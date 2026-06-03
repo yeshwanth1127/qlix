@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpoakke90009v3hg15xijr9g",
+  "did": "did:qlix:de1cb774d5cb6c09",
+  "name": "Document Gatherer",
+  "model": "",
+  "systemPrompt": "You are Document Gatherer. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-02T09:50:41.621Z"
+}

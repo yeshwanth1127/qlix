@@ -1,0 +1,554 @@
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-sans); }
+.tab-buttons { display: flex; gap: 8px; margin-bottom: 24px; border-bottom: 0.5px solid var(--color-border-tertiary); }
+.tab-btn { padding: 12px 16px; background: none; border: none; cursor: pointer; font-size: 14px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; transition: all 0.2s; }
+.tab-btn.active { color: var(--color-text-primary); border-bottom-color: var(--color-text-primary); font-weight: 500; }
+.tab-btn:hover { color: var(--color-text-primary); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.card { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 20px; margin-bottom: 16px; }
+.card-title { font-size: 16px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 12px; }
+.highlight { background: var(--color-background-info); color: var(--color-text-info); padding: 12px; border-radius: var(--border-radius-md); margin: 12px 0; font-size: 13px; border-left: 2px solid var(--color-text-info); }
+.warning { background: rgba(255, 193, 7, 0.1); border-left: 2px solid var(--color-text-warning); padding: 12px; border-radius: var(--border-radius-md); margin: 12px 0; font-size: 13px; }
+.section-title { font-size: 18px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 16px; margin-top: 24px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.subcard { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 16px; }
+.subcard h4 { margin: 0 0 8px 0; font-size: 14px; font-weight: 500; }
+.subcard p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--color-text-secondary); }
+.code-block { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px; margin: 12px 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; }
+.metric-boxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 16px 0; }
+.metric { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px; text-align: center; }
+.metric-label { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.metric-value { font-size: 16px; font-weight: 500; color: var(--color-text-primary); }
+.flow-steps { display: flex; flex-direction: column; gap: 8px; }
+.flow-step { display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--color-background-primary); border-left: 2px solid var(--color-border-secondary); border-radius: var(--border-radius-md); }
+.flow-step-num { min-width: 24px; height: 24px; background: var(--color-background-info); color: var(--color-text-info); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 500; flex-shrink: 0; }
+.flow-step-content { font-size: 13px; line-height: 1.6; }
+.comparison-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+.comparison-table th { text-align: left; padding: 8px 12px; background: var(--color-background-tertiary); border: 0.5px solid var(--color-border-tertiary); font-weight: 500; }
+.comparison-table td { padding: 8px 12px; border: 0.5px solid var(--color-border-tertiary); }
+.comparison-table tr:nth-child(even) td { background: var(--color-background-secondary); }
+.pros-list { list-style: none; padding: 0; margin: 0; }
+.pros-list li { padding: 6px 0; font-size: 13px; color: var(--color-text-info); }
+.pros-list li:before { content: "✓ "; font-weight: 500; margin-right: 6px; }
+.cons-list { list-style: none; padding: 0; margin: 0; }
+.cons-list li { padding: 6px 0; font-size: 13px; color: var(--color-text-danger); }
+.cons-list li:before { content: "✗ "; font-weight: 500; margin-right: 6px; }
+</style>
+
+<div style="padding: 0 0 1rem 0;">
+  <div class="tab-buttons">
+    <button class="tab-btn active" onclick="showTab('overview')">Model Overview</button>
+    <button class="tab-btn" onclick="showTab('tracking')">Tracking Success</button>
+    <button class="tab-btn" onclick="showTab('billing')">Billing Logic</button>
+    <button class="tab-btn" onclick="showTab('architecture')">Tech Stack</button>
+    <button class="tab-btn" onclick="showTab('dashboard')">Admin View</button>
+    <button class="tab-btn" onclick="showTab('roadmap')">Implementation</button>
+  </div>
+
+  <!-- TAB 1: OVERVIEW -->
+  <div id="overview" class="tab-content active">
+    <div class="highlight">
+      <strong>🎯 Pay-Per-Success Model:</strong> Charge only when a user successfully completes an action using your service. Failed attempts are free. This aligns your revenue with customer value.
+    </div>
+
+    <div class="section-title">What Counts as "Success"?</div>
+    <div class="grid-2">
+      <div class="subcard">
+        <h4>✅ Passport Usage</h4>
+        <p>User successfully authenticates/verifies passport data. Status = success, no errors thrown.</p>
+      </div>
+      <div class="subcard">
+        <h4>✅ Trial/Log Completion</h4>
+        <p>User completes a task, trial period, or log request. Returns 200/201 response code.</p>
+      </div>
+      <div class="subcard">
+        <h4>✅ Data Processing</h4>
+        <p>Successfully processed and stored data. Not when validation fails or data rejected.</p>
+      </div>
+      <div class="subcard">
+        <h4>✅ Any Service Action</h4>
+        <p>Whatever your core service does — if it works, user pays. If it fails, it's free (troubleshooting).</p>
+      </div>
+    </div>
+
+    <div class="section-title">Pricing Model Examples</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Option A: Flat Per-Success</div>
+        <div class="code-block">
+Passport Verification: $0.10 per success
+Trial Completion: $0.15 per success
+Log Entry: $0.05 per success
+
+Customer usage in May:
+- 5,000 successful passports
+- 1,200 trials completed
+- 18,000 log entries
+
+Charge = (5000 × $0.10) + (1200 × $0.15) + (18000 × $0.05)
+= $500 + $180 + $900 = $1,580/month
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Option B: Tiered + Per-Success</div>
+        <div class="code-block">
+Starter: $49/mo → 500 free successes included
+Pro: $149/mo → 5,000 free successes included
+Enterprise: Custom pricing
+
++ $0.05 per success beyond included limit
+
+Customer on Pro:
+- Uses 8,000 successful passports
+- Charge = $149 + (3000 overage × $0.05)
+- Total = $149 + $150 = $299/month
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">Why This Model?</div>
+    <div class="grid-2">
+      <div class="subcard">
+        <h4>Customer Perspective</h4>
+        <ul class="pros-list">
+          <li>Only pay for working features</li>
+          <li>Failed attempts are free to debug</li>
+          <li>No surprise bills</li>
+          <li>Fair and transparent pricing</li>
+          <li>Budget predictability</li>
+        </ul>
+      </div>
+      <div class="subcard">
+        <h4>Your Perspective</h4>
+        <ul class="pros-list">
+          <li>Revenue directly tied to usage</li>
+          <li>Scales with product adoption</li>
+          <li>Eliminates "dead weight" users</li>
+          <li>Competitive advantage over per-call pricing</li>
+          <li>Better customer retention</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: TRACKING SUCCESS -->
+  <div id="tracking" class="tab-content">
+    <div class="section-title">How to Track Successful Events</div>
+    
+    <div class="card">
+      <div class="card-title">Database Schema for Tracking</div>
+      <div class="code-block">
+Table: successful_events
+- id (uuid)
+- user_id (references users)
+- org_id (references organizations)
+- event_type (passport, trial, log_entry, etc.)
+- success_status (success, failed, pending)
+- timestamp (when it happened)
+- amount_charged (how much to bill for this)
+- billing_cycle (which month's invoice)
+- invoice_id (once billed)
+
+Table: event_charges
+- event_id (references successful_events)
+- charge_amount ($)
+- charge_date
+- refunded (boolean)
+- refund_reason (if applicable)
+      </div>
+    </div>
+
+    <div class="section-title">When to Record Success</div>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="flow-step-num">1</div>
+        <div class="flow-step-content"><strong>User calls your API endpoint</strong><br/>POST /api/passport/verify with user data</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-step-num">2</div>
+        <div class="flow-step-content"><strong>Validate & process</strong><br/>Run your business logic (verify passport, process trial, log data)</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-step-num">3</div>
+        <div class="flow-step-content"><strong>Check result</strong><br/>Did it succeed? (status 200/201, no business logic errors)</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-step-num">4</div>
+        <div class="flow-step-content"><strong>If SUCCESS: Record event</strong><br/>Log to successful_events table with amount_charged = $0.10 (or whatever your rate is)</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-step-num">5</div>
+        <div class="flow-step-content"><strong>If FAILED: No charge</strong><br/>Log to event logs for troubleshooting, but don't create a charge record</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-step-num">6</div>
+        <div class="flow-step-content"><strong>Monthly: Aggregate & bill</strong><br/>Sum all successful_events for the month, create invoice, charge Stripe</div>
+      </div>
+    </div>
+
+    <div class="section-title">Code Example: Recording Success</div>
+    <div class="code-block">
+// POST /api/passport/verify
+async function verifyPassport(req, res) {
+  const { userId, passportData } = req.body;
+  
+  try {
+    // 1. Validate and process
+    const result = await validatePassport(passportData);
+    
+    if (!result.isValid) {
+      // Failed - no charge
+      return res.status(400).json({ 
+        error: 'Invalid passport',
+        charged: false 
+      });
+    }
+    
+    // 2. Success! Record the charge
+    await db.insert('successful_events', {
+      user_id: userId,
+      org_id: req.org.id,
+      event_type: 'passport_verification',
+      success_status: 'success',
+      timestamp: new Date(),
+      amount_charged: 0.10, // Your rate
+      billing_cycle: getCurrentBillingCycle()
+    });
+    
+    // 3. Return success with info
+    return res.status(200).json({
+      success: true,
+      data: result,
+      charged: true,
+      chargeAmount: 0.10,
+      message: 'Passport verified & charged'
+    });
+    
+  } catch (error) {
+    // Error - no charge
+    res.status(500).json({ 
+      error: error.message,
+      charged: false 
+    });
+  }
+}
+    </div>
+
+    <div class="highlight">
+      <strong>💡 Key insight:</strong> Record success BEFORE returning response. This way if your API returns an error (validation failed, data rejected), it's automatically not charged. Only successful completions hit the database.
+    </div>
+  </div>
+
+  <!-- TAB 3: BILLING LOGIC -->
+  <div id="billing" class="tab-content">
+    <div class="section-title">Monthly Billing Process</div>
+    
+    <div class="card">
+      <div class="card-title">Step 1: Aggregate Successful Events</div>
+      <div class="code-block">
+-- At end of month, count all successes per user
+SELECT 
+  user_id,
+  org_id,
+  event_type,
+  COUNT(*) as success_count,
+  SUM(amount_charged) as total_due
+FROM successful_events
+WHERE billing_cycle = 'May 2024'
+  AND success_status = 'success'
+GROUP BY user_id, org_id, event_type
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 2: Apply Pricing Tier Logic</div>
+      <p style="font-size: 13px; margin-bottom: 12px; color: var(--color-text-secondary);">If using tiered model (included successes + overage):</p>
+      <div class="code-block">
+-- User on Pro plan ($149/mo, 5K included)
+SELECT 
+  org_id,
+  'passport' as event_type,
+  COUNT(*) as total_successes,
+  GREATEST(0, COUNT(*) - 5000) as overage_count,
+  GREATEST(0, COUNT(*) - 5000) * 0.05 as overage_charge
+FROM successful_events
+WHERE org_id = 'org_123' AND billing_cycle = 'May'
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 3: Calculate Invoice Total</div>
+      <div class="code-block">
+-- Example invoice for May
+Invoice for user@example.com (Org ABC)
+
+Base Plan (Pro)               $149.00
+  ├─ Passport verifications: 8,000 used (5K included, 3K overage)
+  │  Overage charge: 3,000 × $0.05 =    $150.00
+  ├─ Trial completions: 500 used (included)
+  └─ Log entries: 12,000 used (included)
+
+Total Due                     $299.00
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 4: Charge via Stripe</div>
+      <div class="code-block">
+// Monthly billing job (runs on 1st of month)
+async function createMonthlyInvoices() {
+  const orgs = await db.query(`
+    SELECT org_id, 
+           SUM(amount_charged) as total
+    FROM successful_events
+    WHERE billing_cycle = 'May 2024'
+    GROUP BY org_id
+  `);
+  
+  for (const org of orgs) {
+    const invoice = await stripe.invoices.create({
+      customer: org.stripe_customer_id,
+      auto_advance: true,
+      metadata: { org_id: org.id, billing_cycle: 'May 2024' }
+    });
+    
+    // Add line item
+    await stripe.invoiceItems.create({
+      customer: org.stripe_customer_id,
+      invoice: invoice.id,
+      amount: Math.round(org.total * 100), // Convert to cents
+      currency: 'usd',
+      description: 'API usage charges - May 2024'
+    });
+    
+    // Finalize & send
+    await stripe.invoices.finalizeInvoice(invoice.id);
+  }
+}
+      </div>
+    </div>
+
+    <div class="warning">
+      <strong>⚠️ Idempotency:</strong> Make sure your billing job can run multiple times without double-charging. Mark successful_events as billed after creating invoice to prevent re-processing.
+    </div>
+  </div>
+
+  <!-- TAB 4: ARCHITECTURE -->
+  <div id="architecture" class="tab-content">
+    <div class="section-title">System Components</div>
+    
+    <div class="grid-2">
+      <div class="subcard">
+        <h4>🔴 API Service (Your existing code)</h4>
+        <p>When API call succeeds, insert into successful_events table. That's it.</p>
+      </div>
+      <div class="subcard">
+        <h4>📊 Event Logger</h4>
+        <p>Tracks all successful events. Fast writes (insert only, no reads during request).</p>
+      </div>
+      <div class="subcard">
+        <h4>💰 Billing Engine</h4>
+        <p>Monthly job that aggregates events, applies tier logic, creates Stripe invoices.</p>
+      </div>
+      <div class="subcard">
+        <h4>📈 Analytics Dashboard</h4>
+        <p>Real-time view of successes, revenue, per-user usage. For customer dashboard.</p>
+      </div>
+    </div>
+
+    <div class="section-title">Recommended Tech Stack</div>
+    <table class="comparison-table">
+      <tr>
+        <th>Component</th>
+        <th>Technology</th>
+        <th>Why</th>
+      </tr>
+      <tr>
+        <td><strong>Event Recording</strong></td>
+        <td>PostgreSQL (write-optimized partition by month)</td>
+        <td>Simple INSERT, massive scale. Partition by billing_cycle for fast queries.</td>
+      </tr>
+      <tr>
+        <td><strong>Real-time Counters</strong></td>
+        <td>Redis (optional but recommended)</td>
+        <td>Fast counter increments for dashboard. Sync to PostgreSQL hourly.</td>
+      </tr>
+      <tr>
+        <td><strong>Monthly Billing Job</strong></td>
+        <td>Node.js + Bull Queue</td>
+        <td>Async job runner. Scheduled for 1st of month. Can retry if Stripe fails.</td>
+      </tr>
+      <tr>
+        <td><strong>Payment Processing</strong></td>
+        <td>Stripe Invoicing API</td>
+        <td>Handles recurring, invoices, webhooks, retries.</td>
+      </tr>
+      <tr>
+        <td><strong>Customer Dashboard</strong></td>
+        <td>React (you already have this)</td>
+        <td>Show usage breakdown by event type. Real-time meter. Estimated bill.</td>
+      </tr>
+      <tr>
+        <td><strong>Admin Dashboard</strong></td>
+        <td>React admin panel</td>
+        <td>View all events, adjust charges, issue refunds, view revenue.</td>
+      </tr>
+    </table>
+
+    <div class="highlight">
+      <strong>✅ What's great about this setup:</strong> Your API service doesn't change much. Just add one INSERT to successful_events. All billing logic happens separately (job queue). Zero latency impact on API performance.
+    </div>
+  </div>
+
+  <!-- TAB 5: ADMIN DASHBOARD -->
+  <div id="dashboard" class="tab-content">
+    <div class="section-title">What Super Admin Sees</div>
+    
+    <div class="metric-boxes">
+      <div class="metric">
+        <div class="metric-label">Successes This Month</div>
+        <div class="metric-value">1.2M</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Revenue This Month</div>
+        <div class="metric-value">$5.4K</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Avg Per Success</div>
+        <div class="metric-value">$0.0045</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Failed Attempts</div>
+        <div class="metric-value">342K</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Real-Time Event Log</div>
+      <div class="code-block">
+Timestamp          | Org              | Type              | Status  | Charge
+2024-05-15 14:32  | Acme Corp        | passport_verify   | success | $0.10
+2024-05-15 14:31  | Acme Corp        | passport_verify   | failed  | FREE
+2024-05-15 14:30  | TechStart Inc    | trial_complete    | success | $0.15
+2024-05-15 14:29  | TechStart Inc    | log_entry         | success | $0.05
+2024-05-15 14:28  | Acme Corp        | passport_verify   | success | $0.10
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Monthly Breakdown (Per Org)</div>
+      <table class="comparison-table">
+        <tr>
+          <th>Organization</th>
+          <th>Passport Successes</th>
+          <th>Trial Successes</th>
+          <th>Log Entries</th>
+          <th>Total Charge</th>
+          <th>Status</th>
+        </tr>
+        <tr>
+          <td>Acme Corp</td>
+          <td>5,000</td>
+          <td>1,200</td>
+          <td>18,000</td>
+          <td>$1,580</td>
+          <td>Paid ✓</td>
+        </tr>
+        <tr>
+          <td>TechStart Inc</td>
+          <td>2,300</td>
+          <td>450</td>
+          <td>8,900</td>
+          <td>$784</td>
+          <td>Pending</td>
+        </tr>
+        <tr>
+          <td>GlobalOps</td>
+          <td>12,000</td>
+          <td>3,100</td>
+          <td>45,200</td>
+          <td>$3,920</td>
+          <td>Paid ✓</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Refunds & Adjustments</div>
+      <p style="font-size: 13px; margin-bottom: 12px; color: var(--color-text-secondary);">Super admin can:</p>
+      <ul style="font-size: 13px; margin: 0; padding-left: 20px; line-height: 1.8;">
+        <li>✓ Refund specific events (e.g., "that passport verify failed due to our bug")</li>
+        <li>✓ Apply manual credits (discount, promotion, goodwill)</li>
+        <li>✓ Override success status if needed (mark failed event as success manually)</li>
+        <li>✓ Adjust per-success rates per org (custom pricing)</li>
+        <li>✓ View full event history with timestamps</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- TAB 6: ROADMAP -->
+  <div id="roadmap" class="tab-content">
+    <div class="section-title">Implementation Timeline</div>
+
+    <div class="card">
+      <div class="card-title">Phase 1: MVP (Weeks 1-2)</div>
+      <ul style="font-size: 13px; margin: 0; padding-left: 20px; line-height: 1.8;">
+        <li>✅ Create successful_events table + event_charges table</li>
+        <li>✅ Add INSERT to your API (when success: log event)</li>
+        <li>✅ Simple Stripe integration (create invoice per org monthly)</li>
+        <li>✅ Basic monthly billing job (aggregate & charge)</li>
+        <li>✅ Customer dashboard showing usage + estimated bill</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 2: Polish (Weeks 3-4)</div>
+      <ul style="font-size: 13px; margin: 0; padding-left: 20px; line-height: 1.8;">
+        <li>✅ Redis counters for real-time stats</li>
+        <li>✅ Detailed event log (UI to see all successes/failures)</li>
+        <li>✅ Refund system (mark event as refunded)</li>
+        <li>✅ Email invoices automatically</li>
+        <li>✅ Super admin event log + revenue dashboard</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 3: Advanced (Weeks 5+)</div>
+      <ul style="font-size: 13px; margin: 0; padding-left: 20px; line-height: 1.8;">
+        <li>✅ Tiered pricing (Starter $49, Pro $149 with included successes)</li>
+        <li>✅ Different rates per event type</li>
+        <li>✅ Usage alerts (e.g., "you've used 80% of your plan")</li>
+        <li>✅ Forecasting (show predicted bill for next month)</li>
+        <li>✅ Custom pricing per org</li>
+        <li>✅ Dunning (retry failed payments)</li>
+      </ul>
+    </div>
+
+    <div class="highlight">
+      <strong>🚀 Quick Win (Week 1):</strong> Just add a simple INSERT to your existing API code when a request succeeds. That's 80% of the work. Then run a monthly script to charge based on successful event count. Everything else is refinement.
+    </div>
+
+    <div class="warning">
+      <strong>📋 Checklist for Phase 1:</strong><br/>
+      □ PostgreSQL table for successful_events<br/>
+      □ Add INSERT in your API endpoint<br/>
+      □ Create monthly billing job (node + schedule)<br/>
+      □ Stripe account setup<br/>
+      □ Test full flow: 1) Success API call → 2) Event logged → 3) Monthly job runs → 4) Invoice created<br/>
+      □ Customer dashboard shows current month usage<br/>
+    </warning>
+  </div>
+</div>
+
+<script>
+function showTab(tabName) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById(tabName).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>

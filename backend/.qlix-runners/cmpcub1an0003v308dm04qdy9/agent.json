@@ -1,0 +1,27 @@
+{
+  "did": "did:qlix:f927a8dd3004e785",
+  "agent_id": "cmpcub1an0003v308dm04qdy9",
+  "private_key": "e32f5b2bbc98612ca11812068a071729a36bc464b044686ecb23afe9c1598e5a",
+  "public_key": "a07168cba2973ee5812278986615351053c8403a27f3e303e3753689320c3123",
+  "permission_scopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction",
+    "system.file_read",
+    "system.file_write"
+  ],
+  "jit_scopes": [
+    "web.transaction",
+    "system.file_write"
+  ],
+  "always_scopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "system.file_read"
+  ],
+  "llm_mode": "proxy",
+  "backend_url": "http://host.docker.internal:4000",
+  "issued_at": "2026-05-19T16:23:06.456Z"
+}

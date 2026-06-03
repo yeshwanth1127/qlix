@@ -1,0 +1,24 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpb9mh1s000dv3c8y8suc41r",
+  "did": "did:qlix:d502a3ab0ac198da",
+  "name": "testing",
+  "model": "",
+  "systemPrompt": "You are testing. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction"
+  ],
+  "jitScopes": [
+    "web.transaction"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "web.click"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-19T11:13:53.873Z"
+}

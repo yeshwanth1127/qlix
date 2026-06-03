@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpgyqupg000f9drcrgowwufb",
+  "did": "did:qlix:782788d982d37da0",
+  "name": "risk scorer",
+  "model": "",
+  "systemPrompt": "You are risk scorer. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-22T13:36:32.880Z"
+}

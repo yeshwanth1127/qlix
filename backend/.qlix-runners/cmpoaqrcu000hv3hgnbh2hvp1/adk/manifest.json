@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpoaqrcu000hv3hgnbh2hvp1",
+  "did": "did:qlix:847e40c3826c2b7f",
+  "name": "Calculator",
+  "model": "",
+  "systemPrompt": "You are Calculator. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T16:48:22.384Z"
+}

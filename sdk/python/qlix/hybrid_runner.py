@@ -1,0 +1,309 @@
+"""Hybrid runner — polls Qlix for runs, executes local tools, inference via backend proxy."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import sys
+import time
+from typing import Any
+
+from .cloud_adk_loader import load_cloud_adk
+
+from .http_client import QlixHttpClient
+from .identity import AgentIdentity, load_identity
+from .runner_common import (
+    default_log,
+    emit_event,
+    maybe_prepend_brain_context,
+    run_backend_proxy_inference,
+    stream_assistant_deltas,
+)
+from .sdk import QlixSDK
+from .agents3_proxy import Agents3RunContext
+from .tool_router import ToolRouter
+
+_log = default_log("hybrid_runner")
+_ping_error_logged = False
+
+
+def _runner_token(identity: AgentIdentity) -> str:
+    token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
+    if token:
+        return token
+    raw = identity.raw
+    for key in ("runner_token", "runnerToken"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+async def _ping_loop(identity: AgentIdentity, runner_token: str) -> None:
+    interval_ms_raw = os.environ.get("QLIX_HYBRID_PING_INTERVAL_MS", "5000").strip()
+    try:
+        interval_ms = max(1000, int(interval_ms_raw))
+    except ValueError:
+        interval_ms = 5000
+
+    headers = {"X-QLIX-Runner-Token": runner_token}
+    async with QlixHttpClient(base_url=identity.backend_url) as http:
+        while True:
+            t0 = time.time()
+            try:
+                await http.post_json(
+                    f"/api/v1/agents/{identity.agent_id}/ping",
+                    {},
+                    headers=headers,
+                )
+            except Exception as exc:
+                global _ping_error_logged
+                if not _ping_error_logged:
+                    _log("ping_error", error=str(exc))
+                    _ping_error_logged = True
+            dt = time.time() - t0
+            await asyncio.sleep(max(0.1, (interval_ms / 1000.0) - dt))
+
+
+async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> None:
+    if not runner_token:
+        _log("runner_init_error", message="missing QLIX_RUNNER_TOKEN or runner_token in agent.json")
+        return
+
+    adk = load_cloud_adk()
+    headers = {"X-QLIX-Runner-Token": runner_token}
+    max_wait_ms = int(os.environ.get("QLIX_HYBRID_POLL_MAX_WAIT_MS", "25000"))
+    router = ToolRouter(identity, runner_runtime="hybrid")
+    run_cache: dict[str, str] = {}
+
+    _log(
+        "poll_start",
+        agent_id=identity.agent_id,
+        backend=identity.backend_url,
+        adk_name=adk.manifest.get("name"),
+    )
+
+    async with QlixHttpClient(base_url=identity.backend_url) as http:
+        async with QlixSDK(identity=identity, http=http) as qlix:
+            seq = 0
+            idle_polls = 0
+
+            while True:
+                run_id = ""
+                try:
+                    polled = await http.post_json(
+                        f"/api/v1/agents/{identity.agent_id}/runs/poll",
+                        {"maxWaitMs": max_wait_ms},
+                        headers=headers,
+                    )
+                    run = polled.get("run")
+                    if not run:
+                        idle_polls += 1
+                        if idle_polls == 1:
+                            _log(
+                                "poll_waiting",
+                                agent_id=identity.agent_id,
+                                message="Connected. Send a message in Qlix chat to start a run.",
+                            )
+                        elif idle_polls % 30 == 0:
+                            _log("poll_idle", agent_id=identity.agent_id, count=idle_polls)
+                        await asyncio.sleep(1.0)
+                        continue
+
+                    idle_polls = 0
+                    run_id = str(run.get("id", ""))
+                    seq = 0
+                    prompt = str(run.get("prompt", ""))
+                    run_inference_model = str(
+                        run.get("inferenceModel") or run.get("inference_model") or ""
+                    ).strip()
+                    skills = run.get("skills") or []
+                    selected_skills = [str(s).strip() for s in skills if str(s).strip()]
+                    _log("run_claimed", run_id=run_id, skills=skills)
+
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={"message": "run_started", "skills": skills, "runtime": "hybrid"},
+                    )
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={"message": "hybrid_runner_start"},
+                    )
+
+                    use_brain = bool(run.get("useBrain"))
+                    prompt_for_skills, seq = await maybe_prepend_brain_context(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        prompt=prompt,
+                        use_brain=use_brain,
+                        seq=seq,
+                        log=_log,
+                    )
+                    enriched_prompt = prompt_for_skills
+                    if selected_skills:
+                        enriched_prompt = (
+                            f"{prompt_for_skills}\n\nSelected skills/tools: {', '.join(selected_skills)}"
+                        )
+
+                    plan = router.plan_run(prompt, skill_filter=selected_skills or None)
+                    _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
+
+                    tools = router.build_tool_definitions(plan)
+
+                    model = run_inference_model or str(
+                        adk.manifest.get("model")
+                        or os.environ.get("QLIX_PROXY_MODEL", "openrouter/openai/gpt-4o-mini")
+                    )
+                    async def _agents3_log_emit(data: dict) -> None:
+                        nonlocal seq
+                        seq = await emit_event(
+                            http,
+                            agent_id=identity.agent_id,
+                            run_id=run_id,
+                            headers=headers,
+                            seq=seq,
+                            event_type="log",
+                            data=data,
+                        )
+
+                    agents3_context = Agents3RunContext(
+                        agent_id=identity.agent_id,
+                        runner_token=runner_token,
+                        model=model,
+                        run_id=run_id,
+                        log_emit=_agents3_log_emit,
+                    )
+                    tool_executors = router.build_executor_map(
+                        plan,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        backend_url=identity.backend_url,
+                        runner_token=runner_token,
+                        qlix_sdk=qlix,
+                        run_cache=run_cache,
+                        agents3_context=agents3_context,
+                    )
+
+                    tools_json = json.dumps(tools, sort_keys=True)
+                    tools_hash = hashlib.md5(tools_json.encode()).hexdigest()[:8]
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={
+                            "message": "inference_request",
+                            "model": model,
+                            "tool_groups": list(plan.groups),
+                            "tools_offered": len(tools),
+                        },
+                    )
+
+                    seq, content, duration_ms, turns, tool_calls, proxy_usage = (
+                        await run_backend_proxy_inference(
+                            http,
+                            identity=identity,
+                            agent_id=identity.agent_id,
+                            headers=headers,
+                            seq=seq,
+                            run_id=run_id,
+                            model=model,
+                            enriched_prompt=enriched_prompt,
+                            tools=tools,
+                            tool_executors=tool_executors,
+                            tools_hash=tools_hash,
+                            tools_schema_bytes=len(tools_json),
+                            log=_log,
+                            live_view_enabled=False,
+                        )
+                    )
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={
+                            "message": "inference_success",
+                            "model": model,
+                            "usage": proxy_usage,
+                            "tool_calls_executed": tool_calls,
+                        },
+                    )
+                    seq = await stream_assistant_deltas(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        content=content,
+                    )
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={"message": "run_result", "turns": turns, "tool_calls": tool_calls},
+                    )
+
+                    await http.post_json(
+                        f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
+                        {"ok": True, "result": content},
+                        headers=headers,
+                    )
+                    _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms)
+                except Exception as exc:
+                    error_msg = str(exc)
+                    _log("poll_execute_error", error=error_msg)
+                    if run_id:
+                        try:
+                            await http.post_json(
+                                f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
+                                {"ok": False, "errorMessage": error_msg},
+                                headers=headers,
+                            )
+                        except Exception:
+                            pass
+                    await asyncio.sleep(1.0)
+
+
+def main() -> None:
+    identity = load_identity()
+    runner_token = _runner_token(identity)
+    if not runner_token:
+        print(
+            "[hybrid_runner] Set QLIX_RUNNER_TOKEN or include runner_token in agent.json",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    async def _main() -> None:
+        await asyncio.gather(
+            _ping_loop(identity, runner_token),
+            _poll_and_execute_loop(identity, runner_token),
+        )
+
+    asyncio.run(_main())
+
+
+if __name__ == "__main__":
+    main()

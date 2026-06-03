@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpoavwit000pv3hg54jkgn6u",
+  "did": "did:qlix:79954f5f09af683a",
+  "name": "Compliance Checker",
+  "model": "",
+  "systemPrompt": "You are Compliance Checker. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T16:50:49.117Z"
+}

@@ -1,0 +1,294 @@
+<style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    .nav{display:flex;gap:6px;margin-bottom:1.5rem;flex-wrap:wrap}
+    .pill{padding:6px 14px;border-radius:20px;font-size:12px;font-weight:500;cursor:pointer;border:0.5px solid var(--color-border-secondary);color:var(--color-text-secondary);background:transparent;transition:all .15s}
+    .pill.active{background:var(--color-text-primary);color:var(--color-background-primary);border-color:transparent}
+    .panel{display:none}
+    .panel.active{display:block}
+    .section-label{font-size:11px;font-weight:500;letter-spacing:.07em;text-transform:uppercase;color:var(--color-text-tertiary);margin-bottom:10px}
+    .card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1rem 1.25rem;margin-bottom:12px}
+    .card-title{font-size:14px;font-weight:500;color:var(--color-text-primary);margin-bottom:4px}
+    .card-sub{font-size:13px;color:var(--color-text-secondary);line-height:1.6}
+    .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+    .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .badge{display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:20px;margin-bottom:6px}
+    .badge-purple{background:var(--color-background-info);color:var(--color-text-info)}
+    .badge-amber{background:#FAEEDA;color:#633806}
+    .badge-teal{background:#E1F5EE;color:#085041}
+    .badge-red{background:var(--color-background-danger);color:var(--color-text-danger)}
+    .badge-gray{background:var(--color-background-secondary);color:var(--color-text-secondary)}
+    .flow-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+    .flow-box{padding:6px 12px;border-radius:6px;font-size:12px;font-weight:500;white-space:nowrap}
+    .flow-arrow{color:var(--color-text-tertiary);font-size:14px}
+    .code{font-family:var(--font-mono);font-size:12px;background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:6px;padding:10px 12px;color:var(--color-text-primary);line-height:1.7;margin-top:6px}
+    .rule-row{display:flex;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--color-border-tertiary);align-items:flex-start}
+    .rule-row:last-child{border-bottom:none}
+    .rule-icon{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;margin-top:1px}
+    .icon-ok{background:#E1F5EE;color:#085041}
+    .icon-no{background:#FCEBEB;color:#A32D2D}
+    .rule-text{font-size:13px;color:var(--color-text-primary);line-height:1.5}
+    .rule-sub{font-size:12px;color:var(--color-text-secondary);margin-top:2px}
+    </style>
+    
+    <div style="padding:1rem 0">
+      <div class="nav">
+        <button class="pill active" onclick="show('arch')">Architecture</button>
+        <button class="pill" onclick="show('flow')">Data flow</button>
+        <button class="pill" onclick="show('qlix')">Qlix connection</button>
+        <button class="pill" onclick="show('sec')">Security</button>
+      </div>
+    
+      <!-- ── ARCHITECTURE ── -->
+      <div class="panel active" id="panel-arch">
+        <div class="section-label">Package structure</div>
+        <div class="card">
+          <div class="card-title">What the user installs</div>
+          <div class="code">pip install qlix
+    
+    from qlix import QlixSDK
+    sdk = QlixSDK()           # loads ~/.qlix/agent.json automatically
+    await sdk.start("ira")    # boots OpenJarvis with identity attached</div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">Layers inside the package</div>
+        <div class="grid2">
+          <div class="card">
+            <div class="badge badge-teal">Layer 1</div>
+            <div class="card-title">identity.py</div>
+            <div class="card-sub">Loads agent.json. Validates DID format, private key length, scope list. Raises clear errors if anything is missing or malformed. Every other layer depends on this.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-teal">Layer 2</div>
+            <div class="card-title">signer.py</div>
+            <div class="card-sub">Ed25519 sign and verify. Takes a payload dict, canonicalises it (sorted keys), signs with private key, returns hex signature. Mirrors your backend's canonicalize() logic exactly.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-amber">Layer 3</div>
+            <div class="card-title">http_client.py</div>
+            <div class="card-sub">Thin async wrapper over httpx. Knows your backend base URL. Handles retries (3x, exponential backoff), auth headers, and maps HTTP errors to typed SDK exceptions.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-amber">Layer 4</div>
+            <div class="card-title">jit.py</div>
+            <div class="card-sub">When a JIT-scoped action is triggered, sends a JIT request and then polls GET /jit/poll/:id every 2 seconds. Blocks until approved, denied, or timed out (120s). Raises PermissionDeniedError on deny.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-purple">Layer 5 — core</div>
+            <div class="card-title">sdk.py — QlixSDK + qlix.run()</div>
+            <div class="card-sub">The main class. Holds identity + signer + http + jit. Exposes qlix.run(action_type, payload, execute_fn). This is the only function OpenJarvis ever calls. Everything else is internal.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-gray">Layer 6 — bundled</div>
+            <div class="card-title">openjarvis/ (subfolder)</div>
+            <div class="card-sub">OpenJarvis lives here as a bundled subfolder. Not a separate pip dependency. One change: every BaseTool.run() is wrapped with qlix.run(). OpenJarvis itself is otherwise unmodified.</div>
+          </div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">File tree</div>
+        <div class="card">
+          <div class="code">qlix/
+      __init__.py          ← exports QlixSDK
+      identity.py          ← agent.json loader + validator
+      signer.py            ← Ed25519 canonicalise + sign
+      http_client.py       ← async HTTP to Qlix backend
+      jit.py               ← JIT approval polling
+      sdk.py               ← QlixSDK class + qlix.run()
+      exceptions.py        ← typed errors (JITDenied, DeviceNotVerified…)
+      openjarvis/          ← bundled execution engine
+        orchestrator.py
+        tool_registry.py
+        memory.py
+        engine.py
+    pyproject.toml         ← pip packaging
+    README.md</div>
+        </div>
+    
+        <div style="margin-top:1rem">
+          <button class="pill" onclick="sendPrompt('Start writing identity.py for the Qlix SDK ↗')">Write identity.py ↗</button>
+          <button class="pill" style="margin-left:8px" onclick="sendPrompt('Start writing signer.py for the Qlix SDK ↗')">Write signer.py ↗</button>
+          <button class="pill" style="margin-left:8px" onclick="sendPrompt('Start writing sdk.py with qlix.run() ↗')">Write sdk.py ↗</button>
+        </div>
+      </div>
+    
+      <!-- ── DATA FLOW ── -->
+      <div class="panel" id="panel-flow">
+        <div class="section-label">Normal action (non-JIT scope)</div>
+        <div class="card">
+          <div class="flow-row"><div class="flow-box" style="background:#EEEDFE;color:#3C3489">User prompt</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">OpenJarvis orchestrator</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">tool.run()</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#EF9F27;color:#412402">qlix.run() intercepts</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">sign payload</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">POST /actions/start</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#E1F5EE;color:#085041">tool executes</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">result returned</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">POST /actions/complete</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#E1F5EE;color:#085041">backend verifies sig</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">debit wallet</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">write audit log</div></div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">JIT action (finance.spend_50, web.transaction etc.)</div>
+        <div class="card">
+          <div class="flow-row"><div class="flow-box" style="background:#EEEDFE;color:#3C3489">tool.run() called</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#FCEBEB;color:#A32D2D">qlix.run() detects JIT scope</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#FCEBEB;color:#A32D2D">POST /jit/request</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#F1EFE8;color:#5F5E5A">SDK polls GET /jit/poll/:id every 2s</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#F1EFE8;color:#5F5E5A">user sees notification</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#F1EFE8;color:#5F5E5A">approves on dashboard/mobile</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#E1F5EE;color:#085041">poll returns approved</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">continues to pre-log</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">tool executes</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#FCEBEB;color:#A32D2D">OR: poll returns denied</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#FCEBEB;color:#A32D2D">raise PermissionDeniedError</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#FCEBEB;color:#A32D2D">tool never runs</div></div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">What travels in each payload</div>
+        <div class="grid2">
+          <div class="card">
+            <div class="badge badge-amber">POST /actions/start</div>
+            <div class="code">did: "did:qlix:abc123"
+    action_type: "web.click"
+    payload: { url, selector }
+    timestamp: "2026-05-03T…"
+    signature: "a3f8c2…"  ← signs above fields</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-amber">POST /actions/complete</div>
+            <div class="code">action_id: "act_xyz"
+    success: true
+    result: { status: 200 }
+    timestamp: "2026-05-03T…"
+    signature: "b9e047…"  ← signs above fields</div>
+          </div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">Passport headers on every web request</div>
+        <div class="card">
+          <div class="code">X-Qlix-DID:        did:qlix:abc123
+    X-Qlix-Signature:  &lt;ed25519 of method+url+timestamp&gt;
+    X-Qlix-Scopes:     web.read,web.click
+    X-Qlix-Timestamp:  2026-05-03T08:00:00Z</div>
+          <div class="card-sub" style="margin-top:8px">Any website receiving these can call GET /api/v1/passport/:did to verify the agent is real, credentialed, and within its declared scopes.</div>
+        </div>
+      </div>
+    
+      <!-- ── QLIX CONNECTION ── -->
+      <div class="panel" id="panel-qlix">
+        <div class="section-label">All SDK → backend endpoints</div>
+        <div class="card">
+          <div class="rule-row">
+            <div class="rule-icon icon-ok">→</div>
+            <div><div class="rule-text">POST /api/actions/start</div><div class="rule-sub">Called before every tool execution. Sends DID, action type, payload, timestamp, signature. Returns action_id. Backend verifies signature immediately — if invalid, returns 403 and tool is blocked.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-ok">→</div>
+            <div><div class="rule-text">POST /api/actions/complete</div><div class="rule-sub">Called after every tool execution. Sends action_id, success/fail, result, signature. Backend debits wallet on success only (your pay-per-success model). Writes final audit log entry.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-ok">→</div>
+            <div><div class="rule-text">POST /api/jit/request</div><div class="rule-sub">Called when a JIT-scoped action is about to execute. Sends action type + full payload. Backend stores it and notifies the user (dashboard/mobile). Returns jit_request_id.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-ok">→</div>
+            <div><div class="rule-text">GET /api/jit/poll/:id</div><div class="rule-sub">SDK polls this every 2 seconds while blocked. Returns status: pending | approved | denied. On approved, returns a one-time use token. On denied, SDK raises PermissionDeniedError.</div></div>
+          </div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">How the SDK authenticates itself to the backend</div>
+        <div class="card">
+          <div class="grid2">
+            <div>
+              <div class="badge badge-purple">Every request includes</div>
+              <div class="code">Header: X-Qlix-DID
+    Header: X-Qlix-Timestamp
+    Header: X-Qlix-Signature
+      ← Ed25519(DID + timestamp + body hash)</div>
+            </div>
+            <div>
+              <div class="badge badge-teal">Backend verifies by</div>
+              <div class="code">1. look up agent by DID
+    2. fetch stored public key
+    3. verify signature
+    4. check timestamp ≤ 30s old
+    5. proceed or 403</div>
+            </div>
+          </div>
+          <div class="card-sub" style="margin-top:10px">No API keys. No bearer tokens. The agent's Ed25519 keypair IS the authentication. This is exactly the same pattern as your verifiable credentials — the private key proves identity, the public key (stored in DB at agent creation) verifies it.</div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">What the backend needs to add (not built yet)</div>
+        <div class="grid3">
+          <div class="card">
+            <div class="badge badge-red">Missing</div>
+            <div class="card-title">Action log table</div>
+            <div class="card-sub">Prisma model for storing every action: id, agentId, actionType, payload, signature, success, result, timestamps.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-red">Missing</div>
+            <div class="card-title">JIT request table</div>
+            <div class="card-sub">Stores pending approvals: id, agentId, actionType, payload, status, one-time token, expiry.</div>
+          </div>
+          <div class="card">
+            <div class="badge badge-red">Missing</div>
+            <div class="card-title">Wallet debit logic</div>
+            <div class="card-sub">On /actions/complete with success:true — debit the org/user wallet by the action's rate. Already designed in your billing model.</div>
+          </div>
+        </div>
+      </div>
+    
+      <!-- ── SECURITY ── -->
+      <div class="panel" id="panel-sec">
+        <div class="section-label">What can go wrong + how we stop it</div>
+    
+        <div class="card">
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Replay attack — attacker captures a signed payload and resends it</div><div class="rule-sub">Stopped by: every payload includes a timestamp. Backend rejects any request where timestamp is older than 30 seconds. An intercepted payload is useless after 30s.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Forged action logs — someone sends fake /actions/start without running a tool</div><div class="rule-sub">Stopped by: signature includes the full payload hash. Backend verifies signature against stored public key. Without the private key (only in agent.json, never on server) you cannot forge a valid signature.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Scope escalation — agent tries to use a scope it wasn't granted</div><div class="rule-sub">Stopped by: backend checks action_type against the agent's stored permissionScopes on every /actions/start. Undeclared scope → 403. The scopes are set at creation time and cannot be changed by the SDK.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">JIT bypass — agent executes a JIT-scoped action without approval</div><div class="rule-sub">Stopped by: two layers. SDK checks jit_scopes from agent.json before calling execute_fn. Backend also checks on /actions/start — JIT actions require a valid one-time JIT token in the payload, else 403.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Private key theft — agent.json is stolen from user's machine</div><div class="rule-sub">Mitigated by: agent credentials can be revoked instantly from the Qlix dashboard. Revoked agents → all /actions/start return 403 immediately. Future: encrypt agent.json at rest with a passphrase.</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Man-in-the-middle — intercept SDK ↔ backend traffic</div><div class="rule-sub">Stopped by: all backend calls are HTTPS only. Even if traffic is intercepted, the attacker sees a signed payload they cannot re-sign (no private key) and cannot replay (30s timestamp window).</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Unverified agent — rogue agent with no Qlix identity calls your backend</div><div class="rule-sub">Stopped by: every request must include X-Qlix-DID. Backend looks up the DID — if not found in DB, instant 403. No DID = no access, no exceptions.</div></div>
+          </div>
+        </div>
+    
+        <div class="section-label" style="margin-top:1rem">What the SDK must never do</div>
+        <div class="card">
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Never log the private key anywhere — not to console, not to files, not to error messages</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Never send the private key over the network — only signatures go to the backend, never the key itself</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Never skip the pre-log — if /actions/start fails, the tool must not execute</div></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-icon icon-no">✕</div>
+            <div><div class="rule-text">Never cache JIT approvals — each JIT token is single-use and tied to one specific action payload</div></div>
+          </div>
+        </div>
+    
+        <div style="margin-top:1rem">
+          <button class="pill" onclick="sendPrompt('Now lets start building the SDK — start with identity.py ↗')">Start building the SDK ↗</button>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+    function show(id) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+      document.getElementById('panel-' + id).classList.add('active');
+      event.target.classList.add('active');
+    }
+    </script>

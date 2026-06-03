@@ -1,0 +1,39 @@
+FORM-16 SUMMARY (PART B) — FY 2024-25
+======================================
+*** This is a summarised Form-16, not a filed Income Tax Return (ITR). ***
+
+Employee:                  Priya Sharma
+PAN:                       AXFPS4421K
+Employer:                  FintechWorks Pvt Ltd, Bengaluru
+Employer TAN:              BLRF12345A
+Assessment year:           AY 2025-26
+Period:                    01-Apr-2024 to 31-Mar-2025
+
+INCOME FROM SALARY
+------------------
+Gross salary (Sec 17(1))            INR 17,40,000
+Less: HRA exemption u/s 10          INR  2,16,000
+Less: Standard deduction (50,000)   INR    50,000
+                                    -------------
+Net salary income                   INR 14,74,000
+
+DEDUCTIONS UNDER CHAPTER VI-A
+-----------------------------
+80C (EPF + LIC)                     INR  1,50,000
+80D (medical insurance)             INR    24,000
+                                    -------------
+Total deductions                    INR  1,74,000
+
+TAXABLE INCOME                      INR 13,00,000
+INCOME TAX (incl. cess)             INR  1,42,800
+TDS DEDUCTED BY EMPLOYER            INR  1,41,600
+
+NOTES
+-----
+- Form-16 only covers SALARY income.
+- Applicant declared INR 25,000 / month freelance income (not in Form-16).
+- Latest ITR (for FY 2024-25) has NOT been provided with this application.
+  Policy: per Loan Policies > Required Documents, ITR is preferred for any
+  applicant declaring non-salary income.
+
+This is DEMO DATA. Not a real Form-16.

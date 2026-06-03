@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpo0pm2w0009v3kos2xgtb8y",
+  "did": "did:qlix:0a080cc6eb1a0a3a",
+  "name": "Research",
+  "model": "",
+  "systemPrompt": "You are Research. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T16:09:35.479Z"
+}

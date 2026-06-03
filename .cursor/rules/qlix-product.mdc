@@ -1,0 +1,111 @@
+---
+description: Qlix product context, information architecture, dashboards, audit UX, and RBAC
+alwaysApply: true
+---
+
+# Qlix — product context
+
+Qlix is the developer console and identity management layer for the **Exora** ecosystem (trust and identity infrastructure for AI agents). It is comparable to AWS Console or Stripe Dashboard for teams building autonomous AI agents on the web.
+
+Qlix is **not** a project management tool. Two primary functions:
+
+1. **Agent identity management** — register, manage, and certify AI agents with cryptographic identities (DIDs + Verifiable Credentials). Exora Layer 3.
+2. **Audit ledger** — tamper-proof, real-time log of agent actions: who did what, when, on whose behalf. Exora Layer 5.
+
+Qlix is the web UI on top of those backend systems.
+
+## Exora ecosystem (scope)
+
+| Layer | Name | Qlix / status |
+|-------|------|----------------|
+| 1 | Ira (desktop/web agent app) | Future — out of scope |
+| 2 | Platform (skill & trust marketplace) | Future — out of scope |
+| 3 | Agent cert (crypto identity) | **In scope — building now** |
+| 4 | Action APIs | Future — out of scope |
+| 5 | Core infra (ledger, billing, governance) | **In scope — building now** |
+
+**In scope for this repo:** Layer 3 and Layer 5 only. Layers 1, 2, and 4 are explicitly out of scope unless re-scoped.
+
+## Users — two paths (no mixed mode at signup)
+
+After email signup, one screen: **“Are you using this for yourself or your team?”** — Individual or Organization. The entire app shell adapts; no mixed mode at signup.
+
+**Individual:** Solo developers — personal workspace, register agents, issue credentials, inspect logs. No org overhead.
+
+**Organization:** Companies/teams — shared registries, members, team-level audit, compliance views, admin controls, billing (see org IA).
+
+## Information architecture
+
+### Individual (authenticated)
+
+- `/` — home / overview
+- `/agents` — registered agents
+- `/agents/:id` — detail: credentials, status, action history
+- `/audit` — personal audit log (filterable, searchable)
+- `/credentials` — issued VCs, DID document, key management
+- `/api-keys` — programmatic access
+- `/settings` — profile, email, password, danger zone
+
+### Organization (authenticated)
+
+- `/` — org overview
+- `/agents`, `/agents/:id` — org-wide registry; detail includes ownership team
+- `/audit` — org audit & compliance
+- `/audit/policies` — policy rules for what agents may do
+- `/members`, `/teams` — invites, roles, group into teams, agent ownership
+- `/credentials` — org-level VCs and DID management
+- `/billing` — plan, usage, invoices, action credits
+- `/settings` — org name, SSO, danger zone
+
+### Shared (unauthenticated)
+
+- `/` — landing (may conflict with authed home: resolve with auth layout vs marketing layout)
+- `/pricing`
+- `/docs`
+- `/blog`
+- `/login`, `/signup` — signup leads to onboarding split
+
+## Individual dashboard (home)
+
+**Metric cards:** Active agents (count + online now); Actions today (count + % vs yesterday); Credentials (count + validity).
+
+**Sections:** **My agents** — compact list: name, owner icon, last active, actions today, status (online / idle / offline). **Recent audit log** — last 10: timestamp, action description, agent name; link to full log.
+
+**Sidebar CTA:** “Working with a team? Upgrade to org →”
+
+## Organization dashboard (home)
+
+**Metric cards:** Registered agents (count + active today); Actions this week (count + % change); Policy violations (count — target 0, positive/green framing).
+
+**Layout:** Left: **Agent registry** — top agents by activity: name, owning team, status. Right: **Members** — avatars, name, team, role; “+N more” if >5.
+
+**Full width below:** **Audit log** — recent entries; admin/system actions visually distinct from agent actions.
+
+## Agent detail (shared; org extras)
+
+Org adds **transfer ownership** and **assign team** where applicable.
+
+**Sections:** Header — name, DID, status, created, last active. **Credentials** tab — VCs: type, issuer, issued, expiry, revocation. **Actions** tab — paginated action log. **Settings** tab — rename, rotate keys, permission scope, suspend, delete.
+
+## Audit log page (core surface)
+
+Compliance/security tool, not a generic activity feed.
+
+**Columns:** Timestamp (date + time + timezone); Agent name (link to detail); Action type (READ, WRITE, AUTH, POLICY_CHANGE, SYSTEM); Description; Actor (agent or admin username); Result (success / blocked / flagged).
+
+**Filters:** Date range; multi-select agent; action type; result; free-text search.
+
+**Export:** CSV — org plan only.
+
+**Visual:** Default rows for success; **blocked** — amber left border; **flagged** — red left border, slightly elevated background; POLICY_CHANGE and SYSTEM — muted / de-emphasized.
+
+## Key UX conventions
+
+- **DIDs / hashes in tables:** Show first 8 + `...` + last 6; full value on tooltip or via copy.
+- **Copy control:** Small copy icon on DID, API key, VC ID — on success show checkmark ~1.5s.
+- **Empty states:** Meaningful copy + primary action (e.g. agents: “You haven’t registered any agents yet. [Register your first agent →]”; audit: “No events in this time range. Try adjusting filters.”).
+- **Loading:** Skeleton loaders for tables and metrics; spinners only for inline actions (submit, delete confirm).
+- **Destructive actions:** Confirmation dialog; agent delete — require typing agent name.
+- **Realtime audit:** Near real-time updates (WebSocket or SSE); new rows animate from top; “N new events” pill when user has scrolled down.
+- **Org switcher:** Topbar dropdown when user has multiple orgs or personal + org; app re-scopes to selected context.
+- **RBAC:** Org **member** role must **not** see Billing, org **Settings**, or **delete agent**. Hide controls — do not only disable.

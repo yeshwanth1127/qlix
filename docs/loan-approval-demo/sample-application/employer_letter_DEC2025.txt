@@ -1,0 +1,31 @@
+FINTECHWORKS PVT LTD
+====================
+HR Operations — Employment Verification Letter (DEMO)
+
+Date of issue:   12 December 2025
+Letter ref:      FW/HR/EVL/2025-0421
+
+To Whom It May Concern,
+
+This is to certify that Ms. Priya Sharma (Employee ID: FW-2206) is employed
+with FintechWorks Pvt Ltd as Senior Product Manager since 12 March 2022.
+Her current gross monthly compensation is INR 1,45,000.
+
+She is a full-time permanent employee and her services have been
+satisfactory.
+
+This letter is issued at the employee's request and is valid as of the
+date of issue.
+
+For FintechWorks Pvt Ltd,
+HR Operations
+(signed — demo)
+
+----------------------------------------------------------------------
+POLICY NOTE for the loan officer / Qlix compliance worker:
+This letter was issued on 12-Dec-2025. As of the application date
+(28-May-2026), the letter is OVER 5 MONTHS OLD. NovaLend underwriting
+policy requires an employer verification letter dated within the last
+3 months. A fresh letter must be obtained before approval.
+
+This is DEMO DATA. Not a real employer letter.

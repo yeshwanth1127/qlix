@@ -1,0 +1,24 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpo0rmcj000hv3kox4q67jb0",
+  "did": "did:qlix:523f6b3d445dfc6d",
+  "name": "Executor Worker",
+  "model": "",
+  "systemPrompt": "You are Executor Worker. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "email.read",
+    "email.send"
+  ],
+  "jitScopes": [
+    "email.read",
+    "email.send"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T16:09:36.718Z"
+}

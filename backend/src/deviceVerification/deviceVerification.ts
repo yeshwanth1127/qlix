@@ -1,0 +1,104 @@
+import { prisma } from '../lib/prisma.js';
+
+/** Thrown when an operation requires a registered passkey (WebAuthn) on this account. */
+export class DeviceNotVerifiedError extends Error {
+  readonly code = 'device_not_verified';
+  constructor() {
+    super('Device verification required');
+    this.name = 'DeviceNotVerifiedError';
+  }
+}
+
+/** Fields needed to decide if the account has completed device enrollment. */
+export interface UserDeviceVerificationFields {
+  readonly deviceVerified: boolean;
+  readonly webauthnCredentialId: string | null;
+  readonly webauthnPublicKey: string | null;
+}
+
+/**
+ * A user is considered device-verified only when the flag is set and a full passkey
+ * credential row exists (credential id + public key). This guards against partial DB state.
+ */
+export function isDeviceVerificationComplete(fields: UserDeviceVerificationFields): boolean {
+  return (
+    fields.deviceVerified === true &&
+    fields.webauthnCredentialId != null &&
+    fields.webauthnCredentialId.length > 0 &&
+    fields.webauthnPublicKey != null &&
+    fields.webauthnPublicKey.length > 0
+  );
+}
+
+/** Session `user` object for auth responses (`deviceVerified` is derived, not raw DB flag). */
+export function sessionUserPayload(
+  user: UserDeviceVerificationFields & {
+    readonly id: string;
+    readonly email: string;
+    readonly displayName: string | null;
+    readonly role: string;
+    readonly orgId: string;
+    readonly workspaceKind: string;
+    readonly isSuperAdmin: boolean;
+  },
+): {
+  id: string;
+  email: string;
+  displayName: string | null;
+  role: string;
+  orgId: string;
+  workspaceKind: string;
+  isSuperAdmin: boolean;
+  deviceVerified: boolean;
+} {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    role: user.role,
+    orgId: user.orgId,
+    workspaceKind: user.workspaceKind,
+    isSuperAdmin: user.isSuperAdmin,
+    deviceVerified: isDeviceVerificationComplete(user),
+  };
+}
+
+const userSelect = {
+  deviceVerified: true,
+  webauthnCredentialId: true,
+  webauthnPublicKey: true,
+} as const;
+
+export class DeviceVerificationService {
+  /**
+   * Ensures the user has completed WebAuthn registration. Used before issuing agent keys, etc.
+   */
+  async assertUserVerified(userId: string): Promise<{ webauthnCredentialId: string }> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: userSelect,
+    });
+    if (!user || !isDeviceVerificationComplete(user)) {
+      throw new DeviceNotVerifiedError();
+    }
+    return { webauthnCredentialId: user.webauthnCredentialId! };
+  }
+
+  async getStatus(userId: string): Promise<{
+    deviceVerified: boolean;
+    hasPasskey: boolean;
+  }> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: userSelect,
+    });
+    if (!user) {
+      return { deviceVerified: false, hasPasskey: false };
+    }
+    const complete = isDeviceVerificationComplete(user);
+    return {
+      deviceVerified: complete,
+      hasPasskey: user.webauthnCredentialId != null && user.webauthnCredentialId.length > 0,
+    };
+  }
+}

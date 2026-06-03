@@ -1,0 +1,52 @@
+HDFC SALARY ACCOUNT — TRANSACTION STATEMENT (DEMO)
+==================================================
+Account holder:     Priya Sharma
+Account number:     XXXXXX4421
+Branch:             Indiranagar, Bengaluru
+Period:             01-Jan-2026  to  31-Mar-2026
+Opening balance:    INR  64,210.00
+Closing balance:    INR  3,12,540.00
+
+DATE        DESCRIPTION                                  DEBIT       CREDIT       BALANCE
+----------  -------------------------------------------  ----------  -----------  ----------
+05-Jan-26   SALARY CR FINTECHWORKS                                    1,45,000    2,09,210
+07-Jan-26   ATM CASH WD                                  10,000                   1,99,210
+10-Jan-26   CC PAYMENT HDFC CARD                          8,500                   1,90,710
+14-Jan-26   IMPS UPI ZOMATO                                 615                   1,90,095
+18-Jan-26   AUTO DEBIT VEHICLE LOAN EMI                  14,200                   1,75,895
+22-Jan-26   NEFT FREELANCE INV-1124 CLIENTCO              25,000     2,00,895
+27-Jan-26   IMPS UPI BIGBASKET                             2,210                   1,98,685
+31-Jan-26   UTILITY BILL BESCOM                            1,420                   1,97,265
+
+05-Feb-26   SALARY CR FINTECHWORKS                                    1,45,000    3,42,265
+07-Feb-26   ATM CASH WD                                  15,000                   3,27,265
+10-Feb-26   CC PAYMENT HDFC CARD                          8,500                   3,18,765
+12-Feb-26   IMPS UPI MEDIBUDDY                            6,420                   3,12,345
+18-Feb-26   AUTO DEBIT VEHICLE LOAN EMI                  14,200                   2,98,145
+20-Feb-26   NEFT FREELANCE INV-1131 CLIENTCO              25,000     3,23,145
+25-Feb-26   IMPS UPI SCHOOL FEES (DEPENDENT)             18,000                   3,05,145
+28-Feb-26   UTILITY BILL BESCOM                            1,380                   3,03,765
+
+05-Mar-26   SALARY CR FINTECHWORKS                                    1,45,000    4,48,765
+07-Mar-26   ATM CASH WD                                  20,000                   4,28,765
+10-Mar-26   CC PAYMENT HDFC CARD                          8,500                   4,20,265
+12-Mar-26   NEFT INWARD REF NB2026031200938               --         2,40,000    6,60,265   <-- unexplained large credit
+14-Mar-26   IMPS UPI APOLLO HOSPITAL                     45,000                   6,15,265
+17-Mar-26   AUTO DEBIT VEHICLE LOAN EMI                  14,200                   6,01,065
+20-Mar-26   IMPS UPI RENOVATION VENDOR                   2,50,000                 3,51,065
+22-Mar-26   IMPS UPI BIGBASKET                             4,210                   3,46,855
+26-Mar-26   IMPS UPI SWIGGY                                2,315                   3,44,540
+28-Mar-26   IMPS UPI SCHOOL FEES (DEPENDENT)             18,000                   3,26,540
+31-Mar-26   UTILITY BILL BESCOM                            1,500                   3,25,040
+31-Mar-26   IMPS UPI CHARITY ICONIC TRUST                12,500                   3,12,540
+
+NOTES (for officer review)
+--------------------------
+- Salary credit is regular at INR 1,45,000.
+- Freelance credits of INR 25,000 appear twice (Jan, Feb) — none in Mar.
+- 12-Mar-26 inward NEFT of INR 2,40,000 has no narration / no remitter name
+  in the statement. Officer must obtain source proof (gift deed, bond
+  maturity, etc.) before this can be counted as income or ignored.
+- Recurring obligations: CC EMI INR 8,500, Vehicle EMI INR 14,200.
+
+This is DEMO DATA. Not a real bank statement.

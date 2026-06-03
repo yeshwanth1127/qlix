@@ -1,0 +1,38 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.tox/
+.nox/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (vendored bridges only — never publish)
+node_modules/
+
+# Local secrets
+.env
+.env.local
+agent.json

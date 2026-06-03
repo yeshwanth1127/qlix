@@ -1,0 +1,24 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmp9rcxpb0001v3c8k1sl9a1v",
+  "did": "did:qlix:1c73560c74c208e1",
+  "name": "ira",
+  "model": "",
+  "systemPrompt": "You are ira. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction"
+  ],
+  "jitScopes": [
+    "web.transaction"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "web.click"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-18T13:48:23.391Z"
+}

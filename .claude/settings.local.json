@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/admin/.claude/projects/d--ysw-qlix/memory/**)",
+      "Bash(rm -rf bench evals learning channels speech server cli daemon)",
+      "Bash(rm -f tools/channel_tools.py tools/text_to_speech.py)",
+      "Bash(python3 -)",
+      "Bash(npx prisma *)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

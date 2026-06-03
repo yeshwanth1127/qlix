@@ -1,0 +1,15 @@
+# Build artifacts
+dist/
+node_modules/
+
+# Env (never commit secrets)
+.env
+.env.local
+
+# Logs / OS
+*.log
+.DS_Store
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal

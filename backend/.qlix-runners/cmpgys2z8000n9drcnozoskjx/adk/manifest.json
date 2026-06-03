@@ -1,0 +1,21 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpgys2z8000n9drcnozoskjx",
+  "did": "did:qlix:554d3aa6a9ee0b9c",
+  "name": "compliance officer",
+  "model": "",
+  "systemPrompt": "You are compliance officer. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "brain.query",
+    "web.read",
+    "brain.knowledge_read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "brain.query",
+    "web.read",
+    "brain.knowledge_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-22T13:37:30.031Z"
+}

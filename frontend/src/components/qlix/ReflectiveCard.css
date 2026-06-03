@@ -1,0 +1,105 @@
+/* ─── ReflectiveCard — adaptive frosted + reflective glass panel ─────────── */
+
+.rc-container {
+  position: relative;
+  overflow: hidden;
+  background: #0c0c0f;
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  isolation: isolate;
+}
+
+/* Hidden SVG filter defs — zero size, invisible */
+.rc-svg-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* Webcam reflection layer */
+.rc-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.15) scaleX(-1);
+  filter: saturate(var(--rc-sat, 0.15))
+          contrast(115%)
+          brightness(108%)
+          blur(var(--rc-blur, 10px))
+          var(--rc-filter, none);
+  z-index: 0;
+  opacity: 0.82;
+  transition: filter 0.3s ease;
+}
+
+/* Film-grain + fine speckle (two tiled layers) */
+.rc-noise {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: var(--rc-roughness, 0.38);
+  pointer-events: none;
+  background-image:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n1'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch' seed='7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n1)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 128 128' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n2'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch' seed='91'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n2)'/%3E%3C/svg%3E");
+  background-size: 180px 180px, 96px 96px;
+  background-repeat: repeat;
+  mix-blend-mode: overlay;
+}
+
+/* Diagonal metallic sheen */
+.rc-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.06) 38%,
+    rgba(255, 255, 255, 0.00) 50%,
+    rgba(255, 255, 255, 0.04) 62%,
+    rgba(255, 255, 255, 0.18) 100%
+  );
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  opacity: var(--rc-metalness, 0.65);
+}
+
+/* Luminous gradient border (mask trick — only shows padding edge) */
+.rc-border {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.65) 0%,
+    rgba(255, 255, 255, 0.12) 50%,
+    rgba(255, 255, 255, 0.45) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  z-index: 20;
+  pointer-events: none;
+}
+
+/* Content layer — sits above all visual effects */
+.rc-content {
+  position: relative;
+  z-index: 10;
+  color: var(--rc-color, white);
+  background: var(--rc-overlay, rgba(10, 10, 14, 0.50));
+  width: 100%;
+}

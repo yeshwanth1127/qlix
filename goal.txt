@@ -1,0 +1,69 @@
+goal:
+LOAN APPLICATION — INTERNAL TEST CASE #LA-2026-0847
+Product: Personal loan (unsecured)
+Requested amount: ₹8,50,000
+Requested term: 48 months
+Stated purpose: Home renovation
+
+APPLICANT PROFILE
+- Legal name: Priya Sharma
+- DOB: 1991-06-14 (age 34)
+- Citizenship: India
+- Employment: Senior Product Manager, NovaTech Pvt Ltd (since 2019-03)
+- Employment type: Salaried
+- Annual gross income (stated): ₹12,00,000
+- Other income (stated freelance): ₹1,20,000 / year (1099-style invoices, not yet verified)
+- Monthly debt obligations (stated): ₹28,000 (₹18,000 existing personal loan EMI + ₹10,000 credit card minimums)
+- Proposed new loan EMI (estimated by applicant): ₹22,500 / month
+- Credit bureau score (stated): 712
+- Prior defaults (stated): none in last 7 years
+- Sanctions / PEP screening (stated): CLEAR
+- Address stability: same city 6+ years
+
+DOCUMENTS ON FILE
+- PAN: present
+- Aadhaar: present
+- ITR FY 2023-24: present
+- ITR FY 2024-25: MISSING (only Form-16 provided)
+- Pay slips: last 3 months present
+- Bank statements: 6 months present (one month shows large unexplained ₹2,40,000 inbound transfer labeled "gift")
+- Employer verification letter: present but dated 8 months ago (STALE)
+- Property proof: not required for unsecured product
+
+UNDERWRITING FLAGS (supervisor must track)
+- Income includes unverified freelance component
+- Stale employer letter
+- Missing latest ITR
+- Large unexplained bank credit
+
+Company rules in prompt are HINTS ONLY — workers with brain access must verify limits via company brain and cite sources.
+
+--- WORKER TASKS ---
+
+Loan Document Gatherer:
+Produce a document readiness report: each required item PRESENT/MISSING/STALE, quality notes, and a prioritized list of what the loan officer must request before approval. Include risk_level: LOW|MEDIUM|HIGH for doc package completeness.
+
+Loan DTI Calculator:
+1) Query company brain for DTI thresholds, minimum credit score, and how to treat unverified secondary income.
+2) Compute DTI two ways: (A) salary only, (B) salary + unverified freelance (label as unverified).
+3) Include proposed new EMI in obligations.
+4) State PASS/FAIL/CONDITIONAL_PASS for each scenario with math shown.
+5) Cite brain policy titles used.
+
+Loan Compliance Checker:
+1) Query company brain for fair-lending, age eligibility, sanctions handling, and any restricted customer segments.
+2) Assess the stated CLEAR sanctions result and fair-lending posture.
+3) Flag if missing ITR or unexplained bank transfer triggers enhanced due diligence per policy.
+4) Output: compliance_status APPROVED|CONDITIONAL|DECLINED, blockers[], advisories[], brain_citations[].
+
+Loan Ops Supervisor:
+Synthesize all worker outputs into a single officer brief:
+- RECOMMENDATION: APPROVE | CONDITIONAL_APPROVE | DECLINE
+- If conditional: exact conditions (documents + verifications required)
+- Top 3 reasons (bullets)
+- Explicitly list which company brain policies were relied on
+- One paragraph suitable for applicant communication (neutral tone)
+- Keep total brief under 1200 words
+
+Deliver the final officer brief formatted for WhatsApp.
+

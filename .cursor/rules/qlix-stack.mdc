@@ -1,0 +1,48 @@
+---
+description: Qlix frontend/backend stack, auth phases, and infrastructure defaults
+globs: "frontend/**/*.{ts,tsx},backend/**/*.ts"
+alwaysApply: false
+---
+
+# Qlix — tech stack
+
+**Repo layout:** `frontend/` = Next.js (App Router). `backend/` = **Node.js** HTTP API (Express + TypeScript + Prisma).
+
+Use this stack unless there is a strong, documented reason to change.
+
+## Frontend
+
+- **Next.js** 14+ with **App Router**
+- **TypeScript** — `strict`, no `any`
+- **Tailwind CSS** — utility-first; no CSS Modules
+- **shadcn/ui** — base primitives (Button, Dialog, Table, Badge, etc.)
+- **Lucide React** — icons, **16px** default
+- **TanStack Query** — all server state, caching, invalidation
+- **Zustand** — lightweight client UI state (sidebar, filters, etc.)
+- **React Hook Form + Zod** — all forms and validation
+
+## Backend / API
+
+- **`backend/`** — **Node.js** with **Express**, **TypeScript**, **Prisma** — primary REST surface; versioned paths under `/api/v1`.
+- **Next.js Route Handlers** in `frontend/` — optional BFF (proxy, cookie rewrites); keep domain logic in `backend/` unless edge-only.
+- **PostgreSQL** — primary database (`backend/prisma`)
+- **Redis** — sessions cache, rate limiting, pub/sub for realtime audit streams
+- **Auth tokens:** JWT in **httpOnly cookies** — no `localStorage` for sensitive auth material
+
+## Auth (phased)
+
+1. Email + password first
+2. Magic link alternative
+3. OAuth (Google, GitHub) fast-follow
+4. SSO (SAML/OIDC) — **org plan only**
+
+## Infrastructure
+
+- **Vercel** — frontend hosting
+- **Railway** or **Supabase** — Postgres + Redis in early stage
+- Secrets via **`.env.local`** only; never hardcode secrets
+
+## Conventions
+
+- Align API shapes and types with Prisma models and shared Zod schemas where practical.
+- Server components by default in App Router; client components only where needed (forms, interactivity, Query providers).

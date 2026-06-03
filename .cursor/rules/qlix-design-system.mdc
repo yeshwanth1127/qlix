@@ -1,0 +1,131 @@
+---
+description: Qlix dark-first design system — tokens, typography, layout shell, component class recipes
+globs: "frontend/**/*.{tsx,css}"
+alwaysApply: false
+---
+
+# Qlix — design system
+
+**Direction:** macOS meets mission-critical infrastructure — refined, dark-first, high-contrast, precise type. References: Linear, Vercel dashboard, Raycast, macOS system settings, Anthropic console. **Not** Notion, Jira, generic “SaaS blue.”
+
+**Dark mode** is default and primary; light mode is supported but secondary.
+
+## CSS variables (`globals.css`)
+
+Define tokens as `:root` variables; **reference variables in components** — avoid raw Tailwind palette classes for surfaces and semantic colors.
+
+```css
+:root {
+  /* Base surfaces */
+  --bg-base:        #0a0a0b;
+  --bg-elevated:    #111113;
+  --bg-overlay:     #18181b;
+  --bg-subtle:      #1c1c1f;
+  --bg-hover:       #242428;
+  --bg-active:      #2a2a30;
+
+  --border-subtle:  rgba(255,255,255,0.06);
+  --border-default: rgba(255,255,255,0.10);
+  --border-strong:  rgba(255,255,255,0.18);
+
+  --text-primary:   #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary:  #52525b;
+  --text-inverted:  #09090b;
+
+  --accent:         #3b82f6;
+  --accent-hover:   #2563eb;
+  --accent-subtle:  rgba(59,130,246,0.12);
+  --accent-border:  rgba(59,130,246,0.30);
+
+  --success:        #22c55e;
+  --success-subtle: rgba(34,197,94,0.10);
+  --warning:        #f59e0b;
+  --warning-subtle: rgba(245,158,11,0.10);
+  --danger:         #ef4444;
+  --danger-subtle:  rgba(239,68,68,0.10);
+  --neutral:        #3f3f46;
+  --neutral-subtle: rgba(63,63,70,0.40);
+
+  --font-mono: 'Berkeley Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --font-sans: -apple-system, 'SF Pro Display', 'SF Pro Text', BlinkMacSystemFont, system-ui, sans-serif;
+}
+```
+
+**Fonts:** System / SF Pro stack for sans. **Do not** import Google Fonts. **Do not** use Inter. Mono for DIDs, keys, hashes.
+
+## Typography
+
+| Role | Spec |
+|------|------|
+| Display (rare) | 20px / weight 500 / tracking -0.02em / `--text-primary` |
+| Title (page) | 16px / 500 / -0.01em / `--text-primary` |
+| Section header | 13px / 500 / 0.01em / uppercase / `--text-secondary` — in Tailwind often `text-[11px] font-medium tracking-widest uppercase text-[--text-tertiary]` |
+| Body | 14px / 400 / `--text-primary` |
+| Body small | 13px / 400 / `--text-secondary` |
+| Label / caption | 12px / 0.01em / `--text-tertiary` |
+| Mono | 12px / 400 / `--font-mono` / `--text-secondary` |
+
+**Rules:** No weight above **500** in dashboard UI. **Never** `font-bold` (700). Metric values: `text-[28px] font-[450] tracking-[-0.03em]` (450 may need arbitrary value / theme).
+
+## Component recipes (Tailwind)
+
+**Card (surface):** `rounded-xl border border-[--border-subtle] bg-[--bg-elevated] p-5`
+
+**Card (interactive):** add `p-4 transition-colors duration-150 hover:border-[--border-default] hover:bg-[--bg-hover] cursor-pointer`
+
+**Metric card:** outer as surface card; label `text-[11px] font-medium tracking-widest uppercase text-[--text-tertiary]`; value `text-[28px] font-[450] tracking-[-0.03em] text-[--text-primary]`; subtext `text-[12px] text-[--text-tertiary]`
+
+**No `shadow-*` on cards** — depth via border + background only.
+
+**Badge / pill (base):** `inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium` + semantic bg/text from success / warning / neutral / danger subtle tokens. Online dot: `size-1.5 rounded-full bg-[--success]`.
+
+**Action type tag:** `rounded-md px-2 py-0.5 text-[10px] font-mono tracking-wider bg-[--bg-overlay] border border-[--border-subtle] text-[--text-secondary]` (md radius, mono).
+
+**Buttons (h-8 always):** Primary `h-8 px-4 rounded-lg bg-[--accent] text-white text-[13px] font-medium transition-colors hover:bg-[--accent-hover] active:scale-[0.98]`; Secondary bordered ghost; Ghost text-only; Destructive border `border-[--danger]/30 bg-[--danger-subtle] text-[--danger]`; Icon button `size-7 rounded-md`.
+
+**Inputs:** `h-8`, `rounded-lg` (not full), `border-[--border-default] bg-[--bg-overlay]`; focus `focus:border-[--border-strong] focus:ring-1 focus:ring-[--accent-border]`.
+
+**Table:** wrapper `w-full border border-[--border-subtle] rounded-xl overflow-hidden`; header row `border-b border-[--border-subtle] bg-[--bg-subtle]`; header cell `px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-[--text-tertiary]`; data row `border-b border-[--border-subtle] transition-colors hover:bg-[--bg-hover] last:border-0`; cell `px-4 py-3 text-[13px] text-[--text-primary]`. Flagged row: add `border-l-2 border-l-[--danger] bg-[--danger-subtle]/30`. Blocked: `border-l-2 border-l-[--warning]`. No zebra striping.
+
+**Sidebar:** bg `--bg-subtle`, `border-r border-[--border-subtle]`. Section label `px-3 pt-5 pb-1.5 text-[10px] font-semibold tracking-[0.08em] uppercase text-[--text-tertiary]`. Nav item default + active with `bg-[--bg-active]` and left accent bar `w-0.5 bg-[--accent]`. Icons `size-4`.
+
+**Modal:** overlay `fixed inset-0 bg-black/60 backdrop-blur-sm`; panel `rounded-2xl border border-[--border-default] bg-[--bg-overlay] shadow-[0_24px_80px_rgba(0,0,0,0.6)] p-6`; title `text-[15px] font-medium text-[--text-primary] tracking-[-0.01em]`; description `text-[13px] text-[--text-secondary] mt-1`. Deep shadow **only** on overlays.
+
+**Topbar:** `fixed top-0 inset-x-0 h-12 z-50 flex items-center px-4 border-b border-[--border-subtle] bg-[--bg-base]/80 backdrop-blur-md`
+
+## Layout shell
+
+- Topbar: fixed, `h-12`, above styles.
+- Sidebar: `fixed left-0 top-12 bottom-0 w-52`, scrollable.
+- Main: `ml-52 pt-12`, inner `px-8 py-6`, **`max-w-5xl mx-auto`** for standard pages; **full width** for audit log table.
+
+ASCII reference: topbar full width; below it sidebar | main.
+
+## Motion
+
+- Default interaction: `transition-colors duration-150 ease-out`
+- Page: `animate-in fade-in duration-200` on main wrapper where available
+- New audit row: `animate-in slide-in-from-top-2 fade-in duration-200`
+- Modal: `animate-in fade-in zoom-in-95 duration-150`
+- **No** bounce / spring; max ~300ms for UI transitions.
+
+**Skeleton:** custom shimmer keyframes (not aggressive default pulse):
+
+```css
+@keyframes shimmer {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 0.7; }
+  100% { opacity: 0.4; }
+}
+```
+
+Use `bg-[--bg-hover]` shapes matching real content.
+
+## Responsive
+
+- **&lt;768px:** sidebar hidden; hamburger opens left sheet
+- **768–1023px:** sidebar icon-only `w-14`, tooltips
+- **1024px+:** full sidebar labels
+
+Ensure `tailwindcss-animate` (or equivalent) is configured if using `animate-in` utilities.

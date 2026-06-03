@@ -1,0 +1,52 @@
+NOVALEND — UNSECURED PERSONAL LOAN APPLICATION
+==============================================
+Application ID:   LA-2026-0847
+Branch:           NovaLend / Bengaluru — Indiranagar
+Date submitted:   28 May 2026
+
+APPLICANT DETAILS
+-----------------
+Name:                 Priya Sharma
+Date of birth:        14 Aug 1992 (age 33)
+PAN:                  AXFPS4421K
+Aadhaar (masked):     XXXX-XXXX-7831
+Email:                priya.sharma@example.com
+Phone:                +91 98xxx-xx482
+Marital status:       Single
+Dependents:           1 (mother)
+
+ADDRESS
+-------
+Current:  402, Lily Block, Prestige Acropolis, Indiranagar, Bengaluru 560038
+Years at current address: 4
+
+EMPLOYMENT
+----------
+Employer:             FintechWorks Pvt Ltd, Bengaluru
+Designation:          Senior Product Manager
+Employment type:      Full-time, permanent
+Joined:               12 Mar 2022
+Gross monthly income: INR 1,45,000  (salary, before tax)
+Other income:         INR 25,000/month (declared freelance consulting)
+                      *not reflected in Form-16; client receipts only*
+
+LOAN REQUEST
+------------
+Purpose:        Home interior renovation + medical expense for mother
+Amount:         INR 6,00,000
+Tenure:         36 months
+Indicative EMI: INR 19,800 (at 12.5% interest, indicative only)
+
+EXISTING OBLIGATIONS
+--------------------
+1. Personal credit card EMI    INR  8,500/month  (active)
+2. Vehicle loan                INR 14,200/month  (active, 19 months remaining)
+3. No other live loans declared
+
+DECLARATIONS
+------------
+[X] I authorise NovaLend to access my credit history (CIBIL).
+[X] All information is true to the best of my knowledge.
+
+Signature: (signed digitally — Priya Sharma)
+Submitted by: Loan Officer A. Menon (Indiranagar branch)

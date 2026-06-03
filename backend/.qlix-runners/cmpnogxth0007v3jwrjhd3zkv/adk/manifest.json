@@ -1,0 +1,23 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpnogxth0007v3jwrjhd3zkv",
+  "did": "did:qlix:5368cac2833a6d16",
+  "name": "leads generator",
+  "model": "",
+  "systemPrompt": "You are leads generator. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "brain.knowledge_read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "brain.knowledge_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T06:23:27.101Z"
+}

@@ -1,0 +1,21 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpwfn8cf000hv3t80nurbmus",
+  "did": "did:qlix:611ea9da3b3c7ddd",
+  "name": "Loan DTI Calculator",
+  "model": "",
+  "systemPrompt": "You are Loan DTI Calculator. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-02T09:50:46.065Z"
+}

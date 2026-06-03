@@ -1,0 +1,273 @@
+import type { Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma.js';
+import { openRouterChatCompletion, openrouterEmbeddings } from '../llm/openrouterClient.js';
+import { normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import { appendBrainActionLog, type BrainAuditSurface } from './brainAudit.service.js';
+
+const EMBEDDING_MODEL = 'openai/text-embedding-3-small';
+const TOP_K = 5;
+const BATCH_SIZE = Math.max(200, Number(process.env.BRAIN_QUERY_BATCH_SIZE || '2000'));
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length);
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < len; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+export interface BrainQueryCitation {
+  collectionId: string;
+  collectionName: string;
+  documentId: string;
+  documentTitle: string;
+  chunkOrdinal: number;
+  excerpt: string;
+}
+
+type ScoredChunk = {
+  chunk: {
+    id: string;
+    documentId: string;
+    ordinal: number;
+    textContent: string;
+    document: {
+      title: string;
+      collectionId: string;
+      collection: { name: string };
+    };
+  };
+  score: number;
+};
+
+function chunkWhere(
+  orgId: string,
+  collectionIds?: string[],
+): Prisma.BrainKnowledgeChunkWhereInput {
+  const base: Prisma.BrainKnowledgeChunkWhereInput = {
+    orgId,
+    embeddingModel: { not: null },
+  };
+  if (collectionIds && collectionIds.length > 0) {
+    base.document = { collectionId: { in: collectionIds } };
+  }
+  return base;
+}
+
+export class BrainQueryService {
+  /** Called after ingest — fire-and-forget from ingest handler. */
+  async embedAndStoreChunks(orgId: string, documentId: string): Promise<void> {
+    const chunks = await prisma.brainKnowledgeChunk.findMany({
+      where: { documentId, orgId, embeddingModel: null },
+    });
+
+    for (const chunk of chunks) {
+      try {
+        const result = await openrouterEmbeddings(chunk.textContent, EMBEDDING_MODEL);
+        await prisma.brainKnowledgeChunk.update({
+          where: { id: chunk.id },
+          data: { embeddingModel: result.model, embeddingVec: result.embedding },
+        });
+      } catch (err) {
+        console.error(`[brainQuery] Failed to embed chunk ${chunk.id}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    await prisma.brainKnowledgeDocument.update({
+      where: { id: documentId },
+      data: { ingestStatus: 'ready' },
+    }).catch(() => {});
+  }
+
+  /**
+   * Iterates org chunks in batches and keeps global top-K by cosine similarity (memory-bounded vs loading all rows).
+   */
+  async retrieveTopChunks(input: {
+    orgId: string;
+    questionEmbedding: number[];
+    collectionIds?: string[];
+    topK?: number;
+  }): Promise<ScoredChunk[]> {
+    const topK = input.topK ?? TOP_K;
+    const where = chunkWhere(input.orgId, input.collectionIds);
+    let top: ScoredChunk[] = [];
+    let skip = 0;
+
+    for (;;) {
+      const batch = await prisma.brainKnowledgeChunk.findMany({
+        where,
+        skip,
+        take: BATCH_SIZE,
+        orderBy: { id: 'asc' },
+        select: {
+          id: true,
+          documentId: true,
+          ordinal: true,
+          textContent: true,
+          embeddingVec: true,
+          document: {
+            select: {
+              title: true,
+              collectionId: true,
+              collection: { select: { name: true } },
+            },
+          },
+        },
+      });
+      if (batch.length === 0) break;
+
+      for (const row of batch) {
+        const vec = row.embeddingVec;
+        if (!Array.isArray(vec)) continue;
+        const score = cosineSimilarity(input.questionEmbedding, vec as number[]);
+        const chunk = {
+          id: row.id,
+          documentId: row.documentId,
+          ordinal: row.ordinal,
+          textContent: row.textContent,
+          document: row.document,
+        };
+        top.push({ chunk, score });
+        top.sort((a, b) => b.score - a.score);
+        if (top.length > topK) top = top.slice(0, topK);
+      }
+      skip += batch.length;
+    }
+
+    return top;
+  }
+
+  buildContextBlocks(scored: ScoredChunk[]): string[] {
+    return scored.map((s, i) => {
+      const doc = s.chunk.document;
+      const col = doc.collection;
+      return `[${i + 1}] Collection: "${col.name}" | Document: "${doc.title}"\n${s.chunk.textContent}`;
+    });
+  }
+
+  toCitations(scored: ScoredChunk[]): BrainQueryCitation[] {
+    return scored.map((s) => ({
+      collectionId: s.chunk.document.collectionId,
+      collectionName: s.chunk.document.collection.name,
+      documentId: s.chunk.documentId,
+      documentTitle: s.chunk.document.title,
+      chunkOrdinal: s.chunk.ordinal,
+      excerpt: s.chunk.textContent.slice(0, 400),
+    }));
+  }
+
+  async queryBrain(input: {
+    userId: string;
+    orgId: string;
+    brainAgentId: string;
+    brainModel: string;
+    question: string;
+    collectionIds?: string[];
+    auditSurface?: BrainAuditSurface;
+    callingAgentId?: string;
+    /** When true, skip final LLM synthesis — only retrieve and return structured context + empty answer. */
+    contextOnly?: boolean;
+    /** When false, skip appendBrainActionLog (caller logs separately). */
+    writeAudit?: boolean;
+  }): Promise<{ answer: string; citations: BrainQueryCitation[]; contextBlock?: string }> {
+    const queryResult = await openrouterEmbeddings(input.question, EMBEDDING_MODEL);
+    const scored = await this.retrieveTopChunks({
+      orgId: input.orgId,
+      questionEmbedding: queryResult.embedding,
+      collectionIds: input.collectionIds,
+    });
+
+    if (scored.length === 0) {
+      const any = await prisma.brainKnowledgeChunk.count({
+        where: chunkWhere(input.orgId, input.collectionIds),
+      });
+      if (any === 0) {
+        return {
+          answer:
+            'No embedded knowledge found. Ingest documents first — embeddings process in the background after ingest.',
+          citations: [],
+          contextBlock: '',
+        };
+      }
+      return {
+        answer: 'No relevant knowledge found for your question.',
+        citations: [],
+        contextBlock: '',
+      };
+    }
+
+    const contextBlocks = this.buildContextBlocks(scored);
+    const contextBlock = contextBlocks.join('\n\n---\n\n');
+    const citations = this.toCitations(scored);
+    const model = normalizeQlixInferenceModelId(input.brainModel);
+
+    if (input.contextOnly) {
+      if (input.writeAudit !== false) {
+        await appendBrainActionLog({
+          brainAgentId: input.brainAgentId,
+          userId: input.userId,
+          actionType: 'brain.query',
+          payload: {
+            description: `Brain retrieval (context-only): "${input.question.slice(0, 100)}"`,
+            chunksRetrieved: scored.length,
+            contextOnly: true,
+          },
+          status: 'success',
+          riskLevel: 'low',
+          auditSurface: input.auditSurface ?? 'console',
+          callingAgentId: input.callingAgentId,
+        });
+      }
+      return {
+        answer: '',
+        citations,
+        contextBlock,
+      };
+    }
+
+    const systemPrompt = [
+      'You are the company AI brain — an authoritative knowledge assistant for this organization.',
+      "Answer the user's question using ONLY the following retrieved knowledge chunks.",
+      'If the answer is not in the provided context, say so clearly.',
+      'Cite which chunks you used by their number [1], [2], etc.',
+      '',
+      'Retrieved context:',
+      contextBlock,
+    ].join('\n');
+
+    const llmResult = await openRouterChatCompletion({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: input.question },
+      ],
+      temperature: 0.2,
+      max_tokens: 1024,
+      stream: false,
+    });
+
+    if (input.writeAudit !== false) {
+      await appendBrainActionLog({
+        brainAgentId: input.brainAgentId,
+        userId: input.userId,
+        actionType: 'brain.query',
+        payload: {
+          description: `Queried brain: "${input.question.slice(0, 100)}"`,
+          chunksRetrieved: scored.length,
+          model,
+          contextOnly: false,
+        },
+        status: 'success',
+        riskLevel: 'low',
+        auditSurface: input.auditSurface ?? 'console',
+        callingAgentId: input.callingAgentId,
+      });
+    }
+
+    return { answer: llmResult.content, citations, contextBlock };
+  }
+}

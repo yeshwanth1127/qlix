@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpgytiks000v9drcy79x3c5c",
+  "did": "did:qlix:25a5e2ef4422d506",
+  "name": "decision writer",
+  "model": "",
+  "systemPrompt": "You are decision writer. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-22T13:38:36.928Z"
+}

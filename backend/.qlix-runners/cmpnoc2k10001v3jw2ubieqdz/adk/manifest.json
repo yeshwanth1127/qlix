@@ -1,0 +1,21 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpnoc2k10001v3jw2ubieqdz",
+  "did": "did:qlix:39e1e34a0202da8d",
+  "name": "TEAM LEAD",
+  "model": "",
+  "systemPrompt": "You are TEAM LEAD. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T11:45:13.811Z"
+}

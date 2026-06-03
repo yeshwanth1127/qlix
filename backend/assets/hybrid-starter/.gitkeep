@@ -1,0 +1,2 @@
+# Run sdk/python/scripts/build_hybrid_starter_assets.ps1 to produce qlix-agent.whl
+# Templates live in templates/ (copied from sdk/python/qlix/starter_pack)

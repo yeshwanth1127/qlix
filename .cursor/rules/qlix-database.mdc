@@ -1,0 +1,48 @@
+---
+description: Qlix core database tables and field semantics (Prisma/Postgres)
+globs: "**/schema.prisma,**/prisma/**/*"
+alwaysApply: false
+---
+
+# Qlix — core schema
+
+Relational model for identity (Layer 3), audit (Layer 5), orgs, and API access. Adjust names to Prisma conventions (`camelCase` fields, `@id`, `DateTime`, etc.) but preserve semantics.
+
+## `users`
+
+- `id`, `email`, `name`, `avatar_url`, `created_at`, `updated_at`
+
+## `organizations`
+
+- `id`, `name`, `slug`, `plan` (`free` | `pro` | `enterprise`), `created_at`
+
+## `org_members`
+
+- `id`, `org_id`, `user_id`, `role` (`owner` | `admin` | `member`), `joined_at`
+
+## `agents`
+
+- `id`, `name`, `did`, `owner_type` (`user` | `org`), `owner_id`
+- `status` (`active` | `idle` | `suspended`), `created_at`, `last_active_at`
+
+## `credentials`
+
+- `id`, `agent_id`, `vc_type`, `issuer_did`, `issued_at`, `expires_at`, `revoked_at`, `payload_json`
+
+## `audit_events`
+
+- `id`, `agent_id`, `org_id` (nullable for individual context), `action_type`
+- `description`, `result` (`success` | `blocked` | `flagged`)
+- `actor_type` (`agent` | `admin` | `system`), `actor_id`
+- `metadata_json`, `created_at`
+
+## `api_keys`
+
+- `id`, `owner_type` (`user` | `org`), `owner_id`
+- `key_hash`, `label`, `last_used_at`, `created_at`, `revoked_at`
+
+## Notes
+
+- Store **hashes** for API keys at rest; never log raw keys.
+- `audit_events.org_id` aligns org-wide views and CSV export eligibility with org plans.
+- Index hot paths: `audit_events(created_at)`, `audit_events(agent_id, created_at)`, `agents(owner_type, owner_id)`.

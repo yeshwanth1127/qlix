@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpgypzqs00079drcf7ejh1v8",
+  "did": "did:qlix:7a42de52041dae03",
+  "name": "intake proccesor",
+  "model": "",
+  "systemPrompt": "You are intake proccesor. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-22T13:35:54.897Z"
+}

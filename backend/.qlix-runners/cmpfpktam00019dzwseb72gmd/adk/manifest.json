@@ -1,0 +1,24 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpfpktam00019dzwseb72gmd",
+  "did": "did:qlix:82073ab460b8e04b",
+  "name": "TL-test",
+  "model": "openrouter/anthropic/claude-3.5-sonnet",
+  "systemPrompt": "You are TL-test. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction"
+  ],
+  "jitScopes": [
+    "web.transaction"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "web.click"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-21T16:32:02.696Z"
+}

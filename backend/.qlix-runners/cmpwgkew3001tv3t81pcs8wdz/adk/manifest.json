@@ -1,0 +1,21 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpwgkew3001tv3t81pcs8wdz",
+  "did": "did:qlix:476642f75c64a208",
+  "name": "Loan Ops Supervisor",
+  "model": "",
+  "systemPrompt": "You are Loan Ops Supervisor. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "brain.knowledge_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-02T09:51:58.325Z"
+}

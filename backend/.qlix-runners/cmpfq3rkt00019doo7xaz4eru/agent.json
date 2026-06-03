@@ -1,0 +1,23 @@
+{
+  "did": "did:qlix:4d8aff48a34cb054",
+  "agent_id": "cmpfq3rkt00019doo7xaz4eru",
+  "private_key": "bacfda0cc148e9315f6efe512ddfa03f26e39e1d253f5ccffaf2a040a37c6a3f",
+  "public_key": "9a9691eeaa786bed0e83ef68a0c110a54b77a35afade6e32e572b8132f4d9ebb",
+  "permission_scopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction"
+  ],
+  "jit_scopes": [
+    "web.transaction"
+  ],
+  "always_scopes": [
+    "web.read",
+    "brain.query",
+    "web.click"
+  ],
+  "llm_mode": "proxy",
+  "backend_url": "http://localhost:4000",
+  "issued_at": "2026-05-21T16:47:24.273Z"
+}

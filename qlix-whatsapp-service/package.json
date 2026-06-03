@@ -1,0 +1,23 @@
+{
+  "name": "qlix-whatsapp-service",
+  "version": "1.0.0",
+  "description": "Qlix WhatsApp Web sidecar (Baileys + Express)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "scan": "cross-env QR_ONLY=true node src/index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.9"
+  }
+}

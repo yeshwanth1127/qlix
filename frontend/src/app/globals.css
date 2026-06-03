@@ -1,0 +1,503 @@
+@import "tailwindcss";
+
+/* Light theme (default class on html from next-themes, or no .dark) */
+:root {
+  --bg-base: #fafafa;
+  --bg-elevated: #ffffff;
+  --bg-overlay: #f4f4f5;
+  --bg-subtle: #f4f4f5;
+  --bg-hover: #e8e8ea;
+  --bg-active: #e0e0e4;
+
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-default: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+
+  --text-primary: #09090b;
+  --text-secondary: #52525b;
+  --text-tertiary: #a1a1aa;
+  --text-inverted: #fafafa;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-subtle: rgba(37, 99, 235, 0.1);
+  --accent-border: rgba(37, 99, 235, 0.35);
+
+  --success: #16a34a;
+  --success-subtle: rgba(22, 163, 74, 0.12);
+  --warning: #d97706;
+  --warning-subtle: rgba(217, 119, 6, 0.12);
+  --danger: #dc2626;
+  --danger-subtle: rgba(220, 38, 38, 0.1);
+  --neutral: #71717a;
+  --neutral-subtle: rgba(113, 113, 122, 0.25);
+
+  --font-sans: -apple-system, "SF Pro Display", "SF Pro Text", BlinkMacSystemFont,
+    system-ui, sans-serif;
+  --font-mono: "Berkeley Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  /* Marketing / split landing (workspace hero) */
+  --landing-page-bg: #fafafa;
+  --landing-hero-column-bg: #f4f4f5;
+  --landing-form-column-bg: #fafafa;
+  --landing-border: #e4e4e7;
+  --landing-card: #ffffff;
+  --landing-card-muted: #f4f4f5;
+  --landing-text: #09090b;
+  --landing-text-muted: #71717a;
+  --landing-text-soft: #a1a1aa;
+  --landing-mono-fg: #3f3f46;
+  --landing-progress-track: #e4e4e7;
+  --landing-primary-soft: #adc6ff;
+  --landing-cta-bg: #2563eb;
+  --landing-cta-text: #ffffff;
+  --landing-cta-hover: #1d4ed8;
+  --landing-glow: rgba(59, 130, 246, 0.12);
+  --landing-panel-grad-from: rgba(0, 0, 0, 0.03);
+  --landing-hero-title: #09090b;
+  --landing-on-card: #3f3f46;
+  --landing-on-card-muted: #71717a;
+  --landing-selection-tint: rgba(37, 99, 235, 0.08);
+  --landing-icon-box: #f4f4f5;
+
+  /* Frosted glass variables */
+  --glass-surface-bg: rgba(255, 255, 255, 0.62);
+  --glass-surface-border: rgba(255, 255, 255, 0.78);
+  --glass-surface-border-hover: rgba(255, 255, 255, 0.92);
+  --glass-surface-bg-hover: rgba(255, 255, 255, 0.78);
+  --glass-surface-shadow: 0 4px 28px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+
+  --glass-muted-bg: rgba(255, 255, 255, 0.4);
+  --glass-muted-border: rgba(255, 255, 255, 0.62);
+
+  --glass-inset-bg: rgba(255, 255, 255, 0.48);
+  --glass-row-hover: rgba(255, 255, 255, 0.35);
+
+  --glass-input-bg: rgba(255, 255, 255, 0.52);
+  --glass-input-border: rgba(255, 255, 255, 0.68);
+
+  --glass-sidebar-bg: rgba(255, 255, 255, 0.45);
+  --glass-topbar-bg: rgba(255, 255, 255, 0.58);
+
+  --glass-grain-tile: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch' seed='42'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.55'/%3E%3C/svg%3E");
+  --glass-grain-opacity: 0.085;
+  --glass-grain-blend: soft-light;
+}
+
+/* Dark theme */
+.dark {
+  --bg-base: #0a0a0b;
+  --bg-elevated: #111113;
+  --bg-overlay: #18181b;
+  --bg-subtle: #1c1c1f;
+  --bg-hover: #242428;
+  --bg-active: #2a2a30;
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #52525b;
+  --text-inverted: #09090b;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-subtle: rgba(59, 130, 246, 0.12);
+  --accent-border: rgba(59, 130, 246, 0.3);
+
+  --success: #22c55e;
+  --success-subtle: rgba(34, 197, 94, 0.1);
+  --warning: #f59e0b;
+  --warning-subtle: rgba(245, 158, 11, 0.1);
+  --danger: #ef4444;
+  --danger-subtle: rgba(239, 68, 68, 0.1);
+  --neutral: #3f3f46;
+  --neutral-subtle: rgba(63, 63, 70, 0.4);
+
+  --landing-page-bg: #0a0a0a;
+  --landing-hero-column-bg: #0a0a0a;
+  --landing-form-column-bg: #0a0a0a;
+  --landing-border: #1f1f1f;
+  --landing-card: #111111;
+  --landing-card-muted: #1a1a1a;
+  --landing-text: #ffffff;
+  --landing-text-muted: #71717a;
+  --landing-text-soft: #a1a1aa;
+  --landing-mono-fg: #c2c6d6;
+  --landing-progress-track: #1f1f1f;
+  --landing-primary-soft: #adc6ff;
+  --landing-cta-bg: #4d8eff;
+  --landing-cta-text: #00285d;
+  --landing-cta-hover: #3d7eff;
+  --landing-glow: rgba(173, 198, 255, 0.08);
+  --landing-panel-grad-from: rgba(255, 255, 255, 0.03);
+  --landing-hero-title: #ffffff;
+  --landing-on-card: #e5e2e1;
+  --landing-on-card-muted: #c2c6d6;
+  --landing-selection-tint: rgba(173, 198, 255, 0.04);
+  --landing-icon-box: #1a1a1a;
+
+  --glass-surface-bg: rgba(255, 255, 255, 0.07);
+  --glass-surface-border: rgba(255, 255, 255, 0.14);
+  --glass-surface-border-hover: rgba(255, 255, 255, 0.22);
+  --glass-surface-bg-hover: rgba(255, 255, 255, 0.11);
+  --glass-surface-shadow: 0 8px 32px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+
+  --glass-muted-bg: rgba(255, 255, 255, 0.045);
+  --glass-muted-border: rgba(255, 255, 255, 0.1);
+
+  --glass-inset-bg: rgba(255, 255, 255, 0.055);
+  --glass-row-hover: rgba(255, 255, 255, 0.06);
+
+  --glass-input-bg: rgba(255, 255, 255, 0.06);
+  --glass-input-border: rgba(255, 255, 255, 0.12);
+
+  --glass-sidebar-bg: rgba(255, 255, 255, 0.055);
+  --glass-topbar-bg: rgba(255, 255, 255, 0.07);
+
+  --glass-grain-opacity: 0.14;
+  --glass-grain-blend: overlay;
+}
+
+/* Organization workspace */
+[data-org-console="true"] {
+  --bg-base: #0a0a0a;
+  --bg-elevated: #111111;
+  --bg-overlay: #111111;
+  --bg-subtle: #111111;
+  --bg-hover: #171717;
+  --bg-active: #262626;
+
+  --border-subtle: #262626;
+  --border-default: #262626;
+  --border-strong: #404040;
+
+  --text-primary: #ffffff;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #737373;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-subtle: rgba(59, 130, 246, 0.12);
+  --accent-border: rgba(59, 130, 246, 0.3);
+
+  --org-cta-bg: #ffffff;
+  --org-cta-fg: #0a0a0a;
+  --org-cta-hover: #e5e5e5;
+
+  --success: #22c55e;
+  --success-subtle: rgba(34, 197, 94, 0.1);
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-subtle: rgba(239, 68, 68, 0.1);
+
+  --glass-surface-bg: rgba(255, 255, 255, 0.07);
+  --glass-surface-border: rgba(255, 255, 255, 0.14);
+  --glass-surface-border-hover: rgba(255, 255, 255, 0.22);
+  --glass-surface-bg-hover: rgba(255, 255, 255, 0.11);
+  --glass-surface-shadow: 0 8px 32px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+
+  --glass-muted-bg: rgba(255, 255, 255, 0.045);
+  --glass-muted-border: rgba(255, 255, 255, 0.1);
+
+  --glass-inset-bg: rgba(255, 255, 255, 0.055);
+  --glass-row-hover: rgba(255, 255, 255, 0.06);
+
+  --glass-input-bg: rgba(255, 255, 255, 0.06);
+  --glass-input-border: rgba(255, 255, 255, 0.12);
+
+  --glass-sidebar-bg: rgba(255, 255, 255, 0.055);
+  --glass-topbar-bg: rgba(255, 255, 255, 0.07);
+
+  --glass-grain-opacity: 0.14;
+  --glass-grain-blend: overlay;
+}
+
+/* Glass panels in @layer components so Tailwind utilities (fixed, hidden, etc.) take priority */
+@layer components {
+  .qlix-glass-box,
+  .qlix-glass-muted,
+  .qlix-glass-inset,
+  .qlix-glass-input,
+  .qlix-glass-sidebar,
+  .qlix-glass-topbar {
+    position: relative;
+  }
+
+  .qlix-glass-box::before,
+  .qlix-glass-muted::before,
+  .qlix-glass-inset::before,
+  .qlix-glass-input::before,
+  .qlix-glass-sidebar::before,
+  .qlix-glass-topbar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: var(--glass-grain-opacity);
+    background-image: var(--glass-grain-tile);
+    background-size: 140px 140px;
+    background-repeat: repeat;
+    mix-blend-mode: var(--glass-grain-blend);
+  }
+
+  .qlix-glass-box {
+    background-color: var(--glass-surface-bg);
+    -webkit-backdrop-filter: blur(20px) saturate(165%);
+    backdrop-filter: blur(20px) saturate(165%);
+    border: 1px solid var(--glass-surface-border);
+    box-shadow: var(--glass-surface-shadow);
+  }
+
+  .qlix-glass-box-interactive {
+    transition:
+      background-color 150ms ease-out,
+      border-color 150ms ease-out,
+      box-shadow 150ms ease-out;
+  }
+
+  .qlix-glass-box-interactive:hover {
+    background-color: var(--glass-surface-bg-hover);
+    border-color: var(--glass-surface-border-hover);
+  }
+
+  .qlix-glass-muted {
+    background-color: var(--glass-muted-bg);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid var(--glass-muted-border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .qlix-glass-inset {
+    background-color: var(--glass-inset-bg);
+    -webkit-backdrop-filter: blur(14px) saturate(150%);
+    backdrop-filter: blur(14px) saturate(150%);
+  }
+
+  .qlix-glass-input {
+    background-color: var(--glass-input-bg);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid var(--glass-input-border);
+  }
+
+  .qlix-glass-sidebar {
+    background-color: var(--glass-sidebar-bg);
+    -webkit-backdrop-filter: blur(28px) saturate(170%);
+    backdrop-filter: blur(28px) saturate(170%);
+    border-right: 1px solid var(--glass-surface-border);
+    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .qlix-glass-topbar {
+    background-color: var(--glass-topbar-bg);
+    -webkit-backdrop-filter: blur(16px) saturate(165%);
+    backdrop-filter: blur(16px) saturate(165%);
+    border-bottom: 1px solid var(--glass-surface-border);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@keyframes qlix-shimmer {
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0.4;
+  }
+}
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes qlix-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-qlix-fade-in {
+  animation: qlix-fade-in 0.2s ease-out;
+}
+
+/* Agent passport modal — card lifts in like a credential being presented */
+@keyframes passport-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.passport-card-in {
+  animation: passport-card-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .passport-card-in {
+    animation: none;
+  }
+}
+
+/* AI Brain console — subtle staggered entrance */
+@keyframes ai-brain-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ai-brain-panel {
+  animation: ai-brain-panel-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-brain-panel {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Create agent modal — step progress & content */
+@keyframes create-agent-progress-shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
+
+@keyframes create-agent-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes create-agent-submit-in {
+  from {
+    opacity: 0;
+    transform: translateX(-0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.create-agent-progress-shimmer {
+  animation: create-agent-progress-shimmer 1.6s ease-in-out infinite;
+}
+
+.create-agent-step-content {
+  animation: create-agent-step-in 0.38s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.create-agent-submit-panel .create-agent-submit-phase {
+  animation: create-agent-submit-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .create-agent-progress-shimmer,
+  .create-agent-step-content,
+  .create-agent-submit-panel .create-agent-submit-phase {
+    animation: none;
+  }
+}
+
+/* Agents split view */
+@keyframes agents-empty-orb {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes agents-list-row-in {
+  from {
+    opacity: 0;
+    transform: translateX(-0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.agents-empty-orb {
+  animation: agents-empty-orb 5s ease-in-out infinite;
+}
+
+.agents-list-row {
+  animation: agents-list-row-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agents-empty-orb,
+  .agents-list-row {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
+.thin-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 2px;
+}

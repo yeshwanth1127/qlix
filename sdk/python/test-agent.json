@@ -1,0 +1,1 @@
+﻿{"agent_id":"test","runner_token":"x","backend_url":"http://localhost:8080","did":"did:qlix:test","private_key":"0"*64,"public_key":"0"*64,"permission_scopes":[],"jit_scopes":[],"always_scopes":[],"llm_mode":"proxy"}

@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpoaee3i0003v3hg9fp93uqa",
+  "did": "did:qlix:aed4a3f1c414b346",
+  "name": "Ops Supervisor",
+  "model": "",
+  "systemPrompt": "You are Ops Supervisor. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-27T16:40:24.899Z"
+}

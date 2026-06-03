@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmp2hjzge0001v3w0nmrpn0x5",
+  "did": "did:qlix:12e84667b5fafbe0",
+  "name": "test",
+  "model": "openrouter/anthropic/claude-3.5-sonnet",
+  "systemPrompt": "You are test. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "web.click",
+    "web.transaction",
+    "system.file_read",
+    "system.file_write"
+  ],
+  "jitScopes": [
+    "web.transaction",
+    "system.file_write"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "web.click",
+    "system.file_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-12T10:26:26.766Z"
+}

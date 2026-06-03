@@ -1,0 +1,28 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpcub1an0003v308dm04qdy9",
+  "did": "did:qlix:f927a8dd3004e785",
+  "name": "test",
+  "model": "",
+  "systemPrompt": "You are test. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "web.transaction",
+    "system.file_read",
+    "system.file_write"
+  ],
+  "jitScopes": [
+    "web.transaction",
+    "system.file_write"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query",
+    "web.click",
+    "system.file_read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-19T16:23:06.457Z"
+}

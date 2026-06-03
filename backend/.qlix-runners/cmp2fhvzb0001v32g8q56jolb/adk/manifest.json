@@ -1,0 +1,22 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmp2fhvzb0001v32g8q56jolb",
+  "did": "did:qlix:3a3fc7a81b401448",
+  "name": "ira",
+  "model": "claude-sonnet-4-6",
+  "systemPrompt": "You are ira. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "web.click",
+    "web.transaction"
+  ],
+  "jitScopes": [
+    "web.transaction"
+  ],
+  "alwaysScopes": [
+    "web.read",
+    "web.click"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-05-12T09:28:49.788Z"
+}
