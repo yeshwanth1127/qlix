@@ -9,6 +9,10 @@ import {
   DeviceNotVerifiedError,
   OrgMembershipError,
 } from '../agents/agents.service.js';
+import { NLCreationService } from '../agents/nlCreate.js';
+import { parseAgentCreationPrompt, NLParseError } from '../agents/nlParse.js';
+import type { AgentCreationPlan } from '../agents/nlTypes.js';
+import type { HybridStarterPlatform } from '../agents/hybridStarterPack.js';
 import {
   buildSdkAgentJson,
   buildSdkAgentJsonPublic,
@@ -244,6 +248,143 @@ export function createAgentsRouter(): Router {
       response.status(500).json({
         error: { code: 'agent_create_failed', message: 'Failed to create agent' },
       });
+    }
+  });
+
+  // ── NL Builder: parse prompt ─────────────────────────────────────────────
+  const nlParseSchema = z.object({
+    prompt: z.string().trim().min(1).max(2000),
+    model: z.string().trim().min(1).max(200).optional(),
+  });
+
+  router.post('/nl-parse', authenticateUser(true), async (request: Request, response: Response) => {
+    const parsed = nlParseSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({
+        error: { code: 'invalid_body', message: 'prompt is required (1-2000 chars)' },
+      });
+      return;
+    }
+    try {
+      const plan = await parseAgentCreationPrompt(parsed.data.prompt, parsed.data.model);
+      response.json({ plan });
+    } catch (err) {
+      if (err instanceof NLParseError) {
+        response.status(422).json({ error: { code: 'nl_parse_failed', message: err.message } });
+        return;
+      }
+      console.error('[nlParse]', err);
+      response.status(500).json({ error: { code: 'nl_parse_error', message: 'Failed to parse prompt' } });
+    }
+  });
+
+  // ── NL Builder: create agents from plan ──────────────────────────────────
+  const nlCreateSchema = z.object({
+    plan: z.object({
+      type: z.enum(['single', 'team']),
+      rationale: z.string().optional(),
+    }).passthrough(),
+    orgId: z.string().uuid().nullable(),
+    clientPlatform: z.enum(['windows', 'macos', 'linux']).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+  });
+
+  const nlCreationService = new NLCreationService();
+
+  router.post('/nl-create', authenticateUser(true), async (request: Request, response: Response) => {
+    const parsed = nlCreateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({
+        error: { code: 'invalid_body', message: 'plan and orgId are required', issues: parsed.error.issues },
+      });
+      return;
+    }
+
+    const stepUpHeader = request.headers['x-qlix-device-step-up'];
+    const stepUpToken = typeof stepUpHeader === 'string' ? stepUpHeader.trim() : '';
+    if (!stepUpToken) {
+      response.status(403).json({
+        error: { code: 'step_up_required', message: 'Complete device verification before creating agents' },
+      });
+      return;
+    }
+    try {
+      const secret = loadJwtSecret();
+      verifyAgentCreateStepUpToken(stepUpToken, secret, request.auth!.userId);
+    } catch {
+      response.status(403).json({
+        error: { code: 'step_up_invalid_or_expired', message: 'Device step-up token is missing, invalid, or expired; verify again' },
+      });
+      return;
+    }
+
+    try {
+      let plan = parsed.data.plan as AgentCreationPlan;
+      const userModel = parsed.data.model;
+      if (userModel) {
+        if (plan.type === 'single') {
+          plan = { ...plan, agent: { ...plan.agent, model: userModel } };
+        } else {
+          plan = {
+            ...plan,
+            team: {
+              ...plan.team,
+              supervisor: { ...plan.team.supervisor, model: userModel },
+              workers: plan.team.workers.map((w) => ({ ...w, model: userModel })),
+            },
+          };
+        }
+      }
+
+      const result = await nlCreationService.createFromPlan({
+        userId: request.auth!.userId,
+        orgId: parsed.data.orgId,
+        plan,
+        request,
+        clientPlatform: parsed.data.clientPlatform as HybridStarterPlatform | undefined,
+      });
+
+      if (result.type === 'single') {
+        const { agentResult, sdkAgentFile, sdkAgentPaths, hybridStarterPack } = result.output;
+        response.status(201).json({
+          type: 'single',
+          agent: agentResult.agent,
+          credentials: agentResult.credentials,
+          sdkAgentFile,
+          sdkAgentPaths,
+          hybridStarterPack,
+        });
+      } else {
+        response.status(201).json({
+          type: 'team',
+          teamId: result.teamId,
+          supervisor: {
+            agent: result.supervisorOutput.agentResult.agent,
+            credentials: result.supervisorOutput.agentResult.credentials,
+            sdkAgentFile: result.supervisorOutput.sdkAgentFile,
+            sdkAgentPaths: result.supervisorOutput.sdkAgentPaths,
+            hybridStarterPack: result.supervisorOutput.hybridStarterPack,
+          },
+          workers: result.workerOutputs.map((w) => ({
+            agent: w.agentResult.agent,
+            credentials: w.agentResult.credentials,
+            sdkAgentFile: w.sdkAgentFile,
+            sdkAgentPaths: w.sdkAgentPaths,
+            hybridStarterPack: w.hybridStarterPack,
+          })),
+        });
+      }
+    } catch (err) {
+      if (err instanceof DeviceNotVerifiedError) {
+        response.status(403).json({ error: { code: 'device_not_verified', message: 'Device verification required' } });
+        return;
+      }
+      if (err instanceof OrgMembershipError) {
+        response.status(403).json({ error: { code: 'forbidden', message: err.message } });
+        return;
+      }
+      console.error('[nlCreate]', err);
+      response.status(500).json({ error: { code: 'nl_create_failed', message: 'Failed to create agents from plan' } });
     }
   });
 

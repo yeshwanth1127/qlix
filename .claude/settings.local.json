@@ -6,7 +6,12 @@
       "Bash(rm -f tools/channel_tools.py tools/text_to_speech.py)",
       "Bash(python3 -)",
       "Bash(npx prisma *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(Get-ChildItem -Path \"d:\\\\ysw\\\\qlix\" -Force)",
+      "Bash(Select-Object -Property Mode, Name)",
+      "Bash(xargs ls -1)",
+      "Bash(xargs grep -l \"createAgent\\\\|POST.*agent\")",
+      "Bash(xargs grep -l \"createAgent\\\\|AgentForm\")"
     ]
   }
 }

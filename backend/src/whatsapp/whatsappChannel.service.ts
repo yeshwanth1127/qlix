@@ -117,11 +117,15 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
   sourceText: string;
   /** Inbound WhatsApp runs always notify even without keyword in prompt. */
   fromWhatsAppChannel?: boolean;
+  /** If the agent's own description mentions WhatsApp, delivery triggers without a keyword in the prompt. */
+  agentDescription?: string | null;
   success?: boolean;
   errorMessage?: string | null;
 }): Promise<WhatsAppDeliveryResult> {
   const wantsDelivery =
-    input.fromWhatsAppChannel === true || goalRequestsWhatsAppDelivery(input.sourceText);
+    input.fromWhatsAppChannel === true ||
+    goalRequestsWhatsAppDelivery(input.sourceText) ||
+    goalRequestsWhatsAppDelivery(input.agentDescription ?? '');
   if (!wantsDelivery) {
     return { sent: false, reason: 'not_requested' };
   }
@@ -269,7 +273,6 @@ async function enqueueWhatsAppAgentRun(
 
   const hints: string[] = [];
   if (useBrain) hints.push('brain on');
-  if (agentRow?.runtime === 'hybrid') hints.push('local PC');
   const suffix = hints.length > 0 ? ` (${hints.join(', ')})` : '';
   return { reply: `Queued — ${agent.name} is on it.${suffix}` };
 }
@@ -405,7 +408,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
       prompt: true,
       orgId: true,
       userId: true,
-      agent: { select: { name: true, orgId: true } },
+      agent: { select: { name: true, description: true, orgId: true } },
     },
   });
   if (!run) return;
@@ -422,6 +425,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
       title: run.agent?.name ?? 'Agent',
       body: extractAgentRunResultText(run.result),
       sourceText: run.prompt,
+      agentDescription: run.agent?.description,
       fromWhatsAppChannel: run.teamRole === 'whatsapp',
       success: run.status === 'success',
       errorMessage: run.errorMessage,
@@ -434,6 +438,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
     title: run.agent?.name ?? 'Agent',
     body: extractAgentRunResultText(run.result),
     sourceText: run.prompt,
+    agentDescription: run.agent?.description,
     fromWhatsAppChannel: run.teamRole === 'whatsapp',
     success: run.status === 'success',
     errorMessage: run.errorMessage,

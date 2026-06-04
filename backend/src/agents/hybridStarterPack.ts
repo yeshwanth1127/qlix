@@ -10,7 +10,7 @@ export type HybridStarterPlatform = 'windows' | 'macos' | 'linux';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STARTER_TEMPLATES_DIR = join(__dirname, '../../assets/hybrid-starter/templates');
-const WHEEL_PATH = join(__dirname, '../../assets/hybrid-starter/qlix-agent.whl');
+const WHEEL_PATH = join(__dirname, '../../assets/hybrid-starter/qlix-0.1.0-py3-none-any.whl');
 
 const LAUNCHER_BY_PLATFORM: Record<HybridStarterPlatform, string> = {
   windows: 'Start Qlix Agent.bat',
@@ -47,7 +47,7 @@ export function resolveHybridStarterPlatform(
  */
 export async function buildHybridStarterPackZip(
   agentJson: Record<string, unknown>,
-  agentName: string,
+  _agentName: string,
   platform: HybridStarterPlatform,
 ): Promise<Buffer> {
   const launcherName = LAUNCHER_BY_PLATFORM[platform];
@@ -81,7 +81,7 @@ export async function buildHybridStarterPackZip(
     }
 
     if (existsSync(WHEEL_PATH)) {
-      archive.append(createReadStream(WHEEL_PATH), { name: 'qlix-agent.whl' });
+      archive.append(createReadStream(WHEEL_PATH), { name: 'qlix-0.1.0-py3-none-any.whl' });
     }
 
     void archive.finalize();

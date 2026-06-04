@@ -809,14 +809,6 @@ export function AgentChatPanel({
                 ) : null}
                 {!catalogLoading && catalogModels.length > 0 ? (
                   <div className="mt-2 space-y-2">
-                    <input
-                      type="search"
-                      value={modelSearch}
-                      onChange={(e) => setModelSearch(e.target.value)}
-                      placeholder="Search by name or id…"
-                      disabled={!conversationId}
-                      className="w-full rounded-lg border border-[--border-subtle] bg-[--bg-base] px-2.5 py-1.5 text-[12px] text-[--text-primary] outline-none placeholder:text-[--text-tertiary] focus:border-[--accent] disabled:opacity-50"
-                    />
                     <select
                       value={selectedQlixModelId}
                       onChange={(e) => {

@@ -321,9 +321,8 @@ export async function startSession(connectorId) {
           const phone = entry.ownerPhoneJid;
           if (phone && (remoteJid === phone || phoneJidFromUserId(remoteJid) === phone)) {
             entry.selfChatRemoteJid = remoteJid;
-          } else if (remoteJid.endsWith('@lid') && phone && !entry.selfChatRemoteJid) {
+          } else if (remoteJid.endsWith('@lid') && entry.knownSelfJids.has(remoteJid)) {
             entry.selfChatRemoteJid = remoteJid;
-            entry.ownerLid = remoteJid;
           }
           if (!isAllowedInboundChat(entry, remoteJid, true)) continue;
           if (isEchoOfOurOutbound(entry, trimmed)) continue;

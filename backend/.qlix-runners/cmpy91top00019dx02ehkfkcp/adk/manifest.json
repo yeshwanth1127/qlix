@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpy91top00019dx02ehkfkcp",
+  "did": "did:qlix:e865ac306ef3ba25",
+  "name": "Web Researcher",
+  "model": "openrouter/openai/gpt-4o-mini",
+  "systemPrompt": "You are Web Researcher. Reads web pages and provides daily summaries.",
+  "permissionScopes": [
+    "web.read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-03T15:57:00.341Z"
+}

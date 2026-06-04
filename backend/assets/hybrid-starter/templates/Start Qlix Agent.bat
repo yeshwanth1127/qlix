@@ -12,11 +12,13 @@ if not exist "%QLIX_AGENT_FILE%" (
   exit /b 1
 )
 
-set "PYLAUNCHER="
-where py >nul 2>&1 && set "PYLAUNCHER=py"
-if not defined PYLAUNCHER where python >nul 2>&1 && set "PYLAUNCHER=python"
+set "PYEXE="
+for /f "delims=" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYEXE=%%i"
+if not defined PYEXE (
+  for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PYEXE=%%i"
+)
 
-if not defined PYLAUNCHER (
+if not defined PYEXE (
   echo.
   echo   Python 3.10+ is required once on this computer.
   echo   Install from https://www.python.org/downloads/
@@ -28,25 +30,24 @@ if not defined PYLAUNCHER (
 )
 
 echo.
+echo   Found Python: %PYEXE%
 echo   Starting your Qlix agent...
 echo   Keep this window open while you use the agent in your browser.
 echo.
 
-if exist "%~dp0qlix-agent.whl" (
-  if /i "%PYLAUNCHER%"=="py" (
-    py -3 -m pip install "%~dp0qlix-agent.whl" -q --disable-pip-version-check 2>nul
-  ) else (
-    python -m pip install "%~dp0qlix-agent.whl" -q --disable-pip-version-check 2>nul
+if exist "%~dp0qlix-0.1.0-py3-none-any.whl" (
+  "%PYEXE%" -m pip install "%~dp0qlix-0.1.0-py3-none-any.whl" -q --disable-pip-version-check
+  if errorlevel 1 (
+    echo.
+    echo   Failed to install the Qlix package. See error above.
+    pause
+    exit /b 1
   )
 ) else if exist "%~dp0lib\qlix" (
   set "PYTHONPATH=%~dp0lib;%PYTHONPATH%"
 )
 
-if /i "%PYLAUNCHER%"=="py" (
-  py -3 -m qlix.hybrid_runner
-) else (
-  python -m qlix.hybrid_runner
-)
+"%PYEXE%" -m qlix.hybrid_runner
 
 if errorlevel 1 (
   echo.

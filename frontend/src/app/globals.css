@@ -222,7 +222,8 @@
   .qlix-glass-inset,
   .qlix-glass-input,
   .qlix-glass-sidebar,
-  .qlix-glass-topbar {
+  .qlix-glass-topbar,
+  .qlix-modal {
     position: relative;
   }
 
@@ -231,7 +232,8 @@
   .qlix-glass-inset::before,
   .qlix-glass-input::before,
   .qlix-glass-sidebar::before,
-  .qlix-glass-topbar::before {
+  .qlix-glass-topbar::before,
+  .qlix-modal::before {
     content: "";
     position: absolute;
     inset: 0;
@@ -299,6 +301,12 @@
     backdrop-filter: blur(16px) saturate(165%);
     border-bottom: 1px solid var(--glass-surface-border);
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  /* Opaque modal card with grain — no blur, solid background */
+  .qlix-modal {
+    background-color: var(--bg-elevated);
+    overflow: hidden;
   }
 }
 

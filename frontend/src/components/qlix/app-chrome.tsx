@@ -1,21 +1,24 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils/cn";
 import { consoleRoutePrefix } from "@/lib/workspace";
+import { getConsoleNavItems } from "@/lib/navigation/individualNav";
+import { canAccessBilling, canSeeOrgSettings } from "@/lib/org-permissions";
 import { AppSidebar } from "./app-sidebar";
-import { MobileDrawer } from "./mobile-drawer";
 import { AppTopbar } from "./app-topbar";
+import { StaggeredMenu, type StaggeredMenuHandle } from "./StaggeredMenu";
 import { useSession } from "./session-context";
 
 /**
  * Fixed topbar + responsive sidebar + scrollable main (pt-12, pl sidebar on desktop).
+ * On mobile, the hamburger opens the StaggeredMenu animated overlay.
  */
 export function AppChrome({ children }: { children: React.ReactNode }) {
-  const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
   const { session } = useSession();
+  const staggeredMenuRef = useRef<StaggeredMenuHandle>(null);
 
   const routePrefix = session
     ? consoleRoutePrefix(session.user.workspaceKind ?? session.organization.workspaceKind)
@@ -34,22 +37,48 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
 
   const isFullHeightPage = /\/teams(\/|$)/.test(pathname);
 
+  const navItems = useMemo(() => {
+    const all = getConsoleNavItems(routePrefix);
+    if (routePrefix !== "/organization") return all;
+    if (session?.organization.workspaceKind !== "organization") return all;
+    return all.filter((i) => {
+      if (i.href.endsWith("/settings")) return canSeeOrgSettings(session.user.role);
+      if (i.href.endsWith("/billing")) return canAccessBilling(session.user.role);
+      return true;
+    });
+  }, [routePrefix, session]);
+
+  const staggeredItems = useMemo(
+    () => navItems.map((item) => ({ href: item.href, label: item.label })),
+    [navItems],
+  );
+
+  const handleMobileNav = useCallback(() => {
+    staggeredMenuRef.current?.toggle();
+  }, []);
+
   return (
     <div data-org-console={isOrgConsole ? "true" : undefined}>
       <AppTopbar
-        onOpenMobileNav={() => setMobileOpen(true)}
+        onOpenMobileNav={handleMobileNav}
         workspaceLabel={workspaceLabel}
         homeHref={homeHref}
         variant={isOrgConsole ? "organization" : "default"}
       />
-      <MobileDrawer
-        isOpen={mobileOpen}
-        onClose={() => setMobileOpen(false)}
-        currentPath={pathname}
-        routePrefix={routePrefix}
-        showUpgradeCta={showUpgradeCta}
-        variant={isOrgConsole ? "organization" : "default"}
-      />
+
+      {/* StaggeredMenu — mobile only; desktop uses AppSidebar */}
+      <div className="md:hidden">
+        <StaggeredMenu
+          ref={staggeredMenuRef}
+          position="left"
+          colors={["#1a1a2e", "#0f0f1a"]}
+          items={staggeredItems}
+          renderHeader={false}
+          displayItemNumbering={false}
+          accentColor="var(--accent)"
+        />
+      </div>
+
       <AppSidebar
         currentPath={pathname}
         routePrefix={routePrefix}

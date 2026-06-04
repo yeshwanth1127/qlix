@@ -6,6 +6,7 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   'system.gui_control',
   'finance.spend_50',
   'finance.spend_100',
+  'email.send',
 ];
 
 export interface JitSplit {

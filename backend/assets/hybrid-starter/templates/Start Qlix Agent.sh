@@ -21,8 +21,8 @@ fi
 echo "Starting your Qlix agent… Keep this window open."
 echo ""
 
-if [ -f "$PWD/qlix-agent.whl" ]; then
-  "$PY" -m pip install "$PWD/qlix-agent.whl" -q --disable-pip-version-check 2>/dev/null
+if [ -f "$PWD/qlix-0.1.0-py3-none-any.whl" ]; then
+  "$PY" -m pip install "$PWD/qlix-0.1.0-py3-none-any.whl" -q --disable-pip-version-check 2>/dev/null
 elif [ -d "$PWD/lib/qlix" ]; then
   export PYTHONPATH="$PWD/lib:${PYTHONPATH:-}"
 fi

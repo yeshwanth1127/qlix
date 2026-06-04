@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmpyyzye400019drwyfp5v80b",
+  "did": "did:qlix:c5694f633c2ee02b",
+  "name": "Web Researcher",
+  "model": "openrouter/openai/gpt-4o-mini",
+  "systemPrompt": "You are Web Researcher. This agent reads web pages and provides daily summaries of the content, delivering the summaries via WhatsApp.",
+  "permissionScopes": [
+    "web.read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-04T04:03:23.053Z"
+}

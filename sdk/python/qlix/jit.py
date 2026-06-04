@@ -28,7 +28,7 @@ from .http_client import QlixHttpClient
 from .signer import sign_payload
 
 POLL_INTERVAL_S = 2.0
-DEFAULT_TIMEOUT_S = 120.0
+DEFAULT_TIMEOUT_S = 290.0
 
 
 @dataclass(frozen=True)
