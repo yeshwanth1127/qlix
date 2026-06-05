@@ -1,0 +1,22 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq133xkz0001v3xwuefr8vhd",
+  "did": "did:qlix:6bad0dbd4fa232e5",
+  "name": "Research Supervisor",
+  "model": "",
+  "systemPrompt": "You are Research Supervisor. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query",
+    "email.read"
+  ],
+  "jitScopes": [
+    "web.read",
+    "email.read"
+  ],
+  "alwaysScopes": [
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-05T15:34:52.913Z"
+}

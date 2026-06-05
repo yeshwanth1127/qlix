@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils/cn";
 import { NLPlanPreview } from "./NLPlanPreview";
 import { VerificationPrompt } from "./VerificationPrompt";
 import { NLCreationProgress, type CreationStep } from "./NLCreationProgress";
+import Particles from "@/components/qlix/Particles";
 
 type FlowState = "idle" | "parsing" | "plan_preview" | "verifying" | "creating" | "done";
 
@@ -282,9 +283,33 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // Animated particle field behind the builder, scoped to this page.
+  const background = (
+    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+      <Particles
+        particleColors={["#8b5cf6", "#22d3ee", "#ffffff"]}
+        particleCount={220}
+        particleSpread={12}
+        speed={0.08}
+        particleBaseSize={90}
+        moveParticlesOnHover
+        particleHoverFactor={0.6}
+        alphaParticles
+        disableRotation={false}
+      />
+    </div>
+  );
+
+  const shell = (content: React.ReactNode) => (
+    <div className="relative min-h-[calc(100dvh-6rem)]">
+      {background}
+      <div className="relative z-10">{content}</div>
+    </div>
+  );
+
   if (state === "done" && doneResult) {
     const routePrefix = orgId ? `/organization` : `/individual`;
-    return (
+    return shell(
       <div className="mx-auto max-w-2xl space-y-5 px-4 py-8">
         <div className="flex items-center gap-2">
           <div className="flex size-8 items-center justify-center rounded-full bg-emerald-500/15">
@@ -328,7 +353,7 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
     );
   }
 
-  return (
+  return shell(
     <div className="mx-auto max-w-2xl px-4 py-8">
       {/* Header */}
       <div className="mb-6 flex items-center gap-3">
