@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem \"d:\\\\ysw\\\\qlix\\\\backend\\\\prisma\\\\migrations\")"
+    ]
+  }
+}

@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, Bot, Check, Download, Loader2, Sparkles, Users, Wand2 } from "lucide-react";
-import { nlParsePrompt, type AgentCreationPlan, type NLAgentSpec, type NLWorkerSpec } from "@/lib/nl-builder-api";
+import { ArrowLeft, ArrowRight, Bot, Check, Download, History, Loader2, Sparkles, Users, Wand2, X } from "lucide-react";
+import { nlParsePrompt, fetchBuilderHistory, saveBuilderPrompt, type AgentCreationPlan, type NLAgentSpec, type NLWorkerSpec } from "@/lib/nl-builder-api";
 import {
   createAgent,
   deleteAgent,
@@ -119,6 +119,8 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
 
   const [state, setState] = useState<FlowState>("idle");
   const [prompt, setPrompt] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [buildHistory, setBuildHistory] = useState<string[]>([]);
   const [parseModel, setParseModel] = useState<string>(CLOUD_MODELS[0]);
   const [agentModel, setAgentModel] = useState<string>(CLOUD_MODELS[0]);
   const [plan, setPlan] = useState<AgentCreationPlan | null>(null);
@@ -126,6 +128,16 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [steps, setSteps] = useState<CreationStep[]>([]);
   const [doneResult, setDoneResult] = useState<DoneResult | null>(null);
+
+  useEffect(() => {
+    void fetchBuilderHistory().then((entries) => setBuildHistory(entries.map((e) => e.prompt)));
+  }, []);
+
+  const saveToHistory = (text: string) => {
+    // Optimistic update: move to top locally, then persist in background
+    setBuildHistory((prev) => [text, ...prev.filter((p) => p !== text)].slice(0, 20));
+    void saveBuilderPrompt(text);
+  };
 
   const reset = () => {
     setState("idle");
@@ -135,6 +147,7 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
     setSteps([]);
     setDoneResult(null);
     setPrompt("");
+    setHistoryOpen(false);
   };
 
   const setStep = (index: number, patch: Partial<CreationStep>) =>
@@ -144,6 +157,8 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
     if (!prompt.trim()) return;
     setState("parsing");
     setParseError(null);
+    setHistoryOpen(false);
+    saveToHistory(prompt.trim());
     const res = await nlParsePrompt(prompt.trim(), parseModel);
     if (!res.ok) {
       setParseError(res.errorMessage);
@@ -367,6 +382,55 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
           <p className="text-[11px] text-[--text-tertiary]">
             Describe what you want — we&apos;ll create the agents for you
           </p>
+        </div>
+        <div className="relative ml-auto">
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((o) => !o)}
+            title="View build history"
+            className="flex items-center gap-1.5 rounded-md border border-[--border-subtle] bg-[--bg-subtle] px-2.5 py-1.5 text-[11px] text-[--text-secondary] transition-colors hover:border-[--accent]/40 hover:text-[--text-primary]"
+          >
+            <History className="size-3.5" aria-hidden />
+            History
+            {buildHistory.length > 0 && (
+              <span className="rounded-full bg-[--accent]/20 px-1.5 py-0.5 text-[9px] font-semibold text-[--accent]">
+                {buildHistory.length}
+              </span>
+            )}
+          </button>
+          {historyOpen && (
+            <div className="absolute right-0 top-full z-20 mt-1.5 w-80 rounded-lg border border-[--border-subtle] bg-[--bg-base]/95 shadow-xl backdrop-blur-sm">
+              <div className="flex items-center justify-between border-b border-[--border-subtle] px-3 py-2">
+                <span className="text-[11px] font-medium text-[--text-primary]">Previous build requests</span>
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(false)}
+                  className="text-[--text-tertiary] transition-colors hover:text-[--text-primary]"
+                  aria-label="Close history"
+                >
+                  <X className="size-3.5" aria-hidden />
+                </button>
+              </div>
+              <div className="max-h-72 space-y-0.5 overflow-y-auto p-1.5">
+                {buildHistory.length === 0 ? (
+                  <p className="px-2.5 py-4 text-center text-[11px] text-[--text-tertiary]">
+                    No history yet — your build requests will appear here.
+                  </p>
+                ) : (
+                  buildHistory.map((entry, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => { setPrompt(entry); setHistoryOpen(false); }}
+                      className="w-full rounded-md px-2.5 py-2 text-left text-[11px] text-[--text-secondary] transition-colors hover:bg-[--bg-subtle] hover:text-[--text-primary]"
+                    >
+                      <span className="line-clamp-2 leading-relaxed">{entry}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

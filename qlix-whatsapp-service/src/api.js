@@ -9,10 +9,25 @@ import {
   getSessionStatus,
   isSessionConnected,
   listSessions,
+  sendDocumentToConnector,
   sendToConnector,
   startSession,
   stopSession,
 } from './sessionManager.js';
+import path from 'node:path';
+
+const MIME_MAP = {
+  '.pdf':  'application/pdf',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls':  'application/vnd.ms-excel',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc':  'application/msword',
+  '.csv':  'text/csv',
+  '.txt':  'text/plain',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+};
 
 const SERVICE_SECRET = process.env.SERVICE_SECRET || '';
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
@@ -33,7 +48,8 @@ function formatApprovalMessage({ context, action_id, scope, agent_name }) {
     `Agent: ${agent_name}\n` +
     `Scope: ${scope}\n` +
     `Action: ${context}\n\n` +
-    `Reply *yes* to approve or *no* to reject.\n` +
+    `Reply with: *yes*, *approve*, *ok*, *yep*, etc. to approve\n` +
+    `Or reply with: *no*, *reject*, *cancel*, *nope*, etc. to reject.\n` +
     `This request expires in 5 minutes.\n\n` +
     `ID: ${action_id}`
   );
@@ -155,6 +171,23 @@ export function createApiRouter() {
 
     registerPendingApproval(connector_id, action_id, agent_name, timeout);
     res.json({ ok: true, action_id });
+  });
+
+  router.post('/send-document', async (req, res) => {
+    const { connector_id, file_path, file_name, mimetype } = req.body ?? {};
+    if (!connector_id || typeof file_path !== 'string' || !file_path.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and file_path required' });
+      return;
+    }
+    if (!isSessionConnected(connector_id)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const ext = path.extname(file_path).toLowerCase();
+    const resolvedMime = mimetype || MIME_MAP[ext] || 'application/octet-stream';
+    const resolvedName = file_name || path.basename(file_path);
+    const result = await sendDocumentToConnector(connector_id, file_path, resolvedName, resolvedMime);
+    res.status(result.ok ? 200 : 503).json(result);
   });
 
   return router;

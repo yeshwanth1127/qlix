@@ -75,6 +75,34 @@ const RUN_SCOPED_JIT_MS = 20 * 60_000;
 /** Scopes already covered by replying to the WhatsApp goal (read/open files on PC). */
 const WHATSAPP_RUN_AUTO_SCOPES = new Set(['system.file_write', 'system.gui_control']);
 
+/**
+ * In-memory run-scoped approval grants: once the user approves a scope for a run,
+ * every later request for the same run+scope auto-approves (no repeat prompts).
+ * Keyed by `${runId}::${actionType}` -> grant expiry epoch ms.
+ */
+const runScopedGrants = new Map<string, number>();
+
+function grantKey(runId: string, actionType: string): string {
+  return `${runId}::${actionType}`;
+}
+
+function recordRunScopedGrant(runId: string | null, actionType: string): void {
+  if (!runId) return;
+  runScopedGrants.set(grantKey(runId, actionType), Date.now() + RUN_SCOPED_JIT_MS);
+}
+
+function hasRunScopedGrantInMemory(runId: string | null, actionType: string): boolean {
+  if (!runId) return false;
+  const key = grantKey(runId, actionType);
+  const expiry = runScopedGrants.get(key);
+  if (expiry == null) return false;
+  if (Date.now() > expiry) {
+    runScopedGrants.delete(key);
+    return false;
+  }
+  return true;
+}
+
 function extractRunId(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
@@ -220,14 +248,28 @@ export class JitService {
       runId != null &&
       WHATSAPP_RUN_AUTO_SCOPES.has(signedPayload.actionType) &&
       (await isActiveWhatsAppAgentRun(runId));
+    const memoryGrant = hasRunScopedGrantInMemory(runId, signedPayload.actionType);
     const runScopedReuse =
-      runId != null && (await hasRunScopedJitGrant(agent.id, signedPayload.actionType, runId));
+      memoryGrant ||
+      (runId != null && (await hasRunScopedJitGrant(agent.id, signedPayload.actionType, runId)));
+
+    console.log(
+      `[jit] request created: actionId=${actionLog.id} agent=${agent.name} actionType=${signedPayload.actionType} ttl=${ttlSeconds}s ` +
+        `runId=${runId ?? 'NULL'} envAuto=${envAutoApprove} whatsappRunAuto=${whatsappRunAuto} memoryGrant=${memoryGrant} runScopedReuse=${runScopedReuse} ` +
+        `auto=${envAutoApprove || whatsappRunAuto || runScopedReuse}`,
+    );
 
     if (envAutoApprove || whatsappRunAuto || runScopedReuse) {
       await autoApproveJitRequest(actionLog.id);
+      // Remember this run+scope so all later requests in the run auto-approve too.
+      recordRunScopedGrant(runId, signedPayload.actionType);
+      console.log(`[jit] auto-approved: actionId=${actionLog.id} reason=${envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : memoryGrant ? 'memory-grant' : 'run-scoped-db'}`);
     } else if (isWhatsAppJitEnabled()) {
       const wa = await getWhatsAppConnectorForAgent(agent.id);
       if (wa) {
+        console.log(
+          `[jit] sending WhatsApp approval: actionId=${actionLog.id} connector=${wa.id} context=${formatJitApprovalContext(signedPayload.payload)}`,
+        );
         void sendApproval({
           connector_id: wa.id,
           action_id: actionLog.id,
@@ -235,7 +277,11 @@ export class JitService {
           scope: signedPayload.actionType,
           context: formatJitApprovalContext(signedPayload.payload),
         });
+      } else {
+        console.log(`[jit] no WhatsApp connector found for agent: agentId=${agent.id}`);
       }
+    } else {
+      console.log(`[jit] waiting for approval (WhatsApp not enabled): actionId=${actionLog.id}`);
     }
 
     return { jitRequestId: actionLog.id, expiresAtMs };
@@ -253,9 +299,19 @@ export class JitService {
       where: { id: input.jitRequestId },
       include: { approval: true },
     });
-    if (!row?.approval) throw new JitRequestNotFoundError();
+    if (!row?.approval) {
+      console.log(`[jit] decide: JIT request not found: actionId=${input.jitRequestId}`);
+      throw new JitRequestNotFoundError();
+    }
+
+    console.log(
+      `[jit] decide received: actionId=${input.jitRequestId} approved=${input.approved} reason=${input.reason ?? 'none'} currentStatus=${row.approval.decision}`,
+    );
 
     if (row.approval.decision !== 'pending') {
+      console.log(
+        `[jit] already decided: actionId=${input.jitRequestId} decision=${row.approval.decision} (ignoring new decision)`,
+      );
       return {
         ok: true,
         status:
@@ -286,6 +342,19 @@ export class JitService {
           data: { approvalStatus: 'approved', status: 'success' },
         }),
       ]);
+      // Record an in-memory run-scoped grant so later requests in the same run
+      // auto-approve without prompting the user again.
+      const payload = row.payload;
+      if (payload && typeof payload === 'object') {
+        const p = payload as Record<string, unknown>;
+        const runId = extractRunId(p.toolPayload ?? p);
+        if (runId) {
+          recordRunScopedGrant(runId, row.actionType);
+          console.log(
+            `[jit] recorded run-scoped grant: runId=${runId} actionType=${row.actionType} (future ${row.actionType} requests in this run auto-approve)`,
+          );
+        }
+      }
       return { ok: true, status: 'approved' };
     }
 

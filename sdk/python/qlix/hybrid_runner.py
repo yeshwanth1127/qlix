@@ -29,6 +29,28 @@ _log = default_log("hybrid_runner")
 _ping_error_logged = False
 
 
+def _build_system_prompt(agent_description: str, wa_connector_id: str) -> str | None:
+    parts: list[str] = []
+    if agent_description:
+        parts.append(agent_description)
+
+    wa_url = os.environ.get("QLIX_WA_URL", "http://localhost:3939").rstrip("/")
+    wa_secret = os.environ.get("QLIX_WA_SECRET", "").strip()
+    if wa_connector_id and wa_secret:
+        parts.append(
+            "To send a file to the user via WhatsApp after creating it, use s3_python:\n"
+            "```python\n"
+            "import urllib.request, json as _j\n"
+            f'_req = urllib.request.Request("{wa_url}/send-document",\n'
+            f'    data=_j.dumps({{"connector_id": "{wa_connector_id}", "file_path": "<absolute path>"}}).encode(),\n'
+            f'    headers={{"X-Service-Secret": "{wa_secret}", "Content-Type": "application/json"}})\n'
+            "urllib.request.urlopen(_req)\n"
+            "```"
+        )
+
+    return "\n\n".join(parts) if parts else None
+
+
 def _runner_token(identity: AgentIdentity) -> str:
     token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
     if token:
@@ -85,6 +107,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
         adk_name=adk.manifest.get("name"),
     )
 
+    inference_http = QlixHttpClient(base_url=identity.backend_url, timeout_s=120.0)
     async with QlixHttpClient(base_url=identity.backend_url) as http:
         async with QlixSDK(identity=identity, http=http) as qlix:
             seq = 0
@@ -116,6 +139,8 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     run_id = str(run.get("id", ""))
                     seq = 0
                     prompt = str(run.get("prompt", ""))
+                    agent_description = str(run.get("agentDescription") or "").strip()
+                    wa_connector_id = str(run.get("waConnectorId") or "").strip()
                     run_inference_model = str(
                         run.get("inferenceModel") or run.get("inference_model") or ""
                     ).strip()
@@ -217,7 +242,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
 
                     seq, content, duration_ms, turns, tool_calls, proxy_usage = (
                         await run_backend_proxy_inference(
-                            http,
+                            inference_http,
                             identity=identity,
                             agent_id=identity.agent_id,
                             headers=headers,
@@ -231,6 +256,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             tools_schema_bytes=len(tools_json),
                             log=_log,
                             live_view_enabled=False,
+                            system_prompt=_build_system_prompt(agent_description, wa_connector_id),
                         )
                     )
                     seq = await emit_event(
@@ -265,15 +291,31 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         data={"message": "run_result", "turns": turns, "tool_calls": tool_calls},
                     )
 
+                    # Fallback when the model ends on tool calls with no final text —
+                    # avoids delivering an empty message to the user/WhatsApp.
+                    final_content = content.strip() if isinstance(content, str) else ""
+                    if not final_content:
+                        if tool_calls > 0:
+                            final_content = (
+                                f"Done — completed the task using {tool_calls} tool "
+                                f"call{'s' if tool_calls != 1 else ''} across {turns} "
+                                f"turn{'s' if turns != 1 else ''}."
+                            )
+                        else:
+                            final_content = "Done — task completed."
+                        _log("empty_content_fallback", run_id=run_id, tool_calls=tool_calls, turns=turns)
+
                     await http.post_json(
                         f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
-                        {"ok": True, "result": content},
+                        {"ok": True, "result": final_content},
                         headers=headers,
                     )
                     _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms)
                 except Exception as exc:
+                    import traceback as _tb
                     error_msg = str(exc)
                     _log("poll_execute_error", error=error_msg)
+                    print("[hybrid_runner] TRACEBACK:\n" + _tb.format_exc(), file=__import__("sys").stderr, flush=True)
                     if run_id:
                         try:
                             await http.post_json(

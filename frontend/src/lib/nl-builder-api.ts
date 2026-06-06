@@ -43,6 +43,38 @@ export type AgentCreationPlan =
 
 // ── API calls ─────────────────────────────────────────────────────────────
 
+export interface BuilderHistoryEntry {
+  id: string;
+  prompt: string;
+  createdAt: string;
+}
+
+export async function fetchBuilderHistory(): Promise<BuilderHistoryEntry[]> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/history`, {
+      credentials: "include",
+    });
+    if (!res.ok) return [];
+    const body = (await res.json().catch(() => null)) as { entries?: BuilderHistoryEntry[] } | null;
+    return body?.entries ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveBuilderPrompt(prompt: string): Promise<void> {
+  try {
+    await fetch(`${apiBase()}/api/v1/nl-builder/history`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ prompt }),
+    });
+  } catch {
+    // best-effort
+  }
+}
+
 type ParseResult =
   | { ok: true; plan: AgentCreationPlan }
   | { ok: false; errorMessage: string };

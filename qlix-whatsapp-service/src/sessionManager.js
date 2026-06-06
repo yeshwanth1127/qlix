@@ -53,11 +53,27 @@ function phoneJidFromUserId(userId) {
   return local ? `${local}@s.whatsapp.net` : null;
 }
 
+/** Strip the device suffix (e.g. ":77") from an @lid: "162027775520975:77@lid" -> "162027775520975@lid". */
+function normalizeLid(jid) {
+  if (!jid || !jid.endsWith('@lid')) return null;
+  const local = jid.split('@')[0].split(':')[0];
+  return local ? `${local}@lid` : null;
+}
+
 /** Only the logged-in account (QR-linked), never a contact's remoteJid. */
 function rememberSelfJid(entry, jid) {
   if (!jid) return;
   entry.knownSelfJids.add(jid);
-  if (jid.endsWith('@lid')) entry.ownerLid = jid;
+  if (jid.endsWith('@lid')) {
+    entry.ownerLid = jid;
+    // Store the normalized @lid (without device suffix) — this is what self-chat messages use.
+    const normalized = normalizeLid(jid);
+    if (normalized) {
+      entry.ownerLidNormalized = normalized;
+      entry.knownSelfJids.add(normalized);
+      console.log(`[qlix-whatsapp] captured ownerLid: ${jid} (normalized=${normalized}) for connector=${entry.connectorId}`);
+    }
+  }
   const phone = phoneJidFromUserId(jid);
   if (phone) entry.ownerPhoneJid = phone;
 }
@@ -68,6 +84,8 @@ function captureOwnerJids(entry, userId) {
   rememberSelfJid(entry, userId);
   const me = entry.sock?.authState?.creds?.me;
   if (me?.id) rememberSelfJid(entry, me.id);
+  // Capture the account's own @lid (used by "Message yourself" self-chat).
+  if (me?.lid) rememberSelfJid(entry, me.lid);
 }
 
 const QLIX_ECHO_MARKERS = [
@@ -132,12 +150,29 @@ function isEchoOfOurOutbound(entry, text) {
 function isAllowedInboundChat(entry, remoteJid, fromMe) {
   const phone = entry.ownerPhoneJid;
   const selfRemote = entry.selfChatRemoteJid;
+
+  // Already remembered self-chat
   if (selfRemote && remoteJid === selfRemote) return true;
+
+  // Phone number match
   if (phone && remoteJid === phone) return true;
+
+  // ONLY accept @lid if it matches the account's OWN @lid (from creds.me.lid).
+  // This is the critical privacy check — other contacts also use @lid addresses.
+  if (remoteJid.endsWith('@lid')) {
+    const normalized = normalizeLid(remoteJid);
+    return (
+      remoteJid === entry.ownerLid ||
+      (normalized != null && normalized === entry.ownerLidNormalized)
+    );
+  }
+
+  // fromMe messages from the account
   if (fromMe) {
     if (phone && phoneJidFromUserId(remoteJid) === phone) return true;
     if (entry.ownerLid && remoteJid === entry.ownerLid) return true;
   }
+
   return false;
 }
 
@@ -209,6 +244,8 @@ export async function startSession(connectorId) {
     ownerJid: null,
     ownerPhoneJid: null,
     ownerLid: null,
+    /** Account's own @lid with device suffix stripped (e.g. "162027775520975@lid"). */
+    ownerLidNormalized: null,
     /** Remote JID for "Message yourself" (learned from fromMe sends). */
     selfChatRemoteJid: null,
     knownSelfJids: new Set(),
@@ -267,7 +304,7 @@ export async function startSession(connectorId) {
           await notifyLinked(connectorId, jid);
         }
         console.log(
-          `[qlix-whatsapp] connected ${connectorId} owner=${entry.ownerJid} phone=${entry.ownerPhoneJid ?? 'n/a'}`,
+          `[qlix-whatsapp] connected ${connectorId} owner=${entry.ownerJid} phone=${entry.ownerPhoneJid ?? 'n/a'} lid=${entry.ownerLid ?? 'none'} knownJids=${[...entry.knownSelfJids].join(',')}`,
         );
       }
 
@@ -307,25 +344,30 @@ export async function startSession(connectorId) {
           msg.message.buttonsResponseMessage?.selectedDisplayText ||
           '';
         const trimmed = text.trim();
-        if (!trimmed) continue;
-
-        // Linked-account self-chat: only messages the user sent (not contact/sync noise).
-        if (!msg.key.fromMe) continue;
+        if (!trimmed) {
+          continue;
+        }
 
         const selfJid = ownerJidForInbound(entry);
         if (!selfJid) continue;
 
         const now = Date.now();
 
+        // Single authoritative gate: only the QR-linked account's own self-chat is allowed.
+        // This rejects all other contacts (including their @lid addresses).
+        if (!isAllowedInboundChat(entry, remoteJid, Boolean(msg.key.fromMe))) {
+          continue;
+        }
+
         if (msg.key.fromMe) {
           const phone = entry.ownerPhoneJid;
           if (phone && (remoteJid === phone || phoneJidFromUserId(remoteJid) === phone)) {
             entry.selfChatRemoteJid = remoteJid;
-          } else if (remoteJid.endsWith('@lid') && entry.knownSelfJids.has(remoteJid)) {
-            entry.selfChatRemoteJid = remoteJid;
           }
-          if (!isAllowedInboundChat(entry, remoteJid, true)) continue;
-          if (isEchoOfOurOutbound(entry, trimmed)) continue;
+        }
+
+        if (isEchoOfOurOutbound(entry, trimmed)) {
+          continue;
         }
 
         const dedupeKey = `${msg.key.id ?? ''}:${trimmed.slice(0, 120)}`;
@@ -403,6 +445,48 @@ export async function sendToConnector(connectorId, text) {
     } catch (err) {
       lastError = err.message || lastError;
       console.warn(`[qlix-whatsapp] send failed connector=${connectorId} to=${jid}:`, lastError);
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+export async function sendDocumentToConnector(connectorId, filePath, fileName, mimetype) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected || !entry.sock) {
+    return { ok: false, error: 'WhatsApp not connected' };
+  }
+  const targets = resolveDeliveryJids(entry);
+  if (targets.length === 0) {
+    return { ok: false, error: 'Owner JID not known yet' };
+  }
+
+  let buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch (err) {
+    return { ok: false, error: `Cannot read file: ${err.message}` };
+  }
+
+  const selfChatJid = entry.selfChatRemoteJid ?? entry.ownerLid;
+  const ordered =
+    selfChatJid && targets.includes(selfChatJid)
+      ? [selfChatJid, ...targets.filter((j) => j !== selfChatJid)]
+      : targets;
+
+  let lastError = 'Send failed';
+  for (const jid of ordered) {
+    try {
+      const sent = await entry.sock.sendMessage(jid, {
+        document: buffer,
+        mimetype,
+        fileName,
+      });
+      rememberOutboundMessageId(entry, sent?.key);
+      console.log(`[qlix-whatsapp] sent document connector=${connectorId} to=${jid} file=${fileName}`);
+      return { ok: true, timestamp: new Date().toISOString(), jid };
+    } catch (err) {
+      lastError = err.message || lastError;
+      console.warn(`[qlix-whatsapp] send document failed connector=${connectorId} to=${jid}:`, lastError);
     }
   }
   return { ok: false, error: lastError };

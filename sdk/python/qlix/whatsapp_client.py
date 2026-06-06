@@ -99,6 +99,37 @@ class WhatsAppClient:
             logger.warning("WhatsApp notify error: %s", exc)
             return False
 
+    async def send_document(
+        self,
+        connector_id: str,
+        file_path: str,
+        *,
+        file_name: str | None = None,
+        mimetype: str | None = None,
+    ) -> bool:
+        payload: dict[str, Any] = {
+            "connector_id": connector_id,
+            "file_path": file_path,
+        }
+        if file_name:
+            payload["file_name"] = file_name
+        if mimetype:
+            payload["mimetype"] = mimetype
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                res = await client.post(
+                    f"{self._base_url}/send-document",
+                    headers=self._headers(),
+                    json=payload,
+                )
+            if res.status_code != 200:
+                logger.warning("WhatsApp send_document failed: %s %s", res.status_code, res.text[:200])
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("WhatsApp send_document error: %s", exc)
+            return False
+
     async def health_check(self) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:

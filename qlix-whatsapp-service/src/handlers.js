@@ -1,8 +1,8 @@
 import * as qlix from './qlix-client.js';
 import { sendToConnector } from './sessionManager.js';
 
-const APPROVE_WORDS = new Set(['yes', 'y', 'approve', 'ok']);
-const REJECT_WORDS = new Set(['no', 'n', 'reject', 'cancel']);
+const APPROVE_WORDS = new Set(['yes', 'y', 'approve', 'ok', 'yep', 'yup', 'agreed', 'proceed', 'allow', 'sure', 'aye']);
+const REJECT_WORDS = new Set(['no', 'n', 'reject', 'cancel', 'nope', 'deny', 'stop', 'decline']);
 
 const BOT_ECHO_MARKERS = [
   'Qlix API error',
@@ -69,19 +69,26 @@ async function reply(connectorId, text) {
 export async function resolveApprovalForConnector(connectorId, approved) {
   const actionId = latestPendingByConnector.get(connectorId);
   if (!actionId) {
+    console.log(`[qlix-whatsapp] approval: no pending approval found for connector=${connectorId}`);
     await reply(connectorId, 'No pending approval request.');
     return;
   }
   const entry = pendingApprovals.get(actionId);
   const agentName = entry?.agent_name ?? 'Agent';
 
+  console.log(
+    `[qlix-whatsapp] approval: resolving actionId=${actionId} connector=${connectorId} approved=${approved} entry=${entry ? 'found' : 'not-in-map'}`,
+  );
+
   const err = await qlix.resolveApproval(actionId, approved, approved ? null : 'user_rejected');
   if (err) {
+    console.log(`[qlix-whatsapp] approval: resolve failed actionId=${actionId} error=${err}`);
     await reply(connectorId, `⚠️ ${err}`);
     return;
   }
 
   clearPendingApproval(actionId);
+  console.log(`[qlix-whatsapp] approval: resolved successfully actionId=${actionId} approved=${approved}`);
   if (approved) {
     await reply(connectorId, `✅ Approved. ${agentName} is proceeding.`);
   } else {
@@ -129,12 +136,31 @@ export async function handleInboundMessage(connectorId, ownerJid, remoteJid, tex
     `[qlix-whatsapp] inbound forwarding connector=${connectorId} preview="${previewText(text)}"`,
   );
 
-  const lower = text.toLowerCase();
-  if (APPROVE_WORDS.has(lower)) {
+  const lower = text.toLowerCase().trim();
+
+  // Check for exact word match or if message starts with approval word
+  function matchesApprovalWords(msg, wordSet) {
+    if (wordSet.has(msg)) return true;
+    // Check if message starts with any approval word followed by punctuation/space
+    for (const word of wordSet) {
+      if (msg === word || msg.startsWith(word + ' ') || msg.startsWith(word + '!') || msg.startsWith(word + '.') || msg.startsWith(word + ',')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (matchesApprovalWords(lower, APPROVE_WORDS)) {
+    console.log(
+      `[qlix-whatsapp] approval match found: connector=${connectorId} text="${text}" lower="${lower}" pending=${latestPendingByConnector.has(connectorId)}`,
+    );
     await resolveApprovalForConnector(connectorId, true);
     return;
   }
-  if (REJECT_WORDS.has(lower)) {
+  if (matchesApprovalWords(lower, REJECT_WORDS)) {
+    console.log(
+      `[qlix-whatsapp] rejection match found: connector=${connectorId} text="${text}" lower="${lower}" pending=${latestPendingByConnector.has(connectorId)}`,
+    );
     await resolveApprovalForConnector(connectorId, false);
     return;
   }

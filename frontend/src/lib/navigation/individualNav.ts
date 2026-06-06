@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Activity,
   BookOpen,
   Bot,
   Brain,
@@ -15,6 +16,7 @@ import {
   Plug,
   Users,
   UsersRound,
+  Wallet,
   Wand2,
 } from "lucide-react";
 
@@ -41,6 +43,11 @@ export function getConsoleNavItems(routePrefix: string): ConsoleNavItem[] {
     { href: `${routePrefix}/credentials`, label: "Credentials", icon: ShieldCheck },
     { href: `${routePrefix}/api-keys`, label: "API keys", icon: KeyRound },
   ];
+  const usageItem: ConsoleNavItem = {
+    href: `${routePrefix}/usage`,
+    label: "Usage",
+    icon: Activity,
+  };
   const settingsItem: ConsoleNavItem = {
     href: `${routePrefix}/settings`,
     label: "Settings",
@@ -49,12 +56,18 @@ export function getConsoleNavItems(routePrefix: string): ConsoleNavItem[] {
   if (routePrefix === "/organization") {
     return [
       ...core,
+      usageItem,
       { href: `${routePrefix}/billing`, label: "Billing", icon: CreditCard },
       { href: `${routePrefix}/members`, label: "Members", icon: Users },
       settingsItem,
     ];
   }
-  return [...core, settingsItem];
+  return [
+    ...core,
+    { href: `${routePrefix}/wallet`, label: "Wallet", icon: Wallet },
+    usageItem,
+    settingsItem,
+  ];
 }
 
 export function isConsoleNavActive(

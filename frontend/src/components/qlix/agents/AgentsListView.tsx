@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { Plus } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import {
   type AgentDTO,
+  deleteAllAgents,
   listAgents,
 } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
@@ -22,6 +23,11 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
 
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? session?.organization.id ?? null : null;
@@ -50,6 +56,27 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const openConfirm = () => {
+    setConfirmInput("");
+    setDeleteError(null);
+    setConfirmOpen(true);
+    setTimeout(() => confirmRef.current?.focus(), 50);
+  };
+
+  const handleDeleteAll = async () => {
+    if (confirmInput !== "DELETE") return;
+    setDeleting(true);
+    setDeleteError(null);
+    const result = await deleteAllAgents();
+    setDeleting(false);
+    if (result.ok) {
+      setConfirmOpen(false);
+      setAgents([]);
+    } else {
+      setDeleteError(result.errorMessage ?? "Failed to delete agents");
+    }
+  };
 
   const handleCreated = (agent: AgentDTO) => {
     setAgents((prev) => [
@@ -90,14 +117,26 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
             Register and manage AI agents with DIDs and verifiable credentials.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-[--accent] px-3 py-1.5 text-[12px] font-medium text-[--accent-contrast] transition-colors hover:bg-[--accent-hover]"
-        >
-          <Plus className="size-3.5" aria-hidden />
-          Create agent
-        </button>
+        <div className="flex items-center gap-2">
+          {agents && agents.length > 0 && (
+            <button
+              type="button"
+              onClick={openConfirm}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[--danger] px-3 py-1.5 text-[12px] font-medium text-[--danger] transition-colors hover:bg-[--danger] hover:text-white"
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+              Delete all
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-[--accent] px-3 py-1.5 text-[12px] font-medium text-[--accent-contrast] transition-colors hover:bg-[--accent-hover]"
+          >
+            <Plus className="size-3.5" aria-hidden />
+            Create agent
+          </button>
+        </div>
       </div>
 
       <ReflectiveCard className="overflow-hidden rounded-xl">
@@ -164,6 +203,47 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
         orgId={orgId}
         deviceVerified={deviceVerified}
       />
+
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-xl border border-[--border-subtle] bg-[--surface] p-6 shadow-xl">
+            <h2 className="text-[14px] font-semibold text-[--text-primary]">Delete all agents?</h2>
+            <p className="mt-2 text-[12px] text-[--text-secondary]">
+              This will permanently delete all {agents?.length ?? ""} agents and cannot be undone.
+              Type <span className="font-mono font-bold text-[--danger]">DELETE</span> to confirm.
+            </p>
+            <input
+              ref={confirmRef}
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleDeleteAll(); }}
+              placeholder="DELETE"
+              className="mt-4 w-full rounded-md border border-[--border-subtle] bg-[--surface-raised] px-3 py-2 text-[13px] text-[--text-primary] outline-none focus:border-[--danger]"
+            />
+            {deleteError && (
+              <p className="mt-2 text-[12px] text-[--danger]">{deleteError}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
+                className="rounded-md px-3 py-1.5 text-[12px] text-[--text-secondary] hover:text-[--text-primary]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteAll()}
+                disabled={confirmInput !== "DELETE" || deleting}
+                className="rounded-md bg-[--danger] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity disabled:opacity-40"
+              >
+                {deleting ? "Deleting…" : "Delete all"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

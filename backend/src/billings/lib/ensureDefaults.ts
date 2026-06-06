@@ -46,6 +46,8 @@ const DEFAULT_BILLING_SERVICES: ReadonlyArray<{
 }> = [
   { serviceKey: 'passport', displayName: 'Passport', unitPrice: '0.10', sortOrder: 0 },
   { serviceKey: 'audit', displayName: 'Audit log', unitPrice: '0.05', sortOrder: 1 },
+  { serviceKey: 'agent_run', displayName: 'Agent run', unitPrice: '0.00', sortOrder: 2 },
+  { serviceKey: 'agent_activate_paid', displayName: 'Paid agent activation', unitPrice: '5.00', sortOrder: 3 },
 ];
 
 /**

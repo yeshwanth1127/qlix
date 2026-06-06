@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq2cult7000d9dtkdfcvn868",
+  "did": "did:qlix:c0ad0ee2acd30a62",
+  "name": "Report Summarizer",
+  "model": "",
+  "systemPrompt": "You are Report Summarizer. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "email.send"
+  ],
+  "jitScopes": [
+    "email.send"
+  ],
+  "alwaysScopes": [],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-06T12:55:51.918Z"
+}

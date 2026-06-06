@@ -810,6 +810,26 @@ export function createAgentsRouter(): Router {
     }
   });
 
+  router.delete('/', authenticateUser(true), async (request: Request, response: Response) => {
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    if (body.confirm !== 'DELETE_ALL') {
+      response.status(400).json({ error: { code: 'invalid_confirm', message: 'Send { confirm: "DELETE_ALL" } to confirm bulk deletion.' } });
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      const deleted = await service.deleteAllAgents(auth.userId, auth.orgId, auth.role);
+      response.json({ ok: true, deleted });
+    } catch (err) {
+      if (err instanceof AgentDeleteForbiddenError) {
+        response.status(403).json({ error: { code: 'forbidden', message: err.message } });
+        return;
+      }
+      console.error('deleteAllAgents error', err);
+      response.status(500).json({ error: { code: 'delete_all_failed', message: 'Failed to delete agents' } });
+    }
+  });
+
   const queryService = new BrainQueryService();
 
   router.post('/:id/brain/query', authenticateUser(true), async (request: Request, response: Response) => {

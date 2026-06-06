@@ -222,12 +222,16 @@ async def run_backend_proxy_inference(
     tools_schema_bytes: int,
     log: LogFn,
     live_view_enabled: bool | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any]]:
     """Multi-turn inference with pre-bound tool executors."""
     if live_view_enabled is None:
         live_view_enabled = goal_requests_live_view(enriched_prompt)
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": enriched_prompt}]
+    messages: list[dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": enriched_prompt})
     max_rounds = int(os.environ.get("QLIX_CLOUD_TOOL_MAX_ROUNDS", "12"))
     max_seconds = float(os.environ.get("QLIX_CLOUD_TOOL_MAX_SECONDS", "150"))
     log(

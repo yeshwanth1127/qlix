@@ -24,7 +24,6 @@ TOOL_SCOPE_MAP: dict[str, tuple[str, ...]] = {
     "s3_bash": ("system.file_write",),
     "s3_python": ("system.file_write",),
     "s3_code_task": ("system.file_write",),
-    # Opening a file in Notepad/Explorer is not writing — same trust as read.
     "s3_open_file": ("system.file_read",),
     "gui_control": ("system.gui_control",),
 }
@@ -234,6 +233,7 @@ def _run_python(code: str) -> dict[str, Any]:
         }
 
 
+
 def openai_agents3_tool_definitions(
     identity: AgentIdentity,
     *,
@@ -405,7 +405,6 @@ def build_agents3_executors(
                 )
             )
         )
-
     for tid in tool_ids:
         action_type = TOOL_SCOPE_MAP.get(tid, (tid,))[0]
         risk = "high" if tid in (
@@ -418,7 +417,10 @@ def build_agents3_executors(
 
         def _make(tid: str = tid, act: str = action_type, r: str = risk) -> Agents3Executor:
             async def _execute(args_json: str) -> str:
-                params = json.loads(args_json) if args_json.strip() else {}
+                try:
+                    params = json.loads(args_json) if args_json.strip() else {}
+                except json.JSONDecodeError:
+                    params = {}
                 if not isinstance(params, dict):
                     params = {}
 

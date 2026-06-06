@@ -77,6 +77,7 @@ model User {
   teamsCreated       Team[]     @relation("TeamsCreated")
   teamRunsStarted    TeamRun[]  @relation("TeamRunsStarted")
   connectorAccounts  ConnectorAccount[]
+  nlBuilderHistory   NlBuilderHistory[]
 
   @@index([orgId])
   @@map("users")
@@ -189,6 +190,9 @@ model Agent {
   /// Optional free-text description that becomes the ADK system prompt context.
   description String? @map("description")
 
+  /// Agent billing tier: `free` | `paid`. Defaults to `free`.
+  agentTier String @default("free") @map("agent_tier")
+
   createdAt  DateTime  @default(now()) @map("created_at")
   lastActive DateTime? @map("last_active")
 
@@ -200,6 +204,7 @@ model Agent {
   credentials          VerifiableCredential[]
   conversations        AgentConversation[]
   runs                 AgentRun[]
+  runUsages            RunUsage[]
   supervisedTeams      Team[]       @relation("TeamSupervisor")
   teamMemberships      TeamMember[]
 
@@ -347,6 +352,7 @@ model AgentRun {
   agent        Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
   conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   events       AgentRunEvent[]
+  usage        RunUsage?
   teamRun      TeamRun?          @relation(fields: [teamRunId], references: [id], onDelete: SetNull)
   a2aTask      A2ATask?
 
@@ -370,6 +376,31 @@ model AgentRunEvent {
   @@unique([runId, seq])
   @@index([runId, createdAt])
   @@map("agent_run_events")
+}
+
+/// Token usage and cost tracking for completed agent runs. One row per run; data sourced from OpenRouter inference events.
+model RunUsage {
+  id                String   @id @default(cuid())
+  runId             String   @unique @map("run_id")
+  agentId           String   @map("agent_id")
+  orgId             String?  @map("org_id") @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  promptTokens      Int      @default(0) @map("prompt_tokens")
+  completionTokens  Int      @default(0) @map("completion_tokens")
+  totalTokens       Int      @default(0) @map("total_tokens")
+  totalCostUsd      Decimal  @default(0) @db.Decimal(18, 8) @map("total_cost_usd")
+  model             String?
+  provider          String?
+  openrouterGenId   String?  @map("openrouter_gen_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agent Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, createdAt])
+  @@index([orgId, createdAt])
+  @@index([userId, createdAt])
+  @@map("run_usages")
 }
 
 /// Verifiable Credential issued by the Qlix platform to an agent.
@@ -843,6 +874,19 @@ model A2ATask {
 }
 
 // ─── End Teams ────────────────────────────────────────────────────────────────
+
+/// Saved NL agent builder prompts per user for history/reuse (newest first, max 20).
+model NlBuilderHistory {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id") @db.Uuid
+  prompt    String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("nl_builder_history")
+}
 
 /// Periodic Merkle roots over the action log hash chain for tamper evidence.
 model MerkleCheckpoint {

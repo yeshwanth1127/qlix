@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
+import { isBillingExempt } from '../billings/lib/isBillingExempt.js';
 
 export interface EnqueueAgentRunInput {
   agentId: string;
   conversationId: string;
   userId: string;
   orgId: string | null;
+  email?: string;
   prompt: string;
   skills?: string[];
   inferenceModel?: string | null;
@@ -53,6 +55,20 @@ export async function ensureTeamConversation(params: {
 export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<EnqueueAgentRunResult> {
   const runId = randomUUID();
   const messageId = randomUUID();
+
+  // Pre-execution balance check (skip for exempt users)
+  if (!isBillingExempt(input.email ?? '')) {
+    const wallet = await prisma.wallet.findFirst({
+      where: input.orgId ? { orgId: input.orgId } : { userId: input.userId },
+      select: { balance: true },
+    });
+    if (wallet && wallet.balance.lessThan(0)) {
+      throw Object.assign(new Error('Wallet balance is insufficient'), {
+        code: 'insufficient_balance',
+        status: 402,
+      });
+    }
+  }
 
   await prisma.$transaction([
     prisma.agentMessage.create({

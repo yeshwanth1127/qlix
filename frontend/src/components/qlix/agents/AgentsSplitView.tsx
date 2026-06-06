@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ExternalLink, Plus } from "lucide-react";
-import { type AgentDTO, listAgents } from "@/lib/agents-api";
+import { ExternalLink, Plus, Trash2 } from "lucide-react";
+import { type AgentDTO, deleteAllAgents, listAgents } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
 import { CreateAgentModal } from "./CreateAgentModal";
@@ -31,6 +31,11 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
 
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? (session?.organization.id ?? null) : null;
@@ -59,6 +64,27 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const openConfirm = () => {
+    setConfirmInput("");
+    setDeleteError(null);
+    setConfirmOpen(true);
+    setTimeout(() => confirmRef.current?.focus(), 50);
+  };
+
+  const handleDeleteAll = async () => {
+    if (confirmInput !== "DELETE") return;
+    setDeleting(true);
+    setDeleteError(null);
+    const result = await deleteAllAgents();
+    setDeleting(false);
+    if (result.ok) {
+      setConfirmOpen(false);
+      setAgents([]);
+    } else {
+      setDeleteError(result.errorMessage ?? "Failed to delete agents");
+    }
+  };
 
   const handleCreated = (agent: AgentDTO) => {
     setAgents((prev) => [agent, ...(prev ?? [])]);
@@ -89,14 +115,26 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
             Register and manage AI agents with DIDs, verifiable credentials, and live cloud runners.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600 px-4 py-2 text-[12px] font-semibold text-white shadow-md shadow-violet-500/25 motion-safe:transition-[filter,transform] motion-safe:duration-200 hover:brightness-110 active:scale-[0.98] dark:from-violet-500 dark:via-indigo-500 dark:to-cyan-500"
-        >
-          <Plus className="size-4" aria-hidden />
-          Create agent
-        </button>
+        <div className="flex items-center gap-2">
+          {agents && agents.length > 0 && (
+            <button
+              type="button"
+              onClick={openConfirm}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 px-4 py-2 text-[12px] font-semibold text-red-500 motion-safe:transition-colors motion-safe:duration-200 hover:bg-red-500/10 dark:border-red-400/40 dark:text-red-400"
+            >
+              <Trash2 className="size-4" aria-hidden />
+              Delete all
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600 px-4 py-2 text-[12px] font-semibold text-white shadow-md shadow-violet-500/25 motion-safe:transition-[filter,transform] motion-safe:duration-200 hover:brightness-110 active:scale-[0.98] dark:from-violet-500 dark:via-indigo-500 dark:to-cyan-500"
+          >
+            <Plus className="size-4" aria-hidden />
+            Create agent
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(380px,42%)_1fr]">
@@ -207,6 +245,47 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
         orgId={orgId}
         deviceVerified={deviceVerified}
       />
+
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-xl border border-red-500/20 bg-[--surface] p-6 shadow-2xl">
+            <h2 className="text-[14px] font-semibold text-[--text-primary]">Delete all agents?</h2>
+            <p className="mt-2 text-[12px] text-[--text-secondary]">
+              This permanently deletes all {agents?.length ?? ""} agents and cannot be undone.
+              Type <span className="font-mono font-bold text-red-500">DELETE</span> to confirm.
+            </p>
+            <input
+              ref={confirmRef}
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleDeleteAll(); }}
+              placeholder="DELETE"
+              className="mt-4 w-full rounded-md border border-[--border-subtle] bg-[--bg-elevated] px-3 py-2 text-[13px] text-[--text-primary] outline-none focus:border-red-500"
+            />
+            {deleteError && (
+              <p className="mt-2 text-[12px] text-red-500">{deleteError}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
+                className="rounded-md px-3 py-1.5 text-[12px] text-[--text-secondary] hover:text-[--text-primary]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteAll()}
+                disabled={confirmInput !== "DELETE" || deleting}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity disabled:opacity-40 hover:bg-red-500"
+              >
+                {deleting ? "Deleting…" : "Delete all"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

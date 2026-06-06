@@ -331,8 +331,15 @@ export function AgentChatPanel({
       setSending(false);
       let msg = "Failed to send message";
       try {
-        const body = (await res.json()) as { error?: { message?: string } };
+        const body = (await res.json()) as { error?: { message?: string; code?: string } };
         if (body?.error?.message) msg = body.error.message;
+        if (res.status === 402) {
+          const walletPath =
+            session?.organization.workspaceKind === "organization"
+              ? "/organization/billing"
+              : "/individual/wallet";
+          msg = `Insufficient wallet balance. Add credits to continue. Go to ${walletPath}`;
+        }
       } catch {
         // ignore
       }

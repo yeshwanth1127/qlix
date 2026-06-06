@@ -456,6 +456,21 @@ export async function updateAgentDescription(
   return { ok: true, agent: data.agent };
 }
 
+export async function deleteAllAgents(): Promise<{ ok: boolean; deleted?: number; errorMessage?: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/agents`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ confirm: "DELETE_ALL" }),
+  });
+  if (res.ok) {
+    const data = (await res.json()) as { ok: boolean; deleted: number };
+    return { ok: true, deleted: data.deleted };
+  }
+  const e = await asError(res, "Failed to delete all agents");
+  return { ok: false, errorMessage: e.message };
+}
+
 export async function deleteAgent(agentId: string, confirmName: string): Promise<DeleteAgentResult> {
   const res = await fetch(`${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}`, {
     method: "DELETE",

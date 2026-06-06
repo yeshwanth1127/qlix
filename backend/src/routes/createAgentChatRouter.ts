@@ -24,6 +24,8 @@ import {
   N8nNotConfiguredError,
 } from '../connectors/emailTool.service.js';
 import { JitTokenInvalidError, JitTokenRequiredError } from '../actions/actions.service.js';
+import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
+import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
 
 const createConversationBody = z.object({});
 
@@ -332,6 +334,7 @@ export function createAgentChatRouter(): Router {
           conversationId,
           userId: request.auth!.userId,
           orgId: convo.orgId,
+          email: request.auth!.email,
           prompt: parsed.data.content,
           skills: parsed.data.skills,
           inferenceModel,
@@ -342,6 +345,10 @@ export function createAgentChatRouter(): Router {
       } catch (err) {
         if (err instanceof ModelPolicyError) {
           response.status(400).json({ error: { code: 'model_not_allowed', message: err.message } });
+          return;
+        }
+        if ((err as any)?.code === 'insufficient_balance') {
+          response.status(402).json({ error: { code: 'insufficient_balance', message: (err as Error).message } });
           return;
         }
         console.error('post message error', err);
@@ -449,6 +456,25 @@ export function createAgentChatRouter(): Router {
         response.json({ run: null });
         return;
       }
+      const [agentRow, waConnector] = await Promise.all([
+        prisma.agent.findUnique({
+          where: { id: agentId },
+          select: { description: true, orgId: true },
+        }),
+        prisma.connectorAccount.findFirst({
+          where: { whatsappDefaultAgentId: agentId },
+          select: { id: true },
+        }),
+      ]);
+      // Fall back to org-wide connector if no agent-specific one found
+      const waConnectorResolved = waConnector ?? (
+        agentRow?.orgId
+          ? await prisma.connectorAccount.findFirst({
+              where: { orgId: agentRow.orgId, provider: 'whatsapp_baileys' },
+              select: { id: true },
+            })
+          : null
+      );
       response.json({
         run: {
           id: run.id,
@@ -459,6 +485,8 @@ export function createAgentChatRouter(): Router {
           userId: run.userId,
           createdAt: run.createdAt.toISOString(),
           useBrain: run.useBrain,
+          agentDescription: agentRow?.description ?? null,
+          waConnectorId: waConnectorResolved?.id ?? null,
         },
       });
     } catch (e: any) {
@@ -526,12 +554,18 @@ export function createAgentChatRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const run = await prisma.agentRun.findUnique({
         where: { id: runId },
-        select: { agentId: true, conversationId: true },
+        select: { agentId: true, conversationId: true, userId: true, orgId: true },
       });
       if (!run || run.agentId !== agentId) {
         response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
         return;
       }
+
+      // Fetch user email for billing exempt check
+      const user = await prisma.user.findUnique({
+        where: { id: run.userId },
+        select: { email: true },
+      });
 
       const finishedAt = new Date();
       await prisma.$transaction(async (tx) => {
@@ -570,6 +604,24 @@ export function createAgentChatRouter(): Router {
 
       const { notifyWhatsappRunComplete } = await import('../whatsapp/whatsappChannel.service.js');
       void notifyWhatsappRunComplete(runId);
+
+      // Fire-and-forget: record run usage and post-execution billing
+      if (parsed.data.ok && user?.email) {
+        void recordRunUsage(prisma, { runId, agentId, orgId: run.orgId, userId: run.userId }).catch((err) => {
+          console.error('[record-run-usage]', err);
+        });
+
+        void recordSuccessfulEvent(prisma, {
+          orgId: run.orgId,
+          userId: run.userId,
+          email: user.email,
+          agentId,
+          eventType: 'agent_run',
+          eventKey: `run:${runId}`,
+        }).catch((err) => {
+          console.error('[record-billing-event]', err);
+        });
+      }
 
       response.json({ ok: true });
     } catch (e: any) {

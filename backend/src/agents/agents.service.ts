@@ -181,6 +181,33 @@ export class AgentsService {
 
     await this.repo.deleteById(agentId);
   }
+
+  async deleteAllAgents(userId: string, orgId: string | null, userRole: string): Promise<number> {
+    if (orgId && !roleCan(userRole, 'delete_agent')) {
+      throw new AgentDeleteForbiddenError(
+        'Organization members cannot delete agents; ask an admin or owner.',
+      );
+    }
+    const agents = await this.repo.listForUser(userId, orgId);
+    let deleted = 0;
+    for (const agent of agents) {
+      if (agent.runtime === 'cloud') {
+        try {
+          await new CloudProvisionerService().teardownCloudRunner({
+            agentId: agent.id,
+            name: agent.name,
+            did: agent.did,
+            cloudRunnerId: agent.cloudRunnerId ?? null,
+          });
+        } catch (err) {
+          console.warn(`Bulk delete: failed to tear down cloud runner for ${agent.id}:`, err);
+        }
+      }
+      await this.repo.deleteById(agent.id);
+      deleted++;
+    }
+    return deleted;
+  }
 }
 
 export { DeviceNotVerifiedError } from '../deviceVerification/deviceVerification.js';

@@ -17,9 +17,12 @@ import { createInferenceCatalogRouter } from '../routes/createInferenceCatalogRo
 import { createAiBrainRouter } from '../routes/createAiBrainRouter.js';
 import { createTeamsRouter } from '../routes/createTeamsRouter.js';
 import { createConnectorsRouter } from '../routes/createConnectorsRouter.js';
+import { createNlBuilderHistoryRouter } from '../routes/createNlBuilderHistoryRouter.js';
 import { createBillingRouter } from '../billings/routes/createBillingRouter.js';
 import { createBillingIngestRouter } from '../billings/routes/createBillingIngestRouter.js';
 import { createAdminBillingRouter } from '../billings/routes/createAdminBillingRouter.js';
+import { createUsageRouter } from '../routes/createUsageRouter.js';
+import { createWalletRouter } from '../routes/createWalletRouter.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -44,8 +47,11 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/ai-brain', createAiBrainRouter());
   application.use('/api/v1/teams', createTeamsRouter());
   application.use('/api/v1/connectors', createConnectorsRouter());
+  application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());
   application.use('/api/v1/actions', createActionsRouter());
   application.use('/api/v1/jit', createJitRouter());
+  application.use('/api/v1/usage', createUsageRouter());
+  application.use('/api/v1/wallet', createWalletRouter());
   application.use('/api/v1/whatsapp', createWhatsAppRouter());
   application.use('/api/v1/internal', createInternalRouter());
   application.use(createPublicPassportRouter());
