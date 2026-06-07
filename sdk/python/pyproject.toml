@@ -40,6 +40,7 @@ hybrid = [
   "gui-agents>=0.3.2",
   "pyautogui>=0.9.54",
   "reportlab>=4.0",
+  "openpyxl>=3.1",
 ]
 dev = [
   "pytest>=8.0",

@@ -8,6 +8,7 @@ import { authenticateUser } from '../middleware/authenticateUser.js';
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
 import { BrainQueryService } from '../aiBrain/brainQuery.service.js';
 import {
   assertStandardAgentCanQueryBrain,
@@ -67,6 +68,9 @@ async function appendAgentRunEvent(
   type: 'delta' | 'log' | 'status',
   data: unknown,
 ): Promise<number> {
+  if (type === 'log' && data && typeof data === 'object' && !Array.isArray(data)) {
+    return appendAgentRunLogEvent(runId, data as Record<string, unknown>);
+  }
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const agg = await prisma.agentRunEvent.aggregate({
       where: { runId },

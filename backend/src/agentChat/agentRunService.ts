@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { isBillingExempt } from '../billings/lib/isBillingExempt.js';
 
@@ -152,6 +153,36 @@ export async function waitForAgentRunCompletion(
   const message = `Agent run timed out after ${timeoutMs}ms`;
   await terminateAgentRun(runId, message);
   throw new Error(message);
+}
+
+/** Append a structured log row to an agent run (SSE / activity timeline). */
+export async function appendAgentRunLogEvent(
+  runId: string,
+  data: Record<string, unknown>,
+): Promise<number> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const agg = await prisma.agentRunEvent.aggregate({
+      where: { runId },
+      _max: { seq: true },
+    });
+    const seq = (agg._max.seq ?? -1) + 1;
+    try {
+      await prisma.agentRunEvent.create({
+        data: { runId, seq, type: 'log', data: data as Prisma.InputJsonValue },
+      });
+      return seq;
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002' &&
+        attempt < 3
+      ) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Failed to append run event after retries');
 }
 
 export async function listAgentRunEventsSince(runId: string, afterSeq: number): Promise<

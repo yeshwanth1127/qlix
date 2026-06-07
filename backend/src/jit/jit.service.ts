@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { verifySignature } from '../agents/keypair.js';
 import { canonicalize } from '../actions/canonical.js';
+import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
 import { prisma } from '../lib/prisma.js';
 import { getWhatsAppConnectorForAgent } from '../connectors/whatsappConnector.service.js';
 import { isWhatsAppJitEnabled, sendApproval } from './whatsappNotifier.js';
@@ -164,6 +165,29 @@ async function hasRunScopedJitGrant(
   return false;
 }
 
+function formatScopeLabel(scope: string): string {
+  const labels: Record<string, string> = {
+    'system.file_write': 'Write files',
+    'system.file_read': 'Read files',
+    'system.gui_control': 'Control desktop',
+    'email.send': 'Send email',
+    'web.transaction': 'Web transactions',
+  };
+  return labels[scope] ?? scope;
+}
+
+async function emitJitRunLog(
+  runId: string | null,
+  data: Record<string, unknown>,
+): Promise<void> {
+  if (!runId) return;
+  try {
+    await appendAgentRunLogEvent(runId, data);
+  } catch (err) {
+    console.warn('[jit] failed to append run activity log:', err);
+  }
+}
+
 async function autoApproveJitRequest(actionLogId: string): Promise<void> {
   const token = crypto.randomUUID();
   const now = Date.now();
@@ -264,6 +288,13 @@ export class JitService {
       // Remember this run+scope so all later requests in the run auto-approve too.
       recordRunScopedGrant(runId, signedPayload.actionType);
       console.log(`[jit] auto-approved: actionId=${actionLog.id} reason=${envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : memoryGrant ? 'memory-grant' : 'run-scoped-db'}`);
+      void emitJitRunLog(runId, {
+        message: 'jit_approval_granted',
+        scope: signedPayload.actionType,
+        scopeLabel: formatScopeLabel(signedPayload.actionType),
+        auto: true,
+        reason: envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : 'run-scoped',
+      });
     } else if (isWhatsAppJitEnabled()) {
       const wa = await getWhatsAppConnectorForAgent(agent.id);
       if (wa) {
@@ -277,11 +308,35 @@ export class JitService {
           scope: signedPayload.actionType,
           context: formatJitApprovalContext(signedPayload.payload),
         });
+        void emitJitRunLog(runId, {
+          message: 'jit_approval_pending',
+          scope: signedPayload.actionType,
+          scopeLabel: formatScopeLabel(signedPayload.actionType),
+          channel: 'whatsapp',
+          context: formatJitApprovalContext(signedPayload.payload),
+          jitRequestId: actionLog.id,
+        });
       } else {
         console.log(`[jit] no WhatsApp connector found for agent: agentId=${agent.id}`);
+        void emitJitRunLog(runId, {
+          message: 'jit_approval_pending',
+          scope: signedPayload.actionType,
+          scopeLabel: formatScopeLabel(signedPayload.actionType),
+          channel: 'dashboard',
+          context: formatJitApprovalContext(signedPayload.payload),
+          jitRequestId: actionLog.id,
+        });
       }
     } else {
       console.log(`[jit] waiting for approval (WhatsApp not enabled): actionId=${actionLog.id}`);
+      void emitJitRunLog(runId, {
+        message: 'jit_approval_pending',
+        scope: signedPayload.actionType,
+        scopeLabel: formatScopeLabel(signedPayload.actionType),
+        channel: 'dashboard',
+        context: formatJitApprovalContext(signedPayload.payload),
+        jitRequestId: actionLog.id,
+      });
     }
 
     return { jitRequestId: actionLog.id, expiresAtMs };
@@ -325,6 +380,11 @@ export class JitService {
 
     const now = Date.now();
     const isTimeout = !input.approved && input.reason === 'timeout';
+    const payload = row.payload;
+    const runId =
+      payload && typeof payload === 'object'
+        ? extractRunId((payload as Record<string, unknown>).toolPayload ?? payload)
+        : null;
 
     if (input.approved) {
       const token = crypto.randomUUID();
@@ -344,17 +404,22 @@ export class JitService {
       ]);
       // Record an in-memory run-scoped grant so later requests in the same run
       // auto-approve without prompting the user again.
-      const payload = row.payload;
       if (payload && typeof payload === 'object') {
         const p = payload as Record<string, unknown>;
-        const runId = extractRunId(p.toolPayload ?? p);
-        if (runId) {
-          recordRunScopedGrant(runId, row.actionType);
+        const grantRunId = extractRunId(p.toolPayload ?? p);
+        if (grantRunId) {
+          recordRunScopedGrant(grantRunId, row.actionType);
           console.log(
-            `[jit] recorded run-scoped grant: runId=${runId} actionType=${row.actionType} (future ${row.actionType} requests in this run auto-approve)`,
+            `[jit] recorded run-scoped grant: runId=${grantRunId} actionType=${row.actionType} (future ${row.actionType} requests in this run auto-approve)`,
           );
         }
       }
+      void emitJitRunLog(runId, {
+        message: 'jit_approval_granted',
+        scope: row.actionType,
+        scopeLabel: formatScopeLabel(row.actionType),
+        channel: 'whatsapp',
+      });
       return { ok: true, status: 'approved' };
     }
 
@@ -379,6 +444,14 @@ export class JitService {
         },
       }),
     ]);
+
+    void emitJitRunLog(runId, {
+      message: decision === 'expired' ? 'jit_approval_expired' : 'jit_approval_denied',
+      scope: row.actionType,
+      scopeLabel: formatScopeLabel(row.actionType),
+      channel: 'whatsapp',
+      reason: input.reason ?? decision,
+    });
 
     return { ok: true, status: decision };
   }

@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageSquare,
   SendHorizonal,
+  ShieldCheck,
   Square,
   Sparkles,
   Trash2,
@@ -22,6 +23,7 @@ import {
   normalizeQlixInferenceModelId,
 } from "@/lib/agents-api";
 import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import { useSession } from "@/components/qlix/session-context";
 import {
   AgentStatusBadge,
   agentStatusHint,
@@ -33,8 +35,12 @@ import { cn } from "@/lib/utils/cn";
 function isHostedChatRuntime(runtime: AgentRuntime | undefined): boolean {
   return runtime === "cloud" || runtime === "hybrid";
 }
-import { ActivityTimeline, LiveToolBar } from "@/components/qlix/agents/AgentRunActivity";
-import { type ActivityStep, summarizeRunnerLog } from "@/components/qlix/agents/agentToolActivity";
+import { ActivityTimeline } from "@/components/qlix/agents/AgentRunActivity";
+import {
+  type ActivityStep,
+  getPendingJitStep,
+  summarizeRunnerLog,
+} from "@/components/qlix/agents/agentToolActivity";
 import {
   AgentBrowserLiveView,
   type BrowserFrame,
@@ -113,6 +119,7 @@ export function AgentChatPanel({
   readonly agentId: string;
   readonly aiBrainHref?: string;
 }) {
+  const { session } = useSession();
   const [agent, setAgent] = useState<AgentDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -295,10 +302,26 @@ export function AgentChatPanel({
     el.scrollTo({ top: el.scrollHeight, behavior: sending ? "auto" : "smooth" });
   }, [messages, sending]);
 
+  // Auto-grow the composer textarea with its content (and reset after a send clears it).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  }, [input]);
+
   const header = useMemo(() => {
     if (!agent) return "Agent chat";
     return agent.name;
   }, [agent]);
+
+  /** The model actually used for replies — the live picker choice for hosted runtimes, else the agent default. */
+  const activeModelLabel = useMemo(() => {
+    if (!agent) return "";
+    const raw =
+      isHostedChatRuntime(agent.runtime) && selectedQlixModelId ? selectedQlixModelId : agent.model;
+    return raw.replace(/^openrouter\//, "");
+  }, [agent?.runtime, agent?.model, selectedQlixModelId]);
 
   const browserScopesOk = useMemo(() => {
     if (!agent) return true;
@@ -637,32 +660,28 @@ export function AgentChatPanel({
                     {header}
                   </h2>
                   {agent ? (
-                    <div className="mt-1.5 space-y-1 text-[11px] text-[--text-tertiary]">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {runnerStatus ? <AgentStatusBadge status={runnerStatus} /> : null}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {runnerStatus ? <AgentStatusBadge status={runnerStatus} /> : null}
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ring-1 ring-inset",
+                          agent.runtime === "cloud"
+                            ? "bg-violet-500/12 text-violet-700 ring-violet-500/25 dark:text-violet-300"
+                            : "bg-teal-500/12 text-teal-800 ring-teal-500/25 dark:text-teal-300",
+                        )}
+                      >
+                        {agent.runtime}
+                      </span>
+                      {activeModelLabel ? (
                         <span
-                          className={cn(
-                            "rounded-full px-2 py-0.5 font-medium capitalize ring-1 ring-inset",
-                            agent.runtime === "cloud"
-                              ? "bg-violet-500/12 text-violet-700 ring-violet-500/25 dark:text-violet-300"
-                              : "bg-teal-500/12 text-teal-800 ring-teal-500/25 dark:text-teal-300",
-                          )}
+                          className="inline-flex max-w-[220px] items-center gap-1 rounded-full bg-black/20 px-2 py-0.5 ring-1 ring-[--border-subtle]"
+                          title={`Default: ${agent.model}`}
                         >
-                          {agent.runtime}
+                          <Sparkles className="size-2.5 shrink-0 text-[--accent]" aria-hidden />
+                          <span className="truncate font-mono text-[10px] text-[--text-secondary]">
+                            {activeModelLabel}
+                          </span>
                         </span>
-                        <span className="font-mono text-[10px] text-[--text-secondary]" title={agent.model}>
-                          Default: {agent.model.length > 36 ? `${agent.model.slice(0, 34)}…` : agent.model}
-                        </span>
-                      </div>
-                      {isHostedChatRuntime(agent.runtime) && selectedQlixModelId ? (
-                        <p className="font-mono text-[10px] text-[--accent]" title={selectedQlixModelId}>
-                          Chat model:{" "}
-                          {selectedQlixModelId.length > 42 ? `${selectedQlixModelId.slice(0, 40)}…` : selectedQlixModelId}
-                          {agentDefaultModelId &&
-                          selectedQlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase()
-                            ? " (agent default)"
-                            : null}
-                        </p>
                       ) : null}
                     </div>
                   ) : null}
@@ -736,7 +755,12 @@ export function AgentChatPanel({
                   </div>
                 </div>
               ) : (
-                messages.map((m) => (
+                messages.map((m) => {
+                  const isLast = m.id === messages[messages.length - 1]?.id;
+                  const thisStreaming = sending && m.role === "agent" && isLast;
+                  const jitPendingStep =
+                    thisStreaming && m.activity ? getPendingJitStep(m.activity) : null;
+                  return (
                   <div
                     key={m.id}
                     className={cn(
@@ -775,14 +799,27 @@ export function AgentChatPanel({
                       )}
                     >
                       {m.role === "agent" && m.activity && m.activity.length > 0 ? (
-                        <ActivityTimeline steps={m.activity} className="mb-3" />
+                        <ActivityTimeline
+                          steps={m.activity}
+                          running={thisStreaming}
+                          defaultOpen={thisStreaming}
+                          className="mb-3"
+                        />
                       ) : null}
-                      {m.role === "agent" &&
-                      sending &&
-                      m.id === messages[messages.length - 1]?.id &&
-                      (m.activity?.length ?? 0) > 0 ? (
-                        <div className="mb-2">
-                          <LiveToolBar steps={m.activity ?? []} />
+                      {jitPendingStep ? (
+                        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
+                          <ShieldCheck
+                            className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-200"
+                            aria-hidden
+                          />
+                          <div className="min-w-0 text-[11px] leading-snug text-amber-950 dark:text-amber-50">
+                            <span className="font-semibold">{jitPendingStep.label}</span>
+                            {jitPendingStep.detail ? (
+                              <span className="mt-0.5 block text-[10px] opacity-90">
+                                {jitPendingStep.detail}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       ) : null}
                       {m.role === "agent" && (!m.content || m.content.trim() === "") && lastAgentStreaming && m.id === messages[messages.length - 1]?.id ? (
@@ -799,7 +836,8 @@ export function AgentChatPanel({
                       )}
                     </div>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}
@@ -816,150 +854,138 @@ export function AgentChatPanel({
         </div>
 
         <div className="border-t border-[--border-subtle] bg-[var(--glass-inset-bg)]/30 px-4 py-3">
-          <div className="mx-auto flex max-w-2xl flex-col gap-2">
-            {isHostedChatRuntime(agent?.runtime) ? (
-              <div className="rounded-xl border border-[--border-subtle] bg-black/20 px-3 py-2.5">
-                <div className="flex items-center gap-2 text-[11px] font-medium text-[--text-secondary]">
-                  <Sparkles className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
-                  Inference model (OpenRouter)
-                </div>
-                {catalogLoading ? (
-                  <p className="mt-2 flex items-center gap-2 text-[11px] text-[--text-tertiary]">
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    Loading catalog…
-                  </p>
-                ) : null}
-                {catalogError ? (
-                  <p className="mt-2 text-[11px] leading-snug text-amber-200/90">{catalogError}</p>
-                ) : null}
-                {!catalogLoading && catalogModels.length > 0 ? (
-                  <div className="mt-2 space-y-2">
-                    <select
-                      value={selectedQlixModelId}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setSelectedQlixModelId(v);
-                        selectedModelRef.current = v;
-                      }}
-                      disabled={!conversationId || pickerModels.length === 0}
-                      className="w-full rounded-lg border border-[--border-subtle] bg-[--bg-base] px-2.5 py-2 text-[12px] text-[--text-primary] outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-50"
-                    >
-                      {pickerModels.length === 0 ? (
-                        selectedQlixModelId.trim() ? (
-                          <option className="bg-white text-black" value={selectedQlixModelId}>
-                            {selectedQlixModelId}
-                          </option>
-                        ) : (
-                          <option className="bg-white text-black" value="">
-                            No matches
-                          </option>
-                        )
-                      ) : (
-                        pickerModels.map((m) => {
-                          const isAgentDefault =
-                            agentDefaultModelId.length > 0 &&
-                            m.qlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase();
-                          return (
-                            <option
-                              key={m.qlixModelId}
-                              className="bg-white text-black"
-                              value={m.qlixModelId}
-                            >
-                              {isAgentDefault ? `${m.name} (agent default)` : m.name}
-                            </option>
-                          );
-                        })
+          <div className="mx-auto max-w-2xl space-y-2">
+            {isHostedChatRuntime(agent?.runtime) && catalogError ? (
+              <p className="text-[10px] leading-snug text-amber-300/90">{catalogError}</p>
+            ) : null}
+
+            <div className="rounded-2xl border border-[--border-subtle] bg-[--bg-base]/70 shadow-inner transition-[border-color,box-shadow] focus-within:border-[--accent]/60 focus-within:ring-2 focus-within:ring-[--accent]/15">
+              {isHostedChatRuntime(agent?.runtime) || canUseBrain ? (
+                <div className="flex flex-wrap items-center gap-2 border-b border-[--border-subtle]/60 px-2.5 py-1.5">
+                  {isHostedChatRuntime(agent?.runtime) ? (
+                    catalogLoading ? (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] text-[--text-tertiary]">
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                        Loading models…
+                      </span>
+                    ) : catalogModels.length > 0 ? (
+                      <label className="inline-flex min-w-0 items-center gap-1.5 text-[--text-secondary]">
+                        <Sparkles className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
+                        <select
+                          value={selectedQlixModelId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setSelectedQlixModelId(v);
+                            selectedModelRef.current = v;
+                          }}
+                          disabled={!conversationId || pickerModels.length === 0}
+                          title="Model used for each reply (OpenRouter catalog)"
+                          className="max-w-[220px] truncate rounded-md border border-transparent bg-transparent py-1 pl-1 pr-5 text-[11px] font-medium text-[--text-primary] outline-none hover:border-[--border-subtle] focus:border-violet-500/50 disabled:opacity-50"
+                        >
+                          {pickerModels.length === 0 ? (
+                            selectedQlixModelId.trim() ? (
+                              <option className="bg-white text-black" value={selectedQlixModelId}>
+                                {selectedQlixModelId}
+                              </option>
+                            ) : (
+                              <option className="bg-white text-black" value="">
+                                No matches
+                              </option>
+                            )
+                          ) : (
+                            pickerModels.map((m) => {
+                              const isAgentDefault =
+                                agentDefaultModelId.length > 0 &&
+                                m.qlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase();
+                              return (
+                                <option
+                                  key={m.qlixModelId}
+                                  className="bg-white text-black"
+                                  value={m.qlixModelId}
+                                >
+                                  {isAgentDefault ? `${m.name} (agent default)` : m.name}
+                                </option>
+                              );
+                            })
+                          )}
+                        </select>
+                      </label>
+                    ) : (
+                      <span className="text-[11px] text-[--text-tertiary]">
+                        {catalogError ? "Model catalog unavailable" : "No models returned"}
+                      </span>
+                    )
+                  ) : null}
+                  {canUseBrain ? (
+                    <button
+                      type="button"
+                      onClick={() => setUseBrain((v) => !v)}
+                      disabled={!conversationId || sending}
+                      aria-pressed={useBrain}
+                      title="When on, the runner pulls snippets from your org AI Brain before answering (requires a provisioned brain and ingested documents)."
+                      className={cn(
+                        "ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition-colors disabled:opacity-50",
+                        useBrain
+                          ? "bg-[--accent]/15 text-[--accent] ring-[--accent]/35"
+                          : "bg-transparent text-[--text-tertiary] ring-[--border-subtle] hover:text-[--text-secondary]",
                       )}
-                    </select>
-                    <p className="text-[10px] text-[--text-tertiary]">
-                      Each message sends this model to the runner. Catalog comes from OpenRouter. If replies still use
-                      an old default, open the agent detail page and use <span className="font-medium">Restart runner</span>{" "}
-                      once so Docker picks up the latest runner code.
-                    </p>
-                  </div>
-                ) : null}
-                {!catalogLoading && !catalogError && catalogModels.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-[--text-tertiary]">No models returned.</p>
-                ) : null}
-              </div>
-            ) : null}
-            {canUseBrain ? (
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-[--border-subtle] bg-black/15 px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 size-3.5 rounded border-[--border-subtle] accent-[--accent]"
-                  checked={useBrain}
-                  onChange={(e) => setUseBrain(e.target.checked)}
-                  disabled={!conversationId || sending}
-                />
-                <span className="min-w-0">
-                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-[--text-secondary]">
-                    <Brain className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
-                    Company knowledge
-                  </span>
-                  <span className="mt-0.5 block text-[10px] leading-snug text-[--text-tertiary]">
-                    When on, the cloud runner pulls snippets from your org AI Brain before answering (requires a
-                    provisioned brain and ingested documents).
-                  </span>
-                </span>
-              </label>
-            ) : null}
-            <div className="flex items-end gap-2">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-                placeholder={conversationId ? "Message your agent… (Shift+Enter for newline)" : "Initializing…"}
-                disabled={!conversationId || sending}
-                rows={2}
-                className="min-h-[44px] max-h-[140px] w-full resize-y rounded-xl border border-[--border-subtle] bg-[--bg-base] px-3 py-2.5 text-[13px] leading-snug text-[--text-primary] shadow-inner outline-none transition-[border-color,box-shadow] placeholder:text-[--text-tertiary] focus:border-[--accent] focus:ring-2 focus:ring-[--accent]/20 disabled:opacity-60"
-              />
-              <button
-                type="button"
-                onClick={() => void send()}
-                disabled={
-                  !conversationId ||
-                  sending ||
-                  input.trim().length === 0 ||
-                  (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
-                }
-                className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 px-4 text-[12px] font-semibold text-white shadow-md shadow-violet-500/25 motion-safe:transition-[filter] hover:brightness-110 disabled:pointer-events-none disabled:opacity-40 dark:from-violet-500 dark:to-cyan-500"
-              >
-                {sending ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                ) : (
-                  <SendHorizonal className="size-4" aria-hidden />
-                )}
-                <span className="hidden sm:inline">{sending ? "Sending" : "Send"}</span>
-              </button>
-              {sending && (
-                <button
-                  type="button"
-                  onClick={() => void stopRun()}
-                  title="Stop the current execution"
-                  className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-red-600 to-orange-600 px-4 text-[12px] font-semibold text-white shadow-md shadow-red-500/25 motion-safe:transition-[filter] hover:brightness-110 dark:from-red-500 dark:to-orange-500"
-                >
-                  <Square className="size-4 fill-current" aria-hidden />
-                  <span className="hidden sm:inline">Stop</span>
-                </button>
-              )}
-            </div>
-            <div className="space-y-1 text-[10px] text-[--text-tertiary]">
-              <p>Cloud agents need an online runner with an ADK build that includes Playwright for browser tools.</p>
-              {agent?.runtime === "cloud" && !browserScopesOk ? (
-                <p className="text-amber-200/90">
-                  Grant this agent <span className="font-mono">web.read</span> and{" "}
-                  <span className="font-mono">web.click</span> (create/edit agent) so the runner can expose navigate,
-                  click, and type tools via OpenRouter.
-                </p>
+                    >
+                      <Brain className="size-3.5 shrink-0" aria-hidden />
+                      Company knowledge
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
+
+              <div className="flex items-end gap-2 p-2">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder={conversationId ? "Message your agent…" : "Initializing…"}
+                  disabled={!conversationId || sending}
+                  rows={1}
+                  className="min-h-[40px] max-h-[160px] w-full resize-none self-center border-0 bg-transparent px-2 py-2 text-[13px] leading-snug text-[--text-primary] outline-none placeholder:text-[--text-tertiary] disabled:opacity-60"
+                />
+                {sending ? (
+                  <button
+                    type="button"
+                    onClick={() => void stopRun()}
+                    title="Stop the current execution"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-sm shadow-red-500/25 motion-safe:transition-[filter] hover:brightness-110 dark:from-red-500 dark:to-orange-500"
+                  >
+                    <Square className="size-4 fill-current" aria-hidden />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void send()}
+                    disabled={
+                      !conversationId ||
+                      input.trim().length === 0 ||
+                      (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
+                    }
+                    title="Send (Enter · Shift+Enter for newline)"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 text-white shadow-sm shadow-violet-500/25 motion-safe:transition-[filter] hover:brightness-110 disabled:pointer-events-none disabled:opacity-40 dark:from-violet-500 dark:to-cyan-500"
+                  >
+                    <SendHorizonal className="size-4" aria-hidden />
+                  </button>
+                )}
+              </div>
             </div>
+
+            {agent?.runtime === "cloud" && !browserScopesOk ? (
+              <p className="text-[10px] leading-snug text-amber-300/90">
+                Grant this agent <span className="font-mono">web.read</span> and{" "}
+                <span className="font-mono">web.click</span> (create/edit agent) to enable browser tools.
+              </p>
+            ) : null}
           </div>
         </div>
       </div>

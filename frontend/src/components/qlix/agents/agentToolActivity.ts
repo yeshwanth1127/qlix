@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import { Brain, Globe, Monitor, Terminal, Wrench } from "lucide-react";
+import { Brain, Globe, Monitor, ShieldCheck, Terminal, Wrench } from "lucide-react";
 
-export type ToolCategory = "browser" | "brain" | "system" | "agents3" | "other";
+export type ToolCategory = "browser" | "brain" | "system" | "agents3" | "approval" | "other";
 
 export type ActivityStep = {
   id: string;
@@ -9,7 +9,7 @@ export type ActivityStep = {
   detail?: string;
   tone: "neutral" | "accent" | "success" | "warn";
   category?: ToolCategory;
-  kind?: "tool_round" | "tool_done" | "other";
+  kind?: "tool_round" | "tool_done" | "jit_pending" | "jit_resolved" | "other";
   toolIds?: string[];
   toolId?: string;
 };
@@ -54,6 +54,8 @@ export function toolCategoryIcon(category: ToolCategory): LucideIcon {
       return Terminal;
     case "agents3":
       return Monitor;
+    case "approval":
+      return ShieldCheck;
     default:
       return Wrench;
   }
@@ -255,6 +257,56 @@ export function summarizeRunnerLog(seq: number, raw: unknown): ActivityStep | nu
       const detail = [turns, tools].filter(Boolean).join(" · ");
       return { id, label: "Run completed", detail: detail || undefined, tone: "success", kind: "other" };
     }
+    case "jit_approval_pending": {
+      const scopeLabel = String(d.scopeLabel ?? d.scope ?? "action");
+      const channel = String(d.channel ?? "");
+      const context = String(d.context ?? "").trim();
+      const detailParts = [
+        channel === "whatsapp"
+          ? "Reply on WhatsApp to approve or deny"
+          : "Waiting for your approval in Qlix",
+        scopeLabel ? `Scope: ${scopeLabel}` : "",
+        context,
+      ].filter(Boolean);
+      return {
+        id,
+        label: "Waiting for your approval",
+        detail: detailParts.join(" · "),
+        tone: "warn",
+        kind: "jit_pending",
+        category: "approval",
+      };
+    }
+    case "jit_approval_granted": {
+      const scopeLabel = String(d.scopeLabel ?? d.scope ?? "");
+      const auto = d.auto === true;
+      return {
+        id,
+        label: auto ? "Pre-approved for this run" : "You approved the action",
+        detail: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
+        tone: "success",
+        kind: "jit_resolved",
+        category: "approval",
+      };
+    }
+    case "jit_approval_denied":
+      return {
+        id,
+        label: "You denied the action",
+        detail: String(d.scopeLabel ?? d.scope ?? ""),
+        tone: "warn",
+        kind: "jit_resolved",
+        category: "approval",
+      };
+    case "jit_approval_expired":
+      return {
+        id,
+        label: "Approval request expired",
+        detail: String(d.scopeLabel ?? d.scope ?? ""),
+        tone: "warn",
+        kind: "jit_resolved",
+        category: "approval",
+      };
     default:
       return {
         id,
@@ -288,4 +340,24 @@ export function getActiveToolsFromSteps(steps: ActivityStep[]): Array<{
     short: f.short,
     category: f.category,
   }));
+}
+
+/** True while a JIT approval was requested and not yet granted/denied/expired. */
+export function isWaitingForJitApproval(steps: ActivityStep[]): boolean {
+  let pendingIdx = -1;
+  let resolvedIdx = -1;
+  for (let i = 0; i < steps.length; i += 1) {
+    const s = steps[i];
+    if (s?.kind === "jit_pending") pendingIdx = i;
+    if (s?.kind === "jit_resolved") resolvedIdx = i;
+  }
+  return pendingIdx >= 0 && resolvedIdx < pendingIdx;
+}
+
+export function getPendingJitStep(steps: ActivityStep[]): ActivityStep | null {
+  if (!isWaitingForJitApproval(steps)) return null;
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    if (steps[i]?.kind === "jit_pending") return steps[i] ?? null;
+  }
+  return null;
 }

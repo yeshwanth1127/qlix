@@ -26,14 +26,26 @@ TOOL_SCOPE_MAP: dict[str, tuple[str, ...]] = {
     "s3_code_task": ("system.file_write",),
     "s3_open_file": ("system.file_read",),
     "s3_create_pdf": ("system.file_write",),
+    "s3_create_xlsx": ("system.file_write",),
     "s3_send_whatsapp_document": ("system.file_read",),
     "gui_control": ("system.gui_control",),
 }
 
 READ_ONLY_S3_TOOLS = frozenset({"s3_read_file", "s3_list_dir", "s3_open_file"})
 WRITE_S3_TOOLS = frozenset(
-    {"s3_write_file", "s3_bash", "s3_python", "s3_code_task", "s3_create_pdf"}
+    {
+        "s3_write_file",
+        "s3_bash",
+        "s3_python",
+        "s3_code_task",
+        "s3_create_pdf",
+        "s3_create_xlsx",
+    }
 )
+
+# Binary office/document formats that must NOT be produced by s3_write_file (which
+# only writes UTF-8 text — doing so yields a corrupt file the app can't open).
+_BINARY_DOC_SUFFIXES = {".xlsx", ".xls", ".docx", ".pptx", ".pdf"}
 
 _WRITE_INTENT = re.compile(
     r"\b(write|save|overwrite|append|export|"
@@ -77,6 +89,7 @@ LOCAL_TOOL_IDS = (
     "s3_bash",
     "s3_python",
     "s3_create_pdf",
+    "s3_create_xlsx",
     "s3_send_whatsapp_document",
 )
 CODE_TOOL_IDS = ("s3_bash", "s3_python", "s3_code_task")
@@ -426,6 +439,111 @@ def _create_pdf_file(
     return True, f"Created PDF: {out.resolve()}"
 
 
+def _coerce_rows(data: Any) -> list[list[Any]] | None:
+    """Normalize accepted xlsx inputs into a list of rows (list of cells)."""
+    if isinstance(data, str):
+        text = data.strip()
+        if not text:
+            return None
+        # Try JSON first (list of lists or list of dicts), then CSV.
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if parsed is not None:
+            return _coerce_rows(parsed)
+        import csv
+        import io
+
+        return [row for row in csv.reader(io.StringIO(text))]
+    if isinstance(data, list):
+        if not data:
+            return None
+        if all(isinstance(r, dict) for r in data):
+            headers: list[str] = []
+            for r in data:
+                for k in r.keys():
+                    if k not in headers:
+                        headers.append(str(k))
+            rows: list[list[Any]] = [headers]
+            for r in data:
+                rows.append([r.get(h, "") for h in headers])
+            return rows
+        out: list[list[Any]] = []
+        for r in data:
+            if isinstance(r, list):
+                out.append(list(r))
+            else:
+                out.append([r])
+        return out
+    return None
+
+
+def _create_xlsx_file(
+    *, title: str, rows: Any, sheet_name: str, output_path: str | None
+) -> tuple[bool, str]:
+    """Write a real .xlsx workbook using openpyxl.
+
+    ``rows`` may be a list of lists, a list of dicts (keys become the header row),
+    a JSON string of either, or CSV text. Returns ``(ok, message)``.
+    """
+    import tempfile
+
+    table = _coerce_rows(rows)
+    if not table:
+        return False, "rows is required to create a spreadsheet (list of lists, list of dicts, JSON, or CSV)"
+
+    if output_path:
+        out = Path(output_path).expanduser()
+        if out.suffix.lower() != ".xlsx":
+            out = out.with_suffix(".xlsx")
+    else:
+        base = Path.home() / "Documents"
+        if not base.is_dir():
+            base = Path(tempfile.gettempdir())
+        out = base / f"{_slugify(title or sheet_name or 'spreadsheet')}.xlsx"
+
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, f"Cannot create output directory: {exc}"
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+    except ImportError:
+        return (
+            False,
+            "openpyxl is not installed. Install the hybrid extras: "
+            "pip install 'qlix[hybrid]' (or pip install openpyxl).",
+        )
+
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = (sheet_name or "Sheet1")[:31]
+        for r_idx, row in enumerate(table, start=1):
+            for c_idx, cell in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=cell)
+        # Bold the header row and set a reasonable column width.
+        if table:
+            for c_idx in range(1, len(table[0]) + 1):
+                ws.cell(row=1, column=c_idx).font = Font(bold=True)
+            for c_idx in range(1, max(len(r) for r in table) + 1):
+                width = max(
+                    (len(str(r[c_idx - 1])) for r in table if c_idx - 1 < len(r)),
+                    default=10,
+                )
+                ws.column_dimensions[ws.cell(row=1, column=c_idx).column_letter].width = min(
+                    max(width + 2, 10), 60
+                )
+        wb.save(str(out))
+    except Exception as exc:
+        return False, f"XLSX generation error: {exc}"
+
+    return True, f"Created spreadsheet: {out.resolve()}"
+
+
 async def _send_whatsapp_document(
     file_path: str,
     file_name: str | None,
@@ -621,6 +739,39 @@ def openai_agents3_tool_definitions(
                 "required": ["content"],
             },
         },
+        "s3_create_xlsx": {
+            "name": "s3_create_xlsx",
+            "description": (
+                "Create a real Excel .xlsx spreadsheet on the user's computer. Use this "
+                "whenever the user asks for a spreadsheet/Excel/xlsx file — do NOT use "
+                "s3_write_file for .xlsx (that produces a corrupt file Excel cannot open). "
+                "Provide 'rows' as a list of lists (first row = headers) or a list of objects. "
+                "Returns the absolute path, which you can pass to s3_send_whatsapp_document."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Used for the filename when output_path is omitted."},
+                    "sheet_name": {"type": "string", "description": "Worksheet name (default 'Sheet1')."},
+                    "rows": {
+                        "type": "array",
+                        "description": (
+                            "Spreadsheet data: a list of rows where each row is a list of cell "
+                            "values, OR a list of objects (keys become the header row)."
+                        ),
+                        "items": {},
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional absolute path for the .xlsx. If omitted, saved to the user's "
+                            "Documents folder using a slug of the title."
+                        ),
+                    },
+                },
+                "required": ["rows"],
+            },
+        },
         "s3_send_whatsapp_document": {
             "name": "s3_send_whatsapp_document",
             "description": (
@@ -791,6 +942,20 @@ async def _dispatch_agents3_tool(
 
     if tool_id == "s3_write_file":
         path = Path(str(params.get("path", "")))
+        suffix = path.suffix.lower()
+        if suffix in _BINARY_DOC_SUFFIXES:
+            tool_hint = (
+                "s3_create_pdf"
+                if suffix == ".pdf"
+                else "s3_create_xlsx"
+                if suffix in (".xlsx", ".xls")
+                else "a dedicated document tool"
+            )
+            return (
+                f"[failed] Cannot write a {suffix} file with s3_write_file — it only writes "
+                f"plain text, which produces a corrupt {suffix} the application cannot open. "
+                f"Use {tool_hint} instead."
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(params.get("content", "")), encoding="utf-8")
         return f"Wrote {path}"
@@ -845,6 +1010,24 @@ async def _dispatch_agents3_tool(
             {
                 "message": "agents3_step",
                 "tool": "s3_create_pdf",
+                "phase": "write",
+                "detail": msg[:160],
+            },
+        )
+        return msg if ok else f"[failed] {msg}"
+
+    if tool_id == "s3_create_xlsx":
+        ok, msg = _create_xlsx_file(
+            title=str(params.get("title") or ""),
+            rows=params.get("rows"),
+            sheet_name=str(params.get("sheet_name") or "Sheet1"),
+            output_path=str(params.get("output_path") or "").strip() or None,
+        )
+        await _emit_agents3_log(
+            agents3_context,
+            {
+                "message": "agents3_step",
+                "tool": "s3_create_xlsx",
                 "phase": "write",
                 "detail": msg[:160],
             },

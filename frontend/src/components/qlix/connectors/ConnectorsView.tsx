@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Loader2, Mail, Phone, Plug, Server } from "lucide-react";
+import { Loader2, Mail, Phone, Plug } from "lucide-react";
 import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
 import {
   disconnectGoogle,
@@ -11,7 +11,6 @@ import {
   googleConnector,
   listConnectors,
   patchWhatsAppDefaults,
-  saveN8nIntegration,
   startGoogleOAuth,
   startWhatsAppLink,
   whatsappConnector,
@@ -20,11 +19,9 @@ import {
 } from "@/lib/connectors-api";
 import { listAgents } from "@/lib/agents-api";
 import { listTeams } from "@/lib/teams-api";
-import { cn } from "@/lib/utils/cn";
 
 interface ConnectorsViewProps {
   readonly isOrgWorkspace: boolean;
-  readonly canManageN8n: boolean;
 }
 
 /** Strip JID suffixes like `:64` from stored owner id for display. */
@@ -38,17 +35,12 @@ function formatWhatsAppPhone(raw: string | null | undefined): string | null {
   return `+${digits}`;
 }
 
-export function ConnectorsView({ isOrgWorkspace, canManageN8n }: ConnectorsViewProps) {
+export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const searchParams = useSearchParams();
   const [data, setData] = useState<ConnectorsListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [n8nBaseUrl, setN8nBaseUrl] = useState("");
-  const [n8nSecret, setN8nSecret] = useState("");
-  const [n8nReadPath, setN8nReadPath] = useState("/webhook/qlix-email-read");
-  const [n8nSendPath, setN8nSendPath] = useState("/webhook/qlix-email-send");
-  const [n8nSaved, setN8nSaved] = useState(false);
   const [waStatus, setWaStatus] = useState<WhatsAppLinkStatusDTO | null>(null);
   const [waPolling, setWaPolling] = useState(false);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
@@ -63,9 +55,6 @@ export function ConnectorsView({ isOrgWorkspace, canManageN8n }: ConnectorsViewP
     try {
       const res = await listConnectors();
       setData(res);
-      if (res.n8n.n8nBaseUrl) setN8nBaseUrl(res.n8n.n8nBaseUrl);
-      setN8nReadPath(res.n8n.n8nEmailReadPath);
-      setN8nSendPath(res.n8n.n8nEmailSendPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load connectors");
     } finally {
@@ -177,28 +166,6 @@ export function ConnectorsView({ isOrgWorkspace, canManageN8n }: ConnectorsViewP
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect WhatsApp");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleSaveN8n(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    setN8nSaved(false);
-    try {
-      await saveN8nIntegration({
-        n8nBaseUrl,
-        n8nWebhookSecret: n8nSecret,
-        n8nEmailReadPath: n8nReadPath,
-        n8nEmailSendPath: n8nSendPath,
-      });
-      setN8nSecret("");
-      setN8nSaved(true);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save n8n settings");
     } finally {
       setBusy(false);
     }
@@ -402,82 +369,6 @@ export function ConnectorsView({ isOrgWorkspace, canManageN8n }: ConnectorsViewP
           </div>
         )}
       </ReflectiveCard>
-
-      {(canManageN8n || isOrgWorkspace) && (
-        <ReflectiveCard className="mt-4 rounded" contentClassName="p-5">
-          <div className="flex items-center gap-2">
-            <Server size={16} className="text-violet-400" />
-            <h2 className="text-[13px] font-medium text-white/90">n8n integration</h2>
-          </div>
-          <p className="mt-1 text-[12px] text-white/45">
-            Self-hosted n8n public HTTPS webhooks. Qlix backend proxies agent email tools to these endpoints.
-          </p>
-          {!canManageN8n && (
-            <p className="mt-2 text-[12px] text-white/35">Org admin required to change n8n settings.</p>
-          )}
-          <form onSubmit={(e) => void handleSaveN8n(e)} className="mt-4 space-y-3">
-            <label className="block">
-              <span className="text-[11px] text-white/40">Base URL</span>
-              <input
-                type="url"
-                value={n8nBaseUrl}
-                onChange={(e) => setN8nBaseUrl(e.target.value)}
-                placeholder="https://n8n.example.com"
-                disabled={!canManageN8n || busy}
-                className="mt-1 w-full rounded border border-white/10 bg-black/20 px-3 py-2 text-[13px] text-white/90"
-              />
-            </label>
-            <label className="block">
-              <span className="text-[11px] text-white/40">Webhook secret (Bearer token)</span>
-              <input
-                type="password"
-                value={n8nSecret}
-                onChange={(e) => setN8nSecret(e.target.value)}
-                placeholder={data?.n8n.configured ? "•••••••• (leave blank to keep)" : "Shared secret for webhook auth"}
-                disabled={!canManageN8n || busy}
-                className="mt-1 w-full rounded border border-white/10 bg-black/20 px-3 py-2 text-[13px] text-white/90"
-              />
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="text-[11px] text-white/40">Read path</span>
-                <input
-                  type="text"
-                  value={n8nReadPath}
-                  onChange={(e) => setN8nReadPath(e.target.value)}
-                  disabled={!canManageN8n || busy}
-                  className="mt-1 w-full rounded border border-white/10 bg-black/20 px-3 py-2 text-[12px] font-mono text-white/80"
-                />
-              </label>
-              <label className="block">
-                <span className="text-[11px] text-white/40">Send path</span>
-                <input
-                  type="text"
-                  value={n8nSendPath}
-                  onChange={(e) => setN8nSendPath(e.target.value)}
-                  disabled={!canManageN8n || busy}
-                  className="mt-1 w-full rounded border border-white/10 bg-black/20 px-3 py-2 text-[12px] font-mono text-white/80"
-                />
-              </label>
-            </div>
-            {canManageN8n && (
-              <button
-                type="submit"
-                disabled={busy || !n8nBaseUrl || (!n8nSecret && !data?.n8n.configured)}
-                className={cn(
-                  "rounded bg-violet-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-violet-500 disabled:opacity-40",
-                )}
-              >
-                Save n8n settings
-              </button>
-            )}
-            {n8nSaved && <p className="text-[12px] text-emerald-400">n8n settings saved.</p>}
-            {data?.n8n.configured && (
-              <p className="text-[12px] text-white/35">n8n is configured for this workspace.</p>
-            )}
-          </form>
-        </ReflectiveCard>
-      )}
     </div>
   );
 }
