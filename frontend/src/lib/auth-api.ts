@@ -17,6 +17,8 @@ export interface AuthSuccessResponse {
     isSuperAdmin: boolean;
     /** True when passkey enrollment is complete (derived server-side). */
     deviceVerified: boolean;
+    /** True when the account is exempt from billing (no wallet debits). Derived server-side. */
+    billingExempt: boolean;
   };
   organization: {
     id: string;

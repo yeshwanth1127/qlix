@@ -38,7 +38,7 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
   const isFullHeightPage = /\/teams(\/|$)/.test(pathname);
 
   const navItems = useMemo(() => {
-    const all = getConsoleNavItems(routePrefix);
+    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false);
     if (routePrefix !== "/organization") return all;
     if (session?.organization.workspaceKind !== "organization") return all;
     return all.filter((i) => {

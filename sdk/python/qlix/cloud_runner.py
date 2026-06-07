@@ -411,6 +411,10 @@ async def _poll_and_execute_loop() -> None:
     seq = 0
     idle_polls = 0
 
+    # Inference can take far longer than the 15s default (multi-turn LLM calls with
+    # many tools), so use a dedicated long-timeout client for the proxy inference path.
+    # Polling/event/complete calls keep the short-timeout `http` client below.
+    inference_http = QlixHttpClient(base_url=identity.backend_url, timeout_s=120.0)
     async with QlixHttpClient(base_url=identity.backend_url) as http:
         while True:
             run_id = ""
@@ -509,7 +513,7 @@ async def _poll_and_execute_loop() -> None:
                 )
                 seq, content, duration_ms, turns, tool_calls, proxy_usage = (
                     await _run_backend_proxy_inference(
-                        http,
+                        inference_http,
                         identity=identity,
                         agent_id=identity.agent_id,
                         headers=headers,

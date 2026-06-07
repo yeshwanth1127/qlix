@@ -26,8 +26,12 @@ export interface ConsoleNavItem {
   readonly icon: LucideIcon;
 }
 
-/** `routePrefix` is `/individual` or `/organization`. */
-export function getConsoleNavItems(routePrefix: string): ConsoleNavItem[] {
+/**
+ * `routePrefix` is `/individual` or `/organization`.
+ * When `billingExempt` is true, the money-facing destinations (Billing / Wallet) are
+ * omitted — exempt accounts are never charged, so only Usage is relevant to them.
+ */
+export function getConsoleNavItems(routePrefix: string, billingExempt = false): ConsoleNavItem[] {
   const core: ConsoleNavItem[] = [
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
@@ -57,14 +61,16 @@ export function getConsoleNavItems(routePrefix: string): ConsoleNavItem[] {
     return [
       ...core,
       usageItem,
-      { href: `${routePrefix}/billing`, label: "Billing", icon: CreditCard },
+      ...(billingExempt
+        ? []
+        : [{ href: `${routePrefix}/billing`, label: "Billing", icon: CreditCard }]),
       { href: `${routePrefix}/members`, label: "Members", icon: Users },
       settingsItem,
     ];
   }
   return [
     ...core,
-    { href: `${routePrefix}/wallet`, label: "Wallet", icon: Wallet },
+    ...(billingExempt ? [] : [{ href: `${routePrefix}/wallet`, label: "Wallet", icon: Wallet }]),
     usageItem,
     settingsItem,
   ];

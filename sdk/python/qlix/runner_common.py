@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable
 
 from .backend_inference_client import backend_proxy_chat_completion
+from .hybrid_document_pipeline import wants_pdf_output
 from .cloud_browser_runtime import (
     browser_action_label,
     capture_browser_frame_for_ui,
@@ -250,6 +251,13 @@ async def run_backend_proxy_inference(
     max_tokens = int(os.environ.get("QLIX_PROXY_MAX_TOKENS", "4096"))
     content_out = ""
     inference_rounds = 0
+    # Weak tool-callers (e.g. AI21 Jamba) sometimes run one tool then return empty
+    # content with no further tool calls, abandoning a multi-step task. Nudge them
+    # to either finish the remaining tool steps or give a real answer, bounded so
+    # we never loop forever / burn credits.
+    max_empty_nudges = int(os.environ.get("QLIX_PROXY_MAX_EMPTY_NUDGES", "2"))
+    empty_nudges = 0
+    force_tool_next_round = False
 
     for round_idx in range(max_rounds):
         inference_rounds += 1
@@ -279,9 +287,11 @@ async def run_backend_proxy_inference(
             max_tokens=max_tokens,
             run_id=run_id,
             tools=tools,
-            tool_choice="auto",
+            tool_choice="required" if force_tool_next_round else "auto",
             tools_hash=tools_hash,
         )
+        if force_tool_next_round:
+            force_tool_next_round = False
         if isinstance(proxy_result.usage, dict):
             usage_acc.update(proxy_result.usage)
 
@@ -428,9 +438,61 @@ async def run_backend_proxy_inference(
                             )
                     except (json.JSONDecodeError, IndexError):
                         pass
+            # After reading a source file for a PDF task, force the next model turn to
+            # call a tool (usually s3_create_pdf) instead of returning empty text.
+            if (
+                "s3_read_file" in tool_names_ran
+                and "s3_create_pdf" not in tool_names_ran
+                and "s3_create_pdf" in tool_executors
+                and wants_pdf_output(enriched_prompt)
+            ):
+                force_tool_next_round = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The source file is loaded above. Call s3_create_pdf now with "
+                            "a title and the file content as the PDF body. Do not stop after "
+                            "reading — create the PDF in this run."
+                        ),
+                    }
+                )
             continue
 
         content_out = proxy_result.content or ""
+        # Degenerate stop: model produced neither a tool call nor any text. If it
+        # already ran at least one tool, the task is very likely unfinished, so
+        # nudge it to continue rather than ending on an empty reply.
+        if (
+            not content_out.strip()
+            and tool_names_ran
+            and empty_nudges < max_empty_nudges
+            and time.time() <= deadline
+        ):
+            empty_nudges += 1
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You stopped without a final answer and the task may not be "
+                        "complete. If there are remaining steps, call the appropriate "
+                        "tools now (for example create the document with s3_create_pdf, "
+                        "then deliver it with s3_send_whatsapp_document). Once everything "
+                        "is done, reply with a short confirmation. Do not ask the user to "
+                        "do any of these steps manually."
+                    ),
+                }
+            )
+            seq = await emit_event(
+                http,
+                agent_id=agent_id,
+                run_id=run_id,
+                headers=headers,
+                seq=seq,
+                event_type="log",
+                data={"message": "empty_response_nudge", "round": round_idx + 1, "nudge": empty_nudges},
+            )
+            continue
         break
 
     duration_ms = int((time.time() - started) * 1000)

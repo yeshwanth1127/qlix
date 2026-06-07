@@ -24,6 +24,13 @@ import {
   N8nNotConfiguredError,
 } from '../connectors/emailTool.service.js';
 import { JitTokenInvalidError, JitTokenRequiredError } from '../actions/actions.service.js';
+import { getWhatsAppConnectorForAgent } from '../connectors/whatsappConnector.service.js';
+import {
+  getWhatsAppSessionStatus,
+  isWhatsAppServiceConfigured,
+  sendWhatsAppDocument,
+  startWhatsAppSession,
+} from '../connectors/whatsappServiceClient.js';
 import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
 import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
 
@@ -105,6 +112,12 @@ const emailSendBody = z.object({
   bodyText: z.string().trim().min(1).max(50_000),
   replyToMessageId: z.string().trim().max(120).nullable().optional(),
   jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const whatsappSendDocumentBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  file_path: z.string().trim().min(1).max(4096),
+  file_name: z.string().trim().min(1).max(255).optional(),
 });
 
 async function assertOwnsAgent(request: Request, agentId: string): Promise<{ userId: string; orgId: string }> {
@@ -459,7 +472,7 @@ export function createAgentChatRouter(): Router {
       const [agentRow, waConnector] = await Promise.all([
         prisma.agent.findUnique({
           where: { id: agentId },
-          select: { description: true, orgId: true },
+          select: { description: true, orgId: true, llmModel: true },
         }),
         prisma.connectorAccount.findFirst({
           where: { whatsappDefaultAgentId: agentId },
@@ -480,7 +493,11 @@ export function createAgentChatRouter(): Router {
           id: run.id,
           prompt: run.prompt,
           skills: run.skills,
-          inferenceModel: run.inferenceModel,
+          // Fall back to the agent's configured model when the run didn't specify one,
+          // so runs use the agent's chosen model instead of the runner's weak default.
+          inferenceModel:
+            run.inferenceModel ??
+            (agentRow?.llmModel ? normalizeQlixInferenceModelId(agentRow.llmModel) : null),
           conversationId: run.conversationId,
           userId: run.userId,
           createdAt: run.createdAt.toISOString(),
@@ -822,6 +839,67 @@ export function createAgentChatRouter(): Router {
       console.error('email/send', err);
       response.status(500).json({
         error: { code: 'email_send_failed', message: err instanceof EmailToolError ? err.message : 'Email send failed' },
+      });
+    }
+  });
+
+  // Runner: send a local document (e.g. a generated PDF) to the agent's linked WhatsApp.
+  router.post('/:agentId/tools/whatsapp/send-document', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappSendDocumentBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'file_path is required' } });
+        return;
+      }
+      if (!isWhatsAppServiceConfigured()) {
+        response.status(409).json({
+          error: { code: 'whatsapp_not_configured', message: 'WhatsApp service is not configured on the backend' },
+        });
+        return;
+      }
+      const connector = await getWhatsAppConnectorForAgent(agentId);
+      if (!connector) {
+        response.status(409).json({
+          error: { code: 'whatsapp_not_linked', message: 'WhatsApp is not linked for this agent. Link it in Connectors.' },
+        });
+        return;
+      }
+
+      let session = await getWhatsAppSessionStatus(connector.id);
+      if (!session.connected) {
+        const restarted = await startWhatsAppSession(connector.id);
+        if (restarted.ok) {
+          await new Promise((r) => setTimeout(r, 2000));
+          session = await getWhatsAppSessionStatus(connector.id);
+        }
+      }
+      if (!session.connected) {
+        response.status(503).json({
+          error: { code: 'whatsapp_offline', message: 'WhatsApp session is offline — re-link WhatsApp in Connectors.' },
+        });
+        return;
+      }
+
+      const sent = await sendWhatsAppDocument({
+        connectorId: connector.id,
+        filePath: parsed.data.file_path,
+        fileName: parsed.data.file_name,
+      });
+      if (!sent.ok) {
+        response.status(503).json({ error: { code: 'whatsapp_send_failed', message: sent.error ?? 'Document send failed' } });
+        return;
+      }
+      response.json({ ok: true, fileName: parsed.data.file_name ?? null });
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      console.error('whatsapp/send-document', err);
+      response.status(500).json({
+        error: { code: 'whatsapp_send_failed', message: 'WhatsApp document send failed' },
       });
     }
   });

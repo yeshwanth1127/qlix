@@ -12,6 +12,7 @@ from typing import Any
 
 from .cloud_adk_loader import load_cloud_adk
 
+from .exceptions import HttpError
 from .http_client import QlixHttpClient
 from .identity import AgentIdentity, load_identity
 from .runner_common import (
@@ -23,10 +24,17 @@ from .runner_common import (
 )
 from .sdk import QlixSDK
 from .agents3_proxy import Agents3RunContext
+from .hybrid_document_pipeline import run_document_pipeline_fallback
 from .tool_router import ToolRouter
 
 _log = default_log("hybrid_runner")
 _ping_error_logged = False
+_poll_conn_error_logged = False
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """True for transport/connection failures (backend unreachable), not HTTP 4xx/5xx."""
+    return isinstance(exc, HttpError) and getattr(exc, "status_code", None) == 0
 
 
 def _build_system_prompt(agent_description: str, wa_connector_id: str) -> str | None:
@@ -34,11 +42,28 @@ def _build_system_prompt(agent_description: str, wa_connector_id: str) -> str | 
     if agent_description:
         parts.append(agent_description)
 
+    # Steer the model to the dedicated tools instead of refusing or hand-rolling.
+    parts.append(
+        "Producing documents and delivering them:\n"
+        "- When asked to create or generate a PDF/document/report, you CAN do it: call the "
+        "s3_create_pdf tool with the title and content (markdown supported). It writes a real "
+        "PDF on the user's computer and returns its absolute path. NEVER tell the user to "
+        "copy-paste text into Word — that is not acceptable.\n"
+        "- To deliver a created file to the user on WhatsApp, call s3_send_whatsapp_document "
+        "with the absolute file_path returned by s3_create_pdf.\n"
+        "- Typical flow for 'make a PDF and send it on WhatsApp': read any needed source files, "
+        "call s3_create_pdf, then call s3_send_whatsapp_document with the returned path.\n"
+        "- Complete the ENTIRE request in this run. After a tool returns (e.g. after reading "
+        "a file), immediately continue to the next required tool call instead of stopping. "
+        "Only finish once every requested step (create, send, etc.) is actually done."
+    )
+
     wa_url = os.environ.get("QLIX_WA_URL", "http://localhost:3939").rstrip("/")
     wa_secret = os.environ.get("QLIX_WA_SECRET", "").strip()
     if wa_connector_id and wa_secret:
         parts.append(
-            "To send a file to the user via WhatsApp after creating it, use s3_python:\n"
+            "If s3_send_whatsapp_document is unavailable, you may instead send a file via "
+            "s3_python:\n"
             "```python\n"
             "import urllib.request, json as _j\n"
             f'_req = urllib.request.Request("{wa_url}/send-document",\n'
@@ -80,8 +105,9 @@ async def _ping_loop(identity: AgentIdentity, runner_token: str) -> None:
                     {},
                     headers=headers,
                 )
-            except Exception as exc:
                 global _ping_error_logged
+                _ping_error_logged = False
+            except Exception as exc:
                 if not _ping_error_logged:
                     _log("ping_error", error=str(exc))
                     _ping_error_logged = True
@@ -121,6 +147,8 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         {"maxWaitMs": max_wait_ms},
                         headers=headers,
                     )
+                    global _poll_conn_error_logged
+                    _poll_conn_error_logged = False
                     run = polled.get("run")
                     if not run:
                         idle_polls += 1
@@ -184,14 +212,79 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             f"{prompt_for_skills}\n\nSelected skills/tools: {', '.join(selected_skills)}"
                         )
 
-                    plan = router.plan_run(prompt, skill_filter=selected_skills or None)
+                    # The agent's standing description (set at creation) is the trusted
+                    # source of intent — the per-run prompt can't always be relied on.
+                    plan = router.plan_run(
+                        prompt,
+                        skill_filter=selected_skills or None,
+                        context=agent_description,
+                    )
                     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
+
+                    # Debug: explain why each local tool is / isn't offered. This makes a
+                    # silently-dropped s3_create_pdf / s3_write_file visible in the run feed.
+                    from .agents3_runtime import diagnose_local_tools
+
+                    tool_diag = diagnose_local_tools(
+                        identity,
+                        groups=plan.groups,
+                        skill_filter=plan.skill_filter,
+                        instruction=plan.instruction,
+                    )
+                    dropped = [
+                        d for d in tool_diag["decisions"]
+                        if not d["offered"] and d["reason"] != "group_not_selected_or_read_only"
+                    ]
+                    _log(
+                        "tool_filter_debug",
+                        run_id=run_id,
+                        granted_scopes=tool_diag["granted_scopes"],
+                        read_only_intent=tool_diag["read_only_intent"],
+                        skill_filter=tool_diag["skill_filter"],
+                        offered_tools=tool_diag["offered_tools"],
+                        dropped=[{"tool": d["tool"], "reason": d["reason"]} for d in dropped],
+                    )
+                    seq = await emit_event(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        seq=seq,
+                        event_type="log",
+                        data={
+                            "message": "tool_filter_debug",
+                            "granted_scopes": tool_diag["granted_scopes"],
+                            "read_only_intent": tool_diag["read_only_intent"],
+                            "skill_filter": tool_diag["skill_filter"],
+                            "groups": tool_diag["groups"],
+                            "offered_tools": tool_diag["offered_tools"],
+                            "dropped_write_or_pdf_tools": [
+                                {"tool": d["tool"], "reason": d["reason"]} for d in dropped
+                            ],
+                            "instruction_preview": tool_diag["instruction_preview"],
+                        },
+                    )
 
                     tools = router.build_tool_definitions(plan)
 
                     model = run_inference_model or str(
                         adk.manifest.get("model")
                         or os.environ.get("QLIX_PROXY_MODEL", "openrouter/openai/gpt-4o-mini")
+                    )
+                    # Make the model resolution explicit so a "switch" is never a mystery:
+                    # shows what the UI/run sent vs what was actually used and why.
+                    _log(
+                        "model_resolved",
+                        run_id=run_id,
+                        model_used=model,
+                        from_run=run_inference_model or None,
+                        manifest_model=str(adk.manifest.get("model") or "") or None,
+                        env_default=os.environ.get("QLIX_PROXY_MODEL") or "openrouter/openai/gpt-4o-mini",
+                        source=(
+                            "run_inference_model"
+                            if run_inference_model
+                            else ("manifest" if adk.manifest.get("model") else "env_default")
+                        ),
                     )
                     async def _agents3_log_emit(data: dict) -> None:
                         nonlocal seq
@@ -259,6 +352,30 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             system_prompt=_build_system_prompt(agent_description, wa_connector_id),
                         )
                     )
+
+                    # Model often reads the file then returns empty — finish PDF/WhatsApp ourselves.
+                    pipeline_tools, pipeline_summary = await run_document_pipeline_fallback(
+                        prompt=enriched_prompt,
+                        tools_executed=tool_calls,
+                        tool_executors=tool_executors,
+                        log=_log,
+                    )
+                    if pipeline_tools:
+                        tool_calls = list(tool_calls) + pipeline_tools
+                        if pipeline_summary.strip():
+                            content = pipeline_summary
+                        seq = await emit_event(
+                            http,
+                            agent_id=identity.agent_id,
+                            run_id=run_id,
+                            headers=headers,
+                            seq=seq,
+                            event_type="log",
+                            data={
+                                "message": "document_pipeline_fallback",
+                                "tools": pipeline_tools,
+                            },
+                        )
                     seq = await emit_event(
                         http,
                         agent_id=identity.agent_id,
@@ -295,15 +412,24 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     # avoids delivering an empty message to the user/WhatsApp.
                     final_content = content.strip() if isinstance(content, str) else ""
                     if not final_content:
-                        if tool_calls > 0:
+                        # tool_calls is the list of executed tool names; use its length.
+                        tool_call_count = (
+                            len(tool_calls) if isinstance(tool_calls, list) else int(tool_calls or 0)
+                        )
+                        if tool_call_count > 0:
                             final_content = (
-                                f"Done — completed the task using {tool_calls} tool "
-                                f"call{'s' if tool_calls != 1 else ''} across {turns} "
+                                f"Done — completed the task using {tool_call_count} tool "
+                                f"call{'s' if tool_call_count != 1 else ''} across {turns} "
                                 f"turn{'s' if turns != 1 else ''}."
                             )
                         else:
                             final_content = "Done — task completed."
-                        _log("empty_content_fallback", run_id=run_id, tool_calls=tool_calls, turns=turns)
+                        _log(
+                            "empty_content_fallback",
+                            run_id=run_id,
+                            tool_calls=tool_call_count,
+                            turns=turns,
+                        )
 
                     await http.post_json(
                         f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
@@ -314,6 +440,18 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                 except Exception as exc:
                     import traceback as _tb
                     error_msg = str(exc)
+                    # Backend unreachable before a run is claimed (e.g. backend still
+                    # starting up) is transient: log once, back off quietly, no traceback.
+                    if not run_id and _is_network_error(exc):
+                        if not _poll_conn_error_logged:
+                            _log(
+                                "poll_waiting_backend",
+                                backend=identity.backend_url,
+                                message="Backend not reachable yet — retrying until it is up.",
+                            )
+                            _poll_conn_error_logged = True
+                        await asyncio.sleep(2.0)
+                        continue
                     _log("poll_execute_error", error=error_msg)
                     print("[hybrid_runner] TRACEBACK:\n" + _tb.format_exc(), file=__import__("sys").stderr, flush=True)
                     if run_id:

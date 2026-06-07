@@ -213,10 +213,19 @@ export function AgentChatPanel({
     catalogSyncedRef.current = true;
     const want = normalizeQlixInferenceModelId(agent.model);
     const exact = catalogModels.find((m) => m.qlixModelId.toLowerCase() === want.toLowerCase());
-    const next = exact?.qlixModelId ?? catalogModels[0]?.qlixModelId ?? want;
+    // Honor the agent's configured model. If it isn't found in the OpenRouter catalog,
+    // keep the agent's model rather than silently defaulting to catalogModels[0]
+    // (which would force an unrelated model like gpt-4o-mini on every run).
+    const next = exact?.qlixModelId ?? want;
     setSelectedQlixModelId(next);
     selectedModelRef.current = next;
   }, [agent, catalogModels]);
+
+  /** Canonical id of the model chosen when the agent was built (its configured default). */
+  const agentDefaultModelId = useMemo(
+    () => (agent ? normalizeQlixInferenceModelId(agent.model) : ""),
+    [agent?.model],
+  );
 
   const pickerModels = useMemo(() => {
     const q = modelSearch.trim().toLowerCase();
@@ -231,8 +240,13 @@ export function AgentChatPanel({
           );
     const sel = selectedQlixModelId.trim();
     if (sel && !list.some((m) => m.qlixModelId === sel)) {
-      const hit = catalogModels.find((m) => m.qlixModelId === sel);
-      if (hit) list = [hit, ...list];
+      // Always keep the selected model visible. Prefer the real catalog entry; if it
+      // isn't in the catalog at all, synthesize one so the native <select> shows the
+      // correct value instead of silently falling back to its first option.
+      const hit =
+        catalogModels.find((m) => m.qlixModelId === sel) ??
+        ({ id: sel, name: sel.replace(/^openrouter\//, ""), contextLength: null, qlixModelId: sel } as OpenRouterCatalogEntry);
+      list = [hit, ...list];
     }
     return list;
   }, [catalogModels, modelSearch, selectedQlixModelId]);
@@ -640,10 +654,14 @@ export function AgentChatPanel({
                           Default: {agent.model.length > 36 ? `${agent.model.slice(0, 34)}…` : agent.model}
                         </span>
                       </div>
-                      {agent.runtime === "cloud" && selectedQlixModelId ? (
+                      {isHostedChatRuntime(agent.runtime) && selectedQlixModelId ? (
                         <p className="font-mono text-[10px] text-[--accent]" title={selectedQlixModelId}>
                           Chat model:{" "}
                           {selectedQlixModelId.length > 42 ? `${selectedQlixModelId.slice(0, 40)}…` : selectedQlixModelId}
+                          {agentDefaultModelId &&
+                          selectedQlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase()
+                            ? " (agent default)"
+                            : null}
                         </p>
                       ) : null}
                     </div>
@@ -837,15 +855,20 @@ export function AgentChatPanel({
                           </option>
                         )
                       ) : (
-                        pickerModels.map((m) => (
-                          <option
-                            key={m.qlixModelId}
-                            className="bg-white text-black"
-                            value={m.qlixModelId}
-                          >
-                            {m.name}
-                          </option>
-                        ))
+                        pickerModels.map((m) => {
+                          const isAgentDefault =
+                            agentDefaultModelId.length > 0 &&
+                            m.qlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase();
+                          return (
+                            <option
+                              key={m.qlixModelId}
+                              className="bg-white text-black"
+                              value={m.qlixModelId}
+                            >
+                              {isAgentDefault ? `${m.name} (agent default)` : m.name}
+                            </option>
+                          );
+                        })
                       )}
                     </select>
                     <p className="text-[10px] text-[--text-tertiary]">

@@ -101,9 +101,11 @@ class QlixHttpClient:
 
             return self._handle_response(response)
 
-        # Exhausted retries on transport error.
+        # Exhausted retries on transport error. Some httpx exceptions (e.g. timeouts)
+        # stringify to "", so fall back to the exception type for a legible message.
+        detail = str(last_exc) if last_exc and str(last_exc) else type(last_exc).__name__ if last_exc else "unknown error"
         raise HttpError(
-            f"Network failure after {self._retries} attempts: {last_exc}",
+            f"Network failure after {self._retries} attempts: {detail}",
             status_code=0,
             body=None,
         )

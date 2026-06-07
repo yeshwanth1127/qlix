@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { TriangleAlert, TrendingDown } from "lucide-react";
 import { useSession } from "@/components/qlix/session-context";
 import { SectionHeading } from "@/components/qlix/section-heading";
@@ -30,7 +31,7 @@ export default function IndividualWalletPage() {
 
   useEffect(() => {
     if (sessionLoading) return;
-    if (!session) {
+    if (!session || session.user.billingExempt) {
       setLoading(false);
       return;
     }
@@ -58,6 +59,26 @@ export default function IndividualWalletPage() {
 
   if (!session) {
     return <p className="text-[13px] text-neutral-500">Please sign in again.</p>;
+  }
+
+  if (session.user.billingExempt) {
+    return (
+      <div className="space-y-3">
+        <SectionHeading title="Wallet" description="Your action credits and transaction history." />
+        <div className="rounded-xl border border-[--border-subtle] bg-[--bg-elevated] p-5">
+          <p className="text-[13px] text-[--text-secondary]">This account is not billed, so it has no wallet.</p>
+          <p className="mt-1 text-[12px] text-[--text-tertiary]">
+            You can still review token consumption and inference cost on the Usage page.
+          </p>
+          <Link
+            href="/individual/usage"
+            className="mt-3 inline-block text-[13px] font-medium text-blue-400 hover:underline"
+          >
+            Go to Usage
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   if (error || !balance) {

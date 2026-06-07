@@ -3,5 +3,5 @@
  * Exempted users still have usage recorded but no wallet is debited.
  */
 export function isBillingExempt(email: string): boolean {
-  return email.startsWith('y@exora.solutions');
+  return email.startsWith('y@exora.com');
 }

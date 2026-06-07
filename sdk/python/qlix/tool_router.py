@@ -214,16 +214,28 @@ class ToolRouter:
         self,
         instruction: str,
         skill_filter: list[str] | None = None,
+        *,
+        context: str = "",
     ) -> ToolRouterResult:
+        """Plan tool groups for a run.
+
+        ``context`` is the agent's standing description (set at creation via the AI
+        builder or manually). It is the trustworthy source of intent — a per-run
+        prompt cannot always be relied on — so it is combined with the prompt when
+        deciding which tool groups and write/deliverable tools to offer. For
+        example, a description of "generate a PDF and send it on WhatsApp" keeps the
+        create/send tools available even if the prompt only says "go".
+        """
+        routing_text = f"{instruction}\n{context}".strip() if context.strip() else instruction
         groups = classify_groups(
-            instruction,
+            routing_text,
             self.identity,
             runner_runtime=self.runner_runtime,
             skill_filter=skill_filter,
         )
         return ToolRouterResult(
             groups=groups,
-            instruction=instruction,
+            instruction=routing_text,
             skill_filter=skill_filter,
         )
 

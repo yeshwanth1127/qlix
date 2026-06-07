@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -12,10 +11,13 @@ import {
   Plus,
   RefreshCw,
   ScrollText,
+  Search,
   Shield,
 } from "lucide-react";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
+import Dock, { type DockItemData } from "./Dock";
+import { NeuralBrainVisualizer } from "./NeuralBrainVisualizer";
 import {
   createAiBrainCollection,
   getAiBrainKnowledgeDocuments,
@@ -36,18 +38,6 @@ import {
 } from "@/lib/ai-brain-api";
 import { canManageBrain } from "@/lib/org-permissions";
 import { AgentStatusBadge, deriveOrgBrainDisplayStatus } from "@/components/qlix/agents/agentStatus";
-
-const BrainLinkMap3D = dynamic(
-  () => import("./BrainLinkMap3D").then((m) => m.BrainLinkMap3D),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-[360px] items-center justify-center bg-gradient-to-b from-indigo-950/45 via-[--bg-base] to-cyan-950/30">
-        <Loader2 className="size-8 animate-spin text-cyan-400" aria-hidden />
-      </div>
-    ),
-  },
-);
 
 function formatTime(ms: number): string {
   try {
@@ -142,6 +132,8 @@ function traceToneClass(tone: TraceTone): string {
   }
 }
 
+type SectionId = "brain" | "ask" | "knowledge" | "policy" | "trace";
+
 export function AiBrainConsoleView() {
   const pathname = usePathname();
   const dashBase = pathname.startsWith("/organization") ? "/organization" : "/individual";
@@ -174,6 +166,8 @@ export function AiBrainConsoleView() {
   const [openRouterModelsError, setOpenRouterModelsError] = useState<string | null>(null);
 
   const [trace, setTrace] = useState<readonly TraceEntry[]>([]);
+
+  const [activeSection, setActiveSection] = useState<SectionId>("brain");
 
   const role = session?.user.role ?? "member";
   const manageBrain = canManageBrain(role);
@@ -385,6 +379,42 @@ export function AiBrainConsoleView() {
   const totalDocs = status?.knowledge.collections.reduce((n, c) => n + c.documentCount, 0) ?? 0;
   const brainDisplayStatus = brain ? deriveOrgBrainDisplayStatus({ status: brain.status }) : null;
 
+  const dockItems: DockItemData[] = useMemo(
+    () => [
+      {
+        icon: <Network size={20} strokeWidth={1.5} />,
+        label: "Brain map",
+        active: activeSection === "brain",
+        onClick: () => setActiveSection("brain"),
+      },
+      {
+        icon: <Search size={20} strokeWidth={1.5} />,
+        label: "Ask",
+        active: activeSection === "ask",
+        onClick: () => setActiveSection("ask"),
+      },
+      {
+        icon: <Database size={20} strokeWidth={1.5} />,
+        label: "Knowledge",
+        active: activeSection === "knowledge",
+        onClick: () => setActiveSection("knowledge"),
+      },
+      {
+        icon: <Shield size={20} strokeWidth={1.5} />,
+        label: "Policy & model",
+        active: activeSection === "policy",
+        onClick: () => setActiveSection("policy"),
+      },
+      {
+        icon: <ScrollText size={20} strokeWidth={1.5} />,
+        label: "Trace",
+        active: activeSection === "trace",
+        onClick: () => setActiveSection("trace"),
+      },
+    ],
+    [activeSection],
+  );
+
   return (
     <div className="animate-qlix-fade-in mx-auto max-w-[1024px] px-4 pb-20 pt-6 md:px-6 md:pt-8">
       {/* Page header */}
@@ -422,7 +452,14 @@ export function AiBrainConsoleView() {
             Sync
           </button>
           {manageBrain && brain ? (
-            <button type="button" className={btnPrimary} onClick={() => document.getElementById("brain-new-collection")?.scrollIntoView({ behavior: "smooth" })}>
+            <button
+              type="button"
+              className={btnPrimary}
+              onClick={() => {
+                setActiveSection("knowledge");
+                setTimeout(() => document.getElementById("brain-collection-form")?.scrollIntoView({ behavior: "smooth" }), 60);
+              }}
+            >
               <Plus className="size-3.5" aria-hidden />
               Add collection
             </button>
@@ -440,20 +477,42 @@ export function AiBrainConsoleView() {
         </div>
       ) : null}
 
-      {/* Brain link map (3D) — hero */}
-      <section className={cn(bentoCard, "mb-6")} style={{ animationDelay: "20ms" }}>
-        <BentoHeader title="Brain link map (3D)" tint="violet" icon={<Network className="size-[18px]" strokeWidth={1.25} />} />
-        <BrainLinkMap3D
-          documents={brainDocuments}
-          brain={brain ? { queryModel: brain.queryModel } : null}
-          loading={loading || sessionLoading}
-          heightClass="h-[560px]"
+      {/* Sub-navbar dock */}
+      <div className="mb-8 flex justify-center pt-4">
+        <Dock
+          items={dockItems}
+          panelHeight={64}
+          baseItemSize={44}
+          magnification={62}
+          distance={150}
+          dockHeight={92}
         />
-      </section>
+      </div>
 
-      <div className="grid grid-cols-12 gap-6">
-        {/* Query command */}
-        <section className={cn(bentoCard, "col-span-12 lg:col-span-8")} style={{ animationDelay: "40ms" }}>
+      <div className="space-y-6">
+        {/* Brain map — neural network visualizer */}
+        {activeSection === "brain" ? (
+          <section
+            className="overflow-hidden rounded-xl border border-violet-500/20 shadow-[0_4px_24px_rgba(99,102,241,0.12)]"
+            style={{ animationDelay: "20ms" }}
+          >
+            {!brain ? (
+              <div className="flex h-[560px] items-center justify-center bg-[#00000f] text-[13px] text-[--text-tertiary]">
+                Brain agent unavailable.
+              </div>
+            ) : (
+              <NeuralBrainVisualizer
+                documents={brainDocuments}
+                loading={loading || sessionLoading}
+                heightClass="h-[560px]"
+              />
+            )}
+          </section>
+        ) : null}
+
+        {/* Ask your knowledge */}
+        {activeSection === "ask" ? (
+        <section className={cn(bentoCard)} style={{ animationDelay: "40ms" }}>
           <BentoHeader title="Ask your knowledge" tint="cyan" icon={<Brain className="size-[18px]" strokeWidth={1.25} />} />
         <div className="p-4">
           {!brain ? (
@@ -525,9 +584,11 @@ export function AiBrainConsoleView() {
           )}
         </div>
         </section>
+        ) : null}
 
         {/* Retrieval trace */}
-        <section className={cn(bentoCard, "col-span-12 max-h-[420px] lg:col-span-4")} style={{ animationDelay: "60ms" }}>
+        {activeSection === "trace" ? (
+        <section className={cn(bentoCard, "max-h-[620px]")} style={{ animationDelay: "60ms" }}>
           <BentoHeader
             title="Retrieval trace"
             tint="amber"
@@ -559,9 +620,11 @@ export function AiBrainConsoleView() {
             )}
           </div>
         </section>
+        ) : null}
 
         {/* Knowledge */}
-        <section className="col-span-12" style={{ animationDelay: "80ms" }}>
+        {activeSection === "knowledge" ? (
+        <section style={{ animationDelay: "80ms" }}>
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <h2 className="text-lg font-medium tracking-tight text-[--text-primary]">Knowledge collections</h2>
             <div className="flex flex-wrap items-center gap-3 text-[13px]">
@@ -772,9 +835,11 @@ export function AiBrainConsoleView() {
             <p className="mt-6 text-[13px] text-[--text-tertiary]">Only owners and admins can manage collections and ingest.</p>
           ) : null}
         </section>
+        ) : null}
 
         {/* Policy & model */}
-        <section className={cn(bentoCard, "col-span-12")} style={{ animationDelay: "100ms" }}>
+        {activeSection === "policy" ? (
+        <section className={cn(bentoCard)} style={{ animationDelay: "100ms" }}>
           <BentoHeader
             title="Policy signals & query model"
             tint="emerald"
@@ -953,6 +1018,7 @@ export function AiBrainConsoleView() {
             </div>
           ) : null}
         </section>
+        ) : null}
       </div>
     </div>
   );

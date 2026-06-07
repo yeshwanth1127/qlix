@@ -85,6 +85,24 @@ export async function sendWhatsAppToConnector(
   return { ok: true };
 }
 
+export async function sendWhatsAppDocument(input: {
+  connectorId: string;
+  filePath: string;
+  fileName?: string;
+  mimetype?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const res = await waFetch('POST', '/send-document', {
+    connector_id: input.connectorId,
+    file_path: input.filePath,
+    file_name: input.fileName,
+    mimetype: input.mimetype,
+  });
+  if (!res.ok) {
+    return { ok: false, error: String(res.data.error ?? 'Document send failed') };
+  }
+  return { ok: true };
+}
+
 export async function sendWhatsAppApproval(input: {
   connector_id: string;
   action_id: string;

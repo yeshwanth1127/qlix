@@ -36,6 +36,7 @@ echo   Keep this window open while you use the agent in your browser.
 echo.
 
 if exist "%~dp0qlix-0.1.0-py3-none-any.whl" (
+  "%PYEXE%" -m pip install "%~dp0qlix-0.1.0-py3-none-any.whl" -q --disable-pip-version-check --force-reinstall --no-deps
   "%PYEXE%" -m pip install "%~dp0qlix-0.1.0-py3-none-any.whl" -q --disable-pip-version-check
   if errorlevel 1 (
     echo.

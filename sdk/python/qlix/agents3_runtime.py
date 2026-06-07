@@ -25,15 +25,21 @@ TOOL_SCOPE_MAP: dict[str, tuple[str, ...]] = {
     "s3_python": ("system.file_write",),
     "s3_code_task": ("system.file_write",),
     "s3_open_file": ("system.file_read",),
+    "s3_create_pdf": ("system.file_write",),
+    "s3_send_whatsapp_document": ("system.file_read",),
     "gui_control": ("system.gui_control",),
 }
 
 READ_ONLY_S3_TOOLS = frozenset({"s3_read_file", "s3_list_dir", "s3_open_file"})
-WRITE_S3_TOOLS = frozenset({"s3_write_file", "s3_bash", "s3_python", "s3_code_task"})
+WRITE_S3_TOOLS = frozenset(
+    {"s3_write_file", "s3_bash", "s3_python", "s3_code_task", "s3_create_pdf"}
+)
 
 _WRITE_INTENT = re.compile(
-    r"\b(write|save|overwrite|append|export|create\s+(?:a\s+)?(?:new\s+)?file|"
-    r"generate\s+.*\.(?:txt|log|csv|json|md))\b",
+    r"\b(write|save|overwrite|append|export|"
+    r"create\s+(?:a\s+)?(?:new\s+)?(?:file|pdf|document|doc|report|invoice)|"
+    r"make\s+(?:a\s+)?(?:pdf|document|report)|"
+    r"generate\s+.*\.(?:txt|log|csv|json|md|pdf|docx|xlsx))\b",
     re.IGNORECASE,
 )
 _READ_INTENT = re.compile(
@@ -41,13 +47,25 @@ _READ_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# A produced/delivered artifact means the task is NOT read-only even when the
+# instruction also contains a read verb (e.g. "read the doc and make a pdf").
+_OUTPUT_INTENT = re.compile(
+    r"\b(pdf|docx|xlsx|spreadsheet|report|invoice|document|"
+    r"send|share|deliver|attach|download|export|email|whatsapp)\b",
+    re.IGNORECASE,
+)
+
 
 def is_read_only_file_intent(instruction: str) -> bool:
-    """True when the user asked to read/open/review files but not create or modify them."""
+    """True when the user asked to read/open/review files but not create or modify them.
+
+    A request that also produces or delivers an artifact (pdf/report/whatsapp/send/…)
+    is never read-only, even if it contains a read verb like "summarize".
+    """
     text = (instruction or "").strip()
     if not text:
         return False
-    if _WRITE_INTENT.search(text):
+    if _WRITE_INTENT.search(text) or _OUTPUT_INTENT.search(text):
         return False
     return _READ_INTENT.search(text) is not None
 
@@ -58,6 +76,8 @@ LOCAL_TOOL_IDS = (
     "s3_open_file",
     "s3_bash",
     "s3_python",
+    "s3_create_pdf",
+    "s3_send_whatsapp_document",
 )
 CODE_TOOL_IDS = ("s3_bash", "s3_python", "s3_code_task")
 GUI_TOOL_IDS = ("gui_control",)
@@ -91,6 +111,69 @@ def _filter_tools(
             continue
         out.append(tid)
     return out
+
+
+def diagnose_local_tools(
+    identity: AgentIdentity,
+    *,
+    groups: tuple[str, ...],
+    skill_filter: list[str] | None,
+    instruction: str | None,
+) -> dict[str, Any]:
+    """Explain, per local tool, whether it is offered and (if not) why.
+
+    Used by the runners to emit a debug event so a missing write/PDF tool is no
+    longer silent. Mirrors the exact gating used by ``_filter_tools`` /
+    ``openai_agents3_tool_definitions`` so the report can't drift from reality.
+    """
+    granted = _granted(identity)
+    read_only = is_read_only_file_intent(instruction or "")
+    filt = (
+        {str(s).strip() for s in (skill_filter or []) if str(s).strip()}
+        if skill_filter
+        else None
+    )
+    scoped_filter = bool(filt and any("." in s for s in filt))
+
+    # Which id pools are in play given the selected groups (matches the
+    # openai_agents3_tool_definitions / build_agents3_executors logic).
+    candidate_ids: list[str] = []
+    if "files" in groups:
+        candidate_ids.extend(LOCAL_TOOL_IDS)
+    if "code" in groups and not read_only:
+        candidate_ids.extend(t for t in CODE_TOOL_IDS if t not in candidate_ids)
+    if "gui" in groups:
+        candidate_ids.extend(t for t in GUI_TOOL_IDS if t not in candidate_ids)
+
+    decisions: list[dict[str, Any]] = []
+    offered: list[str] = []
+    for tid in dict.fromkeys(LOCAL_TOOL_IDS + CODE_TOOL_IDS + GUI_TOOL_IDS):
+        scopes = TOOL_SCOPE_MAP.get(tid, (tid,))
+        missing = [s for s in scopes if s not in granted]
+        reason = None
+        if tid not in candidate_ids:
+            reason = "group_not_selected_or_read_only"
+        elif read_only and tid in WRITE_S3_TOOLS:
+            reason = "blocked_by_read_only_intent"
+        elif missing:
+            reason = f"missing_scope:{','.join(missing)}"
+        elif scoped_filter and not any(s in filt for s in scopes):
+            reason = "skill_scope_filter_excluded"
+        elif filt and not scoped_filter and tid not in filt:
+            reason = "skill_tool_filter_excluded"
+        if reason is None:
+            offered.append(tid)
+        decisions.append({"tool": tid, "offered": reason is None, "reason": reason})
+
+    return {
+        "granted_scopes": sorted(granted),
+        "read_only_intent": read_only,
+        "skill_filter": sorted(filt) if filt else None,
+        "groups": list(groups),
+        "instruction_preview": (instruction or "")[:200],
+        "offered_tools": offered,
+        "decisions": decisions,
+    }
 
 
 def _open_path_on_system(
@@ -234,6 +317,175 @@ def _run_python(code: str) -> dict[str, Any]:
 
 
 
+def _slugify(text: str, *, fallback: str = "document") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", (text or "")).strip("-")
+    return slug[:80] or fallback
+
+
+def _create_pdf_file(
+    *, title: str, content: str, output_path: str | None
+) -> tuple[bool, str]:
+    """Render text/markdown to a real PDF on the local filesystem.
+
+    Returns ``(ok, message)`` where ``message`` is the absolute path on success
+    or an error description on failure.
+    """
+    import tempfile
+
+    if not (content.strip() or title.strip()):
+        return False, "content is required to create a PDF"
+
+    if output_path:
+        out = Path(output_path).expanduser()
+        if out.suffix.lower() != ".pdf":
+            out = out.with_suffix(".pdf")
+    else:
+        base = Path.home() / "Documents"
+        if not base.is_dir():
+            base = Path(tempfile.gettempdir())
+        out = base / f"{_slugify(title)}.pdf"
+
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, f"Cannot create output directory: {exc}"
+
+    try:
+        import html
+
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.platypus import (
+            ListFlowable,
+            ListItem,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+        )
+    except ImportError:
+        return (
+            False,
+            "reportlab is not installed. Install the hybrid extras: "
+            "pip install 'qlix[hybrid]' (or pip install reportlab).",
+        )
+
+    styles = getSampleStyleSheet()
+
+    def _md_inline(text: str) -> str:
+        esc = html.escape(text)
+        esc = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
+        esc = re.sub(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*", r"<i>\1</i>", esc)
+        return esc
+
+    story: list[Any] = []
+    if title.strip():
+        story.append(Paragraph(_md_inline(title.strip()), styles["Title"]))
+        story.append(Spacer(1, 0.2 * inch))
+
+    blocks = re.split(r"\n\s*\n", content.replace("\r\n", "\n"))
+    for block in blocks:
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        lines = block.split("\n")
+        bullet_lines = [ln for ln in lines if ln.lstrip().startswith(("- ", "* "))]
+        if bullet_lines and len(bullet_lines) == len(lines):
+            items = [
+                ListItem(Paragraph(_md_inline(ln.lstrip()[2:]), styles["BodyText"]))
+                for ln in lines
+            ]
+            story.append(ListFlowable(items, bulletType="bullet"))
+            story.append(Spacer(1, 6))
+            continue
+        if block.startswith("### "):
+            story.append(Paragraph(_md_inline(block[4:]), styles["Heading3"]))
+        elif block.startswith("## "):
+            story.append(Paragraph(_md_inline(block[3:]), styles["Heading2"]))
+        elif block.startswith("# "):
+            story.append(Paragraph(_md_inline(block[2:]), styles["Heading1"]))
+        else:
+            text = "<br/>".join(_md_inline(ln) for ln in lines)
+            story.append(Paragraph(text, styles["BodyText"]))
+        story.append(Spacer(1, 6))
+
+    try:
+        doc = SimpleDocTemplate(
+            str(out),
+            pagesize=LETTER,
+            leftMargin=0.9 * inch,
+            rightMargin=0.9 * inch,
+            topMargin=0.9 * inch,
+            bottomMargin=0.9 * inch,
+            title=title.strip() or out.stem,
+        )
+        doc.build(story)
+    except Exception as exc:
+        return False, f"PDF generation error: {exc}"
+
+    return True, f"Created PDF: {out.resolve()}"
+
+
+async def _send_whatsapp_document(
+    file_path: str,
+    file_name: str | None,
+    *,
+    identity: AgentIdentity,
+    agents3_context: Agents3RunContext | None,
+) -> str:
+    """Deliver a local file to the user's linked WhatsApp via the Qlix backend.
+
+    The backend (which holds the WhatsApp service secret) forwards the request to
+    the qlix-whatsapp-service ``/send-document`` endpoint.
+    """
+    if not file_path:
+        return "[failed] file_path is required"
+    path = Path(file_path).expanduser()
+    if not path.is_file():
+        return f"[failed] File not found: {path}"
+
+    backend_url, agent_id, runner_token, _ = _s3_run_context(identity, agents3_context)
+    if not (backend_url and agent_id and runner_token):
+        return (
+            "[failed] WhatsApp send is only available for hybrid runs with a runner token "
+            "(missing backend_url/agent_id/runner_token)."
+        )
+
+    body: dict[str, Any] = {
+        "file_path": str(path.resolve()),
+        "file_name": file_name or path.name,
+    }
+    run_id = agents3_context.run_id if agents3_context else None
+    if run_id:
+        body["runId"] = run_id
+
+    url = f"{backend_url.rstrip('/')}/api/v1/agents/{agent_id}/tools/whatsapp/send-document"
+    headers = {"X-QLIX-Runner-Token": runner_token, "Content-Type": "application/json"}
+    try:
+        import httpx
+
+        def _post() -> tuple[int, str]:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(url, headers=headers, json=body)
+                return resp.status_code, resp.text
+
+        status, text = await asyncio.to_thread(_post)
+    except Exception as exc:
+        return f"[failed] WhatsApp send request error: {exc}"
+
+    if status >= 400:
+        try:
+            data = json.loads(text) if text else {}
+            err = data.get("error") if isinstance(data, dict) else None
+            if isinstance(err, dict):
+                return f"[failed] {err.get('code', 'error')}: {err.get('message', text[:300])}"
+        except json.JSONDecodeError:
+            pass
+        return f"[failed] HTTP {status}: {text[:300]}"
+
+    return f"Sent {body['file_name']} to WhatsApp."
+
+
 def openai_agents3_tool_definitions(
     identity: AgentIdentity,
     *,
@@ -339,6 +591,56 @@ def openai_agents3_tool_definitions(
                 "type": "object",
                 "properties": {"code": {"type": "string"}},
                 "required": ["code"],
+            },
+        },
+        "s3_create_pdf": {
+            "name": "s3_create_pdf",
+            "description": (
+                "Create a real PDF file on the user's computer from text or markdown. "
+                "Use this whenever the user asks to 'create/make/generate a PDF' or document — "
+                "do NOT tell the user to copy-paste into Word. Supports markdown headings "
+                "(#, ##, ###) and bullet lines ('- ' or '* '). Returns the absolute path of "
+                "the created PDF, which you can then pass to s3_send_whatsapp_document."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Document title (rendered at the top)."},
+                    "content": {
+                        "type": "string",
+                        "description": "Body text or markdown for the PDF.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional absolute path for the .pdf. If omitted, it is saved to the "
+                            "user's Documents folder using a slug of the title."
+                        ),
+                    },
+                },
+                "required": ["content"],
+            },
+        },
+        "s3_send_whatsapp_document": {
+            "name": "s3_send_whatsapp_document",
+            "description": (
+                "Send a local file (e.g. a PDF created with s3_create_pdf) to the user's "
+                "linked WhatsApp. Provide the absolute file_path. Use after creating a document "
+                "when the user asked to send it on WhatsApp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to send.",
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "Optional display name for the document in WhatsApp.",
+                    },
+                },
+                "required": ["file_path"],
             },
         },
         "s3_code_task": {
@@ -531,6 +833,42 @@ async def _dispatch_agents3_tool(
         out = (result.get("output") or "") + (result.get("error") or "")
         prefix = "" if result.get("status") == "ok" else "[failed] "
         return prefix + str(out)
+
+    if tool_id == "s3_create_pdf":
+        ok, msg = _create_pdf_file(
+            title=str(params.get("title") or ""),
+            content=str(params.get("content") or ""),
+            output_path=str(params.get("output_path") or "").strip() or None,
+        )
+        await _emit_agents3_log(
+            agents3_context,
+            {
+                "message": "agents3_step",
+                "tool": "s3_create_pdf",
+                "phase": "write",
+                "detail": msg[:160],
+            },
+        )
+        return msg if ok else f"[failed] {msg}"
+
+    if tool_id == "s3_send_whatsapp_document":
+        file_path = str(params.get("file_path") or "").strip()
+        file_name = str(params.get("file_name") or "").strip() or None
+        await _emit_agents3_log(
+            agents3_context,
+            {
+                "message": "agents3_step",
+                "tool": "s3_send_whatsapp_document",
+                "phase": "send",
+                "detail": file_path[:160],
+            },
+        )
+        return await _send_whatsapp_document(
+            file_path,
+            file_name,
+            identity=identity,
+            agents3_context=agents3_context,
+        )
 
     if tool_id == "s3_code_task":
         await _emit_agents3_log(

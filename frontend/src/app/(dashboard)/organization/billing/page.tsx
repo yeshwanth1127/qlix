@@ -31,6 +31,7 @@ export default function OrganizationBillingPage() {
 
   const allowed = useMemo(() => {
     if (!session) return false;
+    if (session.user.billingExempt) return false;
     if (session.organization.workspaceKind !== "organization") return false;
     return canAccessBilling(session.user.role);
   }, [session]);
@@ -66,6 +67,27 @@ export default function OrganizationBillingPage() {
 
   if (!session) {
     return <p className="text-[13px] text-neutral-500">Please sign in again.</p>;
+  }
+
+  if (session.user.billingExempt) {
+    return (
+      <div className="space-y-3">
+        <SectionHeading title="Billing" description="Plan, usage, and action credits." />
+        <div className="rounded-xl border border-[--border-subtle] bg-[--bg-elevated] p-5">
+          <p className="text-[13px] text-[--text-secondary]">This account is not billed.</p>
+          <p className="mt-1 text-[12px] text-[--text-tertiary]">
+            No charges are applied to this workspace. You can still review token consumption and inference cost on the
+            Usage page.
+          </p>
+          <Link
+            href="/organization/usage"
+            className="mt-3 inline-block text-[13px] font-medium text-blue-400 hover:underline"
+          >
+            Go to Usage
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   if (!allowed) {

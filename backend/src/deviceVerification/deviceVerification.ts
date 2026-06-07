@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma.js';
+import { isBillingExempt } from '../billings/lib/isBillingExempt.js';
 
 /** Thrown when an operation requires a registered passkey (WebAuthn) on this account. */
 export class DeviceNotVerifiedError extends Error {
@@ -50,6 +51,7 @@ export function sessionUserPayload(
   workspaceKind: string;
   isSuperAdmin: boolean;
   deviceVerified: boolean;
+  billingExempt: boolean;
 } {
   return {
     id: user.id,
@@ -60,6 +62,7 @@ export function sessionUserPayload(
     workspaceKind: user.workspaceKind,
     isSuperAdmin: user.isSuperAdmin,
     deviceVerified: isDeviceVerificationComplete(user),
+    billingExempt: isBillingExempt(user.email),
   };
 }
 

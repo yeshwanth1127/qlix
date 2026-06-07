@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { Check, Cloud, Cpu, Download, Fingerprint, Laptop, Loader2, ShieldCheck, X } from "lucide-react";
 import {
   ALL_PERMISSION_SCOPES,
@@ -66,6 +67,14 @@ const INITIAL_FORM: FormState = {
   model: CLOUD_MODELS[0],
 };
 
+// React Bits Stepper slide transition — entering content slides in from the
+// opposite side of travel while the outgoing step fades away.
+const stepVariants = {
+  enter: (dir: number) => ({ x: dir >= 0 ? "-100%" : "100%", opacity: 0 }),
+  center: { x: "0%", opacity: 1 },
+  exit: (dir: number) => ({ x: dir >= 0 ? "50%" : "-50%", opacity: 0 }),
+};
+
 function splitJit(form: FormState): { jitScopes: PermissionScope[]; alwaysScopes: PermissionScope[] } {
   const userToggled = new Set(form.userToggledJit);
   const jitScopes = form.permissionScopes.filter(
@@ -88,6 +97,7 @@ export function CreateAgentModal({
   /** Prevents overlapping WebAuthn ceremonies (e.g. double-click) — second call often rejects while the first still saves a passkey. */
   const submitLockRef = useRef(false);
   const [step, setStep] = useState<Step>(1);
+  const [direction, setDirection] = useState(1);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -96,6 +106,7 @@ export function CreateAgentModal({
   useEffect(() => {
     if (open) {
       setStep(1);
+      setDirection(1);
       setForm(cloudOnly ? { ...INITIAL_FORM, runtime: "cloud", llmMode: "proxy", localInferenceMode: null } : INITIAL_FORM);
       setError(null);
       setResult(null);
@@ -140,6 +151,7 @@ export function CreateAgentModal({
       const stepUp = await obtainAgentCreateStepUpToken(deviceVerified);
       if (!stepUp.ok) {
         setError(stepUp.errorMessage);
+        setDirection(-1);
         setStep(4);
         return;
       }
@@ -151,10 +163,12 @@ export function CreateAgentModal({
       const res = await createAgent(body, stepUpToken);
       if (!res.ok) {
         setError(res.errorMessage);
+        setDirection(-1);
         setStep(4);
         return;
       }
       setResult(res.data);
+      setDirection(1);
       setStep("result");
       onCreated(res.data.agent);
     } finally {
@@ -164,6 +178,7 @@ export function CreateAgentModal({
   };
 
   const goNextFromStep4 = () => {
+    setDirection(1);
     setStep(5);
     void submit();
   };
@@ -204,8 +219,17 @@ export function CreateAgentModal({
           <CreateAgentStepProgress step={step as CreateAgentFlowStep} creating={step === 5} />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-          <div key={String(step)} className="create-agent-step-content">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-5">
+          <AnimatePresence mode="wait" custom={direction} initial={false}>
+          <motion.div
+            key={String(step)}
+            custom={direction}
+            variants={stepVariants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          >
           {step === 1 ? (
             <Step1
               name={form.name}
@@ -250,7 +274,8 @@ export function CreateAgentModal({
               {error}
             </p>
           ) : null}
-          </div>
+          </motion.div>
+          </AnimatePresence>
         </div>
 
         {step !== "result" && step !== 5 ? (
@@ -260,7 +285,10 @@ export function CreateAgentModal({
                 type="button"
                 onClick={() => {
                   if (step === 1) onClose();
-                  else setStep(((step as number) - 1) as Step);
+                  else {
+                    setDirection(-1);
+                    setStep(((step as number) - 1) as Step);
+                  }
                 }}
                 className="text-[12px] font-medium text-[--text-tertiary] transition-colors hover:text-[--text-primary]"
                 disabled={submitting}
@@ -279,6 +307,7 @@ export function CreateAgentModal({
                 (step === 3 && !canStep3)
               }
               onClick={() => {
+                setDirection(1);
                 if (step === 1) setStep(2);
                 else if (step === 2) setStep(3);
                 else if (step === 3) setStep(4);
