@@ -253,7 +253,7 @@ export function createAgentsRouter(): Router {
 
   // ── NL Builder: parse prompt ─────────────────────────────────────────────
   const nlParseSchema = z.object({
-    prompt: z.string().trim().min(1).max(2000),
+    prompt: z.string().trim().min(1).max(5000),
     model: z.string().trim().min(1).max(200).optional(),
   });
 
@@ -261,7 +261,7 @@ export function createAgentsRouter(): Router {
     const parsed = nlParseSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
-        error: { code: 'invalid_body', message: 'prompt is required (1-2000 chars)' },
+        error: { code: 'invalid_body', message: 'prompt is required (1-5000 chars)' },
       });
       return;
     }

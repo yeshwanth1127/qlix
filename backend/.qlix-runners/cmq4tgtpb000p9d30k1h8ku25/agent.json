@@ -1,0 +1,16 @@
+{
+  "did": "did:qlix:53164436b5782d17",
+  "agent_id": "cmq4tgtpb000p9d30k1h8ku25",
+  "private_key": "ecd93ac343efbf2580ba703d478540453d1a607488a238618c493157260b9c04",
+  "public_key": "7c581a296180dc0ea97b07947791ea0afad511fd700263b9dbb2ffd72ec43f35",
+  "permission_scopes": [
+    "brain.query"
+  ],
+  "jit_scopes": [
+    "brain.query"
+  ],
+  "always_scopes": [],
+  "llm_mode": "proxy",
+  "backend_url": "http://host.docker.internal:4000",
+  "issued_at": "2026-06-08T06:15:16.353Z"
+}

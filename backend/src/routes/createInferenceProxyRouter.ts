@@ -16,8 +16,8 @@ import { cacheToolDefinitions, getCachedTools } from '../llm/toolCache.js';
 
 function s3InferenceTimeoutMs(): number {
   const raw = process.env.QLIX_S3_INFERENCE_TIMEOUT_MS?.trim();
-  const n = raw ? Number(raw) : 90_000;
-  return Number.isFinite(n) && n > 0 ? n : 90_000;
+  const n = raw ? Number(raw) : 120_000;
+  return Number.isFinite(n) && n > 0 ? n : 120_000;
 }
 
 function handleInferenceProxyError(

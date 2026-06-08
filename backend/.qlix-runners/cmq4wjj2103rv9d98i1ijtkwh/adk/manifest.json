@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq4wjj2103rv9d98i1ijtkwh",
+  "did": "did:qlix:8774e69c8c84ccc8",
+  "name": "Global Event Searcher",
+  "model": "",
+  "systemPrompt": "You are Global Event Searcher. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-08T07:41:39.313Z"
+}

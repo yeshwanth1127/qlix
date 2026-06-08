@@ -13,12 +13,23 @@ export async function sendApproval(input: {
   agent_name: string;
   scope: string;
   context: string;
-}): Promise<void> {
-  if (!isWhatsAppJitEnabled()) return;
-  const result = await sendWhatsAppApproval(input);
-  if (!result.ok) {
-    console.warn('[whatsapp-notifier] sendApproval failed:', result.error);
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!isWhatsAppJitEnabled()) {
+    return { ok: false, error: 'WhatsApp JIT not enabled' };
   }
+  // Retry to survive the reconnect race: the Baileys session may still be
+  // connecting when the JIT request fires, so the first send can 503.
+  let last: { ok: boolean; error?: string } = { ok: false, error: 'not attempted' };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    last = await sendWhatsAppApproval(input);
+    if (last.ok) return last;
+    console.warn(
+      `[whatsapp-notifier] sendApproval attempt ${attempt + 1}/3 failed:`,
+      last.error,
+    );
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+  }
+  return last;
 }
 
 export async function sendMessage(

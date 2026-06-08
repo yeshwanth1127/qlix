@@ -301,21 +301,38 @@ export class JitService {
         console.log(
           `[jit] sending WhatsApp approval: actionId=${actionLog.id} connector=${wa.id} context=${formatJitApprovalContext(signedPayload.payload)}`,
         );
-        void sendApproval({
+        const sent = await sendApproval({
           connector_id: wa.id,
           action_id: actionLog.id,
           agent_name: agent.name,
           scope: signedPayload.actionType,
           context: formatJitApprovalContext(signedPayload.payload),
         });
-        void emitJitRunLog(runId, {
-          message: 'jit_approval_pending',
-          scope: signedPayload.actionType,
-          scopeLabel: formatScopeLabel(signedPayload.actionType),
-          channel: 'whatsapp',
-          context: formatJitApprovalContext(signedPayload.payload),
-          jitRequestId: actionLog.id,
-        });
+        if (sent.ok) {
+          void emitJitRunLog(runId, {
+            message: 'jit_approval_pending',
+            scope: signedPayload.actionType,
+            scopeLabel: formatScopeLabel(signedPayload.actionType),
+            channel: 'whatsapp',
+            context: formatJitApprovalContext(signedPayload.payload),
+            jitRequestId: actionLog.id,
+          });
+        } else {
+          // WhatsApp delivery failed (e.g. session reconnecting) — never leave
+          // the request silently stuck; surface it on the dashboard instead.
+          console.warn(
+            `[jit] WhatsApp approval delivery failed, falling back to dashboard: actionId=${actionLog.id} error=${sent.error}`,
+          );
+          void emitJitRunLog(runId, {
+            message: 'jit_approval_pending',
+            scope: signedPayload.actionType,
+            scopeLabel: formatScopeLabel(signedPayload.actionType),
+            channel: 'dashboard',
+            context: formatJitApprovalContext(signedPayload.payload),
+            jitRequestId: actionLog.id,
+            whatsappError: sent.error ?? 'delivery failed',
+          });
+        }
       } else {
         console.log(`[jit] no WhatsApp connector found for agent: agentId=${agent.id}`);
         void emitJitRunLog(runId, {

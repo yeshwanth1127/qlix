@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq4wisxl03rp9d983pcfl91c",
+  "did": "did:qlix:10716510e4bf31e9",
+  "name": "Event Supervisor",
+  "model": "",
+  "systemPrompt": "You are Event Supervisor. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "brain.query"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-08T07:41:39.243Z"
+}

@@ -296,7 +296,7 @@ async def _run_backend_proxy_inference(
     model: str,
     enriched_prompt: str,
     selected_skills: list[str],
-) -> tuple[int, str, int, int, list[str], dict[str, Any]]:
+) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email tools."""
     import hashlib
 
@@ -511,7 +511,7 @@ async def _poll_and_execute_loop() -> None:
                     event_type="log",
                     data={"message": "inference_request", "model": model},
                 )
-                seq, content, duration_ms, turns, tool_calls, proxy_usage = (
+                seq, content, duration_ms, turns, tool_calls, proxy_usage, _executed_tools = (
                     await _run_backend_proxy_inference(
                         inference_http,
                         identity=identity,

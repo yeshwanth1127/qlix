@@ -24,7 +24,7 @@ from .runner_common import (
 )
 from .sdk import QlixSDK
 from .agents3_proxy import Agents3RunContext
-from .hybrid_document_pipeline import run_document_pipeline_fallback
+from .hybrid_document_pipeline import verify_and_complete_outcomes
 from .tool_router import ToolRouter
 
 _log = default_log("hybrid_runner")
@@ -333,7 +333,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         },
                     )
 
-                    seq, content, duration_ms, turns, tool_calls, proxy_usage = (
+                    seq, content, duration_ms, turns, tool_calls, proxy_usage, executed_tools = (
                         await run_backend_proxy_inference(
                             inference_http,
                             identity=identity,
@@ -353,10 +353,12 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         )
                     )
 
-                    # Model often reads the file then returns empty — finish PDF/WhatsApp ourselves.
-                    pipeline_tools, pipeline_summary = await run_document_pipeline_fallback(
+                    # Verify the run's required outcomes against what actually
+                    # happened; deterministically finish any the model skipped
+                    # (e.g. created a file but never delivered it).
+                    pipeline_tools, pipeline_summary = await verify_and_complete_outcomes(
                         prompt=enriched_prompt,
-                        tools_executed=tool_calls,
+                        executed=executed_tools,
                         tool_executors=tool_executors,
                         log=_log,
                     )

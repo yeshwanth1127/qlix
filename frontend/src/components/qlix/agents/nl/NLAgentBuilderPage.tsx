@@ -442,14 +442,14 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={5}
-              maxLength={2000}
+              maxLength={5000}
               disabled={state === "parsing"}
               placeholder="e.g. Build me a research agent that reads websites and sends me WhatsApp summaries each morning…"
               className="w-full resize-none rounded-lg border border-[--border-subtle] bg-[--bg-base] px-4 py-3 text-[13px] text-[--text-primary] outline-none transition-colors focus:border-[--accent] disabled:opacity-60"
             />
             <div className="mt-1 flex items-center justify-between text-[10px] text-[--text-tertiary]">
               <span>Describe a single agent or a whole team with multiple workers</span>
-              <span>{prompt.length}/2000</span>
+              <span>{prompt.length}/5000</span>
             </div>
           </div>
 

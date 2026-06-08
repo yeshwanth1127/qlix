@@ -15,7 +15,10 @@ function sanitizeScopes(raw: unknown): PermissionScope[] {
   return raw.filter(isValidPermissionScope);
 }
 
-function sanitizeAgentSpec(raw: Record<string, unknown>, fallbackName: string): NLAgentSpec {
+function sanitizeAgentSpec(rawInput: unknown, fallbackName: string): NLAgentSpec {
+  // The model can emit null / non-object entries; coerce so we never deref null.
+  const raw: Record<string, unknown> =
+    rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
   const permissionScopes = sanitizeScopes(raw.permissionScopes);
   const rawJit = sanitizeScopes(raw.jitScopes);
   const scopeSet = new Set(permissionScopes);
@@ -57,7 +60,9 @@ function sanitizeAgentSpec(raw: Record<string, unknown>, fallbackName: string): 
   };
 }
 
-function sanitizeWorkerSpec(raw: Record<string, unknown>, index: number): NLWorkerSpec {
+function sanitizeWorkerSpec(rawInput: unknown, index: number): NLWorkerSpec {
+  const raw: Record<string, unknown> =
+    rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
   const base = sanitizeAgentSpec(raw, `Worker ${index + 1}`);
   return {
     ...base,
@@ -81,7 +86,7 @@ export async function parseAgentCreationPrompt(userPrompt: string, model?: strin
       model: resolvedModel,
       messages: [
         { role: 'system', content: buildSystemPrompt() },
-        { role: 'user', content: userPrompt.slice(0, 2000) },
+        { role: 'user', content: userPrompt.slice(0, 5000) },
       ],
       temperature: 0.1,
       max_tokens: 2048,
@@ -134,7 +139,9 @@ export async function parseAgentCreationPrompt(userPrompt: string, model?: strin
       throw new NLParseError('plan_team: missing supervisor');
     }
 
-    const workersRaw = Array.isArray(teamRaw.workers) ? teamRaw.workers : [];
+    const workersRaw = (Array.isArray(teamRaw.workers) ? teamRaw.workers : []).filter(
+      (w) => w && typeof w === 'object',
+    );
     const configRaw = (teamRaw.config ?? {}) as Record<string, unknown>;
 
     return {

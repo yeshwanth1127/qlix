@@ -27,8 +27,17 @@ TOOL_SCOPE_MAP: dict[str, tuple[str, ...]] = {
     "s3_open_file": ("system.file_read",),
     "s3_create_pdf": ("system.file_write",),
     "s3_create_xlsx": ("system.file_write",),
+    # Representative scope for JIT labeling only; real availability is the
+    # any-of gate below (file_read OR file_write).
     "s3_send_whatsapp_document": ("system.file_read",),
     "gui_control": ("system.gui_control",),
+}
+
+# Tools available when the agent has ANY of these scopes (not all). Delivering a
+# file fits a reader (sends what it read) OR a writer (sends what it created),
+# so the WhatsApp send tool is offered with file_read OR file_write.
+TOOL_ANY_OF_SCOPES: dict[str, tuple[str, ...]] = {
+    "s3_send_whatsapp_document": ("system.file_read", "system.file_write"),
 }
 
 READ_ONLY_S3_TOOLS = frozenset({"s3_read_file", "s3_list_dir", "s3_open_file"})
@@ -100,6 +109,23 @@ def _granted(identity: AgentIdentity) -> set[str]:
     return set(identity.permission_scopes) | set(identity.always_scopes)
 
 
+def _scope_satisfied(
+    tid: str, granted: set[str]
+) -> tuple[bool, tuple[str, ...], list[str]]:
+    """Whether a tool's scope requirement is met.
+
+    Returns (available, scopes_for_filter, missing). Tools in TOOL_ANY_OF_SCOPES
+    are available when ANY listed scope is granted; all others require ALL.
+    """
+    any_of = TOOL_ANY_OF_SCOPES.get(tid)
+    if any_of is not None:
+        ok = any(s in granted for s in any_of)
+        return ok, any_of, [] if ok else list(any_of)
+    scopes = TOOL_SCOPE_MAP.get(tid, (tid,))
+    missing = [s for s in scopes if s not in granted]
+    return not missing, scopes, missing
+
+
 def _filter_tools(
     tool_ids: tuple[str, ...],
     identity: AgentIdentity,
@@ -114,8 +140,8 @@ def _filter_tools(
     for tid in tool_ids:
         if read_only and tid in WRITE_S3_TOOLS:
             continue
-        scopes = TOOL_SCOPE_MAP.get(tid, (tid,))
-        if any(s not in granted for s in scopes):
+        available, scopes, _missing = _scope_satisfied(tid, granted)
+        if not available:
             continue
         if filt and any("." in s for s in filt):
             if not any(s in filt for s in scopes):
@@ -161,15 +187,15 @@ def diagnose_local_tools(
     decisions: list[dict[str, Any]] = []
     offered: list[str] = []
     for tid in dict.fromkeys(LOCAL_TOOL_IDS + CODE_TOOL_IDS + GUI_TOOL_IDS):
-        scopes = TOOL_SCOPE_MAP.get(tid, (tid,))
-        missing = [s for s in scopes if s not in granted]
+        _available, scopes, missing = _scope_satisfied(tid, granted)
         reason = None
         if tid not in candidate_ids:
             reason = "group_not_selected_or_read_only"
         elif read_only and tid in WRITE_S3_TOOLS:
             reason = "blocked_by_read_only_intent"
         elif missing:
-            reason = f"missing_scope:{','.join(missing)}"
+            sep = "|" if tid in TOOL_ANY_OF_SCOPES else ","
+            reason = f"missing_scope:{sep.join(missing)}"
         elif scoped_filter and not any(s in filt for s in scopes):
             reason = "skill_scope_filter_excluded"
         elif filt and not scoped_filter and tid not in filt:
@@ -858,8 +884,14 @@ def build_agents3_executors(
                 )
             )
         )
+    granted = _granted(identity)
     for tid in tool_ids:
-        action_type = TOOL_SCOPE_MAP.get(tid, (tid,))[0]
+        any_of = TOOL_ANY_OF_SCOPES.get(tid)
+        if any_of is not None:
+            # Label the JIT approval under a scope the agent actually holds.
+            action_type = next((s for s in any_of if s in granted), any_of[0])
+        else:
+            action_type = TOOL_SCOPE_MAP.get(tid, (tid,))[0]
         risk = "high" if tid in (
             "s3_bash",
             "s3_write_file",
@@ -958,7 +990,11 @@ async def _dispatch_agents3_tool(
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(params.get("content", "")), encoding="utf-8")
-        return f"Wrote {path}"
+        return (
+            f"Wrote file: {path.resolve()}"
+            " — If the user asked to send/deliver this file (e.g. on WhatsApp), "
+            "call s3_send_whatsapp_document now with file_path set to the path above."
+        )
 
     if tool_id == "s3_list_dir":
         path = Path(str(params.get("path", "")))
@@ -1014,7 +1050,13 @@ async def _dispatch_agents3_tool(
                 "detail": msg[:160],
             },
         )
-        return msg if ok else f"[failed] {msg}"
+        if not ok:
+            return f"[failed] {msg}"
+        return (
+            msg
+            + " — If the user asked to send/deliver this file (e.g. on WhatsApp), "
+            "call s3_send_whatsapp_document now with file_path set to the path above."
+        )
 
     if tool_id == "s3_create_xlsx":
         ok, msg = _create_xlsx_file(
@@ -1032,7 +1074,13 @@ async def _dispatch_agents3_tool(
                 "detail": msg[:160],
             },
         )
-        return msg if ok else f"[failed] {msg}"
+        if not ok:
+            return f"[failed] {msg}"
+        return (
+            msg
+            + " — If the user asked to send/deliver this file (e.g. on WhatsApp), "
+            "call s3_send_whatsapp_document now with file_path set to the path above."
+        )
 
     if tool_id == "s3_send_whatsapp_document":
         file_path = str(params.get("file_path") or "").strip()

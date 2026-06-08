@@ -224,7 +224,7 @@ async def run_backend_proxy_inference(
     log: LogFn,
     live_view_enabled: bool | None = None,
     system_prompt: str | None = None,
-) -> tuple[int, str, int, int, list[str], dict[str, Any]]:
+) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn inference with pre-bound tool executors."""
     if live_view_enabled is None:
         live_view_enabled = goal_requests_live_view(enriched_prompt)
@@ -246,6 +246,14 @@ async def run_backend_proxy_inference(
     deadline = time.time() + max_seconds
     started = time.time()
     tool_names_ran: list[str] = []
+    # Full (name, args, output) records so callers can verify outcomes from
+    # runtime state (e.g. the actual path a create-tool wrote) instead of
+    # guessing the flow.
+    executed_tools: list[dict[str, str]] = []
+    # Times each exact (name, args) call has run. A round that only repeats calls
+    # we've already executed this many times is a stuck no-op loop, not progress.
+    executed_call_counts: dict[str, int] = {}
+    tool_repeat_limit = int(os.environ.get("QLIX_PROXY_MAX_TOOL_REPEAT", "2"))
     usage_acc: dict[str, Any] = {}
     temperature = float(os.environ.get("QLIX_PROXY_TEMPERATURE", "0.2"))
     max_tokens = int(os.environ.get("QLIX_PROXY_MAX_TOKENS", "4096"))
@@ -312,6 +320,39 @@ async def run_backend_proxy_inference(
                     assistant_calls.append(
                         {"id": tid, "type": typ, "function": {"name": name, "arguments": args}}
                     )
+            # Stuck no-op loop: the model keeps re-issuing calls it has already
+            # run (e.g. echoing a path). Don't count it as progress — break and
+            # let the outcome verifier finish or the run end cleanly.
+            round_sigs = [
+                f"{c['function']['name']}\x00{c['function']['arguments']}"
+                for c in assistant_calls
+            ]
+            if round_sigs and all(
+                executed_call_counts.get(sig, 0) >= tool_repeat_limit for sig in round_sigs
+            ):
+                log(
+                    "proxy_tool_loop_stuck",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    round=round_idx + 1,
+                    repeated=[c["function"]["name"] for c in assistant_calls],
+                )
+                seq = await emit_event(
+                    http,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    headers=headers,
+                    seq=seq,
+                    event_type="log",
+                    data={
+                        "message": "tool_loop_stuck_break",
+                        "round": round_idx + 1,
+                        "tools": [c["function"]["name"] for c in assistant_calls],
+                    },
+                )
+                content_out = content_out or proxy_result.content or ""
+                break
+
             messages.append({"role": "assistant", "content": None, "tool_calls": assistant_calls})
             seq = await emit_event(
                 http,
@@ -385,6 +426,12 @@ async def run_backend_proxy_inference(
                 tool_out = result["output"]
                 tool_out_truncated, _ = smart_truncate_tool_result(name, tool_out)
                 tool_names_ran.append(name)
+                # Keep the full (untruncated) output so callers can extract paths.
+                executed_tools.append(
+                    {"name": name, "args": args, "output": str(tool_out)}
+                )
+                sig = f"{name}\x00{args}"
+                executed_call_counts[sig] = executed_call_counts.get(sig, 0) + 1
                 messages.append({"role": "tool", "tool_call_id": tid, "content": tool_out_truncated})
                 seq = await emit_event(
                     http,
@@ -504,4 +551,4 @@ async def run_backend_proxy_inference(
         tools_executed=tool_names_ran,
         duration_ms=duration_ms,
     )
-    return seq, content_out, duration_ms, inference_rounds, tool_names_ran, usage_acc
+    return seq, content_out, duration_ms, inference_rounds, tool_names_ran, usage_acc, executed_tools

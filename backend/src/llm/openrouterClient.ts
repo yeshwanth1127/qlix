@@ -63,7 +63,7 @@ export async function openrouterEmbeddings(
       Authorization: `Bearer ${openRouterApiKey()}`,
     },
     body: JSON.stringify({ model, input: text }),
-    signal: AbortSignal.timeout(options?.timeoutMs ?? 15_000),
+    signal: AbortSignal.timeout(options?.timeoutMs ?? 120_000),
   });
   const payload = (await response.json().catch(() => null)) as any;
   if (!response.ok) {
@@ -81,7 +81,7 @@ export async function openRouterChatCompletion(
   request: InferenceChatRequest,
   options?: { timeoutMs?: number; retries?: number },
 ): Promise<OpenRouterChatResult> {
-  const timeoutMs = options?.timeoutMs ?? 30_000;
+  const timeoutMs = options?.timeoutMs ?? 120_000;
   const retries = options?.retries ?? 2;
   const url = `${openRouterBaseUrl().replace(/\/$/, '')}/chat/completions`;
   const body: Record<string, unknown> = {
