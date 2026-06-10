@@ -7,7 +7,7 @@ export type ActivityStep = {
   id: string;
   label: string;
   detail?: string;
-  tone: "neutral" | "accent" | "success" | "warn";
+  tone: "neutral" | "accent" | "success" | "warn" | "error";
   category?: ToolCategory;
   kind?: "tool_round" | "tool_done" | "jit_pending" | "jit_resolved" | "other";
   toolIds?: string[];
@@ -30,6 +30,7 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   browser_ab_find: { label: "Browser", category: "browser", verb: "Find & act" },
   browser_ab_get: { label: "Browser", category: "browser", verb: "Get page info" },
   browser_exec: { label: "Browser", category: "browser", verb: "CLI command" },
+  whatsapp_send: { label: "WhatsApp", category: "other", verb: "Send file" },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
   shell_exec: { label: "Shell", category: "system", verb: "Run command" },
@@ -107,7 +108,30 @@ function formatToolList(toolIds: string[]): string {
     .join(" · ");
 }
 
+/**
+ * Step kinds that represent the LLM actually invoking a tool (or a tool-gated
+ * approval). Everything else — run lifecycle, engine warmup, "calling model",
+ * routing, etc. — is plumbing and is not surfaced as agent activity.
+ */
+const TOOL_ACTIVITY_KINDS = new Set<ActivityStep["kind"]>([
+  "tool_round",
+  "tool_done",
+  "jit_pending",
+  "jit_resolved",
+]);
+
+/**
+ * Public entry point. Only surfaces activity tied to a real tool call; returns
+ * null for default/lifecycle events so the activity feed stays empty until the
+ * model actually calls a tool.
+ */
 export function summarizeRunnerLog(seq: number, raw: unknown): ActivityStep | null {
+  const step = buildActivityStep(seq, raw);
+  if (!step) return null;
+  return TOOL_ACTIVITY_KINDS.has(step.kind) ? step : null;
+}
+
+function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
   if (!raw || typeof raw !== "object") return null;
   const d = raw as Record<string, unknown>;
   const msg = String(d.message ?? "");
@@ -231,6 +255,20 @@ export function summarizeRunnerLog(seq: number, raw: unknown): ActivityStep | nu
     case "tool_finished": {
       const toolId = String(d.tool ?? "");
       const f = formatToolId(toolId);
+      // `ok` is absent on older runners — treat missing as success for back-compat.
+      const failed = d.ok === false;
+      if (failed) {
+        const error = String(d.error ?? "").trim();
+        return {
+          id,
+          label: f.group === "Agent-S3" ? `Failed — Agent-S3` : `Failed — ${f.group}`,
+          detail: error || `${f.short} failed`,
+          tone: "error",
+          kind: "tool_done",
+          category: f.category,
+          toolId,
+        };
+      }
       return {
         id,
         label: f.group === "Agent-S3" ? `Done — Agent-S3` : `Done — ${f.group}`,

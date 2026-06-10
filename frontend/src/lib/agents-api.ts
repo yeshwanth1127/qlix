@@ -18,7 +18,8 @@ export type PermissionScope =
   | "brain.query"
   | "brain.knowledge_read"
   | "email.read"
-  | "email.send";
+  | "email.send"
+  | "whatsapp.send";
 
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "web.read",
@@ -33,6 +34,7 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "brain.knowledge_read",
   "email.read",
   "email.send",
+  "whatsapp.send",
 ];
 
 export const FORCE_JIT_SCOPES: PermissionScope[] = [
@@ -57,6 +59,7 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "brain.knowledge_read": "Read org knowledge indexed for the brain",
   "email.read": "Read connected Gmail inbox",
   "email.send": "Send email via connected Gmail",
+  "whatsapp.send": "Send messages/files on connected WhatsApp",
 };
 
 export type AgentRuntime = "cloud" | "local" | "hybrid";

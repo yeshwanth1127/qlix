@@ -1,15 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { type AgentDTO, deleteAllAgents, listAgents } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
 import { CreateAgentModal } from "./CreateAgentModal";
-import { AgentChatPanel } from "./AgentChatPanel";
-import { AgentsChatPlaceholder } from "./AgentsChatPlaceholder";
 import {
   AgentStatusBadge,
   RuntimeBadge,
@@ -24,8 +22,6 @@ interface AgentsSplitViewProps {
 export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   const { session } = useSession();
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   const [agents, setAgents] = useState<AgentDTO[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,8 +36,6 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? (session?.organization.id ?? null) : null;
   const deviceVerified = session?.user.deviceVerified === true;
-
-  const selectedAgentId = searchParams.get("agent");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -86,23 +80,15 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
     }
   };
 
+  // Opening an agent navigates to its own full-page chat.
+  const openAgentChat = (id: string) => {
+    router.push(`${routePrefix}/agents/${id}/chat`);
+  };
+
   const handleCreated = (agent: AgentDTO) => {
     setAgents((prev) => [agent, ...(prev ?? [])]);
-    const next = new URLSearchParams(searchParams.toString());
-    next.set("agent", agent.id);
-    router.replace(`${pathname}?${next.toString()}`);
+    openAgentChat(agent.id);
   };
-
-  const selectAgent = (id: string) => {
-    const next = new URLSearchParams(searchParams.toString());
-    next.set("agent", id);
-    router.replace(`${pathname}?${next.toString()}`);
-  };
-
-  const selectedAgent = useMemo(() => {
-    if (!agents || !selectedAgentId) return null;
-    return agents.find((a) => a.id === selectedAgentId) ?? null;
-  }, [agents, selectedAgentId]);
 
   return (
     <div className="animate-qlix-fade-in space-y-6">
@@ -137,103 +123,78 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(380px,42%)_1fr]">
-        <section className="overflow-hidden rounded-xl border border-violet-500/15 bg-[--bg-elevated] shadow-sm ring-1 ring-inset ring-violet-500/10 dark:border-violet-400/20 dark:shadow-[0_4px_24px_rgba(99,102,241,0.08)]">
-          <div className="border-b border-[--border-subtle] bg-gradient-to-r from-violet-500/[0.06] to-cyan-500/[0.04] px-4 py-3 dark:from-violet-500/10 dark:to-cyan-500/10">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700/90 dark:text-violet-300/90">
-              Agent registry
-            </p>
-            <p className="mt-0.5 text-[12px] text-[--text-tertiary]">
-              {loading ? "Loading…" : `${agents?.length ?? 0} registered`}
-            </p>
+      <section className="overflow-hidden rounded-xl border border-violet-500/15 bg-[--bg-elevated] shadow-sm ring-1 ring-inset ring-violet-500/10 dark:border-violet-400/20 dark:shadow-[0_4px_24px_rgba(99,102,241,0.08)]">
+        <div className="border-b border-[--border-subtle] bg-gradient-to-r from-violet-500/[0.06] to-cyan-500/[0.04] px-4 py-3 dark:from-violet-500/10 dark:to-cyan-500/10">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700/90 dark:text-violet-300/90">
+            Agent registry
+          </p>
+          <p className="mt-0.5 text-[12px] text-[--text-tertiary]">
+            {loading ? "Loading…" : `${agents?.length ?? 0} registered`}
+          </p>
+        </div>
+
+        {loading ? (
+          <AgentsRegistrySkeleton />
+        ) : error ? (
+          <p className="px-4 py-10 text-center text-[13px] text-[--danger]">{error}</p>
+        ) : !agents || agents.length === 0 ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-[13px] text-[--text-secondary]">No agents yet.</p>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="mt-4 text-[12px] font-medium text-violet-600 hover:underline dark:text-violet-300"
+            >
+              Create your first agent →
+            </button>
           </div>
-
-          {loading ? (
-            <AgentsRegistrySkeleton />
-          ) : error ? (
-            <p className="px-4 py-10 text-center text-[13px] text-[--danger]">{error}</p>
-          ) : !agents || agents.length === 0 ? (
-            <div className="px-6 py-12 text-center">
-              <p className="text-[13px] text-[--text-secondary]">No agents yet.</p>
-              <button
-                type="button"
-                onClick={() => setOpen(true)}
-                className="mt-4 text-[12px] font-medium text-violet-600 hover:underline dark:text-violet-300"
-              >
-                Create your first agent →
-              </button>
-            </div>
-          ) : (
-            <ul className="max-h-[calc(100vh-12rem)] divide-y divide-[--border-subtle] overflow-y-auto thin-scrollbar">
-              {agents.map((a, i) => {
-                const isSelected = selectedAgentId === a.id;
-                const status = deriveAgentDisplayStatus(a);
-                return (
-                  <li
-                    key={a.id}
-                    className="agents-list-row"
-                    style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+        ) : (
+          <ul className="divide-y divide-[--border-subtle]">
+            {agents.map((a, i) => {
+              const status = deriveAgentDisplayStatus(a);
+              return (
+                <li
+                  key={a.id}
+                  className="agents-list-row"
+                  style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => openAgentChat(a.id)}
+                    className="group relative flex w-full flex-col gap-2 px-4 py-3.5 text-left motion-safe:transition-colors motion-safe:duration-200 hover:bg-[var(--glass-row-hover)]"
                   >
-                    <button
-                      type="button"
-                      onClick={() => selectAgent(a.id)}
-                      className={cn(
-                        "group relative flex w-full flex-col gap-2 px-4 py-3.5 text-left motion-safe:transition-colors motion-safe:duration-200",
-                        isSelected
-                          ? "bg-gradient-to-r from-violet-500/12 via-indigo-500/8 to-transparent dark:from-violet-500/20"
-                          : "hover:bg-[var(--glass-row-hover)]",
-                      )}
-                    >
-                      {isSelected ? (
-                        <span
-                          className="absolute bottom-0 left-0 top-0 w-1 bg-gradient-to-b from-violet-500 to-cyan-500"
-                          aria-hidden
-                        />
-                      ) : null}
-                      <div className="flex items-start justify-between gap-2 pl-1">
-                        <span className="min-w-0">
-                          <span className="block truncate text-[13px] font-semibold text-[--text-primary] group-hover:text-violet-700 dark:group-hover:text-violet-200">
-                            {a.name}
-                          </span>
-                          <span
-                            className="mt-1 block font-mono text-[10px] text-[--text-tertiary]"
-                            title={a.did}
-                          >
-                            {formatDidCompact(a.did)}
-                          </span>
+                    <div className="flex items-start justify-between gap-2 pl-1">
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] font-semibold text-[--text-primary] group-hover:text-violet-700 dark:group-hover:text-violet-200">
+                          {a.name}
                         </span>
-                        <AgentStatusBadge status={status} />
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 pl-1">
-                        <RuntimeBadge runtime={a.runtime} agentKind={a.agentKind} />
-                        <Link
-                          href={`${routePrefix}/agents/${a.id}`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-0.5 text-[10px] font-medium text-[--text-tertiary] hover:text-violet-600 dark:hover:text-violet-300"
+                        <span
+                          className="mt-1 block font-mono text-[10px] text-[--text-tertiary]"
+                          title={a.did}
                         >
-                          Details
-                          <ExternalLink className="size-2.5" aria-hidden />
-                        </Link>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        <section className="min-h-[520px]">
-          {selectedAgent ? (
-            <AgentChatPanel
-              agentId={selectedAgent.id}
-              aiBrainHref={isOrg ? `${routePrefix}/ai-brain` : undefined}
-            />
-          ) : (
-            <AgentsChatPlaceholder agents={agents ?? []} onSelect={selectAgent} />
-          )}
-        </section>
-      </div>
+                          {formatDidCompact(a.did)}
+                        </span>
+                      </span>
+                      <AgentStatusBadge status={status} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pl-1">
+                      <RuntimeBadge runtime={a.runtime} agentKind={a.agentKind} />
+                      <Link
+                        href={`${routePrefix}/agents/${a.id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-0.5 text-[10px] font-medium text-[--text-tertiary] hover:text-violet-600 dark:hover:text-violet-300"
+                      >
+                        Details
+                        <ExternalLink className="size-2.5" aria-hidden />
+                      </Link>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <CreateAgentModal
         open={open}

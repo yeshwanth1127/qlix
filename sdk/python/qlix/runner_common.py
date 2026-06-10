@@ -207,6 +207,62 @@ async def stream_assistant_deltas(
     return seq
 
 
+# Granted-scope -> human capability phrase. Driven by scopes (not the tools loaded
+# this run) so the model always knows what it can do, even when keyword routing
+# didn't load those tools this turn.
+_SCOPE_CAPABILITY: list[tuple[str, str]] = [
+    ("web.", "browse the web and read web pages"),
+    ("email.", "read and send email"),
+    ("brain.", "look up the organization's internal knowledge base"),
+    ("system.file_", "read and write files on the user's computer"),
+    ("system.gui_control", "control desktop applications"),
+]
+
+
+def describe_capabilities(granted_scopes: set[str], tools: list[dict[str, Any]]) -> str:
+    """Natural-language capability summary for the system prompt.
+
+    Capabilities come from the agent's GRANTED SCOPES (stable regardless of which
+    tools a given run loads). The tool list reflects what is actually callable this
+    run. Without this, models answer capability questions from their training prior
+    (e.g. "I can't browse the internet") even when tools are attached.
+    """
+    phrases: list[str] = []
+    for prefix, phrase in _SCOPE_CAPABILITY:
+        if any(s.startswith(prefix) for s in granted_scopes) and phrase not in phrases:
+            phrases.append(phrase)
+
+    tool_lines: list[str] = []
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name", "")).strip()
+        if not name or name in ("think", "done"):
+            continue
+        desc = str(fn.get("description", "")).strip().replace("\n", " ")
+        if len(desc) > 120:
+            desc = desc[:120] + "…"
+        tool_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+
+    parts: list[str] = [
+        "You have REAL, working tools and can take actions by calling them — you are "
+        "not a chat-only assistant."
+    ]
+    if phrases:
+        parts.append("You are able to " + ", ".join(phrases) + ".")
+    if tool_lines:
+        parts.append("Tools you can call right now:\n" + "\n".join(tool_lines[:30]))
+    parts.append(
+        "When the user asks what you can do, or whether you can do something, answer "
+        "based on these capabilities. Never claim you are unable to do something your "
+        "tools enable (for example, do not say you cannot browse the internet when you "
+        "have web access). Prefer calling a tool to actually do the task rather than "
+        "asking the user to do it themselves."
+    )
+    return "\n\n".join(parts)
+
+
 async def run_backend_proxy_inference(
     http: QlixHttpClient,
     *,
@@ -257,6 +313,12 @@ async def run_backend_proxy_inference(
     usage_acc: dict[str, Any] = {}
     temperature = float(os.environ.get("QLIX_PROXY_TEMPERATURE", "0.2"))
     max_tokens = int(os.environ.get("QLIX_PROXY_MAX_TOKENS", "4096"))
+    # Context engineering: keep only the most recent N tool outputs verbatim in the
+    # re-sent message list; older ones are replaced with a tiny placeholder to save
+    # context/cost (the full outputs are still preserved in `executed_tools`).
+    keep_tool_msgs = int(os.environ.get("QLIX_PROXY_KEEP_TOOL_MSGS", "8"))
+    # Track the largest context we send to the model so we can report it once.
+    max_context_chars = 0
     content_out = ""
     inference_rounds = 0
     # Weak tool-callers (e.g. AI21 Jamba) sometimes run one tool then return empty
@@ -284,6 +346,10 @@ async def run_backend_proxy_inference(
                         messages.append({"role": "user", "content": f"[User guidance]: {msg}"})
             except Exception:
                 pass
+
+        context_chars = sum(len(str(m.get("content") or "")) for m in messages)
+        if context_chars > max_context_chars:
+            max_context_chars = context_chars
 
         proxy_result = await backend_proxy_chat_completion(
             http,
@@ -379,10 +445,16 @@ async def run_backend_proxy_inference(
                     return None
                 executor = tool_executors.get(name)
                 if executor:
-                    if inspect.iscoroutinefunction(executor):
-                        tool_out = await executor(args)
-                    else:
-                        tool_out = await asyncio.to_thread(executor, args)
+                    # A single tool raising must never fail the whole run. Turn any
+                    # exception into a failed tool result the model can read and
+                    # recover from (executors already prefix failures with "[failed] ").
+                    try:
+                        if inspect.iscoroutinefunction(executor):
+                            tool_out = await executor(args)
+                        else:
+                            tool_out = await asyncio.to_thread(executor, args)
+                    except Exception as exc:  # noqa: BLE001 - defensive boundary
+                        tool_out = f"[failed] {name} raised: {exc}"
                 else:
                     tool_out = (
                         f"Tool '{name}' is not available for this task. "
@@ -433,6 +505,18 @@ async def run_backend_proxy_inference(
                 sig = f"{name}\x00{args}"
                 executed_call_counts[sig] = executed_call_counts.get(sig, 0) + 1
                 messages.append({"role": "tool", "tool_call_id": tid, "content": tool_out_truncated})
+                # Surface tool failures to the UI: executors prefix failed results
+                # with "[failed] ". Carry an ok flag + short error so the activity
+                # timeline can render the failure inline instead of silently
+                # showing "Done".
+                tool_failed = isinstance(tool_out, str) and tool_out.startswith("[failed] ")
+                finished_data: dict[str, object] = {
+                    "message": "tool_finished",
+                    "tool": name,
+                    "ok": not tool_failed,
+                }
+                if tool_failed:
+                    finished_data["error"] = tool_out[len("[failed] ") :].strip()[:500]
                 seq = await emit_event(
                     http,
                     agent_id=agent_id,
@@ -440,7 +524,7 @@ async def run_backend_proxy_inference(
                     headers=headers,
                     seq=seq,
                     event_type="log",
-                    data={"message": "tool_finished", "tool": name},
+                    data=finished_data,
                 )
 
                 if should_capture_browser_frame(name):
@@ -504,6 +588,18 @@ async def run_backend_proxy_inference(
                         ),
                     }
                 )
+
+            # Tool-result clearing: keep only the most recent `keep_tool_msgs` tool
+            # outputs verbatim; replace the content of older ones with a short
+            # placeholder so we don't re-send stale dumps every round. Only the
+            # `content` is changed (messages are never removed), so the
+            # assistant tool_calls <-> tool_call_id pairing stays valid.
+            if keep_tool_msgs >= 0:
+                tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+                for i in tool_idxs[:-keep_tool_msgs] if keep_tool_msgs else tool_idxs:
+                    content = messages[i].get("content")
+                    if isinstance(content, str) and not content.startswith("[cleared:"):
+                        messages[i]["content"] = "[cleared: earlier tool output removed to save context]"
             continue
 
         content_out = proxy_result.content or ""
@@ -550,5 +646,21 @@ async def run_backend_proxy_inference(
         inference_rounds=inference_rounds,
         tools_executed=tool_names_ran,
         duration_ms=duration_ms,
+    )
+    # Context budget awareness: surface the peak context size (rough tokens ≈ chars/4)
+    # in the run timeline so growth is visible.
+    seq = await emit_event(
+        http,
+        agent_id=agent_id,
+        run_id=run_id,
+        headers=headers,
+        seq=seq,
+        event_type="log",
+        data={
+            "message": "context_size",
+            "peakChars": max_context_chars,
+            "approxTokens": max_context_chars // 4,
+            "rounds": inference_rounds,
+        },
     )
     return seq, content_out, duration_ms, inference_rounds, tool_names_ran, usage_acc, executed_tools

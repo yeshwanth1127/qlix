@@ -285,6 +285,31 @@ def _build_tool_executor_map(
     return executor_map
 
 
+def _build_system_prompt(
+    agent_description: str | None,
+    identity: AgentIdentity,
+    tools: list[dict[str, Any]],
+) -> str:
+    """Tell the model who it is and what it can actually do.
+
+    Without this, models answer capability questions from their training prior
+    (e.g. "I can't browse the internet") even when tools are attached. Capabilities
+    are derived from the agent's granted scopes (see `describe_capabilities`), so it
+    works for any tool the agent has — current or future.
+    """
+    from .runner_common import describe_capabilities
+
+    identity_line = (agent_description or "").strip() or (
+        "an autonomous AI agent running on the Qlix platform"
+    )
+    granted = (
+        set(identity.permission_scopes)
+        | set(identity.always_scopes)
+        | set(identity.jit_scopes)
+    )
+    return f"You are {identity_line}.\n\n" + describe_capabilities(granted, tools)
+
+
 async def _run_backend_proxy_inference(
     http: QlixHttpClient,
     *,
@@ -296,6 +321,7 @@ async def _run_backend_proxy_inference(
     model: str,
     enriched_prompt: str,
     selected_skills: list[str],
+    agent_description: str | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email tools."""
     import hashlib
@@ -305,7 +331,14 @@ async def _run_backend_proxy_inference(
 
     router = ToolRouter(identity, runner_runtime="cloud")
     instruction = enriched_prompt.split("\n\nSelected skills/tools:")[0].strip()
-    plan = router.plan_run(instruction, skill_filter=selected_skills or None)
+    # The agent's standing description is the trusted source of intent — a keyword-less
+    # prompt ("go", a greeting) shouldn't force-load tools, but a browsing agent's
+    # description should still steer routing to the right tool groups.
+    plan = router.plan_run(
+        instruction,
+        skill_filter=selected_skills or None,
+        context=agent_description or "",
+    )
     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
 
     tools = router.build_tool_definitions(plan)
@@ -322,6 +355,15 @@ async def _run_backend_proxy_inference(
     tools_json = json.dumps(tools, sort_keys=True)
     tools_hash = hashlib.md5(tools_json.encode()).hexdigest()[:8]
 
+    system_prompt = _build_system_prompt(agent_description, identity, tools)
+
+    # Capture UI screenshot frames whenever browser tools are in play, so the live
+    # preview shows up as soon as the model navigates/clicks — not only when the user
+    # explicitly asks to "see the browser". Set QLIX_BROWSER_LIVE_VIEW=0 to disable.
+    live_view_enabled = "web" in plan.groups and os.environ.get(
+        "QLIX_BROWSER_LIVE_VIEW", "1"
+    ).strip().lower() not in ("0", "false", "off", "no")
+
     return await run_backend_proxy_inference(
         http,
         identity=identity,
@@ -336,6 +378,8 @@ async def _run_backend_proxy_inference(
         tools_hash=tools_hash,
         tools_schema_bytes=len(tools_json),
         log=default_log("cloud_runner"),
+        system_prompt=system_prompt,
+        live_view_enabled=live_view_enabled,
     )
 
 
@@ -489,6 +533,12 @@ async def _poll_and_execute_loop() -> None:
                     use_brain=use_brain,
                     seq=seq,
                 )
+                # Prepend the agent's memory (recent conversation + saved facts/episodes/recipes),
+                # assembled by the backend and delivered on the poll response. Same mechanism as
+                # the brain context block above.
+                memory_block = run.get("memoryBlock")
+                if isinstance(memory_block, str) and memory_block.strip():
+                    prompt_for_skills = f"{memory_block.strip()}\n\n---\n\n{prompt_for_skills}"
                 enriched_prompt = prompt_for_skills
                 if isinstance(skills, list) and skills:
                     enriched_prompt = (
@@ -522,6 +572,7 @@ async def _poll_and_execute_loop() -> None:
                         model=model,
                         enriched_prompt=enriched_prompt,
                         selected_skills=selected_skills,
+                        agent_description=run.get("agentDescription"),
                     )
                 )
                 seq = await _emit_event(

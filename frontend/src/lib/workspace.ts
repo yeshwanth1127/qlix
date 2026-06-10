@@ -5,9 +5,9 @@ export function consoleRoutePrefix(workspaceKind: WorkspaceKind): string {
   return workspaceKind === "individual" ? "/individual" : "/organization";
 }
 
-/** Default home after sign-in/sign-up: overview lives under the workspace segment. */
+/** Default home after sign-in/sign-up: the AI Builder lives under the workspace segment. */
 export function consoleHomePath(workspaceKind: WorkspaceKind): string {
-  return `${consoleRoutePrefix(workspaceKind)}/overview`;
+  return `${consoleRoutePrefix(workspaceKind)}/agent-builder`;
 }
 
 export function userFirstName(displayName: string | null | undefined, email: string): string {

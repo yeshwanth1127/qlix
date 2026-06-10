@@ -10,22 +10,12 @@ export type PermissionScope =
   | 'brain.query'
   | 'brain.knowledge_read'
   | 'email.read'
-  | 'email.send';
+  | 'email.send'
+  | 'whatsapp.send';
 
-export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
-  'web.read',
-  'web.click',
-  'web.transaction',
-  'system.file_read',
-  'system.file_write',
-  'system.gui_control',
-  'finance.spend_50',
-  'finance.spend_100',
-  'brain.query',
-  'brain.knowledge_read',
-  'email.read',
-  'email.send',
-];
+// Derived from the canonical catalog (single source of truth). Re-exported here so
+// existing importers keep working.
+export { ALL_PERMISSION_SCOPES } from './scopeCatalog.js';
 
 export type AgentRuntime = 'cloud' | 'local' | 'hybrid';
 

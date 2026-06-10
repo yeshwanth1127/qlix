@@ -607,10 +607,13 @@ export function AgentChatPanel({
   const isOrgBrain = agent?.agentKind === "org_brain";
   const lastMsgFrames =
     messages.length > 0 ? messages[messages.length - 1]?.browserFrames : undefined;
+  // Only show the browser live view once a browser tool has actually run (frames
+  // arrive via `browser_frame` events). Don't show it merely because a run is in
+  // progress — a chat/greeting run never touches the browser.
   const showBrowserLive =
     agent?.runtime === "cloud" &&
     !isOrgBrain &&
-    (sending || browserFrames.length > 0 || (lastMsgFrames?.length ?? 0) > 0);
+    (browserFrames.length > 0 || (lastMsgFrames?.length ?? 0) > 0);
 
   if (!loading && isOrgBrain) {
     return (

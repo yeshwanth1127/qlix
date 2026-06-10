@@ -60,7 +60,7 @@ export function AppSidebar({
       ) : null}
       <nav
         className={cn(
-          "flex flex-1 flex-col gap-0.5 overflow-y-auto py-4",
+          "minimal-scrollbar flex flex-1 flex-col gap-0.5 overflow-y-auto py-4",
           org ? "space-y-0.5 px-2" : "px-1.5",
         )}
       >

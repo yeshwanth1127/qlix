@@ -33,9 +33,9 @@ export interface ConsoleNavItem {
  */
 export function getConsoleNavItems(routePrefix: string, billingExempt = false): ConsoleNavItem[] {
   const core: ConsoleNavItem[] = [
+    { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
-    { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
     { href: `${routePrefix}/active-runs`, label: "Active runs", icon: PlayCircle },
     { href: `${routePrefix}/teams`, label: "Teams", icon: UsersRound },
     { href: `${routePrefix}/ai-brain`, label: "AI Brain", icon: Brain },

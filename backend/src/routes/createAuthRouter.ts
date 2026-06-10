@@ -152,6 +152,7 @@ export function createAuthRouter(): Router {
         sendAuthCookie(response, result.token);
 
         response.status(201).json({
+          token: result.token,
           user: sessionUserPayload(result.user),
           organization: {
             id: result.organization.id,
@@ -223,6 +224,7 @@ export function createAuthRouter(): Router {
       sendAuthCookie(response, result.token);
 
       response.status(201).json({
+        token: result.token,
         user: sessionUserPayload(result.user),
         organization: {
           id: result.organization.id,
@@ -348,6 +350,7 @@ export function createAuthRouter(): Router {
       sendAuthCookie(response, result.token);
 
       response.status(201).json({
+        token: result.token,
         user: sessionUserPayload(result.user),
         organization: {
           id: result.organization.id,
@@ -409,6 +412,7 @@ export function createAuthRouter(): Router {
       sendAuthCookie(response, token);
 
       response.json({
+        token,
         user: sessionUserPayload(user),
         organization: {
           id: user.organization.id,
@@ -461,6 +465,7 @@ export function createAuthRouter(): Router {
       );
       sendAuthCookie(response, token);
       response.json({
+        token,
         user: sessionUserPayload(user),
         organization: {
           id: user.organization.id,

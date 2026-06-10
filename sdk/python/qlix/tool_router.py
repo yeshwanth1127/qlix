@@ -16,7 +16,7 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
     "files": ("system.file_read", "system.file_write"),
     "code": ("system.file_read",),
     "gui": ("system.gui_control",),
-    "comms": ("email.read", "email.send"),
+    "comms": ("email.read", "email.send", "whatsapp.send"),
     "knowledge": ("brain.query", "brain.knowledge_read"),
     "always": (),
 }
@@ -39,11 +39,18 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "url",
             "google",
             "search online",
+            "search the web",
+            "search for",
             "navigate to",
             "http",
             "https",
             "web page",
             "scrape",
+            "internet",
+            "research",
+            "look up",
+            "find out",
+            "online",
         }
     ),
     "files": frozenset(
@@ -109,6 +116,8 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "send mail",
             "reply",
             "outlook",
+            "whatsapp",
+            "whats app",
         }
     ),
     "knowledge": frozenset(
@@ -182,11 +191,16 @@ def classify_groups(
     if not selected:
         if runner_runtime == "hybrid":
             selected = {"files"} if is_read_only_file_intent(instruction) else {"files", "code"}
-        else:
-            selected = {"web"}
+        # Cloud: no keyword and no steer from the agent's description -> don't assume the
+        # user wants to browse. Offer only the always-on tools (think/done) so plain chat
+        # / greetings don't spin up the browser. Real browse requests match `web` keywords
+        # (or the agent's description does) and load web tools then.
 
     if runner_runtime == "hybrid" and "comms" in selected:
-        selected.discard("web")
+        # Email-on-hybrid shouldn't drag the browser in, but WhatsApp file delivery
+        # is commonly paired with a browser screenshot/PDF — keep web in that case.
+        if not any(kw in text for kw in ("whatsapp", "whats app")):
+            selected.discard("web")
 
     final: list[ToolGroup] = []
     for g in ("web", "files", "code", "gui", "comms", "knowledge", "always"):
@@ -245,6 +259,7 @@ class ToolRouter:
     ) -> list[dict[str, Any]]:
         from .cloud_browser_runtime import openai_browser_tool_definitions
         from .cloud_email_runtime import openai_email_tool_definitions
+        from .cloud_whatsapp_runtime import openai_whatsapp_tool_definitions
         from .agents3_runtime import openai_agents3_tool_definitions
         from .local_tool_definitions import (
             openai_always_tool_definitions,
@@ -269,6 +284,7 @@ class ToolRouter:
             )
         if "comms" in plan.groups:
             tools.extend(openai_email_tool_definitions(self.identity, sf))
+            tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
         if "knowledge" in plan.groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
         if "always" in plan.groups:
@@ -299,6 +315,7 @@ class ToolRouter:
             _effective_granted_scopes,
         )
         from .cloud_email_runtime import build_email_tool_executors
+        from .cloud_whatsapp_runtime import build_whatsapp_tool_executors
         from .agents3_runtime import build_agents3_executors
         from .luna.core.registry import ToolRegistry
 
@@ -385,6 +402,15 @@ class ToolRouter:
                 runner_token=runner_token,
             )
             executor_map.update(email_executors)
+            whatsapp_executors = build_whatsapp_tool_executors(
+                identity=self.identity,
+                skill_filter=sf,
+                agent_id=agent_id,
+                run_id=run_id,
+                backend_url=backend_url,
+                runner_token=runner_token,
+            )
+            executor_map.update(whatsapp_executors)
 
         if "knowledge" in plan.groups:
             def _brain_stub(_args: str) -> str:

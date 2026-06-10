@@ -9,14 +9,27 @@ export function loadJwtSecret(): string {
   return secret;
 }
 
+function extractBearerToken(authorization: string | undefined): string | undefined {
+  if (!authorization) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  const token = match?.[1]?.trim();
+  return token && token.length > 0 ? token : undefined;
+}
+
+function extractSessionToken(request: Request): string | undefined {
+  const cookie = request.cookies?.[AUTH_COOKIE_NAME] as string | undefined;
+  if (cookie) return cookie;
+  return extractBearerToken(request.headers.authorization);
+}
+
 /**
- * Requires a valid session cookie; attaches `req.auth`. Returns 401 when missing or invalid.
+ * Requires a valid session cookie or Bearer JWT; attaches `req.auth`. Returns 401 when missing or invalid.
  */
 export function authenticateUser(required: boolean) {
   return (request: Request, response: Response, next: NextFunction): void => {
     try {
       const secret = loadJwtSecret();
-      const raw = request.cookies?.[AUTH_COOKIE_NAME] as string | undefined;
+      const raw = extractSessionToken(request);
       if (!raw) {
         if (required) {
           response.status(401).json({ error: { code: 'unauthorized', message: 'Not signed in' } });

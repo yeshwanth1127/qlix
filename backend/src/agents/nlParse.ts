@@ -1,26 +1,23 @@
 import { openRouterChatCompletion } from '../llm/openrouterClient.js';
-import { ALL_PERMISSION_SCOPES, type PermissionScope } from './agents.types.js';
+import { type PermissionScope } from './agents.types.js';
 import { FORCE_JIT_SCOPES } from './jit.js';
+import { getBuildableScopes, type ScopeDef } from './scopeCatalog.js';
 import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
 
 const DEFAULT_NL_PARSE_MODEL = 'openrouter/anthropic/claude-3.5-sonnet';
 
-function isValidPermissionScope(s: unknown): s is PermissionScope {
-  return ALL_PERMISSION_SCOPES.includes(s as PermissionScope);
-}
-
-function sanitizeScopes(raw: unknown): PermissionScope[] {
+function sanitizeScopes(raw: unknown, allowed: Set<string>): PermissionScope[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter(isValidPermissionScope);
+  return raw.filter((s): s is PermissionScope => typeof s === 'string' && allowed.has(s));
 }
 
-function sanitizeAgentSpec(rawInput: unknown, fallbackName: string): NLAgentSpec {
+function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set<string>): NLAgentSpec {
   // The model can emit null / non-object entries; coerce so we never deref null.
   const raw: Record<string, unknown> =
     rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
-  const permissionScopes = sanitizeScopes(raw.permissionScopes);
-  const rawJit = sanitizeScopes(raw.jitScopes);
+  const permissionScopes = sanitizeScopes(raw.permissionScopes, allowed);
+  const rawJit = sanitizeScopes(raw.jitScopes, allowed);
   const scopeSet = new Set(permissionScopes);
   const jitScopes = [
     ...new Set([
@@ -60,10 +57,10 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string): NLAgentSpec
   };
 }
 
-function sanitizeWorkerSpec(rawInput: unknown, index: number): NLWorkerSpec {
+function sanitizeWorkerSpec(rawInput: unknown, index: number, allowed: Set<string>): NLWorkerSpec {
   const raw: Record<string, unknown> =
     rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
-  const base = sanitizeAgentSpec(raw, `Worker ${index + 1}`);
+  const base = sanitizeAgentSpec(raw, `Worker ${index + 1}`, allowed);
   return {
     ...base,
     role: String(raw.role ?? 'worker').slice(0, 80),
@@ -78,20 +75,30 @@ export class NLParseError extends Error {
   }
 }
 
-export async function parseAgentCreationPrompt(userPrompt: string, model?: string): Promise<AgentCreationPlan> {
+export async function parseAgentCreationPrompt(
+  userPrompt: string,
+  orgId: string | null,
+  model?: string,
+): Promise<AgentCreationPlan> {
   const resolvedModel = model?.trim() || DEFAULT_NL_PARSE_MODEL;
+
+  // Offer every scope enabled for this org (base + connector-gated), even if the
+  // connector isn't linked yet — the link is verified at run time, not build time.
+  // Skills-page-disabled scopes are still excluded.
+  const availableScopes: ScopeDef[] = await getBuildableScopes(orgId);
+  const allowed = new Set<string>(availableScopes.map((s) => s.id));
 
   const result = await openRouterChatCompletion(
     {
       model: resolvedModel,
       messages: [
-        { role: 'system', content: buildSystemPrompt() },
+        { role: 'system', content: buildSystemPrompt(availableScopes) },
         { role: 'user', content: userPrompt.slice(0, 5000) },
       ],
       temperature: 0.1,
       max_tokens: 2048,
       stream: false,
-      tools: [buildAgentToolSchema(), buildTeamToolSchema()],
+      tools: [buildAgentToolSchema(availableScopes), buildTeamToolSchema(availableScopes)],
       tool_choice: 'required',
     },
     { timeoutMs: 45_000, retries: 1 },
@@ -123,7 +130,7 @@ export async function parseAgentCreationPrompt(userPrompt: string, model?: strin
     }
     return {
       type: 'single',
-      agent: sanitizeAgentSpec(agentRaw, 'My Agent'),
+      agent: sanitizeAgentSpec(agentRaw, 'My Agent', allowed),
       rationale: String(obj.rationale ?? ''),
     };
   }
@@ -150,8 +157,8 @@ export async function parseAgentCreationPrompt(userPrompt: string, model?: strin
       team: {
         name: String(teamRaw.name ?? 'My Team').slice(0, 120),
         description: String(teamRaw.description ?? '').slice(0, 10000),
-        supervisor: sanitizeAgentSpec(supervisorRaw, 'Supervisor'),
-        workers: workersRaw.map((w, i) => sanitizeWorkerSpec(w as Record<string, unknown>, i)),
+        supervisor: sanitizeAgentSpec(supervisorRaw, 'Supervisor', allowed),
+        workers: workersRaw.map((w, i) => sanitizeWorkerSpec(w as Record<string, unknown>, i, allowed)),
         config: {
           maxParallelWorkers: typeof configRaw.maxParallelWorkers === 'number' ? configRaw.maxParallelWorkers : 3,
           subtaskTimeoutMs: typeof configRaw.subtaskTimeoutMs === 'number' ? configRaw.subtaskTimeoutMs : 180_000,

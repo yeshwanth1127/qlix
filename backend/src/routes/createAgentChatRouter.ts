@@ -1,8 +1,16 @@
 import { Router, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { writeFile, unlink } from 'node:fs/promises';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { enqueueAgentRun } from '../agentChat/agentRunService.js';
+import {
+  buildMemoryBlock,
+  extractAndStoreMemories,
+  updateConversationSummary,
+} from '../agentChat/agentMemory.service.js';
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
@@ -123,6 +131,52 @@ const whatsappSendDocumentBody = z.object({
   file_path: z.string().trim().min(1).max(4096),
   file_name: z.string().trim().min(1).max(255).optional(),
 });
+
+// Cloud runners don't share a filesystem with the WhatsApp service, so they upload
+// the file bytes (base64) instead of a path. ~28M base64 chars ≈ 20MB decoded.
+const whatsappSendFileBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  file_name: z.string().trim().min(1).max(255),
+  mimetype: z.string().trim().max(255).optional(),
+  content_base64: z.string().min(1).max(28_000_000),
+});
+
+/**
+ * Shared WhatsApp document delivery: verify the service + linked connector + live
+ * session, then hand the file path to the WhatsApp service. Returns a structured
+ * error so callers can map it to an HTTP status.
+ */
+async function deliverWhatsAppDocumentForAgent(
+  agentId: string,
+  filePath: string,
+  fileName: string | undefined,
+): Promise<{ ok: true } | { ok: false; status: number; code: string; message: string }> {
+  if (!isWhatsAppServiceConfigured()) {
+    return { ok: false, status: 409, code: 'whatsapp_not_configured', message: 'WhatsApp service is not configured on the backend' };
+  }
+  const connector = await getWhatsAppConnectorForAgent(agentId);
+  if (!connector) {
+    return { ok: false, status: 409, code: 'whatsapp_not_linked', message: 'WhatsApp is not linked for this agent. Link it in Connectors.' };
+  }
+
+  let session = await getWhatsAppSessionStatus(connector.id);
+  if (!session.connected) {
+    const restarted = await startWhatsAppSession(connector.id);
+    if (restarted.ok) {
+      await new Promise((r) => setTimeout(r, 2000));
+      session = await getWhatsAppSessionStatus(connector.id);
+    }
+  }
+  if (!session.connected) {
+    return { ok: false, status: 503, code: 'whatsapp_offline', message: 'WhatsApp session is offline — re-link WhatsApp in Connectors.' };
+  }
+
+  const sent = await sendWhatsAppDocument({ connectorId: connector.id, filePath, fileName });
+  if (!sent.ok) {
+    return { ok: false, status: 503, code: 'whatsapp_send_failed', message: sent.error ?? 'Document send failed' };
+  }
+  return { ok: true };
+}
 
 async function assertOwnsAgent(request: Request, agentId: string): Promise<{ userId: string; orgId: string }> {
   const auth = request.auth!;
@@ -473,7 +527,7 @@ export function createAgentChatRouter(): Router {
         response.json({ run: null });
         return;
       }
-      const [agentRow, waConnector] = await Promise.all([
+      const [agentRow, waConnector, memoryBlock] = await Promise.all([
         prisma.agent.findUnique({
           where: { id: agentId },
           select: { description: true, orgId: true, llmModel: true },
@@ -481,6 +535,15 @@ export function createAgentChatRouter(): Router {
         prisma.connectorAccount.findFirst({
           where: { whatsappDefaultAgentId: agentId },
           select: { id: true },
+        }),
+        buildMemoryBlock({
+          agentId,
+          userId: run.userId,
+          conversationId: run.conversationId,
+          currentPrompt: run.prompt,
+        }).catch((err) => {
+          console.error('[agent-memory] buildMemoryBlock failed', err instanceof Error ? err.message : err);
+          return null;
         }),
       ]);
       // Fall back to org-wide connector if no agent-specific one found
@@ -508,6 +571,7 @@ export function createAgentChatRouter(): Router {
           useBrain: run.useBrain,
           agentDescription: agentRow?.description ?? null,
           waConnectorId: waConnectorResolved?.id ?? null,
+          memoryBlock: memoryBlock ?? null,
         },
       });
     } catch (e: any) {
@@ -575,7 +639,7 @@ export function createAgentChatRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const run = await prisma.agentRun.findUnique({
         where: { id: runId },
-        select: { agentId: true, conversationId: true, userId: true, orgId: true },
+        select: { agentId: true, conversationId: true, userId: true, orgId: true, prompt: true, skills: true },
       });
       if (!run || run.agentId !== agentId) {
         response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
@@ -625,6 +689,29 @@ export function createAgentChatRouter(): Router {
 
       const { notifyWhatsappRunComplete } = await import('../whatsapp/whatsappChannel.service.js');
       void notifyWhatsappRunComplete(runId);
+
+      // Fire-and-forget: learn long-term memory (facts / episode / recipe) from this run.
+      // Never allowed to affect the run outcome.
+      const resultContent =
+        typeof parsed.data.result === 'string'
+          ? parsed.data.result
+          : JSON.stringify(parsed.data.result ?? {}, null, 2);
+      void extractAndStoreMemories({
+        agentId,
+        userId: run.userId,
+        orgId: run.orgId,
+        prompt: run.prompt,
+        resultContent,
+        ok: parsed.data.ok,
+        skills: run.skills ?? [],
+      }).catch((err) => {
+        console.error('[agent-memory] extractAndStoreMemories', err instanceof Error ? err.message : err);
+      });
+
+      // Fire-and-forget: fold older messages into the rolling conversation summary (compaction).
+      void updateConversationSummary(run.conversationId).catch((err) => {
+        console.error('[agent-memory] updateConversationSummary', err instanceof Error ? err.message : err);
+      });
 
       // Fire-and-forget: record run usage and post-execution billing
       if (parsed.data.ok && user?.email) {
@@ -857,42 +944,9 @@ export function createAgentChatRouter(): Router {
         response.status(400).json({ error: { code: 'invalid_body', message: 'file_path is required' } });
         return;
       }
-      if (!isWhatsAppServiceConfigured()) {
-        response.status(409).json({
-          error: { code: 'whatsapp_not_configured', message: 'WhatsApp service is not configured on the backend' },
-        });
-        return;
-      }
-      const connector = await getWhatsAppConnectorForAgent(agentId);
-      if (!connector) {
-        response.status(409).json({
-          error: { code: 'whatsapp_not_linked', message: 'WhatsApp is not linked for this agent. Link it in Connectors.' },
-        });
-        return;
-      }
-
-      let session = await getWhatsAppSessionStatus(connector.id);
-      if (!session.connected) {
-        const restarted = await startWhatsAppSession(connector.id);
-        if (restarted.ok) {
-          await new Promise((r) => setTimeout(r, 2000));
-          session = await getWhatsAppSessionStatus(connector.id);
-        }
-      }
-      if (!session.connected) {
-        response.status(503).json({
-          error: { code: 'whatsapp_offline', message: 'WhatsApp session is offline — re-link WhatsApp in Connectors.' },
-        });
-        return;
-      }
-
-      const sent = await sendWhatsAppDocument({
-        connectorId: connector.id,
-        filePath: parsed.data.file_path,
-        fileName: parsed.data.file_name,
-      });
-      if (!sent.ok) {
-        response.status(503).json({ error: { code: 'whatsapp_send_failed', message: sent.error ?? 'Document send failed' } });
+      const result = await deliverWhatsAppDocumentForAgent(agentId, parsed.data.file_path, parsed.data.file_name);
+      if (!result.ok) {
+        response.status(result.status).json({ error: { code: result.code, message: result.message } });
         return;
       }
       response.json({ ok: true, fileName: parsed.data.file_name ?? null });
@@ -905,6 +959,52 @@ export function createAgentChatRouter(): Router {
       response.status(500).json({
         error: { code: 'whatsapp_send_failed', message: 'WhatsApp document send failed' },
       });
+    }
+  });
+
+  // Runner (cloud): upload file bytes (base64) for WhatsApp delivery. Cloud runners
+  // can't pass a file_path the WhatsApp service can read, so the bytes are staged to
+  // a backend temp file and cleaned up after the send.
+  router.post('/:agentId/tools/whatsapp/send-file', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    let tmpPath: string | null = null;
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappSendFileBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'file_name and content_base64 are required' } });
+        return;
+      }
+      const buffer = Buffer.from(parsed.data.content_base64, 'base64');
+      if (buffer.length === 0) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'content_base64 decoded to empty file' } });
+        return;
+      }
+      const safeName = parsed.data.file_name.replace(/[^\w.\-]+/g, '_').slice(0, 120) || 'document';
+      tmpPath = join(tmpdir(), `qlix-wa-${randomUUID()}-${safeName}`);
+      await writeFile(tmpPath, buffer);
+
+      const result = await deliverWhatsAppDocumentForAgent(agentId, tmpPath, parsed.data.file_name);
+      if (!result.ok) {
+        response.status(result.status).json({ error: { code: result.code, message: result.message } });
+        return;
+      }
+      response.json({ ok: true, fileName: parsed.data.file_name });
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      console.error('whatsapp/send-file', err);
+      response.status(500).json({
+        error: { code: 'whatsapp_send_failed', message: 'WhatsApp file send failed' },
+      });
+    } finally {
+      if (tmpPath) {
+        await unlink(tmpPath).catch(() => {
+          /* best-effort cleanup */
+        });
+      }
     }
   });
 

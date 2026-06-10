@@ -123,16 +123,29 @@ def _build_find(params: dict[str, Any]) -> list[str]:
     return argv
 
 
+# `get <what>` subcommands that require a CSS selector argument.
+_GET_NEEDS_SELECTOR = frozenset({"text", "html", "value", "attr", "count", "box", "styles"})
+# Sensible whole-page defaults when the model omits the selector.
+_GET_DEFAULT_SELECTOR = {"html": "html", "text": "body"}
+
+
 def _build_get(params: dict[str, Any]) -> list[str]:
     what = str(params.get("what", "")).strip()
     if not what:
         raise ValueError("get requires what")
     argv = ["get", what]
     sel = params.get("selector")
-    if sel is not None and str(sel).strip():
-        argv.append(str(sel).strip())
-    attr = params.get("attribute")
-    if what == "attr" and attr is not None and str(attr).strip():
+    sel = str(sel).strip() if sel is not None else ""
+    if not sel and what in _GET_NEEDS_SELECTOR:
+        sel = _GET_DEFAULT_SELECTOR.get(what, "")
+        if not sel:
+            raise ValueError(f"get {what} requires a selector")
+    if sel:
+        argv.append(sel)
+    if what == "attr":
+        attr = params.get("attribute")
+        if attr is None or not str(attr).strip():
+            raise ValueError("get attr requires attribute")
         argv.append(str(attr).strip())
     return argv
 
@@ -586,7 +599,9 @@ AGENT_BROWSER_TOOL_DEFS: tuple[AgentBrowserToolDef, ...] = (
     AgentBrowserToolDef(
         "browser_ab_get",
         ("get",),
-        "Get page info: text, html, value, attr, title, url, count, box, styles.",
+        "Get page info: text, html, value, attr, title, url, count, box, styles. "
+        "A selector is required for text/html/value/attr/count/box/styles "
+        "(omit it for whole-page html/text); title/url/cdp-url take no selector.",
         {
             "type": "object",
             "properties": {
@@ -985,6 +1000,13 @@ def run_agent_browser_tool(
     if not hasattr(driver, "run_cli"):
         return False, "Browser driver does not support agent-browser CLI."
 
-    payload = driver.run_cli(argv)  # type: ignore[union-attr]
+    try:
+        payload = driver.run_cli(argv)  # type: ignore[union-attr]
+    except Exception as exc:
+        # The CLI driver raises on any non-success exit (bad args, element not
+        # found, navigation failure, daemon crash). Return it as a failed tool
+        # result so the model can read the error and recover — never let it
+        # propagate and fail the whole run.
+        return False, f"agent-browser {argv[0]} failed: {exc}"
     content = format_cli_result(payload, argv=argv)
     return bool(payload.get("success")), content

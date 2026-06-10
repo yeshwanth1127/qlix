@@ -38,6 +38,9 @@ model Organization {
   n8nWebhookSecretEnc   String? @map("n8n_webhook_secret_enc")
   n8nEmailReadPath      String  @default("/webhook/qlix-email-read") @map("n8n_email_read_path")
   n8nEmailSendPath      String  @default("/webhook/qlix-email-send") @map("n8n_email_send_path")
+
+  /// Deny-list of catalog scope ids disabled for this org (Skills page). Empty = all supported scopes enabled.
+  disabledScopes       String[] @default([]) @map("disabled_scopes")
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
@@ -68,6 +71,7 @@ model User {
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agents             Agent[]
   agentConversations AgentConversation[]
+  agentMemories      AgentMemory[]
   actionLogs         ActionLog[]
   approvals          Approval[]
   wallets            Wallet[]
@@ -204,6 +208,7 @@ model Agent {
   credentials          VerifiableCredential[]
   conversations        AgentConversation[]
   runs                 AgentRun[]
+  memories             AgentMemory[]
   runUsages            RunUsage[]
   supervisedTeams      Team[]       @relation("TeamSupervisor")
   teamMemberships      TeamMember[]
@@ -218,6 +223,11 @@ model AgentConversation {
   agentId   String   @map("agent_id")
   userId    String   @map("user_id") @db.Uuid
   orgId     String?  @map("org_id") @db.Uuid
+  /// Stage 2 compaction: rolling summary of messages older than the recent window.
+  /// Hard-capped (~2000 chars) and re-compressed on each update, so it can't snowball.
+  summary         String? @db.Text
+  /// How many of this conversation's messages are already folded into `summary`.
+  summarizedCount Int     @default(0) @map("summarized_count")
   createdAt DateTime @default(now()) @map("created_at")
 
   agent    Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -243,6 +253,29 @@ model AgentMessage {
 
   @@index([conversationId, createdAt])
   @@map("agent_messages")
+}
+
+/// Stage 1 agent memory: durable items remembered per agent + per user.
+/// `kind` is `fact` (semantic — things known about the user), `episode` (episodic —
+/// what happened in a past run), or `recipe` (procedural — an approach that worked).
+/// Plain text, no embeddings. Working memory reuses AgentMessage and is not stored here.
+model AgentMemory {
+  id        String   @id @default(cuid())
+  agentId   String   @map("agent_id")
+  userId    String   @map("user_id") @db.Uuid
+  orgId     String?  @map("org_id") @db.Uuid
+  /// `fact` | `episode` | `recipe`
+  kind      String
+  content   String   @db.Text
+  /// `auto` (extracted after a run) | `manual` (entered explicitly)
+  source    String   @default("auto")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, userId, kind, createdAt])
+  @@map("agent_memories")
 }
 
 /// Org-scoped knowledge collection for the AI Brain (RAG sources).

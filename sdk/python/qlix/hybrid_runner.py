@@ -17,6 +17,7 @@ from .http_client import QlixHttpClient
 from .identity import AgentIdentity, load_identity
 from .runner_common import (
     default_log,
+    describe_capabilities,
     emit_event,
     maybe_prepend_brain_context,
     run_backend_proxy_inference,
@@ -37,10 +38,25 @@ def _is_network_error(exc: Exception) -> bool:
     return isinstance(exc, HttpError) and getattr(exc, "status_code", None) == 0
 
 
-def _build_system_prompt(agent_description: str, wa_connector_id: str) -> str | None:
+def _build_system_prompt(
+    agent_description: str,
+    wa_connector_id: str,
+    identity: AgentIdentity,
+    tools: list[dict[str, Any]],
+) -> str | None:
     parts: list[str] = []
     if agent_description:
         parts.append(agent_description)
+
+    # General capability awareness (so the model never denies what its tools/scopes
+    # enable), derived from granted scopes (incl. approval-required JIT scopes) + the
+    # tools loaded this run.
+    granted = (
+        set(identity.permission_scopes)
+        | set(identity.always_scopes)
+        | set(identity.jit_scopes)
+    )
+    parts.append(describe_capabilities(granted, tools))
 
     # Steer the model to the dedicated tools instead of refusing or hand-rolling.
     parts.append(
@@ -349,7 +365,9 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             tools_schema_bytes=len(tools_json),
                             log=_log,
                             live_view_enabled=False,
-                            system_prompt=_build_system_prompt(agent_description, wa_connector_id),
+                            system_prompt=_build_system_prompt(
+                                agent_description, wa_connector_id, identity, tools
+                            ),
                         )
                     )
 

@@ -266,7 +266,7 @@ export function createAgentsRouter(): Router {
       return;
     }
     try {
-      const plan = await parseAgentCreationPrompt(parsed.data.prompt, parsed.data.model);
+      const plan = await parseAgentCreationPrompt(parsed.data.prompt, request.auth!.orgId, parsed.data.model);
       response.json({ plan });
     } catch (err) {
       if (err instanceof NLParseError) {

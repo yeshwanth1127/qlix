@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(Get-ChildItem \"d:\\\\ysw\\\\qlix\\\\backend\\\\prisma\\\\migrations\")",
-      "Bash(python -m pytest tests/ -q --ignore=tests/test_cloud_browser_runtime.py)"
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_cloud_browser_runtime.py)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Select-Object ProcessId, @{n='Cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(120,$_.CommandLine.Length\\)\\)}} | Format-Table -AutoSize -Wrap)",
+      "PowerShell(Stop-Process -Id 16828,22708,2688 -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(\"stopped\")",
+      "PowerShell($ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; New-Item -ItemType Directory -Force 'C:\\\\src' | Out-Null; $url='https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.44.1-stable.zip'; $dst='C:\\\\src\\\\flutter.zip'; Invoke-WebRequest -Uri $url -OutFile $dst; Write-Output \\(\"downloaded bytes: \" + \\(Get-Item $dst\\).Length\\))"
     ]
   }
 }

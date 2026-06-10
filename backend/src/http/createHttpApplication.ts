@@ -58,7 +58,7 @@ export function createHttpApplication(input: CreateHttpApplicationInput): Expres
     cors({
       origin: buildCorsOrigin(input),
       credentials: true,
-      allowedHeaders: ['Content-Type', 'X-QLIX-Device-Step-Up'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-QLIX-Device-Step-Up'],
     }),
   );
   application.use(cookieParser());

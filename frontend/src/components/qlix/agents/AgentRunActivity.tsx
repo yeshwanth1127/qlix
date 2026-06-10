@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Check, ChevronDown, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import {
   type ActivityStep,
   type ToolCategory,
@@ -11,6 +11,9 @@ import {
   toolCategoryIcon,
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
+
+/** Red treatment for a failed tool step's icon chip. */
+const ERROR_DOT_CLASS = "bg-red-500/15 ring-red-500/40 text-red-600 dark:text-red-300";
 
 /** Per-category chip styling for the small step icon. */
 function categoryDotClass(category: ToolCategory | undefined): string {
@@ -153,7 +156,12 @@ export function ActivityTimeline({
               <AnimatePresence initial={false}>
                 {steps.map((s, i) => {
                   const active = running && i === lastStepIdx;
-                  const Icon = s.category ? toolCategoryIcon(s.category) : Sparkles;
+                  const isError = s.tone === "error";
+                  const Icon = isError
+                    ? AlertTriangle
+                    : s.category
+                      ? toolCategoryIcon(s.category)
+                      : Sparkles;
                   return (
                     <motion.li
                       key={s.id}
@@ -167,7 +175,7 @@ export function ActivityTimeline({
                       <span
                         className={cn(
                           "relative z-10 mt-px flex size-5 shrink-0 items-center justify-center rounded-md ring-1",
-                          categoryDotClass(s.category),
+                          isError ? ERROR_DOT_CLASS : categoryDotClass(s.category),
                         )}
                         aria-hidden
                       >
@@ -185,13 +193,24 @@ export function ActivityTimeline({
                         <span
                           className={cn(
                             "text-[11px] font-medium leading-snug",
-                            active ? "text-[--text-primary]" : "text-[--text-primary]/90",
+                            isError
+                              ? "text-red-600 dark:text-red-300"
+                              : active
+                                ? "text-[--text-primary]"
+                                : "text-[--text-primary]/90",
                           )}
                         >
                           {s.label}
                         </span>
                         {s.detail ? (
-                          <span className="mt-0.5 block text-[10px] leading-snug text-[--text-secondary]">
+                          <span
+                            className={cn(
+                              "mt-0.5 block text-[10px] leading-snug",
+                              isError
+                                ? "break-words text-red-500/90 dark:text-red-300/80"
+                                : "text-[--text-secondary]",
+                            )}
+                          >
                             {s.detail}
                           </span>
                         ) : null}

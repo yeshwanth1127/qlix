@@ -1,20 +1,4 @@
-import { ALL_PERMISSION_SCOPES, type PermissionScope } from './agents.types.js';
-import { FORCE_JIT_SCOPES } from './jit.js';
-
-const SCOPE_DESCRIPTIONS: Record<PermissionScope, string> = {
-  'web.read': 'Read and navigate web pages, fetch URLs',
-  'web.click': 'Click links and interact with web UIs',
-  'web.transaction': 'Submit web forms, make online purchases',
-  'system.file_read': 'Read files from the local filesystem',
-  'system.file_write': 'Write or modify files on the local filesystem',
-  'system.gui_control': 'Control desktop applications via screen automation',
-  'finance.spend_50': 'Authorize financial transactions up to $50',
-  'finance.spend_100': 'Authorize financial transactions up to $100',
-  'brain.query': 'Query the organization AI brain for insights and answers',
-  'brain.knowledge_read': 'Read documents indexed in the org knowledge base',
-  'email.read': 'Read messages from a connected Gmail inbox',
-  'email.send': 'Send emails via a connected Gmail account',
-};
+import type { ScopeDef } from './scopeCatalog.js';
 
 const AGENT_REQUIRED = [
   'name',
@@ -28,42 +12,46 @@ const AGENT_REQUIRED = [
   'rationale',
 ];
 
-const AGENT_PROPERTIES_SCHEMA: Record<string, unknown> = {
-  name: { type: 'string', description: 'Short descriptive name, e.g. "Web Researcher"', maxLength: 120 },
-  description: {
-    type: 'string',
-    description: 'Task-specific system prompt for the agent. Be precise about what it does.',
-    maxLength: 10000,
-  },
-  permissionScopes: {
-    type: 'array',
-    description: 'Minimum set of permission scopes required. JIT-forced scopes must also appear in jitScopes.',
-    items: { type: 'string', enum: ALL_PERMISSION_SCOPES },
-  },
-  jitScopes: {
-    type: 'array',
-    description: 'Subset of permissionScopes requiring user approval on every invocation. Must include all JIT-forced scopes present in permissionScopes.',
-    items: { type: 'string', enum: ALL_PERMISSION_SCOPES },
-  },
-  runtime: {
-    type: 'string',
-    enum: ['cloud', 'hybrid', 'local'],
-    description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
-  },
-  model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/anthropic/claude-3.5-sonnet"' },
-  llmMode: {
-    type: 'string',
-    enum: ['proxy', 'direct'],
-    description: 'proxy for cloud/hybrid; direct or proxy for local.',
-  },
-  localInferenceMode: {
-    anyOf: [{ type: 'string', enum: ['local_llm', 'cloud_api'] }, { type: 'null' }],
-    description: 'null for cloud/hybrid; "local_llm" or "cloud_api" for local runtime.',
-  },
-  rationale: { type: 'string', description: 'Brief explanation of why these choices were made.' },
-};
+/** Agent property schema, with scope enums narrowed to the scopes available this request. */
+function agentPropertiesSchema(scopeIds: string[]): Record<string, unknown> {
+  return {
+    name: { type: 'string', description: 'Short descriptive name, e.g. "Web Researcher"', maxLength: 120 },
+    description: {
+      type: 'string',
+      description: 'Task-specific system prompt for the agent. Be precise about what it does.',
+      maxLength: 10000,
+    },
+    permissionScopes: {
+      type: 'array',
+      description: 'Minimum set of permission scopes required. JIT-forced scopes must also appear in jitScopes.',
+      items: { type: 'string', enum: scopeIds },
+    },
+    jitScopes: {
+      type: 'array',
+      description: 'Subset of permissionScopes requiring user approval on every invocation. Must include all JIT-forced scopes present in permissionScopes.',
+      items: { type: 'string', enum: scopeIds },
+    },
+    runtime: {
+      type: 'string',
+      enum: ['cloud', 'hybrid', 'local'],
+      description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
+    },
+    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/anthropic/claude-3.5-sonnet"' },
+    llmMode: {
+      type: 'string',
+      enum: ['proxy', 'direct'],
+      description: 'proxy for cloud/hybrid; direct or proxy for local.',
+    },
+    localInferenceMode: {
+      anyOf: [{ type: 'string', enum: ['local_llm', 'cloud_api'] }, { type: 'null' }],
+      description: 'null for cloud/hybrid; "local_llm" or "cloud_api" for local runtime.',
+    },
+    rationale: { type: 'string', description: 'Brief explanation of why these choices were made.' },
+  };
+}
 
-export function buildAgentToolSchema(): Record<string, unknown> {
+export function buildAgentToolSchema(scopes: ScopeDef[]): Record<string, unknown> {
+  const scopeIds = scopes.map((s) => s.id);
   return {
     type: 'function',
     function: {
@@ -75,7 +63,7 @@ export function buildAgentToolSchema(): Record<string, unknown> {
           rationale: { type: 'string', description: 'Why these permissions and runtime were chosen.' },
           agent: {
             type: 'object',
-            properties: AGENT_PROPERTIES_SCHEMA,
+            properties: agentPropertiesSchema(scopeIds),
             required: AGENT_REQUIRED,
             additionalProperties: false,
           },
@@ -87,7 +75,9 @@ export function buildAgentToolSchema(): Record<string, unknown> {
   };
 }
 
-export function buildTeamToolSchema(): Record<string, unknown> {
+export function buildTeamToolSchema(scopes: ScopeDef[]): Record<string, unknown> {
+  const scopeIds = scopes.map((s) => s.id);
+  const props = agentPropertiesSchema(scopeIds);
   return {
     type: 'function',
     function: {
@@ -105,7 +95,7 @@ export function buildTeamToolSchema(): Record<string, unknown> {
               supervisor: {
                 type: 'object',
                 description: 'Orchestrator agent that delegates to workers and synthesizes results.',
-                properties: AGENT_PROPERTIES_SCHEMA,
+                properties: props,
                 required: AGENT_REQUIRED,
                 additionalProperties: false,
               },
@@ -115,7 +105,7 @@ export function buildTeamToolSchema(): Record<string, unknown> {
                 items: {
                   type: 'object',
                   properties: {
-                    ...AGENT_PROPERTIES_SCHEMA,
+                    ...props,
                     role: {
                       type: 'string',
                       maxLength: 80,
@@ -153,13 +143,14 @@ export function buildTeamToolSchema(): Record<string, unknown> {
   };
 }
 
-export function buildSystemPrompt(): string {
-  const forceJitSet = new Set<string>(FORCE_JIT_SCOPES);
-  const scopeList = ALL_PERMISSION_SCOPES.map((s) => {
-    const jitTag = forceJitSet.has(s) ? ' [JIT-forced]' : '';
-    return `  ${s} — ${SCOPE_DESCRIPTIONS[s]}${jitTag}`;
-  }).join('\n');
-  const forceJitList = (FORCE_JIT_SCOPES as string[]).join(', ');
+export function buildSystemPrompt(scopes: ScopeDef[]): string {
+  const scopeList = scopes
+    .map((s) => `  ${s.id} — ${s.description}${s.forceJit ? ' [JIT-forced]' : ''}`)
+    .join('\n');
+  const forceJitList = scopes
+    .filter((s) => s.forceJit)
+    .map((s) => s.id)
+    .join(', ');
 
   return `You are an agent configuration expert for the Qlix AI agent platform.
 Call EXACTLY ONE of the provided tools — plan_single_agent or plan_team — based on the user description.
@@ -177,16 +168,14 @@ ${scopeList}
 - local: SDK-only, entirely on user's machine. llmMode can be "proxy" or "direct". localInferenceMode must be "local_llm" (local model) or "cloud_api" (proxy through Qlix).
 
 ## JIT scope rules
-JIT-forced scopes: ${forceJitList}
+JIT-forced scopes: ${forceJitList || '(none)'}
 - These MUST appear in BOTH permissionScopes AND jitScopes when requested.
 - Non-JIT scopes go ONLY in permissionScopes, never in jitScopes.
 - jitScopes must always be a subset of permissionScopes.
 
-## Delivery channel rule — CRITICAL
-WhatsApp, dashboard, and notifications are BUILT-IN delivery channels — never add permission scopes for them.
-Only add email.send if the agent's core task is sending emails (e.g. "send marketing emails", "reply to customers").
-Only add email.read if the agent must read the inbox (e.g. "monitor my inbox", "read emails").
-NEVER add email.send or email.read just because the user wants results delivered somewhere.
+## Scope selection rule
+Only request a scope when the agent's core task needs it. The dashboard and notifications are built-in delivery channels — never request a scope just to deliver results somewhere.
+Connector-gated scopes (e.g. email, WhatsApp) MAY be requested even if the connector isn't linked yet — the user links it in Connectors and the link is verified when the agent runs. Request such a scope only when the task explicitly involves that channel.
 
 ## Defaults
 - model: "openrouter/anthropic/claude-3.5-sonnet"

@@ -9,7 +9,7 @@ import { useSession } from "./session-context";
 function replaceWorkspaceSegment(pathname: string, target: WorkspaceKind): string {
   const prefix = consoleRoutePrefix(target);
   const tail = pathname.replace(/^\/(individual|organization)/, "") || "/";
-  const rest = tail === "/" ? "/overview" : tail;
+  const rest = tail === "/" ? "/agent-builder" : tail;
   return `${prefix}${rest}`;
 }
 

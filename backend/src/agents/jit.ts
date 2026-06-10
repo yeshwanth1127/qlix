@@ -1,13 +1,8 @@
 import type { PermissionScope } from './agents.types.js';
+import { FORCE_JIT_SCOPES } from './scopeCatalog.js';
 
-export const FORCE_JIT_SCOPES: PermissionScope[] = [
-  'web.transaction',
-  'system.file_write',
-  'system.gui_control',
-  'finance.spend_50',
-  'finance.spend_100',
-  'email.send',
-];
+// Re-exported for back-compat; the canonical list now lives in the scope catalog.
+export { FORCE_JIT_SCOPES };
 
 export interface JitSplit {
   jitScopes: PermissionScope[];
