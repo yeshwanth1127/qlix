@@ -114,7 +114,7 @@ function specToCreateBody(spec: NLAgentSpec | NLWorkerSpec, orgId: string | null
 }
 
 export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPageProps) {
-  const { refresh: refreshSession } = useSession();
+  const { session, refresh: refreshSession } = useSession();
   const submitLockRef = useRef(false);
 
   const [state, setState] = useState<FlowState>("idle");
@@ -225,9 +225,13 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
         setDoneResult({ type: "single", outputs });
 
       } else {
+        // Teams are workspace-scoped: member agents must carry the same org the
+        // team is created under (the user's own workspace) or the backend rejects
+        // them. For an individual workspace this is just their private org.
+        const teamOrgId = orgId ?? session?.user.orgId ?? null;
         // Supervisor
         setStep(0, { status: "active" });
-        const supRes = await createAgent(specToCreateBody(plan.team.supervisor, orgId), token);
+        const supRes = await createAgent(specToCreateBody(plan.team.supervisor, teamOrgId), token);
         if (!supRes.ok) { setStep(0, { status: "error", errorMessage: supRes.errorMessage }); throw new Error(supRes.errorMessage); }
         setStep(0, { status: "done" });
         outputs.push({ response: supRes.data, label: plan.team.supervisor.name });
@@ -237,7 +241,7 @@ export function NLAgentBuilderPage({ orgId, deviceVerified }: NLAgentBuilderPage
         for (let i = 0; i < plan.team.workers.length; i++) {
           const worker = plan.team.workers[i];
           setStep(i + 1, { status: "active" });
-          const wRes = await createAgent(specToCreateBody(worker, orgId), token);
+          const wRes = await createAgent(specToCreateBody(worker, teamOrgId), token);
           if (!wRes.ok) { setStep(i + 1, { status: "error", errorMessage: wRes.errorMessage }); throw new Error(wRes.errorMessage); }
           setStep(i + 1, { status: "done" });
           outputs.push({ response: wRes.data, label: worker.name });

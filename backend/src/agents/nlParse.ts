@@ -5,7 +5,7 @@ import { getBuildableScopes, type ScopeDef } from './scopeCatalog.js';
 import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
 
-const DEFAULT_NL_PARSE_MODEL = 'openrouter/anthropic/claude-3.5-sonnet';
+const DEFAULT_NL_PARSE_MODEL = 'openrouter/anthropic/claude-sonnet-4.6';
 
 function sanitizeScopes(raw: unknown, allowed: Set<string>): PermissionScope[] {
   if (!Array.isArray(raw)) return [];
@@ -16,7 +16,13 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
   // The model can emit null / non-object entries; coerce so we never deref null.
   const raw: Record<string, unknown> =
     rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
-  const permissionScopes = sanitizeScopes(raw.permissionScopes, allowed);
+  let permissionScopes = sanitizeScopes(raw.permissionScopes, allowed);
+  // The model often gives pure orchestrators / text-only writers zero scopes, but the
+  // create-agent API requires at least one. Fall back to the most benign available scope.
+  if (permissionScopes.length === 0) {
+    const fallback = allowed.has('web.read') ? 'web.read' : [...allowed][0];
+    if (fallback) permissionScopes = [fallback as PermissionScope];
+  }
   const rawJit = sanitizeScopes(raw.jitScopes, allowed);
   const scopeSet = new Set(permissionScopes);
   const jitScopes = [

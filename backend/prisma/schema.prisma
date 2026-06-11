@@ -11,55 +11,58 @@ datasource db {
 
 /// Top-level tenant. Users belong to an organization; agents usually do (`agents.org_id`), but `org_id` may be null for edge flows.
 model Organization {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
-  slug      String   @unique
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  slug          String   @unique
   /// `individual` | `organization` — chosen at signup; drives console routing and IA.
-  workspaceKind String @default("individual") @map("workspace_kind")
-  plan      String   @default("free")
-  createdAt DateTime @default(now()) @map("created_at")
+  workspaceKind String   @default("individual") @map("workspace_kind")
+  plan          String   @default("free")
+  createdAt     DateTime @default(now()) @map("created_at")
 
-  users        User[]
-  agents       Agent[]
+  users                     User[]
+  agents                    Agent[]
   brainKnowledgeCollections BrainKnowledgeCollection[]
-  wallets      Wallet[]
-  invitations  OrganizationInvitation[]
-  successfulEvents SuccessfulEvent[]
-  failedEvents     FailedEvent[]
-  usageMetricsDaily UsageMetricDaily[]
-  billingStatements BillingStatement[]
-  billingLogs       BillingLog[]
-  orgRateOverrides  OrgRateOverride[]
-  teams             Team[]
-  connectorAccounts ConnectorAccount[]
+  wallets                   Wallet[]
+  invitations               OrganizationInvitation[]
+  successfulEvents          SuccessfulEvent[]
+  failedEvents              FailedEvent[]
+  usageMetricsDaily         UsageMetricDaily[]
+  billingStatements         BillingStatement[]
+  billingLogs               BillingLog[]
+  orgRateOverrides          OrgRateOverride[]
+  teams                     Team[]
+  connectorAccounts         ConnectorAccount[]
+  mcpServers                McpServer[]
 
   /// Self-hosted n8n integration (encrypted webhook secret at rest).
-  n8nBaseUrl            String? @map("n8n_base_url")
-  n8nWebhookSecretEnc   String? @map("n8n_webhook_secret_enc")
-  n8nEmailReadPath      String  @default("/webhook/qlix-email-read") @map("n8n_email_read_path")
-  n8nEmailSendPath      String  @default("/webhook/qlix-email-send") @map("n8n_email_send_path")
+  n8nBaseUrl          String? @map("n8n_base_url")
+  n8nWebhookSecretEnc String? @map("n8n_webhook_secret_enc")
+  n8nEmailReadPath    String  @default("/webhook/qlix-email-read") @map("n8n_email_read_path")
+  n8nEmailSendPath    String  @default("/webhook/qlix-email-send") @map("n8n_email_send_path")
 
   /// Deny-list of catalog scope ids disabled for this org (Skills page). Empty = all supported scopes enabled.
-  disabledScopes       String[] @default([]) @map("disabled_scopes")
+  disabledScopes String[] @default([]) @map("disabled_scopes")
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
 model User {
-  id           String   @id @default(uuid()) @db.Uuid
-  orgId        String   @map("org_id") @db.Uuid
-  email        String   @unique
-  displayName  String?  @map("display_name")
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  email         String   @unique
+  displayName   String?  @map("display_name")
   /// `individual` | `organization` — mirrors signup choice; used for routing and authorization.
-  workspaceKind String  @default("individual") @map("workspace_kind")
+  workspaceKind String   @default("individual") @map("workspace_kind")
   /// Org RBAC: `owner` | `admin` | `member`. First signup to an org is always `owner`; invites use `admin` or `member` only.
-  role         String
+  role          String
   /// Platform-level privilege for internal operations (not org RBAC).
-  isSuperAdmin Boolean  @default(false) @map("is_super_admin")
-  publicKey    String?  @map("public_key")
-  biometricRef String?  @map("biometric_ref")
-  passwordHash String   @map("password_hash")
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  isSuperAdmin  Boolean  @default(false) @map("is_super_admin")
+  publicKey     String?  @map("public_key")
+  biometricRef  String?  @map("biometric_ref")
+  passwordHash  String   @map("password_hash")
+  isActive      Boolean  @default(true) @map("is_active")
+  /// Auto-provisioned exploration account (chat-first landing). Claimable via /auth/claim.
+  isGuest       Boolean  @default(false) @map("is_guest")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   /// Passkey / WebAuthn: credential id (base64url), stored after successful registration verify.
   webauthnCredentialId String? @map("webauthn_credential_id")
@@ -68,7 +71,7 @@ model User {
   webauthnCounter      Int     @default(0) @map("webauthn_counter")
   deviceVerified       Boolean @default(false) @map("device_verified")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  organization       Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agents             Agent[]
   agentConversations AgentConversation[]
   agentMemories      AgentMemory[]
@@ -78,10 +81,11 @@ model User {
   invitationsSent    OrganizationInvitation[] @relation("InvitationInviter")
   successfulEvents   SuccessfulEvent[]
   failedEvents       FailedEvent[]
-  teamsCreated       Team[]     @relation("TeamsCreated")
-  teamRunsStarted    TeamRun[]  @relation("TeamRunsStarted")
+  teamsCreated       Team[]                   @relation("TeamsCreated")
+  teamRunsStarted    TeamRun[]                @relation("TeamRunsStarted")
   connectorAccounts  ConnectorAccount[]
   nlBuilderHistory   NlBuilderHistory[]
+  mcpServersCreated  McpServer[]
 
   @@index([orgId])
   @@map("users")
@@ -89,24 +93,24 @@ model User {
 
 /// OAuth connector account (Google Gmail for email.read / email.send).
 model ConnectorAccount {
-  id             String    @id @default(uuid()) @db.Uuid
-  orgId          String    @map("org_id") @db.Uuid
-  userId         String    @map("user_id") @db.Uuid
-  provider       String
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String    @map("org_id") @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  provider               String
   /// `connected` | `revoked` | `error`
-  status         String    @default("connected")
-  scopes         String[]  @default([])
-  emailAddress   String?   @map("email_address")
+  status                 String    @default("connected")
+  scopes                 String[]  @default([])
+  emailAddress           String?   @map("email_address")
   /// Baileys owner JID (`919876543210@s.whatsapp.net`) when provider is `whatsapp_baileys`.
-  whatsappOwnerJid String? @map("whatsapp_owner_jid")
+  whatsappOwnerJid       String?   @map("whatsapp_owner_jid")
   /// Default agent for inbound WhatsApp commands for this workspace.
-  whatsappDefaultAgentId String? @map("whatsapp_default_agent_id")
+  whatsappDefaultAgentId String?   @map("whatsapp_default_agent_id")
   /// Default team for inbound WhatsApp when message has no @TeamName prefix.
-  whatsappDefaultTeamId  String? @map("whatsapp_default_team_id")
-  tokenEnc       String    @map("token_enc")
-  tokenExpiresAt DateTime? @map("token_expires_at")
-  connectedAt    DateTime  @default(now()) @map("connected_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  whatsappDefaultTeamId  String?   @map("whatsapp_default_team_id")
+  tokenEnc               String    @map("token_enc")
+  tokenExpiresAt         DateTime? @map("token_expires_at")
+  connectedAt            DateTime  @default(now()) @map("connected_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -141,22 +145,22 @@ model OrganizationInvitation {
 
 /// AI agent with DID and keys. `id` is a cuid string (references from action log / billing use text FKs).
 model Agent {
-  id     String @id @default(cuid())
-  userId String @map("user_id") @db.Uuid
+  id     String  @id @default(cuid())
+  userId String  @map("user_id") @db.Uuid
   /// Usually the owner org; optional when an agent is not yet tied to an org.
   orgId  String? @map("org_id") @db.Uuid
 
-  name   String
-  did    String @unique
+  name      String
+  did       String @unique
   publicKey String @map("public_key")
   status    String @default("active")
 
-  runtime String @default("cloud")
+  runtime            String  @default("cloud")
   /// DB column `model` — default LLM / runtime label (Prisma field cannot be named `model`).
-  llmModel String @default("claude-sonnet-4-6") @map("model")
+  llmModel           String  @default("claude-sonnet-4-6") @map("model")
   /// Where LLM calls go: `direct` (local engine / OpenRouter) or `proxy` (through Qlix backend).
   /// Constraint enforced in service layer: runtime=cloud + llmMode=direct is invalid.
-  llmMode String @default("proxy") @map("llm_mode")
+  llmMode            String  @default("proxy") @map("llm_mode")
   /// When `runtime` is `local`: `local_llm` vs `cloud_api`. Null when `runtime` is `cloud`.
   localInferenceMode String? @map("local_inference_mode")
 
@@ -200,38 +204,164 @@ model Agent {
   createdAt  DateTime  @default(now()) @map("created_at")
   lastActive DateTime? @map("last_active")
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  actionLogs           ActionLog[]
-  successfulEvents     SuccessfulEvent[]
-  failedEvents         FailedEvent[]
-  credentials          VerifiableCredential[]
-  conversations        AgentConversation[]
-  runs                 AgentRun[]
-  memories             AgentMemory[]
-  runUsages            RunUsage[]
-  supervisedTeams      Team[]       @relation("TeamSupervisor")
-  teamMemberships      TeamMember[]
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization     Organization?          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actionLogs       ActionLog[]
+  successfulEvents SuccessfulEvent[]
+  failedEvents     FailedEvent[]
+  credentials      VerifiableCredential[]
+  conversations    AgentConversation[]
+  runs             AgentRun[]
+  memories         AgentMemory[]
+  runUsages        RunUsage[]
+  supervisedTeams  Team[]                 @relation("TeamSupervisor")
+  teamMemberships  TeamMember[]
+  mcpBindings      AgentMcpBinding[]
 
   @@index([orgId])
   @@index([userId])
   @@map("agents")
 }
 
+/// A registered MCP (Model Context Protocol) server, org-scoped. Its tools are consumed by
+/// agents under full Qlix governance (scopes + JIT + signed audit ledger + pay-per-success).
+model McpServer {
+  id               String    @id @default(uuid()) @db.Uuid
+  orgId            String    @map("org_id") @db.Uuid
+  createdByUserId  String    @map("created_by_user_id") @db.Uuid
+  /// URL-safe id used in scope + actionType strings: `mcp.<slug>.<tool>`. Unique per org.
+  slug             String
+  name             String
+  description      String    @default("")
+  /// `http` (Streamable HTTP — cloud + hybrid) | `stdio` (local subprocess — hybrid only).
+  transport        String    @default("http")
+  /// http transport: endpoint URL.
+  endpointUrl      String?   @map("endpoint_url")
+  /// stdio transport: executable path/name.
+  command          String?
+  /// stdio transport: command arguments.
+  args             String[]  @default([])
+  /// `none` | `header` | `oauth`
+  authType         String    @default("none") @map("auth_type")
+  /// Encrypted JSON `{ headers?, env?, token? }` (AES-256-GCM via AGENT_SECRETS_KEY). Never sent to the browser.
+  secretEnc        String?   @map("secret_enc")
+  /// `connected` | `error` | `revoked` | `pending`
+  status           String    @default("pending")
+  protocolVersion  String?   @map("protocol_version")
+  serverInfo       Json?     @map("server_info")
+  lastError        String?   @map("last_error")
+  lastDiscoveredAt DateTime? @map("last_discovered_at")
+  enabled          Boolean   @default(true)
+  // ---- OAuth (authType = 'oauth') — discovered/registered metadata. Tokens + clientSecret
+  // live in the encrypted secretEnc JSON under `oauth`, never in plain columns. ----
+  oauthIssuer                 String?  @map("oauth_issuer")
+  oauthAuthorizationEndpoint  String?  @map("oauth_authorization_endpoint")
+  oauthTokenEndpoint          String?  @map("oauth_token_endpoint")
+  oauthRegistrationEndpoint   String?  @map("oauth_registration_endpoint")
+  /// RFC 8707 resource indicator (the protected MCP resource URL).
+  oauthResource               String?  @map("oauth_resource")
+  oauthClientId               String?  @map("oauth_client_id")
+  oauthScope                  String?  @map("oauth_scope")
+  /// Extra authorization-request query params as `k=v&k2=v2` (e.g. Google's
+  /// `access_type=offline&prompt=consent`, required to obtain a refresh token).
+  oauthAuthParams             String?  @map("oauth_auth_params")
+  /// True once a token has been obtained and not revoked.
+  oauthConnected              Boolean  @default(false) @map("oauth_connected")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User              @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  tools        McpServerTool[]
+  bindings     AgentMcpBinding[]
+  oauthSessions McpOAuthSession[]
+
+  @@unique([orgId, slug])
+  @@index([orgId])
+  @@map("mcp_servers")
+}
+
+/// In-flight OAuth authorization-code+PKCE dance. One row per "Connect" click; consumed
+/// (and deleted) by the callback. `state` is the single-use CSRF/lookup key.
+model McpOAuthSession {
+  id              String   @id @default(uuid()) @db.Uuid
+  mcpServerId     String   @map("mcp_server_id") @db.Uuid
+  state           String   @unique
+  codeVerifier    String   @map("code_verifier")
+  redirectUri     String   @map("redirect_uri")
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  expiresAtMs     BigInt   @map("expires_at_ms")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  server McpServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
+
+  @@index([mcpServerId])
+  @@map("mcp_oauth_sessions")
+}
+
+/// Cached tool catalog from an MCP server's `tools/list`, with governance derived from annotations.
+model McpServerTool {
+  id                String   @id @default(uuid()) @db.Uuid
+  mcpServerId       String   @map("mcp_server_id") @db.Uuid
+  name              String
+  description       String   @default("")
+  inputSchema       Json?    @map("input_schema")
+  annotations       Json?
+  /// `low` | `medium` | `high` — derived from annotations (readOnlyHint / destructiveHint).
+  riskLevel         String   @default("low") @map("risk_level")
+  /// `auto` | `jit` | `blocked` — default governance applied when binding the tool to an agent.
+  defaultGovernance String   @default("auto") @map("default_governance")
+  /// sha256(name + description + inputSchema) of the currently-advertised definition.
+  definitionHash    String   @map("definition_hash")
+  /// Last admin-approved definitionHash. Mismatch ⇒ re-approval required (tool-poisoning guard).
+  approvedHash      String?  @map("approved_hash")
+  /// Snapshot `{ description, inputSchema }` of the approved definition, kept so the UI can
+  /// show a before/after diff when a server later changes (poisons) the tool.
+  approvedDefinition Json?   @map("approved_definition")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  server McpServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
+
+  @@unique([mcpServerId, name])
+  @@index([mcpServerId])
+  @@map("mcp_server_tools")
+}
+
+/// Binds an MCP server to an agent and records which of its tools the agent may use.
+/// The matching `mcp.<slug>.<tool>` scopes are written onto the Agent's permission/jit scopes.
+model AgentMcpBinding {
+  id           String   @id @default(uuid()) @db.Uuid
+  agentId      String   @map("agent_id")
+  mcpServerId  String   @map("mcp_server_id") @db.Uuid
+  /// Allowed tool names, or `["*"]` for every tool on the server.
+  allowedTools String[] @default([]) @map("allowed_tools")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  agent  Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  server McpServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, mcpServerId])
+  @@index([agentId])
+  @@index([mcpServerId])
+  @@map("agent_mcp_bindings")
+}
+
 model AgentConversation {
-  id        String   @id @default(cuid())
-  agentId   String   @map("agent_id")
-  userId    String   @map("user_id") @db.Uuid
-  orgId     String?  @map("org_id") @db.Uuid
+  id              String   @id @default(cuid())
+  agentId         String   @map("agent_id")
+  userId          String   @map("user_id") @db.Uuid
+  orgId           String?  @map("org_id") @db.Uuid
   /// Stage 2 compaction: rolling summary of messages older than the recent window.
   /// Hard-capped (~2000 chars) and re-compressed on each update, so it can't snowball.
-  summary         String? @db.Text
+  summary         String?  @db.Text
   /// How many of this conversation's messages are already folded into `summary`.
-  summarizedCount Int     @default(0) @map("summarized_count")
-  createdAt DateTime @default(now()) @map("created_at")
+  summarizedCount Int      @default(0) @map("summarized_count")
+  createdAt       DateTime @default(now()) @map("created_at")
 
-  agent    Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user     User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent    Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages AgentMessage[]
   runs     AgentRun[]
 
@@ -248,7 +378,7 @@ model AgentMessage {
   content        String
   createdAt      DateTime @default(now()) @map("created_at")
 
-  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   AgentConversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   brainCitations BrainKnowledgeCitation[]
 
   @@index([conversationId, createdAt])
@@ -280,16 +410,16 @@ model AgentMemory {
 
 /// Org-scoped knowledge collection for the AI Brain (RAG sources).
 model BrainKnowledgeCollection {
-  id          String   @id @default(cuid())
-  orgId       String   @map("org_id") @db.Uuid
-  name        String
-  description String   @default("")
+  id            String   @id @default(cuid())
+  orgId         String   @map("org_id") @db.Uuid
+  name          String
+  description   String   @default("")
   /// Optional retention in days; null = platform default in app layer.
-  retentionDays Int?   @map("retention_days")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  retentionDays Int?     @map("retention_days")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  organization Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
   documents    BrainKnowledgeDocument[]
   citations    BrainKnowledgeCitation[]
 
@@ -321,11 +451,11 @@ model BrainKnowledgeDocument {
 }
 
 model BrainKnowledgeChunk {
-  id         String @id @default(cuid())
-  orgId      String @map("org_id") @db.Uuid
-  documentId String @map("document_id")
-  ordinal    Int
-  textContent String @map("text_content") @db.Text
+  id             String  @id @default(cuid())
+  orgId          String  @map("org_id") @db.Uuid
+  documentId     String  @map("document_id")
+  ordinal        Int
+  textContent    String  @map("text_content") @db.Text
   /// Populated when embedding pipeline exists.
   embeddingModel String? @map("embedding_model")
   /// Float array stored as JSON; populated async after ingest via OpenRouter embeddings.
@@ -349,9 +479,9 @@ model BrainKnowledgeCitation {
   excerpt        String   @db.Text
   createdAt      DateTime @default(now()) @map("created_at")
 
-  message    AgentMessage?             @relation(fields: [agentMessageId], references: [id], onDelete: SetNull)
-  collection BrainKnowledgeCollection  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  document   BrainKnowledgeDocument    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  message    AgentMessage?            @relation(fields: [agentMessageId], references: [id], onDelete: SetNull)
+  collection BrainKnowledgeCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  document   BrainKnowledgeDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([orgId])
   @@index([agentMessageId])
@@ -359,28 +489,28 @@ model BrainKnowledgeCitation {
 }
 
 model AgentRun {
-  id             String   @id @default(cuid())
-  agentId        String   @map("agent_id")
-  conversationId String   @map("conversation_id")
-  userId         String   @map("user_id") @db.Uuid
-  orgId          String?  @map("org_id") @db.Uuid
-  status         String   @default("queued")
+  id             String    @id @default(cuid())
+  agentId        String    @map("agent_id")
+  conversationId String    @map("conversation_id")
+  userId         String    @map("user_id") @db.Uuid
+  orgId          String?   @map("org_id") @db.Uuid
+  status         String    @default("queued")
   prompt         String
-  skills         String[] @default([])
+  skills         String[]  @default([])
   /// Normalized OpenRouter model id for proxy inference (`openrouter/provider/model`). Null = runner manifest default.
-  inferenceModel String?  @map("inference_model")
+  inferenceModel String?   @map("inference_model")
   /// When true, cloud runner prepends org brain context before proxy inference.
-  useBrain       Boolean  @default(false) @map("use_brain")
-  createdAt      DateTime @default(now()) @map("created_at")
+  useBrain       Boolean   @default(false) @map("use_brain")
+  createdAt      DateTime  @default(now()) @map("created_at")
   startedAt      DateTime? @map("started_at")
   finishedAt     DateTime? @map("finished_at")
   result         Json?
-  errorMessage   String?  @map("error_message")
+  errorMessage   String?   @map("error_message")
   /// Set when run is enqueued by team orchestration.
-  teamRunId      String?  @map("team_run_id")
-  teamId         String?  @map("team_id")
+  teamRunId      String?   @map("team_run_id")
+  teamId         String?   @map("team_id")
   /// supervisor | worker — role within the team run.
-  teamRole       String?  @map("team_role")
+  teamRole       String?   @map("team_role")
 
   agent        Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
   conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -413,19 +543,19 @@ model AgentRunEvent {
 
 /// Token usage and cost tracking for completed agent runs. One row per run; data sourced from OpenRouter inference events.
 model RunUsage {
-  id                String   @id @default(cuid())
-  runId             String   @unique @map("run_id")
-  agentId           String   @map("agent_id")
-  orgId             String?  @map("org_id") @db.Uuid
-  userId            String   @map("user_id") @db.Uuid
-  promptTokens      Int      @default(0) @map("prompt_tokens")
-  completionTokens  Int      @default(0) @map("completion_tokens")
-  totalTokens       Int      @default(0) @map("total_tokens")
-  totalCostUsd      Decimal  @default(0) @db.Decimal(18, 8) @map("total_cost_usd")
-  model             String?
-  provider          String?
-  openrouterGenId   String?  @map("openrouter_gen_id")
-  createdAt         DateTime @default(now()) @map("created_at")
+  id               String   @id @default(cuid())
+  runId            String   @unique @map("run_id")
+  agentId          String   @map("agent_id")
+  orgId            String?  @map("org_id") @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  totalTokens      Int      @default(0) @map("total_tokens")
+  totalCostUsd     Decimal  @default(0) @map("total_cost_usd") @db.Decimal(18, 8)
+  model            String?
+  provider         String?
+  openrouterGenId  String?  @map("openrouter_gen_id")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   agent Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -440,20 +570,20 @@ model RunUsage {
 /// Two are issued at agent creation: `identity` (humanVerified+deviceVerified) and `scope` (permission/jit/always).
 /// `claims` is the canonical JSON the signature was computed over; `signature` is the platform Ed25519 signature.
 model VerifiableCredential {
-  id          String   @id @default(cuid())
-  agentId     String   @map("agent_id")
-  agentDid    String   @map("agent_did")
+  id         String    @id @default(cuid())
+  agentId    String    @map("agent_id")
+  agentDid   String    @map("agent_did")
   /// `identity` | `scope` | `jit`
-  type        String
-  issuerDid   String   @map("issuer_did")
-  subjectDid  String   @map("subject_did")
-  claims      Json
-  signature   String
-  issuedAt    DateTime @default(now()) @map("issued_at")
-  expiresAt   DateTime? @map("expires_at")
-  revokedAt   DateTime? @map("revoked_at")
+  type       String
+  issuerDid  String    @map("issuer_did")
+  subjectDid String    @map("subject_did")
+  claims     Json
+  signature  String
+  issuedAt   DateTime  @default(now()) @map("issued_at")
+  expiresAt  DateTime? @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
 
-  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
   @@index([agentDid])
@@ -463,17 +593,17 @@ model VerifiableCredential {
 
 /// Append-only audit trail. Never update or delete rows in application code.
 model ActionLog {
-  id             String   @id @default(uuid()) @db.Uuid
-  agentId        String   @map("agent_id")
-  userId         String   @map("user_id") @db.Uuid
-  actionType     String   @map("action_type")
+  id             String @id @default(uuid()) @db.Uuid
+  agentId        String @map("agent_id")
+  userId         String @map("user_id") @db.Uuid
+  actionType     String @map("action_type")
   payload        Json
-  riskLevel      String   @map("risk_level")
+  riskLevel      String @map("risk_level")
   status         String
-  approvalStatus String   @map("approval_status")
+  approvalStatus String @map("approval_status")
   signature      String
-  prevHash       String   @map("prev_hash")
-  timestampMs    BigInt   @map("timestamp_ms")
+  prevHash       String @map("prev_hash")
+  timestampMs    BigInt @map("timestamp_ms")
 
   agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -522,17 +652,17 @@ model Wallet {
 
 /// Billing ledger entry tied to a wallet and optionally to the action that triggered it.
 model Transaction {
-  id          String   @id @default(uuid()) @db.Uuid
-  walletId    String   @map("wallet_id") @db.Uuid
-  actionLogId String?  @map("action_log_id") @db.Uuid
-  successfulEventId String? @map("successful_event_id") @db.Uuid
-  type        String
-  amount      Decimal  @db.Decimal(18, 8)
-  status      String
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                String   @id @default(uuid()) @db.Uuid
+  walletId          String   @map("wallet_id") @db.Uuid
+  actionLogId       String?  @map("action_log_id") @db.Uuid
+  successfulEventId String?  @map("successful_event_id") @db.Uuid
+  type              String
+  amount            Decimal  @db.Decimal(18, 8)
+  status            String
+  createdAt         DateTime @default(now()) @map("created_at")
 
-  wallet    Wallet     @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  actionLog ActionLog? @relation(fields: [actionLogId], references: [id], onDelete: SetNull)
+  wallet          Wallet           @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  actionLog       ActionLog?       @relation(fields: [actionLogId], references: [id], onDelete: SetNull)
   successfulEvent SuccessfulEvent? @relation(fields: [successfulEventId], references: [id], onDelete: SetNull)
 
   @@index([walletId, createdAt])
@@ -554,15 +684,15 @@ model BillingService {
 
 /// Plan pricing definition (e.g. free/starter/pro/enterprise).
 model PricingTier {
-  id String @id @default(uuid()) @db.Uuid
+  id                String   @id @default(uuid()) @db.Uuid
   /// Must match Organization.plan values.
-  name String @unique
-  monthlyPrice Decimal @db.Decimal(18, 8) @map("monthly_price")
-  includedSuccesses Int @default(0) @map("included_successes")
+  name              String   @unique
+  monthlyPrice      Decimal  @map("monthly_price") @db.Decimal(18, 8)
+  includedSuccesses Int      @default(0) @map("included_successes")
   /// Fallback per-success price when an event type lacks an explicit rate.
-  overageRate Decimal @db.Decimal(18, 8) @map("overage_rate")
-  description String?
-  createdAt DateTime @default(now()) @map("created_at")
+  overageRate       Decimal  @map("overage_rate") @db.Decimal(18, 8)
+  description       String?
+  createdAt         DateTime @default(now()) @map("created_at")
 
   eventRates EventRate[]
 
@@ -571,11 +701,11 @@ model PricingTier {
 
 /// Tier-level price for a specific event type (e.g. pro + passport_verify = $0.05).
 model EventRate {
-  id String @id @default(uuid()) @db.Uuid
-  pricingTierId String @map("pricing_tier_id") @db.Uuid
-  eventType String @map("event_type")
-  unitPrice Decimal @db.Decimal(18, 8) @map("unit_price")
-  createdAt DateTime @default(now()) @map("created_at")
+  id            String   @id @default(uuid()) @db.Uuid
+  pricingTierId String   @map("pricing_tier_id") @db.Uuid
+  eventType     String   @map("event_type")
+  unitPrice     Decimal  @map("unit_price") @db.Decimal(18, 8)
+  createdAt     DateTime @default(now()) @map("created_at")
 
   pricingTier PricingTier @relation(fields: [pricingTierId], references: [id], onDelete: Cascade)
 
@@ -586,13 +716,13 @@ model EventRate {
 
 /// Org-specific override for an event type, time-bounded (null effectiveTo = ongoing).
 model OrgRateOverride {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  eventType String @map("event_type")
-  unitPrice Decimal @db.Decimal(18, 8) @map("unit_price")
-  effectiveFrom DateTime @map("effective_from")
-  effectiveTo DateTime? @map("effective_to")
-  createdAt DateTime @default(now()) @map("created_at")
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  eventType     String    @map("event_type")
+  unitPrice     Decimal   @map("unit_price") @db.Decimal(18, 8)
+  effectiveFrom DateTime  @map("effective_from")
+  effectiveTo   DateTime? @map("effective_to")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -602,26 +732,26 @@ model OrgRateOverride {
 
 /// A successful, billable (or included/free) event for pay-per-success.
 model SuccessfulEvent {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  userId String @map("user_id") @db.Uuid
-  agentId String? @map("agent_id")
-  eventType String @map("event_type")
+  id                 String   @id @default(uuid()) @db.Uuid
+  orgId              String   @map("org_id") @db.Uuid
+  userId             String   @map("user_id") @db.Uuid
+  agentId            String?  @map("agent_id")
+  eventType          String   @map("event_type")
   /// Computed server-side (0 for included successes).
-  amountCharged Decimal @db.Decimal(18, 8) @map("amount_charged")
-  billingCycle String @map("billing_cycle")
+  amountCharged      Decimal  @map("amount_charged") @db.Decimal(18, 8)
+  billingCycle       String   @map("billing_cycle")
   /// Idempotency key unique per org (required for ingest).
-  successfulEventKey String @map("successful_event_key")
-  eventData Json? @map("event_data")
-  apiEndpoint String? @map("api_endpoint")
-  httpStatusCode Int? @map("http_status_code")
-  responseTimeMs Int? @map("response_time_ms")
-  occurredAt DateTime @map("occurred_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  successfulEventKey String   @map("successful_event_key")
+  eventData          Json?    @map("event_data")
+  apiEndpoint        String?  @map("api_endpoint")
+  httpStatusCode     Int?     @map("http_status_code")
+  responseTimeMs     Int?     @map("response_time_ms")
+  occurredAt         DateTime @map("occurred_at")
+  createdAt          DateTime @default(now()) @map("created_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
   transactions Transaction[]
 
   @@unique([orgId, successfulEventKey])
@@ -634,22 +764,22 @@ model SuccessfulEvent {
 
 /// Failed event captured for troubleshooting (no charge).
 model FailedEvent {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  userId String @map("user_id") @db.Uuid
-  agentId String? @map("agent_id")
-  eventType String @map("event_type")
-  errorMessage String? @map("error_message")
-  errorCode String? @map("error_code")
-  requestData Json? @map("request_data")
-  apiEndpoint String? @map("api_endpoint")
-  httpStatusCode Int? @map("http_status_code")
-  occurredAt DateTime @map("occurred_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @map("org_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  agentId        String?  @map("agent_id")
+  eventType      String   @map("event_type")
+  errorMessage   String?  @map("error_message")
+  errorCode      String?  @map("error_code")
+  requestData    Json?    @map("request_data")
+  apiEndpoint    String?  @map("api_endpoint")
+  httpStatusCode Int?     @map("http_status_code")
+  occurredAt     DateTime @map("occurred_at")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   @@index([orgId, occurredAt])
   @@index([orgId, createdAt])
@@ -658,14 +788,14 @@ model FailedEvent {
 
 /// Daily rollup for fast dashboards (per org + event type).
 model UsageMetricDaily {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  metricDate DateTime @map("metric_date") @db.Date
-  eventType String @map("event_type")
-  successfulCount Int @default(0) @map("successful_count")
-  failedCount Int @default(0) @map("failed_count")
-  revenueGenerated Decimal @default(0) @db.Decimal(18, 8) @map("revenue_generated")
-  createdAt DateTime @default(now()) @map("created_at")
+  id               String   @id @default(uuid()) @db.Uuid
+  orgId            String   @map("org_id") @db.Uuid
+  metricDate       DateTime @map("metric_date") @db.Date
+  eventType        String   @map("event_type")
+  successfulCount  Int      @default(0) @map("successful_count")
+  failedCount      Int      @default(0) @map("failed_count")
+  revenueGenerated Decimal  @default(0) @map("revenue_generated") @db.Decimal(18, 8)
+  createdAt        DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -676,18 +806,18 @@ model UsageMetricDaily {
 
 /// Monthly statement (invoice-like) even when using internal credits only.
 model BillingStatement {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  billingCycle String @map("billing_cycle")
-  status String @default("draft")
-  finalizedAt DateTime? @map("finalized_at")
-  subtotal Decimal @db.Decimal(18, 8)
-  total Decimal @db.Decimal(18, 8)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           String    @id @default(uuid()) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  billingCycle String    @map("billing_cycle")
+  status       String    @default("draft")
+  finalizedAt  DateTime? @map("finalized_at")
+  subtotal     Decimal   @db.Decimal(18, 8)
+  total        Decimal   @db.Decimal(18, 8)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  lineItems BillingStatementLineItem[]
+  organization Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  lineItems    BillingStatementLineItem[]
 
   @@unique([orgId, billingCycle])
   @@index([billingCycle])
@@ -695,14 +825,14 @@ model BillingStatement {
 }
 
 model BillingStatementLineItem {
-  id String @id @default(uuid()) @db.Uuid
-  billingStatementId String @map("billing_statement_id") @db.Uuid
-  eventType String @map("event_type")
-  description String?
-  quantity Int @default(0)
-  unitPrice Decimal @db.Decimal(18, 8) @map("unit_price")
-  amount Decimal @db.Decimal(18, 8)
-  createdAt DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(uuid()) @db.Uuid
+  billingStatementId String   @map("billing_statement_id") @db.Uuid
+  eventType          String   @map("event_type")
+  description        String?
+  quantity           Int      @default(0)
+  unitPrice          Decimal  @map("unit_price") @db.Decimal(18, 8)
+  amount             Decimal  @db.Decimal(18, 8)
+  createdAt          DateTime @default(now()) @map("created_at")
 
   billingStatement BillingStatement @relation(fields: [billingStatementId], references: [id], onDelete: Cascade)
 
@@ -712,13 +842,13 @@ model BillingStatementLineItem {
 
 /// Append-only log for billing engine/admin actions.
 model BillingLog {
-  id String @id @default(uuid()) @db.Uuid
-  orgId String @map("org_id") @db.Uuid
-  action String
-  details Json?
-  status String
-  errorMessage String? @map("error_message")
-  createdAt DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  action       String
+  details      Json?
+  status       String
+  errorMessage String?  @map("error_message")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -784,34 +914,34 @@ model TeamMember {
 
 /// A single execution of a team against a user-supplied goal.
 model TeamRun {
-  id              String    @id @default(cuid())
-  teamId          String    @map("team_id")
-  orgId           String    @map("org_id") @db.Uuid
-  startedByUserId String    @map("started_by_user_id") @db.Uuid
-  goal            String    @db.Text
+  id                String    @id @default(cuid())
+  teamId            String    @map("team_id")
+  orgId             String    @map("org_id") @db.Uuid
+  startedByUserId   String    @map("started_by_user_id") @db.Uuid
+  goal              String    @db.Text
   /// `web` | `whatsapp` — where the run was started.
-  sourceChannel     String  @default("web") @map("source_channel")
+  sourceChannel     String    @default("web") @map("source_channel")
   /// Connector UUID when started from WhatsApp.
-  sourceConnectorId String? @map("source_connector_id") @db.Uuid
+  sourceConnectorId String?   @map("source_connector_id") @db.Uuid
   /// `whatsapp` | `none` — where to send the final result.
-  replyChannel      String  @default("none") @map("reply_channel")
+  replyChannel      String    @default("none") @map("reply_channel")
   /// `queued` | `running` | `paused` | `completed` | `failed` | `canceled`
-  status          String    @default("queued")
+  status            String    @default("queued")
   /// Supervisor reasoning/planning steps (JSON array, append-only).
-  supervisorTrace Json      @default("[]") @map("supervisor_trace")
+  supervisorTrace   Json      @default("[]") @map("supervisor_trace")
   /// Artifacts produced during the run (JSON array of {type, name, content, agentId, createdAt}).
-  artifacts       Json      @default("[]")
+  artifacts         Json      @default("[]")
   /// JIT scope escalation requests made during this run.
-  scopeEscalations Json     @default("[]") @map("scope_escalations")
+  scopeEscalations  Json      @default("[]") @map("scope_escalations")
   /// Final synthesized result from the supervisor.
-  result          Json?
-  errorMessage    String?   @map("error_message")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  startedAt       DateTime? @map("started_at")
-  completedAt     DateTime? @map("completed_at")
+  result            Json?
+  errorMessage      String?   @map("error_message")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  startedAt         DateTime? @map("started_at")
+  completedAt       DateTime? @map("completed_at")
 
-  team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  startedBy User           @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
+  team           Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  startedBy      User                   @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
   events         TeamRunEvent[]
   a2aTasks       A2ATask[]
   agentRuns      AgentRun[]
@@ -841,11 +971,11 @@ model TeamRunChannelSession {
 
 /// Durable mid-run user guidance for cloud runners (replaces in-process Map).
 model RunInjection {
-  id          String   @id @default(cuid())
-  agentRunId  String   @map("agent_run_id")
-  message     String   @db.Text
-  createdAt   DateTime @default(now()) @map("created_at")
-  consumedAt  DateTime? @map("consumed_at")
+  id         String    @id @default(cuid())
+  agentRunId String    @map("agent_run_id")
+  message    String    @db.Text
+  createdAt  DateTime  @default(now()) @map("created_at")
+  consumedAt DateTime? @map("consumed_at")
 
   @@index([agentRunId, consumedAt])
   @@map("run_injections")
@@ -853,17 +983,17 @@ model RunInjection {
 
 /// Append-only event log for a TeamRun — the canonical execution record (event sourcing).
 model TeamRunEvent {
-  id          String @id @default(cuid())
-  runId       String @map("run_id")
-  teamId      String @map("team_id")
+  id          String  @id @default(cuid())
+  runId       String  @map("run_id")
+  teamId      String  @map("team_id")
   agentId     String? @map("agent_id")
   seq         Int
   /// task_delegated | tool_called | result_received | scope_requested | approval_granted | artifact_produced | subtask_completed | run_started | run_completed | run_failed | supervisor_step
-  eventType   String @map("event_type")
+  eventType   String  @map("event_type")
   payload     Json
   /// SHA-256 of previous event's payload (or "genesis" for seq=0).
-  prevHash    String @map("prev_hash")
-  timestampMs BigInt @map("timestamp_ms")
+  prevHash    String  @map("prev_hash")
+  timestampMs BigInt  @map("timestamp_ms")
 
   run TeamRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -898,7 +1028,7 @@ model A2ATask {
   startedAt     DateTime? @map("started_at")
   completedAt   DateTime? @map("completed_at")
 
-  run     TeamRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run      TeamRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
   agentRun AgentRun? @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
 
   @@index([runId])
@@ -923,11 +1053,11 @@ model NlBuilderHistory {
 
 /// Periodic Merkle roots over the action log hash chain for tamper evidence.
 model MerkleCheckpoint {
-  id             String   @id @default(uuid()) @db.Uuid
-  fromTimestampMs BigInt  @map("from_timestamp_ms")
-  toTimestampMs   BigInt  @map("to_timestamp_ms")
-  merkleRoot      String  @map("merkle_root")
-  entryCount      Int     @map("entry_count")
+  id              String   @id @default(uuid()) @db.Uuid
+  fromTimestampMs BigInt   @map("from_timestamp_ms")
+  toTimestampMs   BigInt   @map("to_timestamp_ms")
+  merkleRoot      String   @map("merkle_root")
+  entryCount      Int      @map("entry_count")
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@map("merkle_checkpoints")

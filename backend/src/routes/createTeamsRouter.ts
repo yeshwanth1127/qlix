@@ -8,8 +8,8 @@ import { buildAgentCard } from '../agents/agentCard.js';
 import { resolveDockerBackendUrl } from '../agents/sdkAgentFile.js';
 import { AgentsService } from '../agents/agents.service.js';
 import { ALL_PERMISSION_SCOPES, type PermissionScope } from '../agents/agents.types.js';
-import { verifyAgentCreateStepUpToken } from '../lib/authTokens.js';
-import { authenticateUser, loadJwtSecret } from '../middleware/authenticateUser.js';
+import { authenticateUser } from '../middleware/authenticateUser.js';
+import { checkStepUpOrGuest } from '../lib/stepUpOrGuest.js';
 import {
   AgentConfirmNameMismatchError,
   AgentDeleteForbiddenError,
@@ -115,16 +115,9 @@ export function createTeamsRouter(): Router {
       return;
     }
 
-    const stepUpHeader = req.headers['x-qlix-device-step-up'];
-    const stepUpToken = typeof stepUpHeader === 'string' ? stepUpHeader.trim() : '';
-    if (!stepUpToken) {
-      res.status(403).json({ error: { code: 'step_up_required', message: 'Device step-up required to create a team' } });
-      return;
-    }
-    try {
-      verifyAgentCreateStepUpToken(stepUpToken, loadJwtSecret(), req.auth!.userId);
-    } catch {
-      res.status(403).json({ error: { code: 'step_up_invalid_or_expired', message: 'Step-up token invalid or expired' } });
+    const stepUp = await checkStepUpOrGuest(req);
+    if (!stepUp.ok) {
+      res.status(stepUp.status).json({ error: { code: stepUp.code, message: stepUp.message } });
       return;
     }
 

@@ -1,4 +1,4 @@
-import type { Agent as PrismaAgent } from '@prisma/client';
+import type { Agent as PrismaAgent, Prisma } from '@prisma/client';
 import { DeviceVerificationService } from '../deviceVerification/deviceVerification.js';
 import { prisma } from '../lib/prisma.js';
 import type { AgentDTO, AgentRuntime, LocalInferenceMode, LlmMode, PermissionScope } from './agents.types.js';
@@ -140,9 +140,27 @@ export class AgentsRepository {
     return found ? toDTO(found) : null;
   }
 
-  async listForUser(userId: string, orgId: string | null): Promise<AgentDTO[]> {
+  /**
+   * Lists agents for a workspace. When `orgId` is provided the query is org-scoped.
+   * For an individual workspace (`orgId` null) it returns every agent owned by the
+   * user, whether it was stored with no org (`orgId: null`, e.g. single builder
+   * agents) or carries the user's personal workspace org (`workspaceOrgId`, e.g.
+   * team-built agents). Without the union those two storage conventions would each
+   * be visible on only one surface (Agents page vs. dashboard).
+   */
+  async listForUser(
+    userId: string,
+    orgId: string | null,
+    workspaceOrgId: string | null = null,
+  ): Promise<AgentDTO[]> {
+    const where: Prisma.AgentWhereInput = orgId
+      ? { orgId }
+      : {
+          userId,
+          OR: [{ orgId: null }, ...(workspaceOrgId ? [{ orgId: workspaceOrgId }] : [])],
+        };
     const agents = await prisma.agent.findMany({
-      where: orgId ? { orgId } : { userId, orgId: null },
+      where,
       orderBy: { createdAt: 'desc' },
     });
     return agents.map(toDTO);

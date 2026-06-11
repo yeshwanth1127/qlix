@@ -28,8 +28,8 @@ import {
   resolveHybridStarterPlatform,
 } from '../agents/hybridStarterPack.js';
 import { ALL_PERMISSION_SCOPES, type PermissionScope } from '../agents/agents.types.js';
-import { verifyAgentCreateStepUpToken } from '../lib/authTokens.js';
-import { authenticateUser, loadJwtSecret } from '../middleware/authenticateUser.js';
+import { authenticateUser } from '../middleware/authenticateUser.js';
+import { checkStepUpOrGuest, checkGuestAgentCap } from '../lib/stepUpOrGuest.js';
 import { CloudProvisionFailedError, CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { dockerLogs, DockerNotAvailableError } from '../cloudRunners/dockerClient.js';
 import { dockerContainerName, legacyDockerContainerName } from '../cloudRunners/dockerNaming.js';
@@ -115,29 +115,17 @@ export function createAgentsRouter(): Router {
       return;
     }
 
-    const stepUpHeader = request.headers['x-qlix-device-step-up'];
-    const stepUpToken = typeof stepUpHeader === 'string' ? stepUpHeader.trim() : '';
-    if (!stepUpToken) {
-      response.status(403).json({
-        error: {
-          code: 'step_up_required',
-          message: 'Complete device verification (WebAuthn) immediately before creating an agent',
-        },
-      });
+    const stepUp = await checkStepUpOrGuest(request);
+    if (!stepUp.ok) {
+      response.status(stepUp.status).json({ error: { code: stepUp.code, message: stepUp.message } });
       return;
     }
-
-    try {
-      const secret = loadJwtSecret();
-      verifyAgentCreateStepUpToken(stepUpToken, secret, request.auth!.userId);
-    } catch {
-      response.status(403).json({
-        error: {
-          code: 'step_up_invalid_or_expired',
-          message: 'Device step-up token is missing, invalid, or expired; verify again',
-        },
-      });
-      return;
+    if (stepUp.isGuest) {
+      const capError = await checkGuestAgentCap(request.auth!.userId, 1);
+      if (capError) {
+        response.status(capError.status).json({ error: { code: capError.code, message: capError.message } });
+        return;
+      }
     }
 
     try {
@@ -300,22 +288,20 @@ export function createAgentsRouter(): Router {
       return;
     }
 
-    const stepUpHeader = request.headers['x-qlix-device-step-up'];
-    const stepUpToken = typeof stepUpHeader === 'string' ? stepUpHeader.trim() : '';
-    if (!stepUpToken) {
-      response.status(403).json({
-        error: { code: 'step_up_required', message: 'Complete device verification before creating agents' },
-      });
+    const stepUp = await checkStepUpOrGuest(request);
+    if (!stepUp.ok) {
+      response.status(stepUp.status).json({ error: { code: stepUp.code, message: stepUp.message } });
       return;
     }
-    try {
-      const secret = loadJwtSecret();
-      verifyAgentCreateStepUpToken(stepUpToken, secret, request.auth!.userId);
-    } catch {
-      response.status(403).json({
-        error: { code: 'step_up_invalid_or_expired', message: 'Device step-up token is missing, invalid, or expired; verify again' },
-      });
-      return;
+    if (stepUp.isGuest) {
+      const planForCount = parsed.data.plan as AgentCreationPlan;
+      const agentsToCreate =
+        planForCount.type === 'team' ? 1 + (planForCount.team?.workers?.length ?? 0) : 1;
+      const capError = await checkGuestAgentCap(request.auth!.userId, agentsToCreate);
+      if (capError) {
+        response.status(capError.status).json({ error: { code: capError.code, message: capError.message } });
+        return;
+      }
     }
 
     try {
@@ -400,7 +386,9 @@ export function createAgentsRouter(): Router {
       if (orgId) {
         await new BrainAgentService().normalizeOrgBrain(orgId);
       }
-      const agents = await service.listAgents(auth.userId, orgId);
+      // Individual workspace (no orgId param): also include agents that carry the
+      // caller's personal workspace org (e.g. team-built agents), not just orgId-null ones.
+      const agents = await service.listAgents(auth.userId, orgId, auth.orgId);
       response.json({ agents });
     } catch (err) {
       console.error('listAgents error', err);

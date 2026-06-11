@@ -8,6 +8,7 @@ import { getConsoleNavItems } from "@/lib/navigation/individualNav";
 import { canAccessBilling, canSeeOrgSettings } from "@/lib/org-permissions";
 import { AppSidebar } from "./app-sidebar";
 import { AppTopbar } from "./app-topbar";
+import { GuestClaimBanner } from "./GuestClaimBanner";
 import { StaggeredMenu, type StaggeredMenuHandle } from "./StaggeredMenu";
 import { useSession } from "./session-context";
 
@@ -104,6 +105,7 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
               isOrgConsole ? "max-w-[1800px] px-6" : "max-w-5xl px-8",
             )}
           >
+            <GuestClaimBanner />
             {children}
           </div>
         )}

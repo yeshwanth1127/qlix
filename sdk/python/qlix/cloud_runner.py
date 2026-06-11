@@ -322,8 +322,9 @@ async def _run_backend_proxy_inference(
     enriched_prompt: str,
     selected_skills: list[str],
     agent_description: str | None = None,
+    mcp_servers: Any = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
-    """Multi-turn proxy inference with ToolRouter-selected browser/email tools."""
+    """Multi-turn proxy inference with ToolRouter-selected browser/email/MCP tools."""
     import hashlib
 
     from .runner_common import default_log, run_backend_proxy_inference
@@ -341,15 +342,24 @@ async def _run_backend_proxy_inference(
     )
     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
 
-    tools = router.build_tool_definitions(plan)
+    tools = router.build_tool_definitions(plan, mcp_servers=mcp_servers)
     backend_url = os.environ.get("QLIX_BACKEND_URL", identity.backend_url).strip()
     runner_token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
+    # MCP tool calls are signed with the agent key (audit ledger + JIT + billing), so they
+    # need a QlixSDK bound to this identity. Only construct it when MCP servers are bound.
+    mcp_sdk = None
+    if mcp_servers:
+        from .sdk import QlixSDK
+
+        mcp_sdk = QlixSDK(identity=identity, http=http)
     tool_executors = router.build_executor_map(
         plan,
         agent_id=agent_id,
         run_id=run_id,
         backend_url=backend_url,
         runner_token=runner_token,
+        qlix_sdk=mcp_sdk,
+        mcp_servers=mcp_servers,
     )
 
     tools_json = json.dumps(tools, sort_keys=True)
@@ -573,6 +583,7 @@ async def _poll_and_execute_loop() -> None:
                         enriched_prompt=enriched_prompt,
                         selected_skills=selected_skills,
                         agent_description=run.get("agentDescription"),
+                        mcp_servers=run.get("mcpServers") or [],
                     )
                 )
                 seq = await _emit_event(

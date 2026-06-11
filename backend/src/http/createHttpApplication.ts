@@ -1,5 +1,5 @@
 import cookieParser from 'cookie-parser';
-import cors from 'cors';
+import cors, { type CorsOptions } from 'cors';
 import express, { type Express } from 'express';
 import helmet from 'helmet';
 import type { WebAuthnEnvironment } from '../config/loadEnvironmentConfig.js';
@@ -14,31 +14,27 @@ export interface CreateHttpApplicationInput {
   webAuthn: WebAuthnEnvironment;
 }
 
-function buildCorsOrigin(input: CreateHttpApplicationInput): string | string[] {
+function buildCorsOrigin(input: CreateHttpApplicationInput): CorsOptions['origin'] {
   if (input.nodeEnvironment === 'development') {
-    // Dev ergonomics: browsers treat `localhost` and `127.0.0.1` as different origins.
-    // If CORS doesn't match, credentialed requests fail and `Set-Cookie` won't be applied,
-    // which makes the SPA bounce back to `/sign-in` right after signup.
-    const primary = input.frontendUrl;
-    const alternates: string[] = [];
-
-    try {
-      const url = new URL(primary);
-      const host = url.hostname;
-      if (host === 'localhost') {
-        url.hostname = '127.0.0.1';
-        alternates.push(url.toString().replace(/\/$/, ''));
-      } else if (host === '127.0.0.1') {
-        url.hostname = 'localhost';
-        alternates.push(url.toString().replace(/\/$/, ''));
+    // Dev ergonomics: allow any loopback origin regardless of port. The SPA, the
+    // Flutter web client (which picks a random port each launch), and native
+    // clients (no Origin header) all need to talk to the API. Browsers also treat
+    // `localhost` and `127.0.0.1` as different origins, so match both.
+    return (origin, callback) => {
+      // No Origin header → non-browser client (Flutter native, curl). Always allow.
+      if (!origin) {
+        callback(null, true);
+        return;
       }
-    } catch {
-      // If FRONTEND_URL isn't parseable, fall back to the raw string.
-    }
-
-    const merged = [primary.replace(/\/$/, ''), ...alternates.map((o) => o.replace(/\/$/, ''))];
-    const unique = Array.from(new Set(merged));
-    return unique.length === 1 ? unique[0]! : unique;
+      let isLoopback = false;
+      try {
+        const host = new URL(origin).hostname;
+        isLoopback = host === 'localhost' || host === '127.0.0.1';
+      } catch {
+        isLoopback = false;
+      }
+      callback(isLoopback ? null : new Error(`Origin not allowed by CORS: ${origin}`), isLoopback);
+    };
   }
   if (input.corsOrigins.length > 0) {
     return input.corsOrigins;

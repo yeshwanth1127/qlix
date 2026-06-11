@@ -205,3 +205,32 @@ class _ErrorState extends StatelessWidget {
     );
   }
 }
+
+/// Agents list content without a Scaffold – used by [AppShell].
+class AgentsSectionBody extends ConsumerWidget {
+  const AgentsSectionBody({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final agentsAsync = ref.watch(agentsListProvider);
+    return RefreshIndicator(
+      onRefresh: () => ref.refresh(agentsListProvider.future),
+      child: agentsAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (err, _) => _ErrorState(
+          message: '$err',
+          onRetry: () => ref.invalidate(agentsListProvider),
+        ),
+        data: (agents) {
+          if (agents.isEmpty) return _EmptyState();
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: agents.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 12),
+            itemBuilder: (context, i) => _AgentCard(agent: agents[i]),
+          );
+        },
+      ),
+    );
+  }
+}

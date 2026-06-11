@@ -36,7 +36,7 @@ function agentPropertiesSchema(scopeIds: string[]): Record<string, unknown> {
       enum: ['cloud', 'hybrid', 'local'],
       description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
     },
-    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/anthropic/claude-3.5-sonnet"' },
+    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/anthropic/claude-sonnet-4.6"' },
     llmMode: {
       type: 'string',
       enum: ['proxy', 'direct'],
@@ -178,7 +178,7 @@ Only request a scope when the agent's core task needs it. The dashboard and noti
 Connector-gated scopes (e.g. email, WhatsApp) MAY be requested even if the connector isn't linked yet — the user links it in Connectors and the link is verified when the agent runs. Request such a scope only when the task explicitly involves that channel.
 
 ## Defaults
-- model: "openrouter/anthropic/claude-3.5-sonnet"
+- model: "openrouter/anthropic/claude-sonnet-4.6"
 - runtime: "cloud"
 - llmMode: "proxy"
 - localInferenceMode: null`;

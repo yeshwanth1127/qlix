@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/session.dart';
+import '../features/ai_builder/ai_builder_controller.dart';
 import '../repositories/agents_repository.dart';
 import '../repositories/auth_repository.dart';
 import '../repositories/chat_repository.dart';
+import '../repositories/nl_builder_repository.dart';
 import 'api_client.dart';
 import 'secure_store.dart';
 
@@ -116,4 +118,13 @@ final sessionControllerProvider =
   // apiClientProvider) so the providers don't form an initialization cycle.
   ref.read(apiClientProvider).onUnauthorized = controller.handleUnauthorized;
   return controller;
+});
+
+final nlBuilderRepositoryProvider = Provider<NlBuilderRepository>((ref) {
+  return NlBuilderRepository(client: ref.watch(apiClientProvider));
+});
+
+final builderControllerProvider =
+    StateNotifierProvider<BuilderController, BuilderState>((ref) {
+  return BuilderController(ref.watch(nlBuilderRepositoryProvider));
 });

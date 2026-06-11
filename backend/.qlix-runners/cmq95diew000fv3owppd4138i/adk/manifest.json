@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq95diew000fv3owppd4138i",
+  "did": "did:qlix:da8dd3952649bc4c",
+  "name": "Web Researcher",
+  "model": "",
+  "systemPrompt": "You are Web Researcher. Follow user intent safely and use tools when useful.",
+  "permissionScopes": [
+    "web.read",
+    "web.click"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read",
+    "web.click"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-11T07:00:01.113Z"
+}

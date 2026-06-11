@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/providers.dart';
-import 'features/agents/agents_list_screen.dart';
 import 'features/auth/sign_in_screen.dart';
+import 'features/shell/app_shell.dart';
 import 'theme.dart';
 
 class QlixApp extends StatelessWidget {
@@ -41,13 +41,11 @@ class _RootGateState extends ConsumerState<_RootGate> {
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(sessionControllerProvider).status;
-    // Workspace-kind routing: both individual and organization workspaces land
-    // on the agents surface for the chat-first MVP.
     return switch (status) {
       AuthStatus.unknown =>
         const Scaffold(body: Center(child: CircularProgressIndicator())),
       AuthStatus.unauthenticated => const SignInScreen(),
-      AuthStatus.authenticated => const AgentsListScreen(),
+      AuthStatus.authenticated => const AppShell(),
     };
   }
 }

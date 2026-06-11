@@ -24,6 +24,14 @@ const loginSchema = z.object({
   password: z.string().min(1).max(72),
 });
 
+const claimSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(8).max(72),
+  displayName: z.string().min(1).max(120).optional(),
+});
+
+const GUEST_EMAIL_DOMAIN = 'guest.qlix.local';
+
 const superAdminSignupSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(8).max(72),
@@ -369,6 +377,190 @@ export function createAuthRouter(): Router {
       }
       console.error('[auth/super-admin/signup]', error);
       response.status(500).json({ error: { code: 'internal_error', message: 'Super admin sign up failed' } });
+    }
+  });
+
+  // ── Guest exploration accounts ─────────────────────────────────────────────
+  // Auto-provisions a real user + individual workspace so the whole platform
+  // (agents, scopes, JIT, dashboard, wallet) works before sign-up. The account
+  // is flagged `isGuest` and can be claimed later via /claim — same row, so no
+  // data migration is needed.
+  router.post('/guest', async (_request: Request, response: Response) => {
+    try {
+      const secret = loadJwtSecret();
+      const guestId = crypto.randomBytes(6).toString('hex');
+      const email = `guest-${guestId}@${GUEST_EMAIL_DOMAIN}`;
+      // Random throwaway password — guests authenticate only via their session
+      // cookie; password login becomes possible after claiming the account.
+      const passwordHash = await hashPassword(crypto.randomBytes(24).toString('base64url'));
+
+      const orgDisplayName = `Guest Workspace ${guestId.slice(0, 4)}`;
+      const slug = await allocateOrganizationSlug(async (s) => {
+        const row = await prisma.organization.findUnique({ where: { slug: s } });
+        return row !== null;
+      }, orgDisplayName);
+
+      const result = await prisma.$transaction(async (tx) => {
+        const organization = await tx.organization.create({
+          data: {
+            name: orgDisplayName,
+            slug,
+            plan: 'free',
+            workspaceKind: 'individual',
+          },
+        });
+
+        const user = await tx.user.create({
+          data: {
+            orgId: organization.id,
+            email,
+            displayName: 'Explorer',
+            workspaceKind: 'individual',
+            role: 'owner',
+            passwordHash,
+            isGuest: true,
+          },
+        });
+
+        await tx.wallet.create({
+          data: { userId: user.id, currency: 'USD', balance: 0 },
+        });
+        await tx.wallet.create({
+          data: { orgId: organization.id, currency: 'USD', balance: 0 },
+        });
+
+        const token = signAuthToken(
+          {
+            sub: user.id,
+            orgId: organization.id,
+            email: user.email,
+            role: user.role,
+          },
+          secret,
+          SESSION_MAX_AGE_SEC,
+        );
+
+        return { user, organization, token };
+      });
+
+      sendAuthCookie(response, result.token);
+
+      response.status(201).json({
+        token: result.token,
+        user: sessionUserPayload(result.user),
+        organization: {
+          id: result.organization.id,
+          name: result.organization.name,
+          slug: result.organization.slug,
+          workspaceKind: result.organization.workspaceKind,
+          plan: result.organization.plan,
+        },
+      });
+    } catch (error) {
+      console.error('[auth/guest]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Guest session failed' } });
+    }
+  });
+
+  // Converts the current guest account into a real account in place — agents,
+  // conversations, history, and wallets all stay attached to the same user row.
+  router.post('/claim', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      const body = claimSchema.parse(request.body);
+      const auth = request.auth!;
+      const email = normalizeEmail(body.email);
+
+      if (email.endsWith(`@${GUEST_EMAIL_DOMAIN}`)) {
+        response.status(400).json({
+          error: { code: 'invalid_email', message: 'Choose a real email address for your account' },
+        });
+        return;
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: auth.userId },
+        include: { organization: true },
+      });
+      if (!user || !user.isActive) {
+        response.status(401).json({ error: { code: 'unauthorized', message: 'Account not found' } });
+        return;
+      }
+      if (!user.isGuest) {
+        response.status(400).json({
+          error: { code: 'not_a_guest', message: 'This account is already a full account' },
+        });
+        return;
+      }
+
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        response.status(409).json({
+          error: { code: 'email_taken', message: 'An account with this email already exists' },
+        });
+        return;
+      }
+
+      const passwordHash = await hashPassword(body.password);
+      const label = body.displayName?.trim() || email.split('@')[0] || 'Workspace';
+      const orgDisplayName = `${label}'s Workspace`;
+      const slug = await allocateOrganizationSlug(async (s) => {
+        const row = await prisma.organization.findUnique({ where: { slug: s } });
+        return row !== null;
+      }, orgDisplayName);
+
+      const secret = loadJwtSecret();
+      const result = await prisma.$transaction(async (tx) => {
+        const updatedUser = await tx.user.update({
+          where: { id: user.id },
+          data: {
+            email,
+            passwordHash,
+            displayName: body.displayName?.trim() ?? label,
+            isGuest: false,
+          },
+        });
+
+        const organization = await tx.organization.update({
+          where: { id: user.orgId },
+          data: { name: orgDisplayName, slug },
+        });
+
+        const token = signAuthToken(
+          {
+            sub: updatedUser.id,
+            orgId: organization.id,
+            email: updatedUser.email,
+            role: updatedUser.role,
+          },
+          secret,
+          SESSION_MAX_AGE_SEC,
+        );
+
+        return { user: updatedUser, organization, token };
+      });
+
+      sendAuthCookie(response, result.token);
+
+      response.json({
+        token: result.token,
+        user: sessionUserPayload(result.user),
+        organization: {
+          id: result.organization.id,
+          name: result.organization.name,
+          slug: result.organization.slug,
+          workspaceKind: result.organization.workspaceKind,
+          plan: result.organization.plan,
+        },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        response.status(400).json({
+          error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() },
+        });
+        return;
+      }
+      console.error('[auth/claim]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Claim failed' } });
     }
   });
 

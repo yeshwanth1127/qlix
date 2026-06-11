@@ -256,6 +256,7 @@ class ToolRouter:
     def build_tool_definitions(
         self,
         plan: ToolRouterResult,
+        mcp_servers: Any = None,
     ) -> list[dict[str, Any]]:
         from .cloud_browser_runtime import openai_browser_tool_definitions
         from .cloud_email_runtime import openai_email_tool_definitions
@@ -290,6 +291,18 @@ class ToolRouter:
         if "always" in plan.groups:
             tools.extend(openai_always_tool_definitions())
 
+        if mcp_servers:
+            from .cloud_mcp_runtime import openai_mcp_tool_definitions
+
+            tools.extend(
+                openai_mcp_tool_definitions(
+                    self.identity,
+                    mcp_servers,
+                    sf,
+                    runner_runtime=self.runner_runtime,
+                )
+            )
+
         return tools
 
     def build_executor_map(
@@ -304,6 +317,7 @@ class ToolRouter:
         run_cache: dict[str, str] | None = None,
         on_gui_frame: Any = None,
         agents3_context: Any = None,
+        mcp_servers: Any = None,
     ) -> dict[str, callable]:
         import json
 
@@ -427,5 +441,21 @@ class ToolRouter:
 
             executor_map.setdefault("think", _think)
             executor_map.setdefault("done", _done)
+
+        if mcp_servers and qlix_sdk is not None:
+            from .cloud_mcp_runtime import build_mcp_tool_executors
+
+            executor_map.update(
+                build_mcp_tool_executors(
+                    identity=self.identity,
+                    qlix_sdk=qlix_sdk,
+                    mcp_servers=mcp_servers,
+                    runner_runtime=self.runner_runtime,
+                    skill_filter=sf,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                    agent_id=agent_id,
+                )
+            )
 
         return executor_map

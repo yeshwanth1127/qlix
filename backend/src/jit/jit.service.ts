@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { verifySignature } from '../agents/keypair.js';
 import { canonicalize } from '../actions/canonical.js';
+import { scopeRequiresJit } from '../actions/jitScope.js';
 import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
 import { prisma } from '../lib/prisma.js';
 import { getWhatsAppConnectorForAgent } from '../connectors/whatsappConnector.service.js';
@@ -228,7 +229,10 @@ export class JitService {
     await assertSignature(signedPayload, signature, agent.publicKey);
 
     const scopes = agent.jitScopes as string[];
-    if (!scopes.includes(signedPayload.actionType)) {
+    // Use the shared matcher so a whole-server `mcp.<slug>.*` jitScope covers a
+    // per-tool `mcp.<slug>.<tool>` request — otherwise wildcard-bound (stdio) servers
+    // can never have their tool calls approved, even though `/actions/start` allows them.
+    if (!scopeRequiresJit(scopes, signedPayload.actionType)) {
       throw new NotJitScopeError(`Action ${signedPayload.actionType} is not a JIT scope for this agent`);
     }
 

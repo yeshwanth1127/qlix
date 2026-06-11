@@ -177,11 +177,11 @@ export interface RuntimeStatusResponse {
  * The inference proxy strips one `openrouter/` prefix before calling OpenRouter’s API (see `openrouterClient.ts`).
  */
 export const CLOUD_MODELS = [
-  "openrouter/anthropic/claude-3.5-sonnet",
+  "openrouter/anthropic/claude-sonnet-4.6",
   "openrouter/openai/gpt-4o",
   "openrouter/openai/gpt-4o-mini",
-  "openrouter/google/gemini-2.0-flash-001",
-  "openrouter/qwen/qwen2.5-72b-instruct",
+  "openrouter/google/gemini-2.5-flash",
+  "openrouter/qwen/qwen-2.5-72b-instruct",
 ] as const;
 
 export const LOCAL_MODELS = ["qwen3:8b", "llama3.1:8b", "mistral:7b"] as const;

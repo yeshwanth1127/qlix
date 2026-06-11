@@ -81,6 +81,17 @@ class QlixSDK:
     async def aclose(self) -> None:
         from qlix.luna._gate import clear_active_sdk
 
+        # Close any MCP connection pools registered against this SDK (stdio subprocesses /
+        # httpx sessions opened by build_mcp_tool_executors). Best-effort; never block close.
+        pools = getattr(self, "_mcp_pools", None)
+        if isinstance(pools, list):
+            for pool in pools:
+                try:
+                    await pool.aclose()
+                except Exception:
+                    pass
+            pools.clear()
+
         await self._http.aclose()
         clear_active_sdk()
 

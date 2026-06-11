@@ -14,6 +14,7 @@ import {
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
+import { McpRepository } from '../mcp/mcp.repository.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
 import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
@@ -527,7 +528,7 @@ export function createAgentChatRouter(): Router {
         response.json({ run: null });
         return;
       }
-      const [agentRow, waConnector, memoryBlock] = await Promise.all([
+      const [agentRow, waConnector, memoryBlock, mcpServers] = await Promise.all([
         prisma.agent.findUnique({
           where: { id: agentId },
           select: { description: true, orgId: true, llmModel: true },
@@ -544,6 +545,10 @@ export function createAgentChatRouter(): Router {
         }).catch((err) => {
           console.error('[agent-memory] buildMemoryBlock failed', err instanceof Error ? err.message : err);
           return null;
+        }),
+        new McpRepository().runtimeServersForAgent(agentId).catch((err) => {
+          console.error('[mcp] runtimeServersForAgent failed', err instanceof Error ? err.message : err);
+          return [];
         }),
       ]);
       // Fall back to org-wide connector if no agent-specific one found
@@ -572,6 +577,7 @@ export function createAgentChatRouter(): Router {
           agentDescription: agentRow?.description ?? null,
           waConnectorId: waConnectorResolved?.id ?? null,
           memoryBlock: memoryBlock ?? null,
+          mcpServers,
         },
       });
     } catch (e: any) {

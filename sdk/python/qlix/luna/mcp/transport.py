@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from qlix.luna.mcp.protocol import MCPRequest, MCPResponse
+
+# Cap how many interleaved notification/log lines we'll skip while waiting for the
+# matching JSON-RPC response, so a misbehaving server can't spin us forever.
+_MAX_SKIP_LINES = 1000
 
 if TYPE_CHECKING:
     from qlix.luna.mcp.server import MCPServer
@@ -58,23 +65,61 @@ class StdioTransport(MCPTransport):
     stdin/stdout.
     """
 
-    def __init__(self, command: List[str]) -> None:
+    def __init__(self, command: List[str], *, env: Optional[dict] = None) -> None:
         self._command = command
+        self._env = env
         self._process: Optional[subprocess.Popen[str]] = None
+        self._stderr_tail: deque[str] = deque(maxlen=50)
+        self._stderr_thread: Optional[threading.Thread] = None
         self._start()
 
     def _start(self) -> None:
-        """Start the subprocess."""
+        """Start the subprocess.
+
+        When ``env`` is provided it is layered on top of the current process
+        environment (so PATH etc. are preserved while server-specific secrets
+        like API keys are injected).
+
+        A daemon thread continuously drains stderr into a bounded ring buffer.
+        Without this, a chatty server fills the ~64 KB stderr pipe, blocks on its
+        own write, and deadlocks against our blocking ``stdout.readline()``.
+        """
+        import os
+
+        proc_env = None
+        if self._env:
+            proc_env = {**os.environ, **{str(k): str(v) for k, v in self._env.items()}}
         self._process = subprocess.Popen(
             self._command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=proc_env,
         )
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        """Continuously read stderr into a bounded buffer (kept for diagnostics)."""
+        proc = self._process
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            for line in proc.stderr:
+                self._stderr_tail.append(line.rstrip("\n"))
+        except Exception:
+            pass
 
     def send(self, request: MCPRequest) -> MCPResponse:
-        """Write request as JSON line, read response line."""
+        """Write the request as a JSON line and read back the matching response.
+
+        MCP stdio servers may interleave JSON-RPC notifications and log messages on
+        stdout. A naive "read one line" pairs our request with whatever line comes
+        next — often a notification — and mis-parses it as the response. Instead we
+        read until we see a response object whose ``id`` matches our request id,
+        skipping notifications (no/null id) and unrelated lines.
+        """
         proc = self._process
         if proc is None or proc.stdin is None or proc.stdout is None:
             raise RuntimeError("Transport process is not running")
@@ -83,16 +128,41 @@ class StdioTransport(MCPTransport):
         proc.stdin.write(line)
         proc.stdin.flush()
 
-        response_line = proc.stdout.readline()
-        if not response_line:
-            raise RuntimeError("No response from subprocess")
-        return MCPResponse.from_json(response_line.strip())
+        expected_id = request.id
+        for _ in range(_MAX_SKIP_LINES):
+            response_line = proc.stdout.readline()
+            if not response_line:
+                tail = "\n".join(self._stderr_tail)
+                raise RuntimeError(
+                    f"No response from subprocess. stderr:\n{tail}" if tail else "No response from subprocess"
+                )
+            stripped = response_line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue  # non-JSON noise on stdout
+            if not isinstance(parsed, dict):
+                continue
+            # Notifications / server-initiated requests have no response id to match.
+            if parsed.get("id") is None:
+                continue
+            # Compare loosely: some servers echo a numeric id back as a string.
+            if expected_id is not None and str(parsed.get("id")) != str(expected_id):
+                continue  # a response to some other request
+            return MCPResponse.from_json(stripped)
+
+        raise RuntimeError("No matching JSON-RPC response from subprocess (too many interleaved lines)")
 
     def close(self) -> None:
         """Terminate the subprocess."""
         if self._process is not None:
-            self._process.terminate()
-            self._process.wait(timeout=5)
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                pass
             self._process = None
 
 
@@ -108,6 +178,7 @@ class StreamableHTTPTransport(MCPTransport):
         self,
         url: str,
         *,
+        headers: Optional[dict] = None,
         connect_timeout: float = 10.0,
         request_timeout: float = 60.0,
     ) -> None:
@@ -115,6 +186,7 @@ class StreamableHTTPTransport(MCPTransport):
 
         self._url = url
         self._session_id: Optional[str] = None
+        self._extra_headers = {str(k): str(v) for k, v in (headers or {}).items()}
         self._client = httpx.Client(
             timeout=httpx.Timeout(
                 connect=connect_timeout,
@@ -137,6 +209,7 @@ class StreamableHTTPTransport(MCPTransport):
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        headers.update(self._extra_headers)
         if self._session_id is not None:
             headers["Mcp-Session-Id"] = self._session_id
         return headers

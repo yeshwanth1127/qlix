@@ -190,7 +190,8 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     ).strip()
                     skills = run.get("skills") or []
                     selected_skills = [str(s).strip() for s in skills if str(s).strip()]
-                    _log("run_claimed", run_id=run_id, skills=skills)
+                    mcp_servers = run.get("mcpServers") or []
+                    _log("run_claimed", run_id=run_id, skills=skills, mcp_servers=len(mcp_servers))
 
                     seq = await emit_event(
                         http,
@@ -281,7 +282,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         },
                     )
 
-                    tools = router.build_tool_definitions(plan)
+                    tools = router.build_tool_definitions(plan, mcp_servers=mcp_servers)
 
                     model = run_inference_model or str(
                         adk.manifest.get("model")
@@ -330,6 +331,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         qlix_sdk=qlix,
                         run_cache=run_cache,
                         agents3_context=agents3_context,
+                        mcp_servers=mcp_servers,
                     )
 
                     tools_json = json.dumps(tools, sort_keys=True)

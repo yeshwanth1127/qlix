@@ -41,6 +41,7 @@ export function sessionUserPayload(
     readonly orgId: string;
     readonly workspaceKind: string;
     readonly isSuperAdmin: boolean;
+    readonly isGuest: boolean;
   },
 ): {
   id: string;
@@ -50,6 +51,7 @@ export function sessionUserPayload(
   orgId: string;
   workspaceKind: string;
   isSuperAdmin: boolean;
+  isGuest: boolean;
   deviceVerified: boolean;
   billingExempt: boolean;
 } {
@@ -61,6 +63,7 @@ export function sessionUserPayload(
     orgId: user.orgId,
     workspaceKind: user.workspaceKind,
     isSuperAdmin: user.isSuperAdmin,
+    isGuest: user.isGuest,
     deviceVerified: isDeviceVerificationComplete(user),
     billingExempt: isBillingExempt(user.email),
   };
@@ -70,18 +73,26 @@ const userSelect = {
   deviceVerified: true,
   webauthnCredentialId: true,
   webauthnPublicKey: true,
+  isGuest: true,
 } as const;
 
 export class DeviceVerificationService {
   /**
    * Ensures the user has completed WebAuthn registration. Used before issuing agent keys, etc.
+   * Guest exploration accounts have no passkey by design and are waived (null credential).
    */
-  async assertUserVerified(userId: string): Promise<{ webauthnCredentialId: string }> {
+  async assertUserVerified(userId: string): Promise<{ webauthnCredentialId: string | null }> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: userSelect,
     });
-    if (!user || !isDeviceVerificationComplete(user)) {
+    if (!user) {
+      throw new DeviceNotVerifiedError();
+    }
+    if (user.isGuest) {
+      return { webauthnCredentialId: null };
+    }
+    if (!isDeviceVerificationComplete(user)) {
       throw new DeviceNotVerifiedError();
     }
     return { webauthnCredentialId: user.webauthnCredentialId! };

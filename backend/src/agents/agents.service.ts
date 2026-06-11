@@ -86,8 +86,12 @@ export class AgentsService {
     };
   }
 
-  async listAgents(userId: string, orgId: string | null): Promise<AgentDTO[]> {
-    return this.repo.listForUser(userId, orgId);
+  async listAgents(
+    userId: string,
+    orgId: string | null,
+    workspaceOrgId: string | null = null,
+  ): Promise<AgentDTO[]> {
+    return this.repo.listForUser(userId, orgId, workspaceOrgId);
   }
 
   async getAgent(id: string): Promise<AgentDTO | null> {

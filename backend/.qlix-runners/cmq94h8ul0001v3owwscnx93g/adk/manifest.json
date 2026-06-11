@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1",
+  "agentId": "cmq94h8ul0001v3owwscnx93g",
+  "did": "did:qlix:5f0dcca9bfa0633f",
+  "name": "Report Supervisor",
+  "model": "openrouter/anthropic/claude-sonnet-4.6",
+  "systemPrompt": "You are Report Supervisor. t",
+  "permissionScopes": [
+    "web.read"
+  ],
+  "jitScopes": [],
+  "alwaysScopes": [
+    "web.read"
+  ],
+  "runtime": "cloud",
+  "generatedAt": "2026-06-11T06:34:29.940Z"
+}

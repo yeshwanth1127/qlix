@@ -2,29 +2,17 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import {
-  Bell,
-  BookOpen,
   Bot,
-  Brain,
   Cpu,
   Download,
   Eye,
-  Fingerprint,
-  HelpCircle,
   KeyRound,
-  LayoutDashboard,
-  LifeBuoy,
   List,
   ListFilter,
   Loader2,
   Network,
-  ScrollText,
-  Search,
-  Settings,
   ShieldCheck,
-  Terminal,
   TrendingUp,
   Users,
   Zap,
@@ -33,22 +21,9 @@ import type { AuditActionType, AuditResultUi } from "@/lib/dashboard-api";
 import { useDashboardHome } from "@/lib/hooks/use-dashboard-home";
 import { formatCompactCount, userFirstName } from "@/lib/workspace";
 import { cn } from "@/lib/utils/cn";
-import { useSession } from "./session-context";
-import { UserAccountMenu } from "./user-account-menu";
 import { ReflectiveCard } from "./ReflectiveCard";
 
 const RP = "/individual";
-const SIDEBAR_NAV = [
-  { href: `${RP}/overview`, label: "Overview", icon: LayoutDashboard },
-  { href: `${RP}/ai-brain`, label: "AI Brain", icon: Brain },
-  { href: `${RP}/knowledge`, label: "Knowledge", icon: BookOpen },
-  { href: `${RP}/agents`, label: "Agents", icon: Bot },
-  { href: `${RP}/passports`, label: "Passports", icon: Fingerprint },
-  { href: `${RP}/audit`, label: "Audit", icon: ScrollText },
-  { href: `${RP}/credentials`, label: "Credentials", icon: KeyRound },
-  { href: `${RP}/api-keys`, label: "API Keys", icon: Terminal },
-  { href: `${RP}/settings`, label: "Settings", icon: Settings },
-] as const;
 
 function pickAgentIconVariant(id: string): "bot" | "cpu" | "network" | "eye" {
   let sum = 0;
@@ -101,120 +76,9 @@ function ResultCell({ result }: { result: AuditResultUi }) {
 }
 
 export function IndividualHomeView() {
-  const pathname = usePathname();
-  const { session } = useSession();
   const { data, error, loading, refresh } = useDashboardHome();
 
-  const shell = (main: ReactNode) => (
-    <div className="overflow-hidden bg-[#0A0A0A] font-sans text-[#e5e2e1] antialiased">
-      <aside className="qlix-glass-sidebar fixed left-0 top-0 z-50 flex h-full w-[208px] flex-col py-4">
-        <div className="mb-8 px-6">
-          <h1 className="text-xl font-black tracking-tighter text-white">Qlix</h1>
-          <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
-            Individual workspace
-          </p>
-          {session ? (
-            <p className="mt-1 truncate text-[10px] text-neutral-600" title={session.organization.name}>
-              {session.organization.name}
-            </p>
-          ) : null}
-        </div>
-        <nav className="flex-1 space-y-1">
-          {SIDEBAR_NAV.map((item) => {
-            const active =
-              item.href === `${RP}/overview`
-                ? pathname === `${RP}/overview`
-                : pathname === item.href || pathname.startsWith(`${item.href}/`);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center px-4 py-2 transition-colors",
-                  active
-                    ? "border-l-2 border-blue-500 bg-neutral-900 text-blue-400"
-                    : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
-                )}
-              >
-                <Icon className="mr-3 size-[18px] shrink-0" strokeWidth={1.75} aria-hidden />
-                <span className="text-[13px] font-medium">{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="mt-auto space-y-4 px-4">
-          <ReflectiveCard className="rounded" contentClassName="p-3">
-            <p className="mb-1 text-[11px] font-bold text-neutral-300">Upgrade to Org</p>
-            <p className="mb-2 text-[10px] leading-tight text-neutral-500">
-              Unlock team features and shared registries
-            </p>
-            <Link
-              href={`${RP}/upgrade`}
-              className="block w-full rounded bg-blue-600 py-1.5 text-center text-[11px] font-bold text-white transition-colors hover:bg-blue-500"
-            >
-              Upgrade
-            </Link>
-          </ReflectiveCard>
-          <div className="space-y-1 border-t border-neutral-800 pt-4">
-            <a
-              className="flex items-center px-2 py-1.5 text-[13px] text-neutral-400 hover:text-neutral-200"
-              href="#"
-            >
-              <BookOpen className="mr-3 size-4 shrink-0" strokeWidth={1.75} aria-hidden />
-              Docs
-            </a>
-            <a
-              className="flex items-center px-2 py-1.5 text-[13px] text-neutral-400 hover:text-neutral-200"
-              href="#"
-            >
-              <LifeBuoy className="mr-3 size-4 shrink-0" strokeWidth={1.75} aria-hidden />
-              Support
-            </a>
-          </div>
-        </div>
-      </aside>
-
-      <div className="ml-[208px] flex h-screen flex-col">
-        <header className="qlix-glass-topbar sticky top-0 z-40 flex h-12 w-full items-center justify-between px-6">
-          <div className="flex items-center gap-4">
-            <div className="group relative">
-              <Search
-                className="pointer-events-none absolute left-2.5 top-1/2 size-[18px] -translate-y-1/2 text-neutral-500 transition-colors group-hover:text-neutral-300"
-                strokeWidth={1.75}
-                aria-hidden
-              />
-              <input
-                className="qlix-glass-input w-64 rounded py-1.5 pl-9 pr-4 text-[12px] text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-blue-500"
-                placeholder="Search resources..."
-                type="search"
-                aria-label="Search resources"
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              className="p-1.5 text-neutral-400 transition-all hover:text-neutral-100"
-              aria-label="Notifications"
-            >
-              <Bell className="size-[18px]" strokeWidth={1.75} />
-            </button>
-            <button
-              type="button"
-              className="p-1.5 text-neutral-400 transition-all hover:text-neutral-100"
-              aria-label="Help"
-            >
-              <HelpCircle className="size-[18px]" strokeWidth={1.75} />
-            </button>
-            <UserAccountMenu variant="individual" />
-          </div>
-        </header>
-
-        <main className="flex-1 overflow-y-auto bg-[#0A0A0A] p-8">{main}</main>
-      </div>
-    </div>
-  );
+  const shell = (main: ReactNode) => <>{main}</>;
 
   if (loading) {
     return shell(

@@ -18,6 +18,7 @@ import {
 import { downloadBase64File } from "@/lib/download";
 import { canDeleteAgent } from "@/lib/org-permissions";
 import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import { AgentMcpBindings } from "@/components/qlix/mcp/AgentMcpBindings";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
 
@@ -641,6 +642,8 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
           </ul>
         )}
       </ReflectiveCard>
+
+      <AgentMcpBindings agentId={agentId} canManage={canDelete} />
 
       {canDelete ? (
         <ReflectiveCard className="rounded-xl border border-[--danger]/35" contentClassName="p-5">

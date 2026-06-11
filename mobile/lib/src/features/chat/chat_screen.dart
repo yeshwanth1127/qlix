@@ -11,11 +11,11 @@ import 'chat_controller.dart';
 
 /// Cloud models offered in the picker (mirrors `CLOUD_MODELS` in agents-api.ts).
 const _cloudModels = [
-  'openrouter/anthropic/claude-3.5-sonnet',
+  'openrouter/anthropic/claude-sonnet-4.6',
   'openrouter/openai/gpt-4o',
   'openrouter/openai/gpt-4o-mini',
-  'openrouter/google/gemini-2.0-flash-001',
-  'openrouter/qwen/qwen2.5-72b-instruct',
+  'openrouter/google/gemini-2.5-flash',
+  'openrouter/qwen/qwen-2.5-72b-instruct',
 ];
 
 class ChatScreen extends ConsumerStatefulWidget {

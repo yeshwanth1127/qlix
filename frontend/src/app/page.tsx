@@ -1,5 +1,5 @@
 import { Inter, Saira } from "next/font/google";
-import { WorkspaceLandingPage } from "@/components/qlix/workspace-landing-page";
+import { ChatLanding } from "@/components/qlix/landing/ChatLanding";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -14,13 +14,15 @@ const saira = Saira({
   weight: ["500", "600", "700"],
 });
 
-/** Public home (`/`) — marketing / workspace onboarding hero. */
+/**
+ * Public home (`/`) — chat-first builder. Visitors describe an agent and a
+ * guest workspace is provisioned for them automatically; sign-in stays in the
+ * header for returning users.
+ */
 export default function HomePage() {
   return (
-    <div
-      className={`${inter.variable} ${saira.variable} ${inter.className} bg-[var(--landing-form-column-bg)] text-[var(--landing-text)]`}
-    >
-      <WorkspaceLandingPage />
+    <div className={`${inter.variable} ${saira.variable} ${inter.className}`}>
+      <ChatLanding />
     </div>
   );
 }

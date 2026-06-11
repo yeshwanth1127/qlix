@@ -15,6 +15,8 @@ export interface AuthSuccessResponse {
     orgId: string;
     workspaceKind: WorkspaceKind;
     isSuperAdmin: boolean;
+    /** True for auto-provisioned exploration accounts (claimable via /auth/claim). */
+    isGuest: boolean;
     /** True when passkey enrollment is complete (derived server-side). */
     deviceVerified: boolean;
     /** True when the account is exempt from billing (no wallet debits). Derived server-side. */
@@ -124,6 +126,56 @@ export async function postSuperAdminSignup(input: {
   }
   const data = (await response.json()) as AuthSuccessResponse;
   return { ok: true, status, data };
+}
+
+/** Auto-creates a guest exploration account and sets the session cookie. */
+export async function postGuestSession(): Promise<{
+  ok: boolean;
+  data?: AuthSuccessResponse;
+  errorMessage?: string;
+}> {
+  try {
+    const response = await fetch(`${apiBase()}/api/v1/auth/guest`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+      return { ok: false, errorMessage: body?.error?.message ?? "Could not start a guest session" };
+    }
+    const data = (await response.json()) as AuthSuccessResponse;
+    return { ok: true, data };
+  } catch {
+    return { ok: false, errorMessage: "Network error — check your connection" };
+  }
+}
+
+/** Converts the current guest account into a real account (same data, no migration). */
+export async function postClaimAccount(input: {
+  email: string;
+  password: string;
+  displayName?: string;
+}): Promise<{
+  ok: boolean;
+  data?: AuthSuccessResponse;
+  errorMessage?: string;
+}> {
+  try {
+    const response = await fetch(`${apiBase()}/api/v1/auth/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+      return { ok: false, errorMessage: body?.error?.message ?? "Could not create your account" };
+    }
+    const data = (await response.json()) as AuthSuccessResponse;
+    return { ok: true, data };
+  } catch {
+    return { ok: false, errorMessage: "Network error — check your connection" };
+  }
 }
 
 export async function postSessionRefresh(): Promise<AuthSuccessResponse | null> {
