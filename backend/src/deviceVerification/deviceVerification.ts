@@ -78,8 +78,8 @@ const userSelect = {
 
 export class DeviceVerificationService {
   /**
-   * Ensures the user has completed WebAuthn registration. Used before issuing agent keys, etc.
-   * Guest exploration accounts have no passkey by design and are waived (null credential).
+   * Looks up any enrolled passkey for attribution on new agents.
+   * Browser session auth is enough to create agents — passkeys are optional.
    */
   async assertUserVerified(userId: string): Promise<{ webauthnCredentialId: string | null }> {
     const user = await prisma.user.findUnique({
@@ -89,13 +89,10 @@ export class DeviceVerificationService {
     if (!user) {
       throw new DeviceNotVerifiedError();
     }
-    if (user.isGuest) {
+    if (!isDeviceVerificationComplete(user)) {
       return { webauthnCredentialId: null };
     }
-    if (!isDeviceVerificationComplete(user)) {
-      throw new DeviceNotVerifiedError();
-    }
-    return { webauthnCredentialId: user.webauthnCredentialId! };
+    return { webauthnCredentialId: user.webauthnCredentialId };
   }
 
   async getStatus(userId: string): Promise<{

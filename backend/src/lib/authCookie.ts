@@ -16,9 +16,12 @@ export function buildAuthCookieOptions(): {
   maxAge: number;
   path: string;
 } {
+  // Secure by default in production (cookie only sent over HTTPS); can be explicitly overridden
+  // via SESSION_COOKIE_SECURE for local/non-TLS setups.
+  const secure = envFlag('SESSION_COOKIE_SECURE', process.env.NODE_ENV === 'production');
   return {
     httpOnly: true,
-    secure: envFlag('SESSION_COOKIE_SECURE'),
+    secure,
     sameSite: 'lax',
     maxAge: SESSION_MAX_AGE_SEC * 1000,
     path: '/',

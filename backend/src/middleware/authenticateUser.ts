@@ -1,10 +1,13 @@
 import type { NextFunction, Request, Response } from 'express';
 import { AUTH_COOKIE_NAME, verifyAuthToken } from '../lib/authTokens.js';
+import { prisma } from '../lib/prisma.js';
 
 export function loadJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 16) {
-    throw new Error('JWT_SECRET must be set (min 16 characters)');
+  // HS256 keys must be long/high-entropy; 16 chars is brute-forceable offline. Require >= 32.
+  const minLen = process.env.NODE_ENV === 'production' ? 32 : 16;
+  if (!secret || secret.length < minLen) {
+    throw new Error(`JWT_SECRET must be set (min ${minLen} characters)`);
   }
   return secret;
 }
@@ -26,7 +29,7 @@ function extractSessionToken(request: Request): string | undefined {
  * Requires a valid session cookie or Bearer JWT; attaches `req.auth`. Returns 401 when missing or invalid.
  */
 export function authenticateUser(required: boolean) {
-  return (request: Request, response: Response, next: NextFunction): void => {
+  return async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const secret = loadJwtSecret();
       const raw = extractSessionToken(request);
@@ -39,11 +42,27 @@ export function authenticateUser(required: boolean) {
         return;
       }
       const payload = verifyAuthToken(raw, secret);
+
+      // Re-check the account on every request so deactivation and role changes take effect
+      // immediately, instead of being trusted from the JWT for up to the 7-day session lifetime.
+      const user = await prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { isActive: true, role: true, orgId: true },
+      });
+      if (!user || !user.isActive) {
+        if (required) {
+          response.status(401).json({ error: { code: 'unauthorized', message: 'Account is inactive' } });
+          return;
+        }
+        next();
+        return;
+      }
+
       request.auth = {
         userId: payload.sub,
-        orgId: payload.orgId,
+        orgId: user.orgId ?? payload.orgId,
         email: payload.email,
-        role: payload.role,
+        role: user.role,
       };
       next();
     } catch {

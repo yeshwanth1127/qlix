@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import { SketchBox, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import {
   deleteAgentMcpBinding,
   listAgentMcpBindings,
@@ -11,6 +11,7 @@ import {
   type AgentMcpBindingDTO,
   type McpServerDTO,
 } from "@/lib/mcp-api";
+import { cn } from "@/lib/utils/cn";
 
 interface AgentMcpBindingsProps {
   readonly agentId: string;
@@ -87,21 +88,21 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
   }
 
   return (
-    <ReflectiveCard className="rounded-xl" contentClassName="p-5">
-      <h2 className="text-[12px] font-medium text-[--text-secondary]">MCP tools</h2>
-      <p className="mt-1 text-[11px] text-[--text-tertiary]">
+    <SketchBox className="p-5">
+      <h2 className={sketchLabel}>MCP tools</h2>
+      <p className="mt-1 text-[11px] text-black/50">
         Grant this agent tools from registered MCP servers. Destructive tools require JIT approval; every
         call is signed to the audit ledger.
       </p>
 
-      {error ? <p className="mt-3 text-[12px] text-[--danger]">{error}</p> : null}
+      {error ? <p className="mt-3 text-[12px] text-black">{error}</p> : null}
 
       {loading ? (
-        <p className="mt-3 flex items-center gap-1 text-[12px] text-[--text-tertiary]">
+        <p className="mt-3 flex items-center gap-1 text-[12px] text-black/50">
           <Loader2 className="size-3 animate-spin" /> Loading…
         </p>
       ) : servers.length === 0 ? (
-        <p className="mt-3 text-[12px] text-[--text-tertiary]">
+        <p className="mt-3 text-[12px] text-black/50">
           No MCP servers registered. Add one under Connectors.
         </p>
       ) : (
@@ -111,17 +112,17 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
             const allowAll = binding?.allowedTools.includes("*") ?? false;
             const bound = Boolean(binding);
             return (
-              <div key={server.id} className="rounded-md border border-[--border-subtle] p-3">
+              <div key={server.id} className="border border-black p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-medium text-[--text-primary]">
+                  <span className="text-[12px] font-medium text-black">
                     {server.name}{" "}
-                    <span className="font-mono text-[11px] text-[--text-tertiary]">mcp.{server.slug}</span>
+                    <span className="font-mono text-[11px] text-black/50">mcp.{server.slug}</span>
                   </span>
                   <button
                     type="button"
                     disabled={!canManage || busy}
                     onClick={() => void toggleAll(server)}
-                    className="rounded border border-[--border-subtle] px-2 py-1 text-[11px] text-[--text-secondary] hover:bg-white/5 disabled:opacity-40"
+                    className={`${sketchButton} disabled:opacity-40`}
                   >
                     {bound ? "Unbind" : "Bind all tools"}
                   </button>
@@ -138,11 +139,10 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
                             disabled={!canManage || busy}
                             onClick={() => void toggleTool(server, tool.name)}
                             title={tool.description}
-                            className={`rounded-md border px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${
-                              on
-                                ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-200"
-                                : "border-[--border-subtle] text-[--text-tertiary]"
-                            }`}
+                            className={cn(
+                              "border border-black px-2 py-0.5 font-mono text-[11px] disabled:opacity-40",
+                              on ? "bg-black text-white" : "bg-white text-black hover:bg-black/5",
+                            )}
                           >
                             {tool.name}
                           </button>
@@ -152,7 +152,7 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
                   </ul>
                 )}
                 {server.tools && server.tools.length === 0 && bound && (
-                  <p className="mt-2 text-[11px] text-[--text-tertiary]">
+                  <p className="mt-2 text-[11px] text-black/50">
                     Tools discovered at runtime by the agent runner.
                   </p>
                 )}
@@ -161,6 +161,6 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
           })}
         </div>
       )}
-    </ReflectiveCard>
+    </SketchBox>
   );
 }

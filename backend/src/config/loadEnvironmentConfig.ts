@@ -26,7 +26,12 @@ function parseNodeEnvironment(value: string | undefined): NodeEnvironment {
   if (value === 'production' || value === 'test' || value === 'development') {
     return value;
   }
-  return 'development';
+  // Fail closed: an unset/unknown NODE_ENV must NOT unlock development-only relaxations (permissive
+  // loopback CORS, shorter secret minimums). Local dev sets NODE_ENV=development explicitly.
+  if (value !== undefined) {
+    console.warn(`[config] Unknown NODE_ENV="${value}"; treating as production (fail-closed).`);
+  }
+  return 'production';
 }
 
 function parseCorsOrigins(raw: string | undefined): string[] {

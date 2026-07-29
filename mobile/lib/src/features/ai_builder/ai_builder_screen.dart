@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../models/nl_builder.dart';
 import '../../models/session.dart';
+import '../../theme.dart';
+import '../../ui/sketch.dart';
 import 'ai_builder_controller.dart';
 
 // ─── Public section widget (no Scaffold) ─────────────────────────────────────
@@ -114,35 +116,36 @@ class _InputView extends StatelessWidget {
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF7C3AED), Color(0xFF0891B2)],
-                  ),
+                  color: QlixColors.ink,
                   borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: QlixColors.accent.withValues(alpha: 0.35),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                      spreadRadius: -6,
+                    ),
+                  ],
                 ),
-                child: const Icon(Icons.auto_fix_high,
-                    color: Colors.white, size: 22),
+                child: const Icon(Icons.auto_awesome,
+                    color: QlixColors.accent, size: 22),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    ShaderMask(
-                      shaderCallback: (bounds) => const LinearGradient(
-                        colors: [Color(0xFFA78BFA), Color(0xFF22D3EE)],
-                      ).createShader(bounds),
-                      child: Text(
-                        'AI Agent Builder',
-                        style: tt.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
+                    Text(
+                      'AI Agent Builder',
+                      style: tt.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: QlixColors.ink,
                       ),
                     ),
                     Text(
                       "Describe what you want — we'll create the agents",
                       style: tt.bodySmall
-                          ?.copyWith(color: cs.onSurfaceVariant),
+                          ?.copyWith(color: QlixColors.inkSecondary),
                     ),
                   ],
                 ),
@@ -369,9 +372,9 @@ class _AgentSpecCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF15151F),
+        color: const QlixColors.glass,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF2A2A3E)),
+        border: Border.all(color: const QlixColors.inkBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -560,7 +563,7 @@ class _StepIcon extends StatelessWidget {
               strokeWidth: 2, color: cs.primary),
         ),
       CreationStepStatus.done => Icon(Icons.check_circle,
-          size: 20, color: const Color(0xFF34D399)),
+          size: 20, color: const QlixColors.green),
       CreationStepStatus.error =>
         Icon(Icons.cancel, size: 20, color: cs.error),
     };
@@ -589,11 +592,11 @@ class _DoneView extends StatelessWidget {
               width: 32,
               height: 32,
               decoration: BoxDecoration(
-                color: const Color(0xFF34D399).withValues(alpha: 0.15),
+                color: const QlixColors.green.withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
               child: const Icon(Icons.check,
-                  size: 18, color: Color(0xFF34D399)),
+                  size: 18, color: QlixColors.green),
             ),
             const SizedBox(width: 10),
             Column(
@@ -653,9 +656,9 @@ class _CreatedAgentCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF15151F),
+        color: const QlixColors.glass,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF2A2A3E)),
+        border: Border.all(color: const QlixColors.inkBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -692,12 +695,12 @@ class _CreatedAgentCard extends StatelessWidget {
             Row(
               children: [
                 const Icon(Icons.check_circle_outline,
-                    size: 12, color: Color(0xFF34D399)),
+                    size: 12, color: QlixColors.green),
                 const SizedBox(width: 4),
                 Text(
                   'Provisioning on Qlix cloud…',
                   style: tt.labelSmall?.copyWith(
-                      color: const Color(0xFF34D399)),
+                      color: const QlixColors.green),
                 ),
               ],
             ),
@@ -732,24 +735,18 @@ class _GradientButton extends StatelessWidget {
         child: Container(
           height: 48,
           decoration: BoxDecoration(
-            gradient: disabled
-                ? null
-                : const LinearGradient(
-                    colors: [
-                      Color(0xFF7C3AED),
-                      Color(0xFF4F46E5),
-                      Color(0xFF0891B2),
-                    ],
-                  ),
-            color: disabled ? const Color(0xFF2A2A3E) : null,
-            borderRadius: BorderRadius.circular(12),
+            color: disabled
+                ? QlixColors.ink.withValues(alpha: 0.35)
+                : QlixColors.ink,
+            borderRadius: BorderRadius.circular(999),
             boxShadow: disabled
                 ? null
                 : [
-                    const BoxShadow(
-                      color: Color(0x407C3AED),
-                      blurRadius: 12,
-                      offset: Offset(0, 4),
+                    BoxShadow(
+                      color: QlixColors.accent.withValues(alpha: 0.28),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                      spreadRadius: -8,
                     ),
                   ],
           ),
@@ -762,11 +759,12 @@ class _GradientButton extends StatelessWidget {
                       strokeWidth: 2, color: Colors.white),
                 )
               : Text(
-                  label,
+                  label.toUpperCase(),
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
-                    fontSize: 14,
+                    fontSize: 11,
+                    letterSpacing: 1.4,
                   ),
                 ),
         ),
@@ -872,9 +870,9 @@ class _HistoryButton extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          border: Border.all(color: const Color(0xFF2A2A3E)),
+          border: Border.all(color: const QlixColors.inkBorder),
           borderRadius: BorderRadius.circular(8),
-          color: const Color(0xFF15151F),
+          color: const QlixColors.glass,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -921,9 +919,9 @@ class _HistoryDropdown extends StatelessWidget {
       margin: const EdgeInsets.only(top: 8),
       constraints: const BoxConstraints(maxHeight: 220),
       decoration: BoxDecoration(
-        color: const Color(0xFF12121C),
+        color: const QlixColors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF2A2A3E)),
+        border: Border.all(color: const QlixColors.inkBorder),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -942,7 +940,7 @@ class _HistoryDropdown extends StatelessWidget {
               ],
             ),
           ),
-          const Divider(height: 1, color: Color(0xFF2A2A3E)),
+          const Divider(height: 1, color: QlixColors.inkBorder),
           Flexible(
             child: entries.isEmpty
                 ? const Padding(

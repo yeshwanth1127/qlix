@@ -2,20 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bot,
-  Brain,
-  CheckCircle2,
-  ChevronDown,
-  Clock,
-  History,
-  Loader2,
-  MessageSquare,
-  Phone,
-  Square,
-  UsersRound,
-  XCircle,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
   type ActiveAgentRunDTO,
   type AgentRunHistoryDTO,
@@ -28,7 +15,14 @@ import {
   type ActivityStep,
   summarizeRunnerLog,
 } from "@/components/qlix/agents/agentToolActivity";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import {
+  SketchBox,
+  SketchPageHeader,
+  SketchRow,
+  SketchSection,
+  sketchButton,
+  sketchLabel,
+} from "@/components/qlix/sketch";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
 
@@ -59,72 +53,6 @@ function promptPreview(prompt: string, max = 160): string {
   const t = prompt.trim().replace(/\s+/g, " ");
   if (t.length <= max) return t;
   return `${t.slice(0, max)}…`;
-}
-
-function sourceMeta(source: ActiveAgentRunDTO["source"]): {
-  label: string;
-  icon: typeof MessageSquare;
-  className: string;
-} {
-  switch (source) {
-    case "whatsapp":
-      return {
-        label: "WhatsApp",
-        icon: Phone,
-        className: "bg-emerald-500/15 text-emerald-700 ring-emerald-500/30 dark:text-emerald-300",
-      };
-    case "team":
-      return {
-        label: "Team",
-        icon: UsersRound,
-        className: "bg-sky-500/15 text-sky-700 ring-sky-500/30 dark:text-sky-300",
-      };
-    default:
-      return {
-        label: "Dashboard",
-        icon: MessageSquare,
-        className: "bg-[var(--glass-muted-bg)] text-[--text-secondary] ring-[--border-subtle]",
-      };
-  }
-}
-
-function statusMeta(status: string): {
-  label: string;
-  icon: typeof Loader2;
-  className: string;
-} {
-  switch (status) {
-    case "running":
-      return {
-        label: "Running",
-        icon: Loader2,
-        className: "bg-[--accent]/12 text-[--accent] ring-[--accent]/30",
-      };
-    case "queued":
-      return {
-        label: "Queued",
-        icon: Clock,
-        className: "bg-amber-500/10 text-amber-800 ring-amber-500/25 dark:text-amber-200",
-      };
-    case "success":
-      return {
-        label: "Completed",
-        icon: CheckCircle2,
-        className: "bg-emerald-500/12 text-emerald-700 ring-emerald-500/30 dark:text-emerald-300",
-      };
-    case "failed":
-      return {
-        label: "Failed",
-        icon: XCircle,
-        className: "bg-red-500/12 text-red-700 ring-red-500/30 dark:text-red-300",
-      };
-    default:
-      return {
-        label: status,
-        icon: Clock,
-        className: "bg-[var(--glass-muted-bg)] text-[--text-secondary] ring-[--border-subtle]",
-      };
-  }
 }
 
 function eventsToSteps(events: AgentRunHistoryDTO["events"]): ActivityStep[] {
@@ -189,72 +117,32 @@ function useAgentRunStream(
   return { activity, streaming };
 }
 
-function RunCardHeader({
+function RunSummary({
   run,
   routePrefix,
   elapsed,
   actions,
 }: {
-  readonly run: ActiveAgentRunDTO;
+  readonly run: ActiveAgentRunDTO | AgentRunHistoryDTO;
   readonly routePrefix: string;
   readonly elapsed?: string;
   readonly actions?: React.ReactNode;
 }) {
-  const src = sourceMeta(run.source);
-  const SrcIcon = src.icon;
-  const st = statusMeta(run.status);
-  const StatusIcon = st.icon;
-
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0 flex-1 space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1",
-              src.className,
-            )}
-          >
-            <SrcIcon className="size-3" aria-hidden />
-            {src.label}
-          </span>
-          {run.useBrain ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/12 px-2 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-violet-500/25 dark:text-violet-300">
-              <Brain className="size-3" aria-hidden />
-              AI Brain
-            </span>
-          ) : null}
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
-              st.className,
-            )}
-          >
-            <StatusIcon
-              className={cn("size-3", run.status === "running" && "animate-spin")}
-              aria-hidden
-            />
-            {st.label}
-          </span>
-          {elapsed ? (
-            <span className="text-[10px] text-[--text-tertiary]">{elapsed}</span>
-          ) : null}
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-center gap-2 font-serif text-[10px] uppercase tracking-widest text-black/60">
+          <span>{run.source}</span>
+          <span>{run.status}</span>
+          {elapsed ? <span>{elapsed}</span> : null}
         </div>
-        <div className="flex items-center gap-2">
-          <Bot className="size-4 shrink-0 text-[--text-tertiary]" aria-hidden />
-          <Link
-            href={`${routePrefix}/agents/${run.agentId}`}
-            className="text-sm font-semibold text-[--text-primary] hover:text-[--accent]"
-          >
-            {run.agentName}
-          </Link>
-          <span className="text-[10px] uppercase tracking-wide text-[--text-tertiary]">
-            {run.agentRuntime}
-          </span>
-        </div>
-        <p className="text-[12px] leading-relaxed text-[--text-secondary]">
-          {promptPreview(run.prompt)}
-        </p>
+        <Link
+          href={`${routePrefix}/agents/${run.agentId}`}
+          className="text-sm font-medium text-black underline underline-offset-2"
+        >
+          {run.agentName}
+        </Link>
+        <p className="text-[12px] leading-relaxed text-black/70">{promptPreview(run.prompt)}</p>
       </div>
       {actions}
     </div>
@@ -296,8 +184,8 @@ function ActiveRunCard({
   };
 
   return (
-    <ReflectiveCard className="p-4">
-      <RunCardHeader
+    <SketchBox className="p-4">
+      <RunSummary
         run={run}
         routePrefix={routePrefix}
         elapsed={formatElapsed(run.startedAt, run.createdAt)}
@@ -307,14 +195,9 @@ function ActiveRunCard({
               type="button"
               onClick={() => void stop()}
               disabled={stopping}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[--border-subtle] px-2.5 py-1.5 text-[11px] font-medium text-[--text-secondary] transition hover:border-red-500/40 hover:text-red-600 disabled:opacity-50"
+              className={sketchButton}
             >
-              {stopping ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              ) : (
-                <Square className="size-3.5" aria-hidden />
-              )}
-              Stop
+              {stopping ? "Stopping…" : "Stop"}
             </button>
           ) : null
         }
@@ -323,10 +206,10 @@ function ActiveRunCard({
         {(streaming || activity.length > 0) && <LiveToolBar steps={activity} />}
         <ActivityTimeline steps={activity} />
         {isActive && activity.length === 0 && streaming ? (
-          <p className="text-[11px] text-[--text-tertiary]">Waiting for runner activity…</p>
+          <p className="font-serif text-[11px] uppercase text-black/50">Waiting for activity…</p>
         ) : null}
       </div>
-    </ReflectiveCard>
+    </SketchBox>
   );
 }
 
@@ -341,57 +224,42 @@ function HistoryRunCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const steps = useMemo(() => eventsToSteps(run.events), [run.events]);
-  const finishedLabel = run.finishedAt
-    ? formatWhen(run.finishedAt)
-    : formatWhen(run.createdAt);
+  const finishedLabel = run.finishedAt ? formatWhen(run.finishedAt) : formatWhen(run.createdAt);
 
   return (
-    <ReflectiveCard className="overflow-hidden">
-      <div className="flex items-start gap-2 p-4">
+    <SketchBox className="overflow-hidden">
+      <div className="p-4">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          aria-label={open ? "Collapse run steps" : "Expand run steps"}
-          className="mt-1 rounded-md p-0.5 text-[--text-tertiary] transition hover:bg-white/5 hover:text-[--text-primary]"
+          className="mb-2 font-serif text-[10px] uppercase tracking-widest text-black/50"
         >
-          <ChevronDown
-            className={cn("size-4 transition-transform", open && "rotate-180")}
-            aria-hidden
-          />
+          {open ? "− Collapse" : "+ Expand"}
         </button>
-        <div className="min-w-0 flex-1">
-          <RunCardHeader
-            run={run}
-            routePrefix={routePrefix}
-            elapsed={finishedLabel}
-          />
-          {!open && steps.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              className="mt-2 text-left text-[11px] text-[--text-tertiary] hover:text-[--accent]"
-            >
-              {steps.length} step{steps.length === 1 ? "" : "s"} — show steps
-            </button>
-          ) : null}
-        </div>
+        <RunSummary run={run} routePrefix={routePrefix} elapsed={finishedLabel} />
+        {!open && steps.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="mt-2 text-left font-serif text-[10px] uppercase text-black/50"
+          >
+            {steps.length} step{steps.length === 1 ? "" : "s"}
+          </button>
+        ) : null}
       </div>
       {open ? (
-        <div className="space-y-3 border-t border-[--border-subtle] px-4 pb-4 pt-3">
+        <div className="space-y-3 border-t border-black px-4 pb-4 pt-3">
           {run.errorMessage ? (
-            <p className="rounded-md border border-red-500/25 bg-red-500/8 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
-              {run.errorMessage}
-            </p>
+            <p className="border border-black px-3 py-2 text-[11px] text-black">{run.errorMessage}</p>
           ) : null}
           {steps.length > 0 ? (
             <ActivityTimeline steps={steps} />
           ) : (
-            <p className="text-[11px] text-[--text-tertiary]">No activity steps recorded for this run.</p>
+            <p className="font-serif text-[11px] uppercase text-black/50">No steps recorded</p>
           )}
         </div>
       ) : null}
-    </ReflectiveCard>
+    </SketchBox>
   );
 }
 
@@ -438,42 +306,28 @@ export function ActiveRunsView({ routePrefix }: { readonly routePrefix: string }
   }, [refreshAll]);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-[--text-primary]">Active runs</h1>
-        <p className="mt-1 max-w-2xl text-sm text-[--text-secondary]">
-          Live progress for queued and running agents, plus a history of completed runs with each
-          step taken (tools, model calls, Agent-S3 actions).
-        </p>
-      </div>
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      <SketchPageHeader title="Active Runs" />
 
       {error ? (
-        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+        <p className="text-sm text-black" role="alert">
           {error}
         </p>
       ) : null}
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-[--text-primary]">Live</h2>
+      <SketchSection title="Live">
         {loading ? (
-          <div className="space-y-3">
-            {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="h-32 animate-pulse rounded-xl border border-[--border-subtle] bg-[var(--glass-muted-bg)]"
-              />
-            ))}
-          </div>
+          <SketchBox className="flex min-h-[160px] items-center justify-center p-6">
+            <Loader2 className="size-5 animate-spin text-black" aria-hidden />
+          </SketchBox>
         ) : runs.length === 0 ? (
-          <ReflectiveCard className="p-6 text-center">
-            <p className="text-sm text-[--text-secondary]">No active runs right now.</p>
-            <p className="mt-2 text-[12px] text-[--text-tertiary]">
-              When an agent is triggered from WhatsApp or chat, it will appear here with live tool
-              and model activity.
+          <SketchBox className="min-h-[160px] p-6 text-center">
+            <p className="font-serif text-[11px] uppercase tracking-widest text-black/50">
+              No active runs right now
             </p>
-          </ReflectiveCard>
+          </SketchBox>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {runs.map((run) => (
               <ActiveRunCard
                 key={run.id}
@@ -484,44 +338,52 @@ export function ActiveRunsView({ routePrefix }: { readonly routePrefix: string }
             ))}
           </div>
         )}
-      </section>
+      </SketchSection>
 
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <History className="size-4 text-[--text-tertiary]" aria-hidden />
-          <h2 className="text-sm font-semibold text-[--text-primary]">Run history</h2>
-          <span className="text-[11px] text-[--text-tertiary]">Last 30 completed runs</span>
-        </div>
+      <SketchSection title="History">
         {historyLoading ? (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="h-20 animate-pulse rounded-xl border border-[--border-subtle] bg-[var(--glass-muted-bg)]"
-              />
+              <SketchRow key={i} className="min-h-[3rem] animate-pulse" />
             ))}
           </div>
         ) : history.length === 0 ? (
-          <ReflectiveCard className="p-6 text-center">
-            <p className="text-sm text-[--text-secondary]">No completed runs yet.</p>
-          </ReflectiveCard>
+          <SketchBox className="p-6 text-center">
+            <p className="font-serif text-[11px] uppercase tracking-widest text-black/50">
+              No completed runs yet
+            </p>
+          </SketchBox>
         ) : (
-          <div className="space-y-3">
-            {history.map((run, i) => (
-              <HistoryRunCard
-                key={run.id}
-                run={run}
-                routePrefix={routePrefix}
-                defaultOpen={i === 0}
-              />
-            ))}
-          </div>
+          <SketchBox className="flex flex-col gap-2 p-3">
+            {history.map((run, i) =>
+              i === 0 ? (
+                <HistoryRunCard
+                  key={run.id}
+                  run={run}
+                  routePrefix={routePrefix}
+                  defaultOpen
+                />
+              ) : (
+                <SketchRow
+                  key={run.id}
+                  className="flex flex-wrap items-center justify-between gap-2"
+                  onClick={() => {}}
+                >
+                  <span className="truncate text-[12px] text-black">{run.agentName}</span>
+                  <span className="font-serif text-[10px] uppercase text-black/50">{run.status}</span>
+                </SketchRow>
+              ),
+            )}
+          </SketchBox>
         )}
-      </section>
+      </SketchSection>
 
-      <p className="text-center text-[12px] text-[--text-tertiary]">
-        <Link href={`${routePrefix}/agents`} className="font-medium text-[--accent] hover:underline">
-          Open agents →
+      <p className="text-center">
+        <Link
+          href={`${routePrefix}/agents`}
+          className={cn(sketchLabel, "underline underline-offset-2")}
+        >
+          Open agents
         </Link>
       </p>
     </div>

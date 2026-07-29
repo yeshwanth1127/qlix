@@ -62,6 +62,10 @@ def test_browser_action_label() -> None:
         "browser_navigate", {"url": "https://example.com"}
     )
     assert "Submit" in browser_action_label("browser_click", {"selector": "Submit", "by_text": True})
+    assert "contact@" in browser_action_label(
+        "browser_ab_find",
+        {"locator": "text", "value": "contact@", "action": "text"},
+    )
 
 
 def test_live_browser_view_default_on(monkeypatch) -> None:

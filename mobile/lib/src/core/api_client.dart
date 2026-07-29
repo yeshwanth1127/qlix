@@ -12,6 +12,10 @@ import 'secure_store.dart';
 /// current token), stores the new token, and replays the failed request. If
 /// refresh fails the session is cleared and [onUnauthorized] fires so the app
 /// can route back to sign-in.
+///
+/// Note: [BaseOptions.validateStatus] treats 4xx as success responses (so
+/// callers can read error bodies). The 401 refresh path therefore lives in
+/// `onResponse`, not `onError`.
 class ApiClient {
   ApiClient({required SecureStore store, this.onUnauthorized})
       // ignore: prefer_initializing_formals
@@ -37,15 +41,50 @@ class ApiClient {
           }
           handler.next(options);
         },
+        onResponse: (response, handler) async {
+          if (response.statusCode != 401) {
+            return handler.next(response);
+          }
+
+          final requestPath = response.requestOptions.path;
+          final alreadyRetried =
+              response.requestOptions.extra['__retried__'] == true;
+
+          // Skip refresh for credential-exchange endpoints (would recurse or
+          // loop). `/auth/me` is intentionally allowed so bootstrap can recover
+          // an expired access token via refresh.
+          if (_isCredentialAuthPath(requestPath) || alreadyRetried) {
+            return handler.next(response);
+          }
+
+          final newToken = await _tryRefresh();
+          if (newToken != null) {
+            final opts = response.requestOptions;
+            opts.extra['__retried__'] = true;
+            opts.headers['Authorization'] = 'Bearer $newToken';
+            try {
+              final retried = await dio.fetch<dynamic>(opts);
+              return handler.resolve(retried);
+            } catch (_) {
+              // fall through to unauthorized handling
+            }
+          }
+
+          await _store.clear();
+          onUnauthorized?.call();
+          handler.next(response);
+        },
         onError: (error, handler) async {
+          // Network / 5xx path — 401s with validateStatus < 500 land in
+          // onResponse above, but keep a belt-and-suspenders handler for
+          // cases where Dio still surfaces them as errors.
           final response = error.response;
           final requestPath = error.requestOptions.path;
-          final isAuthEndpoint = requestPath.contains('/auth/');
           final alreadyRetried =
               error.requestOptions.extra['__retried__'] == true;
 
           if (response?.statusCode == 401 &&
-              !isAuthEndpoint &&
+              !_isCredentialAuthPath(requestPath) &&
               !alreadyRetried) {
             final newToken = await _tryRefresh();
             if (newToken != null) {
@@ -77,6 +116,13 @@ class ApiClient {
   void Function()? onUnauthorized;
 
   Completer<String?>? _refreshInFlight;
+
+  static bool _isCredentialAuthPath(String path) {
+    return path.contains('/auth/login') ||
+        path.contains('/auth/signup') ||
+        path.contains('/auth/refresh') ||
+        path.contains('/auth/logout');
+  }
 
   /// Attempts a single refresh, de-duplicating concurrent callers.
   Future<String?> _tryRefresh() {

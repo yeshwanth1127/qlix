@@ -341,7 +341,7 @@ export function BrainLinkMap3D({
     return (
       <div className={cn("relative flex flex-col items-center justify-center gap-3 bg-gradient-to-b from-violet-950/35 via-[--bg-base] to-fuchsia-950/20 px-6 text-center", heightClass)}>
         <p className="max-w-sm text-[13px] text-[--text-secondary]">
-          Provision the brain agent to open the 3D link map. Every ingested document will connect to the core for RAG and audit.
+          Set up the brain agent to open the 3D link map. Every ingested document will connect to the core for RAG and audit.
         </p>
       </div>
     );

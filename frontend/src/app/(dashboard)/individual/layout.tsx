@@ -1,4 +1,5 @@
 import { IndividualConsoleLayout } from "@/components/qlix/individual-console-layout";
+import { SubscriptionRouteGate } from "@/components/qlix/subscription-route-gate";
 import { WorkspaceRouteGate } from "@/components/qlix/workspace-route-gate";
 
 export default function IndividualWorkspaceLayout({
@@ -8,7 +9,9 @@ export default function IndividualWorkspaceLayout({
 }>) {
   return (
     <WorkspaceRouteGate expected="individual">
-      <IndividualConsoleLayout>{children}</IndividualConsoleLayout>
+      <SubscriptionRouteGate>
+        <IndividualConsoleLayout>{children}</IndividualConsoleLayout>
+      </SubscriptionRouteGate>
     </WorkspaceRouteGate>
   );
 }

@@ -1,7 +1,7 @@
 import { AgentsService, type CreateAgentResult } from './agents.service.js';
 import { AgentsRepository } from './agents.repository.js';
 import { TeamsService } from '../teams/teams.service.js';
-import { CloudProvisionerService, CloudProvisionFailedError } from '../cloudRunners/cloudProvisioner.service.js';
+import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { encryptForAgentSecrets, AgentSecretsKeyMissingError } from '../cloudRunners/agentSecrets.js';
 import { generateHybridRunnerToken } from '../agentChat/runnerAuth.js';
 import {
@@ -18,8 +18,8 @@ import {
   resolveHybridStarterPlatform,
   type HybridStarterPlatform,
 } from './hybridStarterPack.js';
-import { DockerNotAvailableError } from '../cloudRunners/dockerClient.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
+import { wireAgentMcpFromScopes } from './agentMcpWire.js';
 
 /** Minimal subset of Express Request that resolvers need. */
 export type RequestLike = { protocol?: string; get(name: string): string | undefined; headers: Record<string, string | string[] | undefined> };
@@ -130,6 +130,13 @@ export class NLCreationService {
 
     const { agent, privateKey } = agentResult;
 
+    await wireAgentMcpFromScopes({
+      userId,
+      orgId,
+      agentId: agent.id,
+      scopes: spec.permissionScopes,
+    });
+
     const backendUrl =
       agent.runtime === 'hybrid' || agent.runtime === 'local'
         ? resolveHybridRunnerBackendUrl(request)
@@ -156,18 +163,7 @@ export class NLCreationService {
           .updateCloudFields(agent.id, { cloudProvisioningStatus: 'failed', cloudRunnerId: null, cloudProvisioningError: msg })
           .catch(() => {});
       }
-      try {
-        await this.cloudProvisioner.provisionCloudRunner({ agent, privateKey, requestForBackendUrl: request });
-      } catch (provErr) {
-        const message =
-          provErr instanceof DockerNotAvailableError ? provErr.message
-          : provErr instanceof CloudProvisionFailedError ? provErr.message
-          : 'Cloud runner provisioning failed';
-        console.warn('[nlCreate] Cloud provisioning:', message);
-        await this.agentsRepo
-          .updateCloudFields(agent.id, { cloudProvisioningStatus: 'failed', cloudRunnerId: null, cloudProvisioningError: message })
-          .catch(() => {});
-      }
+      this.cloudProvisioner.scheduleProvisionCloudRunner({ agent, privateKey, requestForBackendUrl: request });
       sdkAgentFile = buildSdkAgentJsonPublic(agent, backendUrl);
     } else if (agent.runtime === 'hybrid') {
       const { token: runnerToken, hash: runnerTokenHash } = generateHybridRunnerToken();
@@ -175,7 +171,7 @@ export class NLCreationService {
       sdkAgentFile = buildSdkAgentJsonHybrid(agent, privateKey, runnerToken, backendUrl);
       try {
         const platform = resolveHybridStarterPlatform(clientPlatform, request.headers['user-agent'] as string | undefined);
-        const zip = await buildHybridStarterPackZip(sdkAgentFile, agent.name, platform);
+        const zip = await buildHybridStarterPackZip(sdkAgentFile, agent.name, platform, request);
         hybridStarterPack = {
           filename: hybridStarterPackFilename(agent.name, platform),
           base64: zip.toString('base64'),
@@ -194,4 +190,5 @@ export class NLCreationService {
       hybridStarterPack,
     };
   }
+
 }

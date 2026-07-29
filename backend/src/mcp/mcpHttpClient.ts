@@ -7,7 +7,7 @@
  * `Mcp-Session-Id` header, per the MCP Streamable HTTP spec.
  */
 import type { DiscoveredTool, DiscoveryResult } from './mcp.types.js';
-import { assertSafeFetchUrl, SsrfBlockedError } from './ssrfGuard.js';
+import { assertSafeFetchUrl, safeFetch, SsrfBlockedError } from './ssrfGuard.js';
 
 const PROTOCOL_VERSION = '2025-03-26';
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -61,7 +61,7 @@ class HttpRpcSession {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let resp: Response;
     try {
-      resp = await fetch(this.url, {
+      resp = await safeFetch(this.url, {
         method: 'POST',
         headers,
         body: JSON.stringify({ jsonrpc: '2.0', method, params, id }),
@@ -101,7 +101,7 @@ class HttpRpcSession {
     const headers = { ...this.baseHeaders };
     if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
     try {
-      await fetch(this.url, {
+      await safeFetch(this.url, {
         method: 'POST',
         headers,
         body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),

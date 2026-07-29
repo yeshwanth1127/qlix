@@ -289,6 +289,9 @@ def _build_system_prompt(
     agent_description: str | None,
     identity: AgentIdentity,
     tools: list[dict[str, Any]],
+    *,
+    groups: tuple[str, ...] | None = None,
+    instruction: str = "",
 ) -> str:
     """Tell the model who it is and what it can actually do.
 
@@ -298,6 +301,13 @@ def _build_system_prompt(
     works for any tool the agent has — current or future.
     """
     from .runner_common import describe_capabilities
+    from .tool_router import (
+        has_qlix_leads_scope,
+        is_lead_browser_enrichment_intent,
+        is_lead_generation_intent,
+        lead_enrichment_run_guidance,
+        lead_generation_run_guidance,
+    )
 
     identity_line = (agent_description or "").strip() or (
         "an autonomous AI agent running on the Qlix platform"
@@ -307,7 +317,26 @@ def _build_system_prompt(
         | set(identity.always_scopes)
         | set(identity.jit_scopes)
     )
-    return f"You are {identity_line}.\n\n" + describe_capabilities(granted, tools)
+    parts = [
+        f"You are {identity_line}.",
+        describe_capabilities(granted, tools, groups=groups),
+    ]
+    enrich_intent = is_lead_browser_enrichment_intent(instruction)
+    gen_intent = is_lead_generation_intent(instruction)
+    if enrich_intent and has_qlix_leads_scope(identity):
+        if "web" in (groups or ()):
+            parts.append(lead_enrichment_run_guidance())
+        elif not any(s.startswith("web.") and s != "web.research" for s in granted):
+            parts.append(
+                "The user asked to find emails on lead websites, but this agent is missing "
+                "the web.read and web.click scopes. Tell them to open the agent → "
+                "'Add or remove scopes' → enable web.read and web.click, then retry."
+            )
+        else:
+            parts.append(lead_enrichment_run_guidance())
+    elif gen_intent and has_qlix_leads_scope(identity):
+        parts.append(lead_generation_run_guidance())
+    return "\n\n".join(parts)
 
 
 async def _run_backend_proxy_inference(
@@ -329,6 +358,7 @@ async def _run_backend_proxy_inference(
 
     from .runner_common import default_log, run_backend_proxy_inference
     from .tool_router import ToolRouter
+    from .cloud_email_runtime import email_send_needs_jit
 
     router = ToolRouter(identity, runner_runtime="cloud")
     instruction = enriched_prompt.split("\n\nSelected skills/tools:")[0].strip()
@@ -345,10 +375,14 @@ async def _run_backend_proxy_inference(
     tools = router.build_tool_definitions(plan, mcp_servers=mcp_servers)
     backend_url = os.environ.get("QLIX_BACKEND_URL", identity.backend_url).strip()
     runner_token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
-    # MCP tool calls are signed with the agent key (audit ledger + JIT + billing), so they
-    # need a QlixSDK bound to this identity. Only construct it when MCP servers are bound.
+    # MCP, research, and JIT-gated email tools use the signed Qlix action / approval lifecycle.
+    needs_sdk = (
+        bool(mcp_servers)
+        or "research" in plan.groups
+        or ("comms" in plan.groups and email_send_needs_jit(identity))
+    )
     mcp_sdk = None
-    if mcp_servers:
+    if needs_sdk:
         from .sdk import QlixSDK
 
         mcp_sdk = QlixSDK(identity=identity, http=http)
@@ -365,7 +399,9 @@ async def _run_backend_proxy_inference(
     tools_json = json.dumps(tools, sort_keys=True)
     tools_hash = hashlib.md5(tools_json.encode()).hexdigest()[:8]
 
-    system_prompt = _build_system_prompt(agent_description, identity, tools)
+    system_prompt = _build_system_prompt(
+        agent_description, identity, tools, groups=plan.groups, instruction=instruction
+    )
 
     # Capture UI screenshot frames whenever browser tools are in play, so the live
     # preview shows up as soon as the model navigates/clicks — not only when the user
@@ -441,6 +477,13 @@ async def _poll_and_execute_loop() -> None:
                 _log("browser_engine_info_error", error=str(info_exc))
         except Exception as exc:
             _log("agent_browser_warmup_error", error=str(exc))
+    try:
+        from qlix.cloud_research_runtime import configure_research_sources
+
+        configure_research_sources()
+        _log("agent_reach_configured")
+    except Exception as exc:
+        _log("agent_reach_config_error", error=str(exc))
     runner_token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
     if not runner_token:
         _log("runner_init_error", message="missing QLIX_RUNNER_TOKEN")

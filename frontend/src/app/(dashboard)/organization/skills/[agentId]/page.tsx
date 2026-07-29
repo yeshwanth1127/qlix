@@ -1,4 +1,4 @@
-import { AgentSkillsPlaceholderView } from "@/components/qlix/skills/AgentSkillsPlaceholderView";
+import { AgentSkillsView } from "@/components/qlix/skills/AgentSkillsView";
 
 export default async function OrganizationAgentSkillsPage({
   params,
@@ -6,6 +6,6 @@ export default async function OrganizationAgentSkillsPage({
   readonly params: Promise<{ agentId: string }>;
 }) {
   const { agentId } = await params;
-  return <AgentSkillsPlaceholderView routePrefix="/organization" agentId={agentId} />;
+  return <AgentSkillsView routePrefix="/organization" agentId={agentId} />;
 }
 

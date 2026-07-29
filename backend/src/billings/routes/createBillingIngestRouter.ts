@@ -3,11 +3,11 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
-import { authenticateUser } from '../../middleware/authenticateUser.js';
 import { billingCycleFromDateUtc, parseOccurredAt } from '../lib/billingCycle.js';
 import { ensureBillingDefaults } from '../lib/ensureDefaults.js';
 import { getServiceTokenFromRequest, verifyServiceToken } from '../lib/serviceToken.js';
 import { lookupBillingUnitPrice } from '../lib/priceLookup.js';
+import { debitWalletTwoBucket } from '../lib/recordBillingEvent.js';
 
 function isPrismaUniqueConstraintError(error: unknown): error is { code: string } {
   if (!error || typeof error !== 'object') return false;
@@ -42,16 +42,17 @@ const failureSchema = z.object({
   errorCode: z.string().max(120).optional(),
 });
 
-function requireAuthOrServiceToken(request: Request, response: Response): { ok: true } | { ok: false } {
-  if (request.auth) return { ok: true };
+// Billing ingest debits org wallets, so it must be a trusted server-to-server call. A valid
+// service token is required — cookie/Bearer *user* auth is intentionally NOT sufficient, otherwise
+// any signed-in org member could fabricate billable "success" events and drain the org's credits.
+function requireServiceToken(request: Request, response: Response): { ok: true } | { ok: false } {
   const token = getServiceTokenFromRequest(request);
   if (token && verifyServiceToken(token)) return { ok: true };
-  response.status(401).json({ error: { code: 'unauthorized', message: 'Missing auth or service token' } });
+  response.status(401).json({ error: { code: 'unauthorized', message: 'Valid billing service token required' } });
   return { ok: false };
 }
 
-function deriveOrgAndUser(request: Request, body: { orgId?: string; userId?: string }): { orgId: string; userId: string } | null {
-  if (request.auth) return { orgId: request.auth.orgId, userId: request.auth.userId };
+function deriveOrgAndUser(_request: Request, body: { orgId?: string; userId?: string }): { orgId: string; userId: string } | null {
   if (body.orgId && body.userId) return { orgId: body.orgId, userId: body.userId };
   return null;
 }
@@ -59,12 +60,9 @@ function deriveOrgAndUser(request: Request, body: { orgId?: string; userId?: str
 export function createBillingIngestRouter(): Router {
   const router = Router();
 
-  // Optional cookie auth; callers may be services.
-  router.use(authenticateUser(false));
-
   router.post('/success', async (request: Request, response: Response) => {
     try {
-      const gate = requireAuthOrServiceToken(request, response);
+      const gate = requireServiceToken(request, response);
       if (!gate.ok) return;
 
       await ensureBillingDefaults(prisma);
@@ -102,31 +100,8 @@ export function createBillingIngestRouter(): Router {
           },
         });
 
-        let walletAfter: Prisma.Decimal | null = null;
         if (amountCharged.gt(0)) {
-          const wallet = await tx.wallet.findUnique({ where: { orgId: derived.orgId } });
-          const orgWallet =
-            wallet ??
-            (await tx.wallet.create({
-              data: { orgId: derived.orgId, currency: 'USD', balance: 0 },
-            }));
-
-          const updated = await tx.wallet.update({
-            where: { id: orgWallet.id },
-            data: { balance: { decrement: amountCharged } },
-            select: { balance: true },
-          });
-          walletAfter = updated.balance;
-
-          await tx.transaction.create({
-            data: {
-              walletId: orgWallet.id,
-              successfulEventId: event.id,
-              type: 'usage_debit',
-              amount: amountCharged.neg(),
-              status: 'posted',
-            },
-          });
+          await debitWalletTwoBucket(tx, derived.orgId, amountCharged, event.id, prisma);
         }
 
         await tx.billingLog.create({
@@ -140,12 +115,11 @@ export function createBillingIngestRouter(): Router {
               billedServiceKey: price.serviceKey,
               billingCycle,
               amountCharged: amountCharged.toString(),
-              walletAfter: walletAfter ? walletAfter.toString() : null,
             },
           },
         });
 
-        return { event, walletAfter };
+        return { event };
       });
 
       response.status(201).json({
@@ -160,7 +134,6 @@ export function createBillingIngestRouter(): Router {
           billingCycle: result.event.billingCycle,
           occurredAt: result.event.occurredAt.toISOString(),
         },
-        walletAfter: result.walletAfter ? result.walletAfter.toString() : null,
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -210,7 +183,7 @@ export function createBillingIngestRouter(): Router {
 
   router.post('/failure', async (request: Request, response: Response) => {
     try {
-      const gate = requireAuthOrServiceToken(request, response);
+      const gate = requireServiceToken(request, response);
       if (!gate.ok) return;
 
       await ensureBillingDefaults(prisma);

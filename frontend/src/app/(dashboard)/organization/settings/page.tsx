@@ -1,6 +1,7 @@
-import { makePlaceholderPage } from "@/components/qlix/make-placeholder-page";
+"use client";
 
-export default makePlaceholderPage(
-  "Settings",
-  "Profile, email, password, and account controls.",
-);
+import { SettingsView } from "@/components/qlix/settings-view";
+
+export default function OrganizationSettingsPage() {
+  return <SettingsView />;
+}

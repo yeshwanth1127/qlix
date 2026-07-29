@@ -8,6 +8,7 @@ import { requireOrgAction } from '../middleware/requireOrgAction.js';
 import { billingCycleFromDateUtc } from '../lib/billingCycle.js';
 import { canonicalBillingServiceKey } from '../lib/billingServiceCatalog.js';
 import { ensureBillingDefaults } from '../lib/ensureDefaults.js';
+import { sessionOrganizationPayload } from '../lib/subscriptionAccess.js';
 
 const eventsQuerySchema = z.object({
   billingCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(),
@@ -18,6 +19,33 @@ const eventsQuerySchema = z.object({
 
 export function createBillingRouter(): Router {
   const router = Router();
+
+  /** Any signed-in member can read subscription/trial status (used by Subscriptions page + gates). */
+  router.get('/subscription', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      const auth = request.auth!;
+      const org = await prisma.organization.findUnique({
+        where: { id: auth.orgId },
+        select: { id: true, name: true, slug: true, workspaceKind: true, plan: true },
+      });
+      if (!org) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Organization not found' } });
+        return;
+      }
+      const user = await prisma.user.findUnique({
+        where: { id: auth.userId },
+        select: { isSuperAdmin: true },
+      });
+      const payload = await sessionOrganizationPayload(org, {
+        email: auth.email,
+        isSuperAdmin: Boolean(user?.isSuperAdmin),
+      });
+      response.json({ subscription: payload.subscription, plan: payload.plan });
+    } catch (error) {
+      console.error('[billing/subscription]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to load subscription' } });
+    }
+  });
 
   router.get('/overview', authenticateUser(true), requireOrgAction('billing'), async (request: Request, response: Response) => {
     try {
@@ -36,7 +64,15 @@ export function createBillingRouter(): Router {
 
       const cycle = billingCycleFromDateUtc(new Date());
 
-      const wallet = await prisma.wallet.findUnique({ where: { orgId }, select: { balance: true, currency: true } });
+      const wallet = await prisma.wallet.findUnique({
+        where: { orgId },
+        select: { balance: true, freeBalance: true, paidBalance: true, freeExpiresAt: true, currency: true },
+      });
+
+      const subscription = await prisma.orgSubscription.findUnique({
+        where: { orgId },
+        select: { planName: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
+      });
 
       const [successCount, spend] = await Promise.all([
         prisma.successfulEvent.count({ where: { orgId, billingCycle: cycle } }),
@@ -106,8 +142,22 @@ export function createBillingRouter(): Router {
         organization: { id: org.id, name: org.name, plan: org.plan },
         billingCycle: cycle,
         wallet: wallet
-          ? { balance: wallet.balance.toString(), currency: wallet.currency }
-          : { balance: '0', currency: 'USD' },
+          ? {
+              balance: wallet.balance.toString(),
+              freeBalance: wallet.freeBalance.toString(),
+              paidBalance: wallet.paidBalance.toString(),
+              freeExpiresAt: wallet.freeExpiresAt ? wallet.freeExpiresAt.toISOString() : null,
+              currency: wallet.currency,
+            }
+          : { balance: '0', freeBalance: '0', paidBalance: '0', freeExpiresAt: null, currency: 'INR' },
+        subscription: subscription
+          ? {
+              planName: subscription.planName,
+              status: subscription.status,
+              currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
+              cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+            }
+          : null,
         plan: { name: org.plan },
         services: servicesPayload,
         ...(unlistedServices.length > 0 ? { unlistedServices } : {}),

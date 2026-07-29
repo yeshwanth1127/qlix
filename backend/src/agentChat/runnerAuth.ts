@@ -22,7 +22,12 @@ function timingSafeEqualStr(a: string, b: string): boolean {
  * Used for hybrid runner token storage (one-way, no decryption needed).
  */
 function computeHybridTokenHash(token: string): string {
-  const key = process.env.AGENT_SECRETS_KEY ?? 'qlix-dev-secret';
+  const key = process.env.AGENT_SECRETS_KEY?.trim();
+  if (!key) {
+    // Fail closed: a hardcoded fallback would make every hybrid runner-token hash forgeable
+    // (runner impersonation) in any environment where the key is unset.
+    throw new Error('AGENT_SECRETS_KEY is required to authenticate hybrid runners');
+  }
   return crypto.createHmac('sha256', key).update(token).digest('hex');
 }
 

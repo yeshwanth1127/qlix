@@ -14,10 +14,10 @@ export function createNlBuilderHistoryRouter(): Router {
   const router = Router();
   const jwtSecret = loadJwtSecret();
 
-  router.use(authenticateUser(jwtSecret));
+  router.use(authenticateUser(true));
 
   router.get('/', async (req: Request, res: Response) => {
-    const userId = req.auth.userId;
+    const userId = req.auth!.userId;
     const entries = await prisma.nlBuilderHistory.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -33,7 +33,7 @@ export function createNlBuilderHistoryRouter(): Router {
       res.status(400).json({ error: { code: 'invalid_body', message: 'prompt is required (max 2000 chars)' } });
       return;
     }
-    const userId = req.auth.userId;
+    const userId = req.auth!.userId;
     const { prompt } = parsed.data;
 
     // Remove any existing identical prompt so re-inserting bumps it to the top

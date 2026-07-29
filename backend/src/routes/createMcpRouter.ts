@@ -11,20 +11,41 @@ import { callHttpTool } from '../mcp/mcpHttpClient.js';
 import { slugify } from '../mcp/mcp.governance.js';
 import type { McpAuthType, McpGovernance, McpTransport } from '../mcp/mcp.types.js';
 
-/** Where the OAuth provider redirects back to. Fixed per request origin so it matches DCR. */
+/**
+ * Where the OAuth provider redirects back to. In production a fixed MCP_OAUTH_REDIRECT_URI is
+ * REQUIRED so a poisoned Host / X-Forwarded-* header cannot skew the redirect URI (which is bound
+ * into DCR and the auth request). Only development falls back to the request origin.
+ */
 function oauthRedirectUri(request: Request): string {
-  const configured = process.env.MCP_OAUTH_REDIRECT_URI;
+  const configured = process.env.MCP_OAUTH_REDIRECT_URI?.trim();
   if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new McpOAuthError('MCP_OAUTH_REDIRECT_URI must be configured in production');
+  }
   const proto = (request.headers['x-forwarded-proto'] as string) || request.protocol;
   return `${proto}://${request.get('host')}/api/v1/mcp/oauth/callback`;
+}
+
+/** Restrict postMessage to the app origin so the OAuth result can't be read by an arbitrary opener. */
+function frontendOrigin(): string {
+  const url = process.env.FRONTEND_URL?.trim() || process.env.QLIX_FRONTEND_URL?.trim();
+  if (!url) return '';
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
 }
 
 /** Minimal HTML that notifies the opener (the connectors page) and closes the popup. */
 function oauthPopupHtml(payload: { ok: boolean; message?: string }): string {
   const json = JSON.stringify({ type: 'qlix-mcp-oauth', ...payload });
+  // Target the known app origin, never '*', so the OAuth outcome is not leaked to any window that
+  // manages to open this popup.
+  const targetOrigin = JSON.stringify(frontendOrigin() || '/');
   return `<!doctype html><meta charset="utf-8"><title>Qlix</title><body style="font-family:system-ui;background:#0b0b0f;color:#ddd;padding:24px">
 <p>${payload.ok ? 'Connected. You can close this window.' : 'Connection failed.'}</p>
-<script>try{window.opener&&window.opener.postMessage(${json},'*')}catch(e){}setTimeout(function(){window.close()},400)</script>
+<script>try{window.opener&&window.opener.postMessage(${json},${targetOrigin})}catch(e){}setTimeout(function(){window.close()},400)</script>
 </body>`;
 }
 
@@ -102,6 +123,16 @@ const proxyCallSchema = z.object({
   tool: z.string().min(1),
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
+
+/** GMB scrape + per-site email extraction can take 30–90s; default MCP timeout is 15s. */
+function mcpProxyTimeoutMs(slug: string, tool: string): number {
+  if (slug === 'qlix-leads' && tool === 'gmb_search_leads') return 120_000;
+  if (slug === 'qlix-leads') return 45_000;
+  if (slug === 'qlix-jobs' && tool === 'search_jobs') return 45_000;
+  if (slug === 'qlix-jobs' && tool === 'queue_applications') return 60_000;
+  if (slug === 'qlix-jobs') return 30_000;
+  return 15_000;
+}
 
 export function createMcpRouter(): Router {
   const router = Router();
@@ -550,7 +581,17 @@ export function createMcpRouter(): Router {
         return;
       }
       const headers = target.authType === 'oauth' ? await mcpOAuth.bearerHeader(target.serverId) : target.headers;
-      const result = await callHttpTool({ url: target.endpointUrl, headers, tool, arguments: args });
+      const proxyHeaders = { ...headers };
+      if (slug === 'qlix-leads' || slug === 'qlix-jobs') {
+        proxyHeaders['X-Qlix-Agent-Id'] = agentId;
+      }
+      const result = await callHttpTool({
+        url: target.endpointUrl,
+        headers: proxyHeaders,
+        tool,
+        arguments: args,
+        timeoutMs: mcpProxyTimeoutMs(slug, tool),
+      });
       response.json({ isError: result.isError, content: result.content });
     } catch (err) {
       response.status(502).json({ error: { code: 'proxy_failed', message: err instanceof Error ? err.message : 'proxy call failed' } });

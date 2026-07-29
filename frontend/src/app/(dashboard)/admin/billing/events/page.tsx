@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
 import { SectionHeading } from "@/components/qlix/section-heading";
+import { SketchBox, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getAdminBillingEvents, type AdminBillingEventsResponse } from "@/lib/admin-billing-api";
 import { cn } from "@/lib/utils/cn";
 
@@ -36,32 +36,42 @@ export default function AdminBillingEventsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-[13px] text-neutral-500">Loading event log…</p>;
-  if (error || !data) return <p className="text-[13px] text-red-500">{error ?? "Could not load event log."}</p>;
+  if (loading) return <p className={sketchLabel}>Loading event log…</p>;
+
+  if (error || !data) {
+    return (
+      <div className="space-y-2">
+        <p className="text-[13px] text-black">{error ?? "Could not load event log."}</p>
+        <button type="button" onClick={() => window.location.reload()} className={sketchButton}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full space-y-6">
       <SectionHeading title="Billing event log" description="Successful billable events across all organizations." />
 
-      <div className="text-[12px] text-[--text-tertiary]">
-        Billing cycle: <span className="font-mono text-[--text-secondary]">{data.billingCycle}</span>
+      <div className="font-serif text-[11px] uppercase tracking-widest text-black/50">
+        Billing cycle: <span className="font-mono text-black">{data.billingCycle}</span>
       </div>
 
-      <ReflectiveCard className="overflow-hidden rounded-xl">
+      <SketchBox className="overflow-hidden">
         <table className="w-full border-collapse text-left text-[13px]">
-          <thead className="border-b border-[--border-subtle]">
-            <tr className="qlix-glass-inset text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">
-              <th className="px-4 py-3">Time (UTC)</th>
-              <th className="px-4 py-3">Org</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Charge</th>
-              <th className="px-4 py-3">Endpoint</th>
+          <thead className="border-b border-black">
+            <tr>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Time (UTC)</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Org</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Type</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Charge</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Endpoint</th>
             </tr>
           </thead>
           <tbody>
             {data.events.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-[--text-tertiary]">
+                <td colSpan={5} className="px-4 py-8 text-black/50">
                   No events recorded yet.
                 </td>
               </tr>
@@ -70,24 +80,23 @@ export default function AdminBillingEventsPage() {
                 <tr
                   key={e.id}
                   className={cn(
-                    "transition-colors hover:bg-[var(--glass-row-hover)]",
-                    idx < arr.length - 1 ? "border-b border-[--border-subtle]" : "",
+                    "transition-colors hover:bg-black/5",
+                    idx < arr.length - 1 ? "border-b border-black/20" : "",
                   )}
                 >
-                  <td className="px-4 py-3 font-mono text-[--text-secondary]">
+                  <td className="px-4 py-3 font-mono text-black">
                     {new Date(e.occurredAt).toISOString().replace("T", " ").slice(0, 19)}
                   </td>
-                  <td className="px-4 py-3 text-[--text-secondary]">{e.org.name}</td>
-                  <td className="px-4 py-3 font-mono text-[--text-secondary]">{e.eventType}</td>
-                  <td className="px-4 py-3 font-mono text-[--text-secondary]">{formatUsd(e.amountCharged)}</td>
-                  <td className="px-4 py-3 font-mono text-[11px] text-[--text-tertiary]">{e.apiEndpoint ?? "—"}</td>
+                  <td className="px-4 py-3 text-black">{e.org.name}</td>
+                  <td className="px-4 py-3 font-mono text-black">{e.eventType}</td>
+                  <td className="px-4 py-3 font-mono text-black">{formatUsd(e.amountCharged)}</td>
+                  <td className="px-4 py-3 font-mono text-[11px] text-black/50">{e.apiEndpoint ?? "—"}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
-      </ReflectiveCard>
+      </SketchBox>
     </div>
   );
 }
-

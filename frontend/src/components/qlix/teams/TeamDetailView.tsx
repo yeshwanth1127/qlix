@@ -23,6 +23,13 @@ import {
 } from "@/lib/teams-api";
 import { listAgents, restartCloudRunner, type AgentDTO, type PermissionScope } from "@/lib/agents-api";
 import { cn } from "@/lib/utils/cn";
+import {
+  SketchBox,
+  SketchRow,
+  sketchButton,
+  sketchInput,
+  sketchLabel,
+} from "@/components/qlix/sketch";
 import { CreateAgentModal } from "@/components/qlix/agents/CreateAgentModal";
 import { DelegatedScopePicker } from "@/components/qlix/teams/DelegatedScopePicker";
 import { TeamRunView } from "./TeamRunView";
@@ -31,7 +38,6 @@ import { TeamRunHistoryView } from "./TeamRunHistoryView";
 interface TeamDetailViewProps {
   readonly team: TeamDTO;
   readonly routePrefix: string;
-  readonly deviceVerified: boolean;
   readonly onDeleted: () => void;
   readonly onUpdated: (team: TeamDTO) => void;
 }
@@ -41,23 +47,12 @@ type ActiveTab = "build" | "run" | "history";
 type AgentCreatePurpose = "supervisor" | "worker";
 type AddMode = "create" | "existing";
 
-const STATUS_BADGE: Record<string, string> = {
-  active: "text-emerald-400 bg-emerald-400/10",
-  draft: "text-yellow-400 bg-yellow-400/10",
-  archived: "text-white/40 bg-white/5",
-};
-
-function runnerBadge(entry: TeamRunnerStatusEntry | undefined): {
-  label: string;
-  className: string;
-} {
-  if (!entry) return { label: "unknown", className: "text-white/30 bg-white/5" };
-  if (entry.ready) return { label: "online", className: "text-emerald-400 bg-emerald-400/10" };
-  if (entry.provisioningStatus === "provisioning")
-    return { label: "provisioning", className: "text-yellow-400 bg-yellow-400/10" };
-  if (entry.provisioningStatus === "failed")
-    return { label: "failed", className: "text-red-400 bg-red-400/10" };
-  return { label: "offline", className: "text-white/40 bg-white/5" };
+function runnerStatusLabel(entry: TeamRunnerStatusEntry | undefined): string {
+  if (!entry) return "Unknown";
+  if (entry.ready) return "Online";
+  if (entry.provisioningStatus === "provisioning") return "Starting up";
+  if (entry.provisioningStatus === "failed") return "Failed to start";
+  return "Offline";
 }
 
 function RunnerRow({
@@ -72,33 +67,27 @@ function RunnerRow({
   readonly restarting: boolean;
 }) {
   if (!entry) {
-    return <p className="mt-2 text-[11px] text-white/30">Loading runner status…</p>;
+    return <p className="mt-2 text-[11px] text-black/50">Loading status…</p>;
   }
-  const badge = runnerBadge(entry);
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
-      <span className={cn("rounded-full px-2 py-0.5 font-medium", badge.className)}>{badge.label}</span>
-      {entry.containerName && (
-        <span className="font-mono text-white/25 truncate max-w-[200px]" title={entry.containerName}>
-          {entry.containerName}
-        </span>
-      )}
+      <span className="font-serif uppercase tracking-widest text-black/60">{runnerStatusLabel(entry)}</span>
       {entry.inferenceError && (
-        <span className="text-red-400/80">{entry.inferenceError}</span>
+        <span className="text-black">{entry.inferenceError}</span>
       )}
       <button
         type="button"
         onClick={onRestart}
         disabled={restarting}
-        className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
-        title="Stop container, rebuild Docker image with latest SDK, restart"
+        className={`${sketchButton} gap-1 py-0.5`}
+        title="Restart this agent to pick up the latest updates"
       >
         <RefreshCw size={11} className={restarting ? "animate-spin" : ""} />
-        {restarting ? "Rebuilding…" : "Rebuild"}
+        {restarting ? "Restarting…" : "Restart"}
       </button>
       <Link
         href={`${agentsHrefPrefix}/agents/${entry.agentId}`}
-        className="text-white/30 hover:text-white/60"
+        className="underline underline-offset-2 text-black/50 hover:text-black"
       >
         Agent detail →
       </Link>
@@ -106,7 +95,7 @@ function RunnerRow({
   );
 }
 
-export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, onUpdated }: TeamDetailViewProps) {
+export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: TeamDetailViewProps) {
   const [tab, setTab] = useState<ActiveTab>("build");
   const [deleting, setDeleting] = useState(false);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
@@ -166,7 +155,7 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
       await restartCloudRunner(agentId);
       await pollRunners();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to restart runner");
+      alert(err instanceof Error ? err.message : "Failed to restart agent");
     } finally {
       setRestartingId(null);
     }
@@ -174,7 +163,7 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
 
   function promptConfirmName(label: string, expected: string): string | null {
     const typed = window.prompt(
-      `This permanently deletes ${label} from the database and stops/removes its Docker runner.\n\nType "${expected}" to confirm:`,
+      `This permanently deletes ${label} and stops its agent.\n\nType "${expected}" to confirm:`,
     );
     if (typed == null) return null;
     return typed.trim();
@@ -394,83 +383,97 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
     { id: "history", label: "History" },
   ];
 
+  const isRunTab = tab === "run" && canRun;
+
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
-        <div>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
+      <div
+        className={cn(
+          "flex shrink-0 items-center justify-between border-b border-black px-6",
+          isRunTab ? "py-2" : "py-4",
+        )}
+      >
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold text-white/90">{team.name}</h2>
-            <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", STATUS_BADGE[team.status] ?? "text-white/40 bg-white/5")}>
+            <h2 className="truncate text-base font-semibold text-black">{team.name}</h2>
+            <span className="shrink-0 font-serif text-[10px] uppercase tracking-widest text-black/50">
               {team.status === "draft" ? "Draft — needs supervisor" : team.status}
             </span>
           </div>
-          {team.description && (
-            <p className="mt-0.5 text-xs text-white/50">{team.description}</p>
+          {!isRunTab && team.description && (
+            <p className="mt-0.5 text-xs text-black/60">{team.description}</p>
           )}
-          <p className="mt-1 text-xs text-white/30 font-mono">{team.did}</p>
-          <div className="mt-2 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 max-w-xl">
-            <p className="text-[10px] font-medium text-emerald-300/90">WhatsApp (self-chat)</p>
-            <p className="mt-1 text-[11px] font-mono text-white/55 break-all">
-              @{team.name}: &lt;goal&gt; or @{team.name} &lt;goal&gt;
-            </p>
-            <p className="mt-1 text-[10px] text-white/35">
-              Teams run only with @. @ &lt;goal&gt; uses the default team from Connectors. Mid-run: @ more guidance · !status · !cancel
-            </p>
-          </div>
+          {!isRunTab && <p className="mt-1 font-mono text-xs text-black/40">{team.did}</p>}
+          {!isRunTab && (
+            <SketchBox className="mt-2 max-w-xl px-3 py-2">
+              <p className={`${sketchLabel} text-[10px]`}>WhatsApp (self-chat)</p>
+              <p className="mt-1 break-all font-mono text-[11px] text-black/70">
+                @{team.name}: &lt;goal&gt; or @{team.name} &lt;goal&gt;
+              </p>
+              <p className="mt-1 text-[10px] text-black/50">
+                Teams run only with @. @ &lt;goal&gt; uses the default team from Connectors. Mid-run: @ more guidance · !status · !cancel
+              </p>
+            </SketchBox>
+          )}
         </div>
         <button
+          type="button"
           onClick={handleDelete}
           disabled={deleting}
-          className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-40"
+          className={`${sketchButton} shrink-0 gap-1.5 disabled:opacity-40`}
         >
           <Trash2 size={13} />
           Delete
         </button>
       </div>
 
-      <div className="flex border-b border-white/10 px-6">
+      <div className="flex shrink-0 border-b border-black px-6">
         {tabs.map((t) => (
           <button
             key={t.id}
+            type="button"
             onClick={() => !t.disabled && setTab(t.id)}
             disabled={t.disabled}
             className={cn(
-              "mr-4 py-2 text-xs font-medium capitalize transition-colors",
+              "mr-4 py-2 font-serif text-[11px] uppercase tracking-widest transition-colors",
               t.disabled
-                ? "text-white/20 cursor-not-allowed"
+                ? "cursor-not-allowed text-black/25"
                 : tab === t.id
-                  ? "border-b-2 border-indigo-500 text-indigo-400"
-                  : "text-white/40 hover:text-white/70",
+                  ? "border-b-2 border-black text-black"
+                  : "text-black/50 hover:text-black",
             )}
           >
             {t.label}
             {t.id === "run" && !canRun && (
-              <span className="ml-1 text-white/20">(runners not ready)</span>
+              <span className="ml-1 normal-case tracking-normal text-black/30">(not ready yet)</span>
             )}
           </button>
         ))}
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          isRunTab ? "overflow-hidden" : "overflow-auto",
+        )}
+      >
         {tab === "build" && (
           <div className="px-6 py-5 space-y-6">
             {actionError && (
-              <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-                {actionError}
-              </div>
+              <SketchBox className="px-3 py-2 text-xs text-black">{actionError}</SketchBox>
             )}
 
             <div>
-              <div className="flex items-center gap-2 mb-3">
-                <ShieldCheck size={14} className="text-indigo-400" />
-                <span className="text-xs font-semibold text-white/70">Supervisor Agent</span>
-                <span className="text-xs text-white/30">(required, cloud)</span>
+              <div className="mb-3 flex items-center gap-2">
+                <ShieldCheck size={14} className="text-black" />
+                <span className={`${sketchLabel} normal-case`}>Supervisor Agent</span>
+                <span className="text-xs text-black/50">(required, cloud)</span>
               </div>
 
               {team.supervisorAgent ? (
-                <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-4 py-3">
-                  <p className="text-sm font-medium text-white/85">{team.supervisorAgent.name}</p>
-                  <p className="text-xs text-white/40 font-mono mt-0.5">{team.supervisorAgent.did}</p>
+                <SketchBox className="px-4 py-3">
+                  <p className="text-sm font-medium text-black">{team.supervisorAgent.name}</p>
+                  <p className="mt-0.5 font-mono text-xs text-black/50">{team.supervisorAgent.did}</p>
                   <RunnerRow
                     entry={runnerByAgentId(team.supervisorAgent.id)}
                     agentsHrefPrefix={routePrefix}
@@ -478,67 +481,61 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                     restarting={restartingId === team.supervisorAgent.id}
                   />
                   <div className="mt-2 flex items-center gap-3">
-                    <button
-                      onClick={openCreateSupervisor}
-                      className="text-xs text-indigo-400/70 hover:text-indigo-400 transition-colors"
-                    >
+                    <button type="button" onClick={openCreateSupervisor} className={sketchButton}>
                       Replace supervisor
                     </button>
                     <button
+                      type="button"
                       onClick={handleDeleteSupervisor}
-                      className="flex items-center gap-1 text-xs text-red-400/70 hover:text-red-400 transition-colors"
-                      title="Deletes supervisor agent from DB and Docker"
+                      className={`${sketchButton} gap-1`}
+                      title="Permanently deletes this agent"
                     >
                       <Trash2 size={13} />
                       Delete
                     </button>
                   </div>
-                </div>
+                </SketchBox>
               ) : (
-                <div className="rounded-lg border border-dashed border-white/15 bg-white/3 px-4 py-5 flex flex-col items-center gap-3">
-                  <p className="text-xs text-white/40 text-center">
-                    Cloud supervisor runs in Docker (ADK). It decomposes goals, delegates to workers, and synthesizes results.
+                <SketchBox className="flex flex-col items-center gap-3 border-dashed px-4 py-5">
+                  <p className="text-center text-xs text-black/50">
+                    The supervisor agent runs in the cloud. It decomposes goals, delegates to workers, and synthesizes results.
                   </p>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={openCreateSupervisor}
-                      className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
-                    >
+                    <button type="button" onClick={openCreateSupervisor} className={`${sketchButton} gap-1.5`}>
                       <ShieldCheck size={13} />
                       Create New
                     </button>
                     <button
+                      type="button"
                       onClick={() => void openExistingPicker("supervisor")}
-                      className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium border border-white/15 hover:bg-white/5 text-white/60 hover:text-white/90 transition-colors"
+                      className={`${sketchButton} gap-1.5`}
                     >
                       <Plus size={13} />
                       Use Existing Agent
                     </button>
                   </div>
-                </div>
+                </SketchBox>
               )}
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Users size={14} className="text-white/50" />
-                  <span className="text-xs font-semibold text-white/70">
+                  <Users size={14} className="text-black/60" />
+                  <span className={`${sketchLabel} normal-case`}>
                     Worker Agents
-                    {workerCount > 0 && <span className="ml-1.5 text-white/40">({workerCount})</span>}
+                    {workerCount > 0 && <span className="ml-1.5 text-black/50">({workerCount})</span>}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={openCreateWorker}
-                    className="flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-medium text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/10 transition-colors"
-                  >
+                  <button type="button" onClick={openCreateWorker} className={`${sketchButton} gap-1`}>
                     <UserPlus size={12} />
                     Create New
                   </button>
                   <button
+                    type="button"
                     onClick={() => void openExistingPicker("worker")}
-                    className="flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-medium text-white/50 border border-white/15 hover:bg-white/5 hover:text-white/80 transition-colors"
+                    className={`${sketchButton} gap-1`}
                   >
                     <Plus size={12} />
                     Use Existing
@@ -546,30 +543,29 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                 </div>
               </div>
 
-              {/* Pipeline sequencing controls */}
-              <div className="mb-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2 flex items-start gap-3">
-                <Sparkles size={14} className="mt-0.5 shrink-0 text-indigo-400/80" />
-                <div className="flex-1 min-w-0">
+              <SketchBox className="mb-3 flex items-start gap-3 px-3 py-2">
+                <Sparkles size={14} className="mt-0.5 shrink-0 text-black/60" />
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs font-medium text-white/80">Pipeline order</p>
-                    <label className="flex items-center gap-2 text-[11px] text-white/60 cursor-pointer">
+                    <p className="text-xs font-medium text-black">Pipeline order</p>
+                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-black/60">
                       <input
                         type="checkbox"
                         checked={Boolean(team.config.autoSequence)}
                         onChange={(e) => void handleToggleAutoSequence(e.target.checked)}
                         disabled={togglingAutoSequence}
-                        className="size-3.5 rounded border-white/20 bg-white/10 accent-indigo-500"
+                        className="size-3.5 accent-black"
                       />
                       Auto-sequence (supervisor decides on every run)
                     </label>
                   </div>
-                  <p className="mt-1 text-[11px] text-white/40">
+                  <p className="mt-1 text-[11px] text-black/50">
                     {team.config.autoSequence
                       ? "Supervisor LLM picks the order on every run from each agent's description. Stage numbers below are ignored."
                       : "Workers run strictly in the order shown below. Add agents in any order — use the arrows to set the sequence."}
                   </p>
                 </div>
-              </div>
+              </SketchBox>
 
               {team.members && team.members.length > 0 ? (
                 <div className="space-y-2">
@@ -580,11 +576,10 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                         a.addedAt.localeCompare(b.addedAt),
                     )
                     .map((m, idx, arr) => (
-                    <div key={m.id} className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 flex items-start gap-3">
-                      {/* Stage badge + reorder arrows. Greyed when autoSequence is on. */}
+                    <SketchRow key={m.id} className="flex items-start gap-3 border-black">
                       <div
                         className={cn(
-                          "flex flex-col items-center gap-0.5 shrink-0 pt-0.5",
+                          "flex shrink-0 flex-col items-center gap-0.5 pt-0.5",
                           team.config.autoSequence && "opacity-30",
                         )}
                         title={
@@ -599,12 +594,12 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                           disabled={
                             team.config.autoSequence || idx === 0 || reorderingId !== null
                           }
-                          className="rounded p-0.5 text-white/40 hover:text-indigo-400 disabled:opacity-25 disabled:hover:text-white/40"
+                          className="rounded p-0.5 text-black/50 hover:text-black disabled:opacity-25"
                           aria-label="Move stage up"
                         >
                           <ArrowUp size={11} />
                         </button>
-                        <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/70 tabular-nums">
+                        <span className="border border-black px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-black">
                           {idx + 1}
                         </span>
                         <button
@@ -615,18 +610,18 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                             idx === arr.length - 1 ||
                             reorderingId !== null
                           }
-                          className="rounded p-0.5 text-white/40 hover:text-indigo-400 disabled:opacity-25 disabled:hover:text-white/40"
+                          className="rounded p-0.5 text-black/50 hover:text-black disabled:opacity-25"
                           aria-label="Move stage down"
                         >
                           <ArrowDown size={11} />
                         </button>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white/80">{m.agent?.name ?? m.agentId}</p>
-                        <p className="text-xs text-white/40 mt-0.5">
-                          Role: <span className="text-white/60">{m.role}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-black">{m.agent?.name ?? m.agentId}</p>
+                        <p className="mt-0.5 text-xs text-black/50">
+                          Role: <span className="text-black/70">{m.role}</span>
                           {m.delegatedScopes.length > 0 && (
-                            <span className="ml-2 text-white/30">
+                            <span className="ml-2 text-black/40">
                               · {m.delegatedScopes.join(", ")}
                             </span>
                           )}
@@ -644,14 +639,14 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                                 type="button"
                                 onClick={() => void saveMemberScopes(m)}
                                 disabled={savingMemberScopes}
-                                className="text-[11px] text-indigo-400 hover:text-indigo-300"
+                                className={sketchButton}
                               >
                                 Save scopes
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setEditingMemberId(null)}
-                                className="text-[11px] text-white/35 hover:text-white/60"
+                                className={sketchButton}
                               >
                                 Cancel
                               </button>
@@ -664,7 +659,7 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                               setEditingMemberId(m.id);
                               setEditScopes(m.delegatedScopes);
                             }}
-                            className="mt-1 text-[11px] text-white/30 hover:text-indigo-400"
+                            className={`${sketchButton} mt-1 py-0.5 normal-case tracking-normal`}
                           >
                             Edit delegated scopes
                           </button>
@@ -677,39 +672,39 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
                         />
                       </div>
                       <button
+                        type="button"
                         onClick={() => handleDeleteWorker(m)}
                         disabled={removingId === m.agentId}
-                        className="flex items-center gap-1 text-xs text-red-400/70 hover:text-red-400 transition-colors disabled:opacity-40"
-                        title="Deletes agent from DB and Docker"
+                        className={`${sketchButton} gap-1 disabled:opacity-40`}
+                        title="Permanently deletes this agent"
                       >
                         <Trash2 size={13} />
                         Delete
                       </button>
-                    </div>
+                    </SketchRow>
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-white/30 py-2">
-                  No worker agents yet. Each worker gets its own cloud Docker runner on the team network.
+                <p className="py-2 text-xs text-black/50">
+                  No worker agents yet. Each worker runs on its own in the cloud.
                 </p>
               )}
             </div>
 
             {allReady ? (
-              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 flex items-center gap-2">
-                <Play size={13} className="text-emerald-400 shrink-0" />
-                <p className="text-xs text-emerald-300/80">
-                  All cloud runners are online. Switch to the <strong>Run</strong> tab to start a task.
+              <SketchBox className="flex items-center gap-2 px-4 py-3">
+                <Play size={13} className="shrink-0 text-black" />
+                <p className="text-xs text-black/70">
+                  All agents are online. Switch to the <strong>Run</strong> tab to start a task.
                 </p>
-              </div>
+              </SketchBox>
             ) : (
-              <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-3 flex items-center gap-2">
-                <Clock size={13} className="text-yellow-400 shrink-0" />
-                <p className="text-xs text-yellow-300/80">
-                  Waiting for cloud runners: need supervisor + at least one worker, all with fresh heartbeat.
-                  Filter Docker: <code className="font-mono text-white/50">docker ps --filter label=com.qlix.team.id={team.id}</code>
+              <SketchBox className="flex items-center gap-2 px-4 py-3">
+                <Clock size={13} className="shrink-0 text-black" />
+                <p className="text-xs text-black/70">
+                  Waiting for agents to come online: you need a supervisor and at least one worker.
                 </p>
-              </div>
+              </SketchBox>
             )}
           </div>
         )}
@@ -734,7 +729,6 @@ export function TeamDetailView({ team, routePrefix, deviceVerified, onDeleted, o
         <CreateAgentModal
           open={showCreateAgent}
           orgId={team.orgId}
-          deviceVerified={deviceVerified}
           cloudOnly
           onClose={() => setShowCreateAgent(false)}
           onCreated={handleAgentCreated}
@@ -798,78 +792,79 @@ function ExistingAgentPicker({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="relative w-full max-w-md rounded-xl border border-white/10 bg-[#0e0e12] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 p-4">
+      <div className="relative w-full max-w-md border-2 border-black bg-white">
+        <div className="flex items-center justify-between border-b border-black px-5 py-4">
           <div>
-            <h2 className="text-sm font-semibold text-white/90">
+            <h2 className={sketchLabel}>
               Use existing agent as {purpose}
             </h2>
-            <p className="mt-0.5 text-xs text-white/40">
+            <p className="mt-0.5 text-xs text-black/50">
               Only cloud agents not already in this team are shown.
             </p>
           </div>
-          <button onClick={onClose} className="text-white/30 hover:text-white/70">
+          <button type="button" onClick={onClose} className="text-black/40 hover:text-black">
             <X size={16} />
           </button>
         </div>
 
-        <div className="px-5 pt-3 pb-1">
-          <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5">
-            <Search size={13} className="text-white/30 shrink-0" />
+        <div className="px-5 pb-1 pt-3">
+          <div className="flex items-center gap-2 border border-black px-3 py-1.5">
+            <Search size={13} className="shrink-0 text-black/40" />
             <input
               type="text"
               value={search}
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Search agents…"
-              className="flex-1 bg-transparent text-xs text-white/80 outline-none placeholder:text-white/25"
+              className="flex-1 bg-transparent text-xs text-black outline-none placeholder:text-black/30"
               autoFocus
             />
           </div>
         </div>
 
-        <div className="max-h-72 overflow-auto px-5 py-2 space-y-1">
+        <div className="max-h-72 space-y-1 overflow-auto px-5 py-2">
           {loading ? (
-            <p className="py-4 text-center text-xs text-white/30">Loading agents…</p>
+            <p className="py-4 text-center text-xs text-black/50">Loading agents…</p>
           ) : filtered.length === 0 ? (
-            <p className="py-4 text-center text-xs text-white/30">
+            <p className="py-4 text-center text-xs text-black/50">
               {agents.length === 0
                 ? "No eligible cloud agents found. Create one on the Agents page first."
                 : "No agents match your search."}
             </p>
           ) : (
             filtered.map((agent) => (
-              <div
+              <SketchRow
                 key={agent.id}
-                className="flex items-center justify-between rounded-lg border border-white/8 bg-white/4 px-3 py-2.5 hover:bg-white/7 transition-colors"
+                className="flex items-center justify-between border-black"
               >
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-white/85 truncate">{agent.name}</p>
+                  <p className="truncate text-sm font-medium text-black">{agent.name}</p>
                   {agent.description && (
-                    <p className="text-xs text-white/40 truncate mt-0.5">{agent.description}</p>
+                    <p className="mt-0.5 truncate text-xs text-black/50">{agent.description}</p>
                   )}
-                  <p className="text-xs text-white/25 font-mono truncate mt-0.5">
+                  <p className="mt-0.5 truncate font-mono text-xs text-black/40">
                     {agent.cloudProvisioningStatus ?? agent.status}
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={() =>
                     purpose === "worker" ? onSelectWorker(agent) : onAdd(agent)
                   }
                   disabled={addingId === agent.id}
-                  className="ml-3 shrink-0 rounded px-3 py-1 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+                  className={`${sketchButton} ml-3 shrink-0 disabled:opacity-50`}
                 >
                   {addingId === agent.id ? "Adding…" : purpose === "worker" ? "Select" : "Add"}
                 </button>
-              </div>
+              </SketchRow>
             ))
           )}
         </div>
 
         {purpose === "worker" && pendingWorkerAgent && (
-          <div className="border-t border-white/10 px-5 py-3 space-y-2">
-            <p className="text-xs text-white/50">
-              Delegated scopes for <strong className="text-white/80">{pendingWorkerAgent.name}</strong>
+          <div className="space-y-2 border-t border-black px-5 py-3">
+            <p className="text-xs text-black/60">
+              Delegated scopes for <strong className="text-black">{pendingWorkerAgent.name}</strong>
             </p>
             <DelegatedScopePicker
               availableScopes={pendingWorkerAgent.permissionScopes ?? []}
@@ -880,18 +875,15 @@ function ExistingAgentPicker({
               type="button"
               onClick={() => onAdd(pendingWorkerAgent)}
               disabled={addingId === pendingWorkerAgent.id}
-              className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              className={`${sketchButton} disabled:opacity-50`}
             >
               Add worker with selected scopes
             </button>
           </div>
         )}
 
-        <div className="border-t border-white/10 px-5 py-3 flex justify-end">
-          <button
-            onClick={onClose}
-            className="text-xs text-white/40 hover:text-white/70 transition-colors"
-          >
+        <div className="flex justify-end border-t border-black px-5 py-3">
+          <button type="button" onClick={onClose} className={sketchButton}>
             Cancel
           </button>
         </div>

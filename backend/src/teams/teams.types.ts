@@ -26,7 +26,8 @@ export type TeamRunEventType =
   | 'run_completed'
   | 'run_failed'
   | 'result_delivered'
-  | 'user_injection';
+  | 'user_injection'
+  | 'lead_review_required';
 
 export interface TeamConfig {
   maxParallelWorkers: number;
@@ -123,6 +124,8 @@ export interface TeamRunDTO {
   scopeEscalations: ScopeEscalation[];
   result: unknown | null;
   errorMessage: string | null;
+  leadCampaignId: string | null;
+  leadOutreachApprovedAt: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

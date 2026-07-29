@@ -12,6 +12,7 @@ import {
   exchangeGoogleCode,
   GoogleOAuthNotConfiguredError,
   mintGoogleOAuthState,
+  revokeGoogleToken,
   verifyGoogleOAuthState,
 } from '../connectors/googleOAuth.service.js';
 import type { ConnectorAccountDTO, N8nIntegrationDTO } from '../connectors/connectors.types.js';
@@ -21,6 +22,22 @@ import {
   startWhatsAppLink,
   WhatsAppServiceNotConfiguredError,
 } from '../connectors/whatsappConnector.service.js';
+import {
+  defaultOrbitBaseUrl,
+  isOrbitOauthProvider,
+  OrbitApiError,
+  orbitGetSocialConnectUrl,
+  verifyOrbitCredentials,
+} from '../connectors/orbitClient.service.js';
+import {
+  enableOrbitForOrg,
+  getOrbitCredsForOrg,
+  isOrbitPlatformConfigured,
+  listOrbitChannelsForOrg,
+  markOrbitSocialPending,
+  OrbitPlatformNotConfiguredError,
+  releaseOrbitChannel,
+} from '../connectors/orbitProvisioning.service.js';
 
 const repo = new ConnectorsRepository();
 
@@ -121,12 +138,268 @@ export function createConnectorsRouter(): Router {
     }
   });
 
+  const orbitConnectSchema = z.object({
+    apiKey: z.string().trim().min(8).max(512).optional(),
+    baseUrl: z.string().url().max(500).optional(),
+  });
+
+  /** Enable Orbit for this workspace using platform ORBIT_API_KEY (preferred). */
+  router.post('/orbit/enable', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const result = await enableOrbitForOrg({ orgId: auth.orgId, userId: auth.userId });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof OrbitPlatformNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitApiError) {
+        response.status(err.status === 401 || err.status === 403 ? 401 : 502).json({
+          error: { code: 'orbit_enable_failed', message: err.message },
+        });
+        return;
+      }
+      console.error('[connectors] orbit/enable', err);
+      response.status(500).json({
+        error: { code: 'orbit_enable_failed', message: err instanceof Error ? err.message : 'Failed to enable Orbit' },
+      });
+    }
+  });
+
+  router.get('/orbit/status', authenticateUser(true), async (request: Request, response: Response) => {
+    response.json({
+      platformConfigured: isOrbitPlatformConfigured(),
+      defaultBaseUrl: defaultOrbitBaseUrl(),
+    });
+  });
+
+  /** Legacy: paste API key (still allowed if platform key not set). */
+  router.put('/orbit', authenticateUser(true), async (request: Request, response: Response) => {
+    const parsed = orbitConnectSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid Orbit body' } });
+      return;
+    }
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+
+      // Prefer platform auto-enable when configured and no key pasted.
+      if (isOrbitPlatformConfigured() && !parsed.data.apiKey?.trim()) {
+        const result = await enableOrbitForOrg({ orgId: auth.orgId, userId: auth.userId });
+        response.json(result);
+        return;
+      }
+
+      const apiKey = parsed.data.apiKey?.trim();
+      if (!apiKey) {
+        response.status(400).json({
+          error: {
+            code: 'invalid_body',
+            message: isOrbitPlatformConfigured()
+              ? 'Use Enable social (platform Orbit is configured)'
+              : 'apiKey is required',
+          },
+        });
+        return;
+      }
+      const baseUrl = (parsed.data.baseUrl?.trim() || defaultOrbitBaseUrl()).replace(/\/$/, '');
+      const credentials = {
+        apiKey,
+        baseUrl,
+        channelIds: [] as string[],
+        pendingClaimAtMs: null,
+        groupId: null,
+        groupName: `qlix:${auth.orgId}`,
+      };
+      const check = await verifyOrbitCredentials(credentials);
+      const connector = await repo.upsertOrbit({
+        orgId: auth.orgId,
+        userId: auth.userId,
+        credentials,
+        label: `Orbit · ${check.channelCount} channel${check.channelCount === 1 ? '' : 's'}`,
+      });
+      response.json({ connector, channelCount: check.channelCount });
+    } catch (err) {
+      if (err instanceof OrbitPlatformNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitApiError) {
+        response.status(err.status === 401 || err.status === 403 ? 401 : 502).json({
+          error: { code: 'orbit_auth_failed', message: err.message || 'Orbit rejected this API key' },
+        });
+        return;
+      }
+      console.error('[connectors] orbit/put', err);
+      response.status(500).json({
+        error: {
+          code: 'orbit_connect_failed',
+          message: err instanceof Error ? err.message : 'Failed to connect Orbit',
+        },
+      });
+    }
+  });
+
+  router.delete('/orbit', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      await repo.delete(request.auth!.orgId, 'orbit');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] orbit/delete', err);
+      response.status(500).json({ error: { code: 'orbit_disconnect_failed', message: 'Failed to disconnect Orbit' } });
+    }
+  });
+
+  router.get('/orbit/channels', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      const auth = request.auth!;
+      const result = await listOrbitChannelsForOrg({
+        orgId: auth.orgId,
+        userId: auth.userId,
+        claim: true,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof OrbitPlatformNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitApiError) {
+        response.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({
+          error: { code: 'orbit_channels_failed', message: err.message },
+        });
+        return;
+      }
+      console.error('[connectors] orbit/channels', err);
+      response.status(500).json({ error: { code: 'orbit_channels_failed', message: 'Failed to list channels' } });
+    }
+  });
+
+  router.post('/orbit/social/:integration/start', authenticateUser(true), async (request: Request, response: Response) => {
+    const integration = String(request.params.integration ?? '').trim().toLowerCase();
+    if (!isOrbitOauthProvider(integration)) {
+      response.status(400).json({
+        error: {
+          code: 'invalid_integration',
+          message: `Unsupported provider. Use one of: facebook, instagram, x, linkedin, …`,
+        },
+      });
+      return;
+    }
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      // Auto-enable with platform key if not linked yet.
+      let creds = await getOrbitCredsForOrg(auth.orgId);
+      if (!creds) {
+        if (!isOrbitPlatformConfigured()) {
+          response.status(404).json({ error: { code: 'orbit_not_connected', message: 'Enable Orbit first' } });
+          return;
+        }
+        await enableOrbitForOrg({ orgId: auth.orgId, userId: auth.userId });
+        creds = await getOrbitCredsForOrg(auth.orgId);
+      }
+      if (!creds) {
+        response.status(404).json({ error: { code: 'orbit_not_connected', message: 'Enable Orbit first' } });
+        return;
+      }
+      await markOrbitSocialPending(auth.orgId, auth.userId);
+      const refresh =
+        typeof request.body?.refresh === 'string' && request.body.refresh.trim()
+          ? request.body.refresh.trim()
+          : undefined;
+      const url = await orbitGetSocialConnectUrl(
+        { apiKey: creds.apiKey, baseUrl: creds.baseUrl },
+        integration,
+        refresh,
+      );
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+          response.status(502).json({ error: { code: 'invalid_oauth_url', message: 'Unexpected OAuth URL' } });
+          return;
+        }
+      } catch {
+        response.status(502).json({ error: { code: 'invalid_oauth_url', message: 'Unexpected OAuth URL' } });
+        return;
+      }
+      response.json({ url, integration });
+    } catch (err) {
+      if (err instanceof OrbitPlatformNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitApiError) {
+        response.status(err.status === 400 ? 400 : 502).json({
+          error: {
+            code: 'orbit_social_start_failed',
+            message:
+              err.message ||
+              'Failed to start channel OAuth. Ensure the provider apps are configured in Orbit.',
+          },
+        });
+        return;
+      }
+      console.error('[connectors] orbit/social/start', err);
+      response.status(500).json({
+        error: { code: 'orbit_social_start_failed', message: 'Failed to start channel OAuth' },
+      });
+    }
+  });
+
+  router.delete('/orbit/channels/:id', authenticateUser(true), async (request: Request, response: Response) => {
+    const channelId = String(request.params.id ?? '').trim();
+    if (!channelId) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'channel id required' } });
+      return;
+    }
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      await releaseOrbitChannel(auth.orgId, auth.userId, channelId);
+      response.status(204).send();
+    } catch (err) {
+      if (err instanceof OrbitApiError) {
+        response.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({
+          error: { code: 'orbit_channel_delete_failed', message: err.message },
+        });
+        return;
+      }
+      console.error('[connectors] orbit/channels/delete', err);
+      response.status(500).json({
+        error: { code: 'orbit_channel_delete_failed', message: 'Failed to disconnect channel' },
+      });
+    }
+  });
+
   router.delete('/google', authenticateUser(true), async (request: Request, response: Response) => {
     try {
       if (!(await canManageConnectors(request))) {
         response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
         return;
       }
+      // Best-effort revoke at Google before dropping the local tokens.
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'google');
+      if (tokens?.refreshToken) await revokeGoogleToken(tokens.refreshToken);
       await repo.delete(request.auth!.orgId, 'google');
       response.status(204).send();
     } catch (err) {
@@ -253,6 +526,17 @@ export function createConnectorsRouter(): Router {
       }
       let connector = existing;
       if (parsed.data.agentId !== undefined) {
+        if (parsed.data.agentId) {
+          // Prevent IDOR: only an agent owned by this org may be wired to the org's WhatsApp connector.
+          const agent = await prisma.agent.findFirst({
+            where: { id: parsed.data.agentId, orgId: auth.orgId },
+            select: { id: true },
+          });
+          if (!agent) {
+            response.status(404).json({ error: { code: 'agent_not_found', message: 'Agent not found' } });
+            return;
+          }
+        }
         connector = await repo.setWhatsAppDefaultAgent(existing.id, parsed.data.agentId);
       }
       if (parsed.data.teamId !== undefined) {

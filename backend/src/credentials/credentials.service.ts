@@ -46,7 +46,7 @@ export class CredentialsService {
 
     const identityClaims: IdentityClaims = {
       humanVerified: true,
-      deviceVerified: true,
+      deviceVerified: agent.webauthnCredentialId != null && agent.webauthnCredentialId.length > 0,
       webauthnCredentialId: agent.webauthnCredentialId,
       issuedBy: platform.did,
     };

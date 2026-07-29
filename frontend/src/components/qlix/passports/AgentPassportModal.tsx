@@ -6,20 +6,9 @@ import { X } from "lucide-react";
 import type { PassportRow } from "@/lib/passports-api";
 import { cn } from "@/lib/utils/cn";
 import { CopyDidButton } from "./CopyDidButton";
-import { ProfileCard } from "./ProfileCard";
+import { ExoraPassportCard } from "./ExoraPassportCard";
 
 const MRZ_WIDTH = 36;
-
-/** Repeating Exora-mark foil, used as the holographic shine mask (luminance). */
-const FOIL_PATTERN =
-  "data:image/svg+xml," +
-  encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>` +
-      `<g fill='none' stroke='white' stroke-width='2' stroke-linejoin='round'>` +
-      `<path d='M32 8 50 19v22L32 52 14 41V19Z'/>` +
-      `<path d='M24 26 40 38M40 26 24 38' stroke-linecap='round'/>` +
-      `</g></svg>`,
-  );
 
 /** Date-only label, e.g. "30 Apr 2026". */
 function formatPassportDate(iso: string | null | undefined): string {
@@ -66,101 +55,59 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
   const isActive = passport.status.toLowerCase() === "active";
   const [mrz1, mrz2] = buildMrz(passport.name, passport.did);
 
-  const emblem = (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: "100%",
-        height: "100%",
-        paddingBottom: "24%",
-      }}
-    >
-      {/* Circular seal medallion — the logo's white background reads as the seal face */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 170,
-          height: 170,
-          borderRadius: "9999px",
-          background: "radial-gradient(circle at 50% 36%, #ffffff 0%, #f1f0f6 72%, #e7e5ef 100%)",
-          border: "4px solid rgba(255,255,255,0.18)",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.65)",
-        }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element -- local static seal asset */}
-        <img
-          src="/exora-logo.jpeg"
-          alt="Exora"
-          width={122}
-          height={122}
-          style={{ display: "block", width: 122, height: 122, objectFit: "contain", borderRadius: "9999px" }}
-        />
-      </div>
-    </div>
-  );
-
   return (
     <div
-      className="animate-qlix-fade-in fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm"
+      className="animate-qlix-fade-in fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-[#171223]/45 p-4 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
       aria-label={`Passport for ${passport.name}`}
       onClick={onClose}
     >
       <div
-        className="passport-card-in flex w-full max-w-3xl flex-col items-stretch gap-4 md:flex-row"
+        className="passport-card-in flex w-full max-w-3xl flex-col items-center gap-5 md:flex-row md:items-stretch"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Left page — holographic identity card */}
-        <div className="flex justify-center md:shrink-0">
-          <ProfileCard
-            className="h-[460px] sm:h-[500px]"
+        {/* Left page — passport cover */}
+        <div className="flex items-center justify-center md:shrink-0">
+          <ExoraPassportCard
+            className="w-[min(320px,84vw)]"
             name={passport.name}
-            title="Layer 3 Identity"
-            showUserInfo={false}
-            enableTilt
-            enableMobileTilt={false}
-            behindGlowEnabled
-            behindGlowColor="rgba(59,130,246,0.55)"
-            iconUrl={FOIL_PATTERN}
-            innerGradient="linear-gradient(145deg, rgba(59,130,246,0.18) 0%, rgba(99,102,241,0.10) 100%)"
-            avatarNode={emblem}
+            subtitle="Layer 3 Identity"
+            didShort={passport.didShort}
           />
         </div>
 
         {/* Right page — data page */}
-        <div className="flex min-w-0 flex-1 flex-col rounded-2xl border border-[--border-default] bg-[--bg-overlay] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.6)] sm:p-6">
-          <div className="flex items-center justify-between border-b border-[--border-subtle] pb-3">
-            <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[13px] font-medium tracking-[0.25em] text-[--text-primary]">EXORA</span>
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[--text-tertiary]">Passport</span>
+        <div className="flex min-w-0 flex-1 flex-col rounded-3xl border border-[#221c33]/12 bg-gradient-to-b from-[#fffdf8] to-[#f6f2e9] p-5 shadow-[0_1px_1px_rgba(28,24,48,0.05),0_30px_80px_-32px_rgba(28,24,48,0.5),inset_0_1px_0_rgba(255,255,255,0.9)] sm:p-6">
+          <div className="flex items-center justify-between border-b border-[#221c33]/10 pb-3">
+            <div className="flex items-baseline gap-2.5">
+              <span className="font-serif text-[14px] tracking-[0.3em] text-[#221c33]">EXORA</span>
+              <span className="text-[9px] font-medium uppercase tracking-[0.3em] text-[#221c33]/45">
+                Passport
+              </span>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="qlix-glass-muted inline-flex size-7 items-center justify-center rounded-md text-[--text-tertiary] transition-colors hover:bg-[var(--glass-surface-bg-hover)] hover:text-[--text-primary]"
+              className="inline-flex size-7 items-center justify-center rounded-full border border-[#221c33]/12 bg-white/60 text-[#221c33]/50 transition-colors hover:border-[#221c33]/30 hover:text-[#221c33]"
               aria-label="Close passport"
             >
               <X className="size-[15px]" aria-hidden />
             </button>
           </div>
 
-          <p className="mt-3 text-[10px] font-medium uppercase tracking-widest text-[--text-tertiary]">
+          <p className="mt-3 text-[9px] font-medium uppercase tracking-[0.32em] text-[#221c33]/45">
             Digital Agent Passport
           </p>
 
           <dl className="mt-4 space-y-3.5">
             <Field label="Holder">
-              <span className="text-[15px] font-medium tracking-[-0.01em] text-[--text-primary]">{passport.name}</span>
+              <span className="font-serif text-[16px] tracking-[-0.01em] text-[#221c33]">{passport.name}</span>
             </Field>
 
             <Field label="Passport No.">
               <div className="flex items-center gap-2">
-                <span className="truncate font-mono text-[12px] text-[--text-secondary]" title={passport.did}>
+                <span className="truncate font-mono text-[12px] text-[#221c33]/70" title={passport.did}>
                   {passport.didShort}
                 </span>
                 <CopyDidButton value={passport.did} />
@@ -171,34 +118,36 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
               <Field label="Status">
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium capitalize",
-                    isActive ? "bg-[--success-subtle] text-[--success]" : "bg-[var(--glass-muted-bg)] text-[--text-secondary]",
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium capitalize",
+                    isActive
+                      ? "border-[#15803d]/25 bg-[#15803d]/[0.07] text-[#15803d]"
+                      : "border-[#221c33]/15 bg-white/50 text-[#221c33]/60",
                   )}
                 >
-                  {isActive ? <span className="size-1.5 rounded-full bg-[--success]" aria-hidden /> : null}
+                  {isActive ? <span className="size-1.5 rounded-full bg-[#15803d]" aria-hidden /> : null}
                   {passport.status}
                 </span>
               </Field>
 
               <Field label="Credentials">
-                <span className="text-[13px] text-[--text-primary]">
+                <span className="text-[13px] text-[#221c33]">
                   {passport.credentialsIssued} {passport.credentialsIssued === 1 ? "VC" : "VCs"}
                 </span>
               </Field>
 
               <Field label="Issued">
-                <span className="text-[13px] text-[--text-primary]">{formatPassportDate(passport.createdAt)}</span>
+                <span className="text-[13px] text-[#221c33]">{formatPassportDate(passport.createdAt)}</span>
               </Field>
 
               <Field label="Last active">
-                <span className="text-[13px] text-[--text-primary]">{formatPassportDate(passport.lastActiveAt)}</span>
+                <span className="text-[13px] text-[#221c33]">{formatPassportDate(passport.lastActiveAt)}</span>
               </Field>
             </div>
           </dl>
 
           {/* Machine-readable zone */}
-          <div className="mt-4 overflow-hidden rounded-md border border-[--border-subtle] bg-black/25 px-3 py-2">
-            <pre className="overflow-hidden font-mono text-[11px] leading-relaxed tracking-[0.18em] text-[--text-tertiary]">
+          <div className="mt-4 overflow-hidden rounded-lg border border-[#221c33]/10 bg-[#f1ede1] px-3 py-2">
+            <pre className="overflow-hidden font-mono text-[11px] leading-relaxed tracking-[0.18em] text-[#221c33]/45">
               {mrz1}
               {"\n"}
               {mrz2}
@@ -206,10 +155,12 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
           </div>
 
           <div className="mt-auto flex items-center justify-between gap-3 pt-4">
-            <span className="text-[11px] text-[--text-tertiary]">Issued by Exora · Layer 3</span>
+            <span className="text-[10px] uppercase tracking-[0.18em] text-[#221c33]/40">
+              Issued by Exora · Layer 3
+            </span>
             <Link
               href={`${routePrefix}/agents/${passport.agentId}`}
-              className="shrink-0 text-[12px] font-medium text-[--accent] transition-colors hover:text-[--accent-hover]"
+              className="shrink-0 text-[12px] font-medium text-[#221c33] underline-offset-4 transition-colors hover:underline"
             >
               View full agent details →
             </Link>
@@ -223,7 +174,7 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
 function Field({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-[10px] font-medium uppercase tracking-widest text-[--text-tertiary]">{label}</dt>
+      <dt className="text-[9px] font-medium uppercase tracking-[0.28em] text-[#221c33]/40">{label}</dt>
       <dd className="mt-1">{children}</dd>
     </div>
   );

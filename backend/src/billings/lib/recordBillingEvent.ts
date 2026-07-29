@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
+import type { Prisma as PrismaNamespace } from '@prisma/client';
 import { billingCycleFromDateUtc } from './billingCycle.js';
 import { lookupBillingUnitPrice } from './priceLookup.js';
 import { isBillingExempt } from './isBillingExempt.js';
+import { notifyLowBalance } from './lowBalanceNotifier.js';
 
 export interface RecordBillingEventInput {
   orgId: string;
@@ -18,7 +20,130 @@ export interface RecordBillingEventInput {
 }
 
 /**
- * Record a successful billing event and debit the wallet (unless user is exempt).
+ * Two-bucket wallet debit: drains freeBalance first, then paidBalance.
+ * Must be called inside a Prisma transaction.
+ * Returns the wallet after debit; also triggers low-balance notification if both buckets hit 0.
+ */
+export async function debitWalletTwoBucket(
+  tx: PrismaNamespace.TransactionClient,
+  orgId: string,
+  amount: Prisma.Decimal,
+  successfulEventId?: string,
+  prismaOuter?: PrismaClient,
+): Promise<void> {
+  if (amount.lte(0)) return;
+
+  // Find or create the wallet
+  const existing = await tx.wallet.findUnique({ where: { orgId } });
+  const wallet =
+    existing ??
+    (await tx.wallet.create({
+      data: { orgId, currency: 'INR', balance: new Prisma.Decimal(0), freeBalance: new Prisma.Decimal(0), paidBalance: new Prisma.Decimal(0) },
+    }));
+
+  const freeAvailable = wallet.freeBalance.greaterThan(0) ? wallet.freeBalance : new Prisma.Decimal(0);
+  const fromFree = freeAvailable.gte(amount) ? amount : freeAvailable;
+  const fromPaid = amount.sub(fromFree);
+
+  // Update buckets atomically
+  await tx.wallet.update({
+    where: { id: wallet.id },
+    data: {
+      freeBalance: { decrement: fromFree },
+      paidBalance: { decrement: fromPaid },
+      balance: { decrement: amount },
+    },
+  });
+
+  // Free-credit debit transaction
+  if (fromFree.gt(0)) {
+    await tx.transaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'usage_debit',
+        amount: fromFree.negated(),
+        status: 'posted',
+        creditKind: 'free',
+        ...(successfulEventId ? { successfulEventId } : {}),
+      },
+    });
+  }
+
+  // Paid-credit debit transaction
+  if (fromPaid.gt(0)) {
+    await tx.transaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'usage_debit',
+        amount: fromPaid.negated(),
+        status: 'posted',
+        creditKind: 'paid',
+        ...(successfulEventId ? { successfulEventId } : {}),
+      },
+    });
+  }
+
+  // If both buckets are now at/below 0, notify the org (deduped, async — runs outside the tx)
+  const newTotal = wallet.balance.sub(amount);
+  if (newTotal.lte(0) && prismaOuter) {
+    // Non-blocking — don't let notification failure roll back the billing event
+    notifyLowBalance(orgId, prismaOuter).catch((err) =>
+      console.error(`[lowBalanceNotifier] org ${orgId}:`, err),
+    );
+  }
+}
+
+/**
+ * Credit the paidBalance of a wallet (e.g. after a successful Razorpay payment or admin top-up).
+ * Must be called outside a transaction (it opens its own).
+ */
+export async function creditPaidBalance(
+  prisma: PrismaClient,
+  orgId: string,
+  amount: Prisma.Decimal,
+  reason?: string,
+): Promise<void> {
+  if (amount.lte(0)) throw new Error('Amount must be > 0');
+
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.wallet.findUnique({ where: { orgId } });
+    const wallet =
+      existing ??
+      (await tx.wallet.create({
+        data: { orgId, currency: 'INR', balance: new Prisma.Decimal(0), freeBalance: new Prisma.Decimal(0), paidBalance: new Prisma.Decimal(0) },
+      }));
+
+    await tx.wallet.update({
+      where: { id: wallet.id },
+      data: {
+        paidBalance: { increment: amount },
+        balance: { increment: amount },
+      },
+    });
+
+    await tx.transaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'manual_credit',
+        amount,
+        status: 'posted',
+        creditKind: 'paid',
+      },
+    });
+
+    await tx.billingLog.create({
+      data: {
+        orgId,
+        action: 'topup_paid',
+        status: 'success',
+        details: { amount: amount.toString(), reason: reason ?? null },
+      },
+    });
+  });
+}
+
+/**
+ * Record a successful billing event and debit the wallet using two-bucket logic (unless user is exempt).
  * Idempotent: if the eventKey already exists, returns successfully without re-debiting.
  */
 export async function recordSuccessfulEvent(
@@ -28,17 +153,12 @@ export async function recordSuccessfulEvent(
   const occurredAt = input.occurredAt ?? new Date();
   const billingCycle = billingCycleFromDateUtc(occurredAt);
 
-  // Lookup price globally
-  const price = await lookupBillingUnitPrice({
-    prisma,
-    eventType: input.eventType,
-  });
+  const price = await lookupBillingUnitPrice({ prisma, eventType: input.eventType });
   const amountCharged = price.unitPrice;
 
   try {
     await prisma.$transaction(async (tx) => {
-      // Always create the event row (for auditing)
-      await tx.successfulEvent.create({
+      const event = await tx.successfulEvent.create({
         data: {
           orgId: input.orgId,
           userId: input.userId,
@@ -55,31 +175,10 @@ export async function recordSuccessfulEvent(
         },
       });
 
-      // Only debit wallet if user is not exempt
       if (!isBillingExempt(input.email) && amountCharged.gt(0)) {
-        const wallet = await tx.wallet.findUnique({ where: { orgId: input.orgId } });
-        const orgWallet =
-          wallet ??
-          (await tx.wallet.create({
-            data: { orgId: input.orgId, currency: 'USD', balance: 0 },
-          }));
-
-        await tx.wallet.update({
-          where: { id: orgWallet.id },
-          data: { balance: { decrement: amountCharged } },
-        });
-
-        await tx.transaction.create({
-          data: {
-            walletId: orgWallet.id,
-            type: 'usage_debit',
-            amount: amountCharged.neg(),
-            status: 'posted',
-          },
-        });
+        await debitWalletTwoBucket(tx, input.orgId, amountCharged, event.id, prisma);
       }
 
-      // Log the action
       await tx.billingLog.create({
         data: {
           orgId: input.orgId,
@@ -96,9 +195,8 @@ export async function recordSuccessfulEvent(
       });
     });
   } catch (error) {
-    // Idempotent: if unique constraint violation, the event was already recorded
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      return;
+      return; // Idempotent — already recorded
     }
     throw error;
   }

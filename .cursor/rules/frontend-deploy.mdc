@@ -1,0 +1,32 @@
+---
+description: After frontend code changes, build and restart the production server
+globs: frontend/**/*
+alwaysApply: false
+---
+
+# Frontend — build & restart after changes
+
+This project serves the Next.js frontend in production via PM2 (`qlix-frontend` on port 3000).
+
+After **any** change under `frontend/` (components, styles, pages, config), always:
+
+1. **Build**
+   ```bash
+   cd /var/www/qlix/frontend && npm run build
+   ```
+
+2. **Restart** (only if build succeeds)
+   ```bash
+   pm2 restart qlix-frontend
+   ```
+
+3. **Verify** — confirm `qlix-frontend` is `online` in `pm2 list`.
+
+Do not skip the build step and only restart PM2 — `next start` serves the compiled `.next` output; dev-mode hot reload is not used in production.
+
+If the build fails, fix the error before restarting. Common fix: missing dependency → `npm install <pkg>` in `frontend/`.
+
+Quick one-liner (when build is expected to pass):
+```bash
+cd /var/www/qlix/frontend && npm run build && pm2 restart qlix-frontend
+```

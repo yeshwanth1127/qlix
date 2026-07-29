@@ -47,7 +47,6 @@ export function TeamsSplitView({ routePrefix }: TeamsSplitViewProps) {
         <CreateTeamModal
           open={showCreate}
           orgId={session.organization.id}
-          deviceVerified={session.user.deviceVerified}
           onClose={() => setShowCreate(false)}
           onCreated={(team) => {
             setTeams((prev) => [team, ...prev]);

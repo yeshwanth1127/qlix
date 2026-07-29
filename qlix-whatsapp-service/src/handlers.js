@@ -1,5 +1,11 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as qlix from './qlix-client.js';
 import { sendToConnector } from './sessionManager.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const STATE_FILE = path.join(__dirname, '..', 'data', 'pending-approvals.json');
 
 const APPROVE_WORDS = new Set(['yes', 'y', 'approve', 'ok', 'yep', 'yup', 'agreed', 'proceed', 'allow', 'sure', 'aye']);
 const REJECT_WORDS = new Set(['no', 'n', 'reject', 'cancel', 'nope', 'deny', 'stop', 'decline']);
@@ -36,17 +42,60 @@ function isLikelyOutboundEcho(text) {
 /** connectorId -> latest pending action_id */
 const latestPendingByConnector = new Map();
 
-/** action_id -> { connectorId, agent_name, timeout } */
+/**
+ * action_id -> { connector_id, agent_name, expires_at, timeout }.
+ * Previously in-memory only — a sidecar restart mid-approval lost this map entirely,
+ * so the user's later "yes"/"no" reply hit "No pending approval request." with no
+ * recovery path. Now persisted to disk on every change and reloaded at boot.
+ */
 export const pendingApprovals = new Map();
 
-export function registerPendingApproval(connectorId, actionId, agentName, timeoutHandle) {
+function persist() {
+  const rows = [...pendingApprovals.values()].map((e) => ({
+    connector_id: e.connector_id,
+    action_id: e.action_id,
+    agent_name: e.agent_name,
+    expires_at: e.expires_at,
+  }));
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    fs.writeFileSync(STATE_FILE, JSON.stringify(rows), 'utf8');
+  } catch (err) {
+    console.warn('[qlix-whatsapp] failed to persist pending approvals:', err?.message ?? err);
+  }
+}
+
+async function expireApproval(connectorId, actionId) {
+  if (!pendingApprovals.has(actionId)) return;
+  await qlix.resolveApproval(actionId, false, 'timeout');
+  clearPendingApproval(actionId);
+  await sendToConnector(connectorId, '⏱️ Approval timed out. Action cancelled.');
+}
+
+function scheduleAndStore(connectorId, actionId, agentName, expiresAt) {
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+
+  const timeout = setTimeout(() => {
+    expireApproval(connectorId, actionId).catch((err) =>
+      console.warn(`[qlix-whatsapp] approval expiry failed actionId=${actionId}:`, err?.message ?? err),
+    );
+  }, remainingMs);
+  timeout.unref?.();
+
   pendingApprovals.set(actionId, {
     connector_id: connectorId,
     action_id: actionId,
     agent_name: agentName,
-    timeout: timeoutHandle,
+    expires_at: expiresAt,
+    timeout,
   });
   latestPendingByConnector.set(connectorId, actionId);
+  persist();
+}
+
+/** Fresh registration — `ttlMs` is a duration (e.g. 5 minutes) from now. */
+export function registerPendingApproval(connectorId, actionId, agentName, ttlMs) {
+  scheduleAndStore(connectorId, actionId, agentName, Date.now() + ttlMs);
 }
 
 export function clearPendingApproval(actionId) {
@@ -57,6 +106,23 @@ export function clearPendingApproval(actionId) {
     if (latestPendingByConnector.get(entry.connector_id) === actionId) {
       latestPendingByConnector.delete(entry.connector_id);
     }
+    persist();
+  }
+}
+
+/** Call once at service boot — reschedules or immediately expires approvals a prior process left pending. */
+export function resumePendingApprovals() {
+  let rows;
+  try {
+    rows = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  console.log(`[qlix-whatsapp] resuming ${rows.length} pending approval(s) from disk`);
+  for (const row of rows) {
+    if (!row?.action_id || !row?.connector_id || typeof row.expires_at !== 'number') continue;
+    scheduleAndStore(row.connector_id, row.action_id, row.agent_name ?? 'Agent', row.expires_at);
   }
 }
 

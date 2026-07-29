@@ -8,6 +8,7 @@ import { requireSuperAdmin } from '../middleware/requireSuperAdmin.js';
 import { billingCycleFromDateUtc } from '../lib/billingCycle.js';
 import { ensureBillingDefaults } from '../lib/ensureDefaults.js';
 import { runBillingRollups } from '../jobs/billingRollups.js';
+import { runSubscriptionRenewals } from '../jobs/runSubscriptionRenewals.js';
 
 const listEventsQuerySchema = z.object({
   billingCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(),
@@ -44,6 +45,25 @@ const triggerRollupSchema = z.object({
   billingCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(),
 });
 
+const setSubscriptionSchema = z.object({
+  planName: z.string().min(1).max(50),
+  /** ISO date string for period start. Defaults to now. */
+  periodStart: z.string().datetime().optional(),
+  /** ISO date string for period end. Defaults to first day of next month. */
+  periodEnd: z.string().datetime().optional(),
+});
+
+const topupSchema = z.object({
+  amount: z.string().min(1).max(64),
+  reason: z.string().min(1).max(255).optional(),
+});
+
+const patchModelTierSchema = z.object({
+  pricePerStep: z.string().min(1).max(64),
+  displayName: z.string().min(1).max(200).optional(),
+  modelPrefixes: z.array(z.string().min(1)).optional(),
+});
+
 const patchBillingServiceSchema = z.object({
   unitPrice: z.string().min(1).max(64),
   displayName: z.string().min(1).max(200).optional(),
@@ -59,7 +79,15 @@ export function createAdminBillingRouter(): Router {
       await ensureBillingDefaults(prisma);
       const cycle = billingCycleFromDateUtc(new Date());
 
-      const [successCount, revenue, failureCount] = await Promise.all([
+      const [
+        successCount,
+        revenue,
+        failureCount,
+        homepageUniqueVisitors,
+        activeUsers,
+        registeredAgents,
+        activeAgents,
+      ] = await Promise.all([
         prisma.successfulEvent.count({ where: { billingCycle: cycle } }),
         prisma.successfulEvent.aggregate({ where: { billingCycle: cycle }, _sum: { amountCharged: true } }),
         prisma.failedEvent.count({
@@ -69,6 +97,10 @@ export function createAdminBillingRouter(): Router {
             },
           },
         }),
+        prisma.homepageVisit.count(),
+        prisma.user.count({ where: { isActive: true, isGuest: false } }),
+        prisma.agent.count(),
+        prisma.agent.count({ where: { status: 'active' } }),
       ]);
 
       const revenueTotal = revenue._sum.amountCharged ?? new Prisma.Decimal('0');
@@ -80,6 +112,10 @@ export function createAdminBillingRouter(): Router {
         revenueThisMonth: revenueTotal.toString(),
         avgPerSuccess: avg.toString(),
         failedAttemptsThisMonth: failureCount,
+        homepageUniqueVisitors,
+        activeUsers,
+        registeredAgents,
+        activeAgents,
       });
     } catch (error) {
       console.error('[admin/billing/metrics]', error);
@@ -179,7 +215,7 @@ export function createAdminBillingRouter(): Router {
             name: o.name,
             slug: o.slug,
             plan: o.plan,
-            wallet: w ? { balance: w.balance.toString(), currency: w.currency } : { balance: '0', currency: 'USD' },
+            wallet: w ? { balance: w.balance.toString(), currency: w.currency } : { balance: '0', currency: 'INR' },
             monthToDate: {
               successes: s?._count.id ?? 0,
               spend: revenue.toString(),
@@ -241,12 +277,15 @@ export function createAdminBillingRouter(): Router {
         const orgWallet =
           wallet ??
           (await tx.wallet.create({
-            data: { orgId, currency: 'USD', balance: 0 },
+            data: { orgId, currency: 'INR', balance: 0, freeBalance: 0, paidBalance: 0 },
           }));
         const updated = await tx.wallet.update({
           where: { id: orgWallet.id },
-          data: { balance: { increment: amount } },
-          select: { balance: true, currency: true },
+          data: {
+            paidBalance: { increment: amount },
+            balance: { increment: amount },
+          },
+          select: { balance: true, freeBalance: true, paidBalance: true, currency: true },
         });
         await tx.transaction.create({
           data: {
@@ -267,7 +306,14 @@ export function createAdminBillingRouter(): Router {
         return updated;
       });
 
-      response.status(201).json({ wallet: { balance: result.balance.toString(), currency: result.currency } });
+      response.status(201).json({
+        wallet: {
+          balance: result.balance.toString(),
+          freeBalance: result.freeBalance.toString(),
+          paidBalance: result.paidBalance.toString(),
+          currency: result.currency,
+        },
+      });
     } catch (error) {
       if (error instanceof z.ZodError) {
         response.status(400).json({ error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() } });
@@ -332,6 +378,280 @@ export function createAdminBillingRouter(): Router {
       }
       console.error('[admin/billing/orgs/:orgId/rates]', error);
       response.status(500).json({ error: { code: 'internal_error', message: 'Failed to set rate override' } });
+    }
+  });
+
+  // ── Subscription management ────────────────────────────────────────────────
+
+  router.get('/subscriptions', async (_request: Request, response: Response) => {
+    try {
+      const subs = await prisma.orgSubscription.findMany({
+        orderBy: [{ currentPeriodEnd: 'asc' }],
+        include: { organization: { select: { id: true, name: true, plan: true } } },
+      });
+
+      const wallets = await prisma.wallet.findMany({
+        where: { orgId: { in: subs.map((s) => s.orgId) } },
+        select: { orgId: true, balance: true, freeBalance: true, paidBalance: true, currency: true },
+      });
+      const walletByOrg = new Map(wallets.map((w) => [w.orgId!, w]));
+
+      response.json({
+        subscriptions: subs.map((s) => {
+          const w = walletByOrg.get(s.orgId);
+          return {
+            id: s.id,
+            orgId: s.orgId,
+            orgName: s.organization.name,
+            planName: s.planName,
+            status: s.status,
+            currentPeriodStart: s.currentPeriodStart.toISOString(),
+            currentPeriodEnd: s.currentPeriodEnd.toISOString(),
+            cancelAtPeriodEnd: s.cancelAtPeriodEnd,
+            wallet: w
+              ? { balance: w.balance.toString(), freeBalance: w.freeBalance.toString(), paidBalance: w.paidBalance.toString(), currency: w.currency }
+              : null,
+          };
+        }),
+      });
+    } catch (error) {
+      console.error('[admin/billing/subscriptions]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to list subscriptions' } });
+    }
+  });
+
+  router.post('/orgs/:orgId/subscription', async (request: Request, response: Response) => {
+    try {
+      const orgId = request.params.orgId;
+      if (!orgId) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Missing orgId' } });
+        return;
+      }
+      const body = setSubscriptionSchema.parse(request.body);
+
+      const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true } });
+      if (!org) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Organization not found' } });
+        return;
+      }
+
+      const now = new Date();
+      const periodStart = body.periodStart ? new Date(body.periodStart) : now;
+      const periodEnd = body.periodEnd
+        ? new Date(body.periodEnd)
+        : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+
+      const sub = await prisma.orgSubscription.upsert({
+        where: { orgId },
+        update: {
+          planName: body.planName,
+          status: 'active',
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: periodEnd,
+          cancelAtPeriodEnd: false,
+        },
+        create: {
+          orgId,
+          planName: body.planName,
+          status: 'active',
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: periodEnd,
+        },
+      });
+
+      // Sync organization.plan field
+      await prisma.organization.update({ where: { id: orgId }, data: { plan: body.planName } });
+
+      response.status(201).json({
+        subscription: {
+          id: sub.id,
+          orgId: sub.orgId,
+          planName: sub.planName,
+          status: sub.status,
+          currentPeriodStart: sub.currentPeriodStart.toISOString(),
+          currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
+        },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() } });
+        return;
+      }
+      console.error('[admin/billing/orgs/:orgId/subscription]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to set subscription' } });
+    }
+  });
+
+  router.post('/trigger-renewal', async (request: Request, response: Response) => {
+    try {
+      const dryRun = request.query.dryRun === 'true' || (request.body as Record<string, unknown>)?.dryRun === true;
+      const result = await runSubscriptionRenewals({ prisma, dryRun });
+      response.status(200).json(result);
+    } catch (error) {
+      console.error('[admin/billing/trigger-renewal]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to run subscription renewals' } });
+    }
+  });
+
+  // ── Wallet top-up (admin) ──────────────────────────────────────────────────
+
+  router.post('/orgs/:orgId/topup-paid', async (request: Request, response: Response) => {
+    try {
+      const orgId = request.params.orgId;
+      if (!orgId) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Missing orgId' } });
+        return;
+      }
+      const body = topupSchema.parse(request.body);
+      const amount = new Prisma.Decimal(body.amount);
+      if (amount.lte(0)) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Amount must be > 0' } });
+        return;
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const existing = await tx.wallet.findUnique({ where: { orgId } });
+        const wallet = existing ?? (await tx.wallet.create({ data: { orgId, currency: 'INR', balance: 0, freeBalance: 0, paidBalance: 0 } }));
+        const updated = await tx.wallet.update({
+          where: { id: wallet.id },
+          data: {
+            paidBalance: { increment: amount },
+            balance: { increment: amount },
+          },
+          select: { balance: true, freeBalance: true, paidBalance: true, currency: true },
+        });
+        await tx.transaction.create({
+          data: { walletId: wallet.id, type: 'manual_credit', amount, status: 'posted', creditKind: 'paid' },
+        });
+        await tx.billingLog.create({
+          data: { orgId, action: 'manual_credit_paid', status: 'success', details: { amount: amount.toString(), reason: body.reason ?? null } },
+        });
+        return updated;
+      });
+
+      response.status(201).json({
+        wallet: { balance: result.balance.toString(), freeBalance: result.freeBalance.toString(), paidBalance: result.paidBalance.toString(), currency: result.currency },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() } });
+        return;
+      }
+      console.error('[admin/billing/orgs/:orgId/topup-paid]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to apply paid credit' } });
+    }
+  });
+
+  router.post('/orgs/:orgId/topup-free', async (request: Request, response: Response) => {
+    try {
+      const orgId = request.params.orgId;
+      if (!orgId) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Missing orgId' } });
+        return;
+      }
+      const body = topupSchema.parse(request.body);
+      const amount = new Prisma.Decimal(body.amount);
+      if (amount.lte(0)) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Amount must be > 0' } });
+        return;
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const existing = await tx.wallet.findUnique({ where: { orgId } });
+        const wallet = existing ?? (await tx.wallet.create({ data: { orgId, currency: 'INR', balance: 0, freeBalance: 0, paidBalance: 0 } }));
+        const updated = await tx.wallet.update({
+          where: { id: wallet.id },
+          data: {
+            freeBalance: { increment: amount },
+            balance: { increment: amount },
+          },
+          select: { balance: true, freeBalance: true, paidBalance: true, currency: true, freeExpiresAt: true },
+        });
+        await tx.transaction.create({
+          data: { walletId: wallet.id, type: 'manual_credit', amount, status: 'posted', creditKind: 'free' },
+        });
+        await tx.billingLog.create({
+          data: { orgId, action: 'manual_credit_free', status: 'success', details: { amount: amount.toString(), reason: body.reason ?? null } },
+        });
+        return updated;
+      });
+
+      response.status(201).json({
+        wallet: {
+          balance: result.balance.toString(),
+          freeBalance: result.freeBalance.toString(),
+          paidBalance: result.paidBalance.toString(),
+          currency: result.currency,
+          freeExpiresAt: result.freeExpiresAt ? result.freeExpiresAt.toISOString() : null,
+        },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() } });
+        return;
+      }
+      console.error('[admin/billing/orgs/:orgId/topup-free]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to apply free credit' } });
+    }
+  });
+
+  // ── Model tier management ──────────────────────────────────────────────────
+
+  router.get('/model-tiers', async (_request: Request, response: Response) => {
+    try {
+      const tiers = await prisma.modelTier.findMany({ orderBy: [{ sortOrder: 'asc' }] });
+      response.json({
+        modelTiers: tiers.map((t) => ({
+          tierKey: t.tierKey,
+          displayName: t.displayName,
+          pricePerStep: t.pricePerStep.toString(),
+          modelPrefixes: t.modelPrefixes,
+          sortOrder: t.sortOrder,
+        })),
+      });
+    } catch (error) {
+      console.error('[admin/billing/model-tiers]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to list model tiers' } });
+    }
+  });
+
+  router.patch('/model-tiers/:tierKey', async (request: Request, response: Response) => {
+    try {
+      const tierKey = request.params.tierKey?.trim();
+      if (!tierKey) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Missing tierKey' } });
+        return;
+      }
+      const body = patchModelTierSchema.parse(request.body);
+      const existing = await prisma.modelTier.findUnique({ where: { tierKey } });
+      if (!existing) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Unknown model tier' } });
+        return;
+      }
+      const updated = await prisma.modelTier.update({
+        where: { tierKey },
+        data: {
+          pricePerStep: new Prisma.Decimal(body.pricePerStep),
+          ...(body.displayName !== undefined ? { displayName: body.displayName.trim() } : {}),
+          ...(body.modelPrefixes !== undefined ? { modelPrefixes: body.modelPrefixes } : {}),
+        },
+      });
+      response.json({
+        modelTier: {
+          tierKey: updated.tierKey,
+          displayName: updated.displayName,
+          pricePerStep: updated.pricePerStep.toString(),
+          modelPrefixes: updated.modelPrefixes,
+          sortOrder: updated.sortOrder,
+        },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        response.status(400).json({ error: { code: 'validation_error', message: 'Invalid input', details: error.flatten() } });
+        return;
+      }
+      console.error('[admin/billing/model-tiers/:tierKey]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to update model tier' } });
     }
   });
 

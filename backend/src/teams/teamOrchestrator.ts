@@ -5,6 +5,19 @@ import { TeamAgentRunBridge } from './teamAgentRunBridge.js';
 import { deliverTextToWorkspaceWhatsApp } from '../whatsapp/whatsappChannel.service.js';
 import { goalRequestsWhatsAppDelivery } from '../whatsapp/whatsappDeliveryIntent.js';
 import {
+  buildLeadGenStageGoal,
+  extractCampaignIdFromText,
+  findLeadReviewCheckpoint,
+  isLeadGenPipelineTeam,
+  listAgentRunTools,
+  memberLeadGenStage,
+  normalizeFindingsText,
+  parseLeadGenRequest,
+  type LeadReviewCheckpoint,
+  validateLeadGenWorkerOutput,
+} from '../leads/leadGenPipelineGoals.js';
+import { LeadsRepository } from '../leads/leads.repository.js';
+import {
   clearNotifierState,
   notifyTeamChannelProgress,
   teamRunShouldReplyWhatsApp,
@@ -37,6 +50,7 @@ export type RunEventEmitter = (eventType: string, data: unknown) => void;
 export class TeamOrchestrator {
   private readonly repo = new TeamsRepository();
   private readonly bridge = new TeamAgentRunBridge();
+  private readonly leadsRepo = new LeadsRepository();
 
   async execute(
     run: TeamRunDTO,
@@ -69,22 +83,31 @@ export class TeamOrchestrator {
       //   stageOrder, supervisor never sees a "pick the order" prompt.
       const useDeterministicOrder = !config.autoSequence;
 
-      const planMessage = useDeterministicOrder
-        ? `Pipeline order locked by team stages (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
-        : 'Supervisor is planning subtasks…';
-      emit('status', { message: planMessage, agentId: supervisorId });
+      // Lead-gen teams always use deterministic stage goals (scrape → enrich → outreach)
+      // so workers never all receive the full user goal from supervisor decomposition.
+      const isLeadGen = isLeadGenPipelineTeam(orderedMembers);
 
-      const plan = useDeterministicOrder
-        ? this.buildStaticPipelinePlan(run, orderedMembers)
-        : await this.supervisorDecompose(
-            run,
-            team,
-            orderedMembers,
-            emit,
-            timeoutMs,
-            maxAttempts,
-            !!config.pipelineMode,
-          );
+      const planMessage =
+        isLeadGen
+          ? `Lead-gen pipeline (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
+          : useDeterministicOrder
+            ? `Pipeline order locked by team stages (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
+            : 'Supervisor is planning subtasks…';
+      await this.emitEvent(run, team, supervisorId, 'task_status_update', { message: planMessage }, emit);
+
+      const plan = isLeadGen
+        ? this.buildLeadGenPipelinePlan(run, orderedMembers)
+        : useDeterministicOrder
+          ? this.buildStaticPipelinePlan(run, orderedMembers)
+          : await this.supervisorDecompose(
+              run,
+              team,
+              orderedMembers,
+              emit,
+              timeoutMs,
+              maxAttempts,
+              !!config.pipelineMode,
+            );
 
       await this.repo.appendSupervisorTrace(run.id, {
         step: 'decompose',
@@ -99,23 +122,55 @@ export class TeamOrchestrator {
       const results: WorkerResult[] = [];
 
       if (config.pipelineMode) {
-        for (const subtask of plan) {
+        for (let stageIndex = 0; stageIndex < plan.length; stageIndex++) {
+          const subtask = plan[stageIndex]!;
           const current = await this.repo.findRun(run.id);
           if (current?.status === 'canceled') {
             emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
             return;
           }
-          // In pipeline mode, a failed stage means downstream stages have no data — abort.
-          const lastFailed = results.find((r) => r.status === 'failed');
-          if (lastFailed) {
-            emit('complete', {
-              status: 'failed',
-              synthesis: `Pipeline aborted: stage "${lastFailed.agentName}" failed — ${lastFailed.errorMessage ?? 'no output produced'}. Downstream stages were skipped.`,
-            });
-            return;
-          }
           const result = await this.executeWorkerTask(run, team, subtask, emit, timeoutMs, maxAttempts, results);
           results.push(result);
+          if (result.status === 'failed') {
+            await this.abortPipelineRun(run, team, supervisorId, result, emit);
+            return;
+          }
+
+          const member = orderedMembers.find((m) => m.agentId === subtask.agentId);
+          const lgStage = member ? memberLeadGenStage(member) : null;
+          const hasOutreachRemaining = plan.slice(stageIndex + 1).some((s) => {
+            const m = orderedMembers.find((x) => x.agentId === s.agentId);
+            return m != null && memberLeadGenStage(m) === 'outreach';
+          });
+          if (isLeadGen && lgStage === 'enrich' && hasOutreachRemaining) {
+            let campaignId =
+              extractCampaignIdFromText(result.findings) ??
+              results
+                .map((r) => extractCampaignIdFromText(r.findings))
+                .find((id): id is string => Boolean(id));
+            if (!campaignId && run.startedAt) {
+              campaignId =
+                (await this.leadsRepo.findLatestCampaignSince(
+                  team.orgId,
+                  new Date(run.startedAt),
+                )) ?? undefined;
+            }
+            if (campaignId) {
+              await this.pauseForLeadReview(
+                run,
+                team,
+                supervisorId,
+                {
+                  campaignId,
+                  completedResults: results,
+                  remainingSubtasks: plan.slice(stageIndex + 1),
+                },
+                emit,
+              );
+              emit('paused', { status: 'paused', campaignId, teamRunId: run.id });
+              return;
+            }
+          }
         }
       } else {
         const batches = this.batchSubtasksAvoidingCollision(plan, config.maxParallelWorkers);
@@ -134,70 +189,7 @@ export class TeamOrchestrator {
         }
       }
 
-      emit('status', { message: 'Supervisor is synthesizing results…', agentId: supervisorId });
-      const synthesis = await this.supervisorSynthesize(
-        run,
-        team,
-        run.goal,
-        results,
-        emit,
-        timeoutMs,
-        maxAttempts,
-      );
-
-      await this.repo.appendSupervisorTrace(run.id, {
-        step: 'synthesize',
-        synthesis,
-        timestampMs: Date.now(),
-      });
-
-      const allArtifacts = results.flatMap((r) => r.artifacts);
-      const finalArtifact: TeamRunArtifact = {
-        id: `artifact_final_${Date.now()}`,
-        type: 'text',
-        name: 'Final Result',
-        content: synthesis,
-        agentId: supervisorId,
-        createdAt: new Date().toISOString(),
-      };
-      allArtifacts.push(finalArtifact);
-
-      for (const artifact of allArtifacts) {
-        await this.repo.appendArtifact(run.id, artifact);
-        await this.emitEvent(run, team, supervisorId, 'artifact_produced', { artifact }, emit);
-      }
-
-      await this.emitEvent(run, team, supervisorId, 'run_completed', {
-        synthesis,
-        artifactCount: allArtifacts.length,
-      }, emit);
-
-      await this.repo.updateRunStatus(run.id, 'completed', {
-        completedAt: new Date(),
-        result: { synthesis, artifactCount: allArtifacts.length },
-      });
-
-      if (teamRunShouldReplyWhatsApp(run, run.goal)) {
-        const delivery = await deliverTextToWorkspaceWhatsApp(team.orgId, {
-          title: team.name,
-          body: synthesis,
-        });
-        await this.emitEvent(run, team, supervisorId, 'result_delivered', {
-          channel: 'whatsapp',
-          sent: delivery.sent,
-          reason: delivery.reason,
-        }, emit);
-        if (!delivery.sent) {
-          console.warn('[TeamOrchestrator] WhatsApp result delivery skipped:', delivery.reason);
-        }
-      }
-
-      if (run.sourceConnectorId) {
-        await this.repo.clearChannelSession(run.sourceConnectorId);
-      }
-      clearNotifierState(run.id);
-
-      emit('complete', { status: 'completed', synthesis });
+      await this.finalizeSuccessfulRun(run, team, supervisorId, results, emit, timeoutMs, maxAttempts);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[TeamOrchestrator] run ${run.id} failed:`, message);
@@ -216,6 +208,312 @@ export class TeamOrchestrator {
       clearNotifierState(run.id);
       emit('error', { message });
     }
+  }
+
+  /** Resume a paused lead-gen run after the user approves outreach in the UI. */
+  async resumeFromCheckpoint(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    emit: RunEventEmitter,
+  ): Promise<void> {
+    const config = team.config as TeamConfig;
+    const supervisorId = team.supervisorAgentId!;
+    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
+    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
+
+    const checkpoint = findLeadReviewCheckpoint(run.supervisorTrace);
+    if (!checkpoint) {
+      throw new Error('No lead review checkpoint found for this run');
+    }
+
+    const completedResults: WorkerResult[] = checkpoint.completedResults.map((r) => ({
+      ...r,
+      artifacts: [],
+    }));
+
+    try {
+      await this.repo.updateRunStatus(run.id, 'running');
+      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
+        message: 'Outreach approved — continuing pipeline…',
+      }, emit);
+
+      for (const subtask of checkpoint.remainingSubtasks) {
+        const current = await this.repo.findRun(run.id);
+        if (current?.status === 'canceled') {
+          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+          return;
+        }
+        const result = await this.executeWorkerTask(
+          run,
+          team,
+          subtask,
+          emit,
+          timeoutMs,
+          maxAttempts,
+          completedResults,
+        );
+        completedResults.push(result);
+        if (result.status === 'failed') {
+          await this.abortPipelineRun(run, team, supervisorId, result, emit);
+          return;
+        }
+      }
+
+      await this.finalizeSuccessfulRun(
+        run,
+        team,
+        supervisorId,
+        completedResults,
+        emit,
+        timeoutMs,
+        maxAttempts,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[TeamOrchestrator] resume run ${run.id} failed:`, message);
+      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
+      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
+      clearNotifierState(run.id);
+      emit('error', { message });
+    }
+  }
+
+  /** Re-run the enrich worker to visit lead websites and find emails before outreach approval. */
+  async retryLeadEnrichment(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    emit: RunEventEmitter,
+  ): Promise<void> {
+    const config = team.config as TeamConfig;
+    const supervisorId = team.supervisorAgentId!;
+    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
+    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
+
+    const checkpoint = findLeadReviewCheckpoint(run.supervisorTrace);
+    if (!checkpoint) {
+      throw new Error('No lead review checkpoint found for this run');
+    }
+
+    const enrichMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'enrich');
+    if (!enrichMember) {
+      throw new Error('Team has no email enricher worker');
+    }
+
+    const scrapeResults = checkpoint.completedResults.filter((r) => {
+      const member = team.members?.find((m) => m.agentId === r.agentId);
+      return member != null && memberLeadGenStage(member) === 'scrape';
+    });
+
+    try {
+      await this.leadsRepo.resetBrowserEnrichmentAttempts(team.orgId, checkpoint.campaignId);
+      await this.repo.updateRunStatus(run.id, 'running');
+      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
+        message: 'Retrying email enrichment — visiting lead websites with browser tools…',
+      }, emit);
+
+      const parsed = parseLeadGenRequest(run.goal);
+      const baseGoal = buildLeadGenStageGoal('enrich', run.goal, parsed, checkpoint.campaignId);
+      const description = (enrichMember.agent as { description?: string } | undefined)?.description;
+      const descPart = description?.trim() ? `\n\nRole description: ${description.trim()}` : '';
+      const retryGoal = [
+        baseGoal,
+        descPart,
+        '',
+        'RETRY PASS: A previous enrichment pass did not find enough emails.',
+        'Call list_leads with includeAll=true and visit EVERY lead in needsBrowserEnrichment.',
+        'Use browser_ab_open on each website, check /contact and footer mailto links, then update_lead_email or record_lead_enrichment(no_email_on_site).',
+        'Do not invent emails. Do not skip leads that were marked no_email_on_site before — try again.',
+      ].filter(Boolean).join('\n');
+
+      const enrichSubtask: SubtaskPlan = {
+        subtaskId: `leadgen_retry_enrich_${Date.now()}`,
+        agentId: enrichMember.agentId,
+        agentName: enrichMember.agent?.name ?? enrichMember.agentId,
+        agentDescription: description,
+        role: enrichMember.role,
+        goal: retryGoal,
+        delegatedScopes: enrichMember.delegatedScopes,
+      };
+
+      const priorResults: WorkerResult[] = scrapeResults.map((r) => ({
+        ...r,
+        artifacts: [],
+      }));
+
+      const result = await this.executeWorkerTask(
+        run,
+        team,
+        enrichSubtask,
+        emit,
+        timeoutMs,
+        maxAttempts,
+        priorResults,
+      );
+
+      const completedResults =
+        result.status === 'completed'
+          ? [...priorResults, result]
+          : priorResults;
+
+      if (result.status === 'failed') {
+        await this.emitEvent(run, team, supervisorId, 'task_status_update', {
+          message: 'Enrichment retry did not complete — review leads and retry or approve outreach.',
+          error: result.errorMessage,
+        }, emit);
+      }
+
+      await this.pauseForLeadReview(
+        run,
+        team,
+        supervisorId,
+        {
+          campaignId: checkpoint.campaignId,
+          completedResults,
+          remainingSubtasks: checkpoint.remainingSubtasks,
+        },
+        emit,
+      );
+      emit('paused', { status: 'paused', campaignId: checkpoint.campaignId, teamRunId: run.id });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[TeamOrchestrator] retry enrichment run ${run.id} failed:`, message);
+      await this.repo.updateRunStatus(run.id, 'paused');
+      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
+        message: 'Enrichment retry failed — review leads and try again.',
+        error: message,
+      }, emit);
+      emit('error', { message });
+    }
+  }
+
+  private async finalizeSuccessfulRun(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    supervisorId: string,
+    results: WorkerResult[],
+    emit: RunEventEmitter,
+    timeoutMs: number,
+    maxAttempts: number,
+  ): Promise<void> {
+    await this.emitEvent(
+      run,
+      team,
+      supervisorId,
+      'task_status_update',
+      { message: 'Supervisor is synthesizing results…' },
+      emit,
+    );
+    const synthesis = await this.supervisorSynthesize(
+      run,
+      team,
+      run.goal,
+      results,
+      emit,
+      timeoutMs,
+      maxAttempts,
+    );
+
+    await this.repo.appendSupervisorTrace(run.id, {
+      step: 'synthesize',
+      synthesis,
+      timestampMs: Date.now(),
+    });
+
+    const allArtifacts = results.flatMap((r) => r.artifacts);
+    const finalArtifact: TeamRunArtifact = {
+      id: `artifact_final_${Date.now()}`,
+      type: 'text',
+      name: 'Final Result',
+      content: synthesis,
+      agentId: supervisorId,
+      createdAt: new Date().toISOString(),
+    };
+    allArtifacts.push(finalArtifact);
+
+    for (const artifact of allArtifacts) {
+      await this.repo.appendArtifact(run.id, artifact);
+      await this.emitEvent(run, team, supervisorId, 'artifact_produced', { artifact }, emit);
+    }
+
+    await this.emitEvent(run, team, supervisorId, 'run_completed', {
+      synthesis,
+      artifactCount: allArtifacts.length,
+    }, emit);
+
+    await this.repo.updateRunStatus(run.id, 'completed', {
+      completedAt: new Date(),
+      result: { synthesis, artifactCount: allArtifacts.length },
+    });
+
+    if (teamRunShouldReplyWhatsApp(run, run.goal)) {
+      const delivery = await deliverTextToWorkspaceWhatsApp(team.orgId, {
+        title: team.name,
+        body: synthesis,
+      });
+      await this.emitEvent(run, team, supervisorId, 'result_delivered', {
+        channel: 'whatsapp',
+        sent: delivery.sent,
+        reason: delivery.reason,
+      }, emit);
+      if (!delivery.sent) {
+        console.warn('[TeamOrchestrator] WhatsApp result delivery skipped:', delivery.reason);
+      }
+    }
+
+    if (run.sourceConnectorId) {
+      await this.repo.clearChannelSession(run.sourceConnectorId);
+    }
+    clearNotifierState(run.id);
+
+    emit('complete', { status: 'completed', synthesis });
+  }
+
+  private async pauseForLeadReview(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    supervisorId: string,
+    params: {
+      campaignId: string;
+      completedResults: WorkerResult[];
+      remainingSubtasks: SubtaskPlan[];
+    },
+    emit: RunEventEmitter,
+  ): Promise<void> {
+    const checkpoint: LeadReviewCheckpoint = {
+      step: 'lead_review_checkpoint',
+      campaignId: params.campaignId,
+      completedResults: params.completedResults.map((r) => ({
+        subtaskId: r.subtaskId,
+        agentId: r.agentId,
+        agentName: r.agentName,
+        summary: r.summary,
+        findings: r.findings,
+        status: r.status,
+      })),
+      remainingSubtasks: params.remainingSubtasks.map((s) => ({
+        subtaskId: s.subtaskId,
+        agentId: s.agentId,
+        agentName: s.agentName,
+        role: s.role,
+        goal: s.goal,
+        delegatedScopes: s.delegatedScopes,
+      })),
+      timestampMs: Date.now(),
+    };
+
+    await this.repo.appendSupervisorTrace(run.id, checkpoint);
+    await this.repo.updateRunLeadReview(run.id, {
+      status: 'paused',
+      leadCampaignId: params.campaignId,
+    });
+    await this.emitEvent(run, team, supervisorId, 'lead_review_required', {
+      campaignId: params.campaignId,
+      teamRunId: run.id,
+      message: 'Review scraped leads and approve outreach to continue.',
+    }, emit);
+    await this.emitEvent(run, team, supervisorId, 'task_status_update', {
+      message: 'Waiting for you to review leads and approve outreach…',
+    }, emit);
   }
 
   private async runSupervisorLlm(
@@ -259,10 +557,14 @@ export class TeamOrchestrator {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (attempt < maxAttempts) {
-          emit('status', {
-            message: `Supervisor retry ${attempt}/${maxAttempts - 1}…`,
-            agentId: supervisorId,
-          });
+          await this.emitEvent(
+            run,
+            team,
+            supervisorId,
+            'task_status_update',
+            { message: `Supervisor retry ${attempt}/${maxAttempts - 1}…` },
+            emit,
+          );
         }
       }
     }
@@ -299,6 +601,53 @@ export class TeamOrchestrator {
     });
   }
 
+  private buildLeadGenPipelinePlan(
+    run: TeamRunDTO,
+    orderedMembers: TeamMemberDTO[],
+  ): SubtaskPlan[] {
+    const parsed = parseLeadGenRequest(run.goal);
+    return orderedMembers.map((m, i) => {
+      const stageNum = i + 1;
+      const lgStage = memberLeadGenStage(m);
+      const description = (m.agent as { description?: string } | undefined)?.description;
+      const stageGoal =
+        lgStage != null
+          ? buildLeadGenStageGoal(lgStage, run.goal, parsed, null)
+          : `Stage ${stageNum}: contribute to lead generation.\n\nUser goal: ${run.goal}`;
+      const descPart = description?.trim() ? `\n\nRole description: ${description.trim()}` : '';
+      return {
+        subtaskId: `leadgen_${stageNum}_${m.agentId.slice(0, 8)}`,
+        agentId: m.agentId,
+        agentName: m.agent?.name ?? m.agentId,
+        agentDescription: description,
+        role: m.role,
+        goal: `${stageGoal}${descPart}`,
+        delegatedScopes: m.delegatedScopes,
+      };
+    });
+  }
+
+  private async abortPipelineRun(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    supervisorId: string,
+    failed: WorkerResult,
+    emit: RunEventEmitter,
+  ): Promise<void> {
+    const synthesis = `Pipeline aborted: stage "${failed.agentName}" failed — ${failed.errorMessage ?? 'no output produced'}. Downstream stages were skipped.`;
+    await this.repo.updateRunStatus(run.id, 'failed', {
+      completedAt: new Date(),
+      errorMessage: synthesis,
+      result: { synthesis },
+    });
+    await this.emitEvent(run, team, supervisorId, 'run_failed', { error: synthesis }, emit);
+    if (run.sourceConnectorId) {
+      await this.repo.clearChannelSession(run.sourceConnectorId);
+    }
+    clearNotifierState(run.id);
+    emit('complete', { status: 'failed', synthesis });
+  }
+
   private pipelineName(members: TeamMemberDTO[]): string {
     return members.map((m) => m.agent?.name ?? m.agentId.slice(0, 6)).join(' → ');
   }
@@ -333,6 +682,7 @@ ${rosterText}
 Rules:
 - Each subtask must be assigned to exactly one worker (use agent id from the list)
 - The subtask goal must be self-contained${pipelineNote}
+- Do NOT change or “improve” the user goal (business type, location, counts). Preserve these constraints exactly; only split them into steps.
 - When workers have both email.read and email.send scopes, assign reading and sending to different agents; only assign email.send when the subtask explicitly requires sending mail
 - Do NOT create subtasks to send WhatsApp/SMS messages — Qlix delivers results to WhatsApp automatically when the user goal mentions WhatsApp
 - For conceptual research (no explicit URLs in the user goal), assign one research subtask that asks for a written answer; do not assign separate "send to WhatsApp" steps
@@ -409,11 +759,17 @@ User goal: ${run.goal}`;
       goal: subtask.goal,
     }, emit);
 
-    emit('status', {
-      message: `${subtask.agentName} (${subtask.role}) is working on: ${subtask.goal.slice(0, 80)}…`,
-      agentId: subtask.agentId,
-      taskId: a2aTask.id,
-    });
+    await this.emitEvent(
+      run,
+      team,
+      subtask.agentId,
+      'task_status_update',
+      {
+        message: `${subtask.agentName} (${subtask.role}) is working on: ${subtask.goal.slice(0, 80)}…`,
+        taskId: a2aTask.id,
+      },
+      emit,
+    );
 
     const completedPrior = priorResults.filter((r) => r.status === 'completed');
     const priorContext =
@@ -424,25 +780,59 @@ User goal: ${run.goal}`;
         : '';
 
     const member = team.members?.find((m) => m.agentId === subtask.agentId);
+    const leadGenStage = member ? memberLeadGenStage(member) : null;
     const agentHasBrain = member?.agent?.permissionScopes?.includes('brain.query') ?? false;
     const useBrain =
       subtask.delegatedScopes.includes('brain.query') || agentHasBrain;
 
     const needsBrowser =
+      leadGenStage === 'enrich' ||
       /\bhttps?:\/\//i.test(subtask.goal) ||
       /\b(browse|navigate|scrape|visit|open\s+url|website|web\s+page)\b/i.test(subtask.goal);
     const browserGuidance = needsBrowser
-      ? '- Browser tools are allowed if needed; use at most 3 browser actions, then return your JSON answer.\n'
-      : '- Do NOT use browser tools for this subtask — answer from your knowledge and return JSON immediately.\n';
+      ? '- Browser tools are allowed if needed; use at most 3 browser actions per lead, then return your JSON answer.\n'
+      : leadGenStage === 'scrape'
+        ? '- Do NOT use browser tools — call gmb_search_leads MCP tool only.\n'
+        : '- Do NOT use browser tools for this subtask unless explicitly required.\n';
 
-    const workerPrompt = `Complete this subtask thoroughly. Return a JSON object:
+    const leadScrapeGuidance =
+      subtask.delegatedScopes.includes('mcp.qlix-leads.gmb_search_leads')
+        ? `- Lead scraping: call mcp__qlix-leads__gmb_search_leads as your FIRST action (not think). Use searchQuery, location, maxResults from the subtask. Then list_leads includeAll=true. Return campaignId and leads in JSON.\n`
+        : '';
+
+    const leadEnrichGuidance =
+      leadGenStage === 'enrich'
+        ? `- Email enrichment: call list_leads FIRST. For each lead with a website, browser_ab_open then update_lead_email or record_lead_enrichment. Never call update_lead_email without a real leadId from list_leads.\n`
+        : '';
+
+    const leadOutreachGuidance =
+      leadGenStage === 'outreach'
+        ? `- Outreach: call list_leads for contactable leads only. email_send requires verified emails and campaignId + leadId metadata from prior stages.\n`
+        : '';
+
+    const workerPrompt =
+      leadGenStage != null
+        ? `${subtask.goal}
+${browserGuidance}${leadScrapeGuidance}${leadEnrichGuidance}${leadOutreachGuidance}${priorContext}
+When finished, reply with JSON:
+{
+  "summary": "<concise 2-3 sentence summary>",
+  "findings": "<detailed output, include campaignId and lead data>",
+  "artifacts": []
+}`
+        : `Complete this subtask thoroughly. Return a JSON object:
 {
   "summary": "<concise 2-3 sentence summary>",
   "findings": "<detailed output, include all relevant data>",
   "artifacts": []
 }
-${browserGuidance}${priorContext}
+${browserGuidance}${leadScrapeGuidance}${priorContext}
 Subtask: ${subtask.goal}`;
+
+    const workerSkills: PermissionScope[] =
+      leadGenStage === 'outreach'
+        ? [...new Set([...subtask.delegatedScopes, 'mcp.qlix-leads.list_leads' as PermissionScope])]
+        : subtask.delegatedScopes;
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -454,7 +844,7 @@ Subtask: ${subtask.goal}`;
           userId: run.startedByUserId,
           role: 'worker',
           prompt: workerPrompt,
-          skills: subtask.delegatedScopes,
+          skills: workerSkills,
           a2aTaskId: a2aTask.id,
           useBrain,
           inferenceModel: (team.config as TeamConfig).defaultModel ?? null,
@@ -480,12 +870,25 @@ Subtask: ${subtask.goal}`;
           const jsonMatch = raw.match(/\{[\s\S]*\}/);
           const parsed = JSON.parse(jsonMatch?.[0] ?? '{}') as {
             summary?: string;
-            findings?: string;
+            findings?: unknown;
           };
-          summary = parsed.summary ?? summary;
-          findings = parsed.findings ?? findings;
+          summary = typeof parsed.summary === 'string' ? parsed.summary : summary;
+          findings = normalizeFindingsText(parsed.findings ?? findings);
         } catch {
           // use raw text
+        }
+
+        if (leadGenStage != null) {
+          const toolsUsed = await listAgentRunTools(agentRunId);
+          const validationError = validateLeadGenWorkerOutput({
+            stage: leadGenStage,
+            toolsUsed,
+            findings,
+            pipelineMode: !!(team.config as TeamConfig).pipelineMode,
+          });
+          if (validationError) {
+            throw new Error(validationError);
+          }
         }
 
         const artifact: TeamRunArtifact = {
@@ -529,10 +932,14 @@ Subtask: ${subtask.goal}`;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (attempt < maxAttempts) {
-          emit('status', {
-            message: `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1})…`,
-            agentId: subtask.agentId,
-          });
+          await this.emitEvent(
+            run,
+            team,
+            subtask.agentId,
+            'task_status_update',
+            { message: `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1})…` },
+            emit,
+          );
         }
       }
     }

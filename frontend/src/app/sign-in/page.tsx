@@ -6,7 +6,7 @@ interface SignInPageProps {
 }
 
 function AuthFallback() {
-  return <div className="min-h-dvh bg-[#0A0A0A]" aria-hidden />;
+  return <div className="min-h-dvh bg-[#f2efe8]" aria-hidden />;
 }
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {

@@ -15,7 +15,6 @@ import {
   SquareKanban,
   type LucideIcon,
 } from "lucide-react";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
 import { MCP_CATALOG, type McpCatalogEntry } from "@/lib/mcpCatalog";
 import {
   createMcpServer,
@@ -24,6 +23,7 @@ import {
   type CreateMcpServerInput,
   type McpTransport,
 } from "@/lib/mcp-api";
+import { SketchBox, sketchButton, sketchInput, sketchLabel } from "@/components/qlix/sketch";
 
 const ICONS: Record<McpCatalogEntry["icon"], LucideIcon> = {
   github: GitBranch,
@@ -35,16 +35,11 @@ const ICONS: Record<McpCatalogEntry["icon"], LucideIcon> = {
   google: Mail,
 };
 
-const inputCls =
-  "mt-1 w-full rounded border border-white/10 bg-transparent px-3 py-1.5 text-[12px] text-white/80 outline-none focus:border-indigo-500";
-
 interface McpAddServerProps {
-  /** Called after a server is created (token path) or the OAuth popup is launched. */
   readonly onDone: () => void;
   readonly onCancel: () => void;
 }
 
-/** Add-server flow: pick a curated integration (or Custom URL), then a prefilled connect form. */
 export function McpAddServer({ onDone, onCancel }: McpAddServerProps) {
   const [picked, setPicked] = useState<McpCatalogEntry | "custom" | null>(null);
 
@@ -62,10 +57,10 @@ function Gallery({
   readonly onCancel: () => void;
 }) {
   return (
-    <ReflectiveCard className="mt-4 rounded" contentClassName="p-5">
+    <SketchBox className="mt-4 p-5">
       <div className="flex items-center justify-between">
-        <p className="text-[12px] font-medium text-white/70">Add an integration</p>
-        <button type="button" onClick={onCancel} className="text-[12px] text-white/45 hover:text-white/70">
+        <p className={sketchLabel}>Add an integration</p>
+        <button type="button" onClick={onCancel} className={sketchButton}>
           Cancel
         </button>
       </div>
@@ -77,22 +72,22 @@ function Gallery({
               key={entry.id}
               type="button"
               onClick={() => onPick(entry)}
-              className="flex items-start gap-3 rounded-md border border-white/10 p-3 text-left hover:border-indigo-500/40 hover:bg-white/5"
+              className="flex items-start gap-3 border border-black p-3 text-left transition-colors hover:bg-black/5"
             >
-              <div className="rounded-lg bg-white/5 p-2">
-                <Icon size={18} className={entry.accent} />
+              <div className="border border-black p-2">
+                <Icon size={18} className="text-black" />
               </div>
               <div className="min-w-0">
-                <p className="text-[12px] font-medium text-white/85">
+                <p className="text-[12px] font-medium text-black">
                   {entry.name}{" "}
-                  <span className="text-[10px] uppercase tracking-wide text-white/30">{entry.category}</span>
+                  <span className="text-[10px] uppercase tracking-wide text-black/40">{entry.category}</span>
                   {entry.auth === "oauth" && (
-                    <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-emerald-500/10 px-1 py-0.5 text-[9px] text-emerald-300">
+                    <span className="ml-1 inline-flex items-center gap-0.5 border border-black px-1 py-0.5 text-[9px] text-black">
                       <ShieldCheck size={9} /> OAuth
                     </span>
                   )}
                 </p>
-                <p className="mt-0.5 text-[11px] leading-snug text-white/45">{entry.blurb}</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-black/50">{entry.blurb}</p>
               </div>
             </button>
           );
@@ -100,20 +95,20 @@ function Gallery({
         <button
           type="button"
           onClick={() => onPick("custom")}
-          className="flex items-start gap-3 rounded-md border border-dashed border-white/15 p-3 text-left hover:border-indigo-500/40 hover:bg-white/5"
+          className="flex items-start gap-3 border border-dashed border-black p-3 text-left transition-colors hover:bg-black/5"
         >
-          <div className="rounded-lg bg-white/5 p-2">
-            <Plug size={18} className="text-white/60" />
+          <div className="border border-black p-2">
+            <Plug size={18} className="text-black/60" />
           </div>
           <div className="min-w-0">
-            <p className="text-[12px] font-medium text-white/85">Custom server</p>
-            <p className="mt-0.5 text-[11px] leading-snug text-white/45">
+            <p className="text-[12px] font-medium text-black">Custom server</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-black/50">
               Paste any MCP endpoint URL or local command.
             </p>
           </div>
         </button>
       </div>
-    </ReflectiveCard>
+    </SketchBox>
   );
 }
 
@@ -134,7 +129,6 @@ function ConnectForm({
   const [args, setArgs] = useState((entry?.args ?? []).join(" "));
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [customAuth, setCustomAuth] = useState("");
-  // OAuth manual client (only for providers without dynamic registration).
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -190,7 +184,6 @@ function ConnectForm({
     try {
       const server = await createMcpServer({ ...buildBaseInput(), transport: "http", authType: "oauth" });
       const cfg = entry?.oauthConfig;
-      // Apply pre-filled config (Google etc.) and/or manually-entered client credentials.
       if (cfg || clientId.trim() || clientSecret.trim()) {
         await setMcpOAuthConfig(server.id, {
           ...cfg,
@@ -200,7 +193,7 @@ function ConnectForm({
       }
       const url = await startMcpOAuth(server.id);
       window.open(url, "qlix-mcp-oauth", "width=620,height=760");
-      onDone(); // list refreshes now; the popup posts a message on success to refresh again
+      onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start OAuth");
       setBusy(false);
@@ -213,36 +206,27 @@ function ConnectForm({
     (isOAuth || !missingRequired);
 
   return (
-    <ReflectiveCard className="mt-4 rounded" contentClassName="p-5">
-      <button
-        type="button"
-        onClick={onBack}
-        className="flex items-center gap-1 text-[12px] text-white/45 hover:text-white/75"
-      >
+    <SketchBox className="mt-4 p-5">
+      <button type="button" onClick={onBack} className={`${sketchButton} gap-1`}>
         <ArrowLeft size={13} /> Back
       </button>
 
       {entry?.reviewNote && (
-        <p className="mt-3 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200/90">
+        <SketchBox className="mt-3 px-3 py-2 text-[11px] leading-relaxed text-black/70">
           {entry.reviewNote}
           {entry.docsUrl && (
             <>
               {" "}
-              <a
-                href={entry.docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="underline decoration-amber-400/40 underline-offset-2 hover:text-amber-100"
-              >
+              <a href={entry.docsUrl} target="_blank" rel="noreferrer" className="underline underline-offset-2">
                 Docs ↗
               </a>
             </>
           )}
-        </p>
+        </SketchBox>
       )}
 
       {error && (
-        <p className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300">{error}</p>
+        <SketchBox className="mt-3 px-3 py-2 text-[12px] text-black">{error}</SketchBox>
       )}
 
       <div className="mt-3 space-y-3">
@@ -253,9 +237,7 @@ function ConnectForm({
                 key={t}
                 type="button"
                 onClick={() => setTransport(t)}
-                className={`rounded px-3 py-1.5 text-[12px] ${
-                  transport === t ? "bg-indigo-600 text-white" : "border border-white/10 text-white/60"
-                }`}
+                className={`${sketchButton} ${transport === t ? "bg-black text-white hover:bg-black hover:text-white" : ""}`}
               >
                 {t === "http" ? "Remote (HTTP)" : "Local (stdio)"}
               </button>
@@ -263,16 +245,16 @@ function ConnectForm({
           </div>
         )}
 
-        <label className="block text-[12px] text-white/60">
+        <label className="block text-[12px] text-black/70">
           Name
-          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Linear" />
+          <input className={`${sketchInput} mt-1`} value={name} onChange={(e) => setName(e.target.value)} placeholder="Linear" />
         </label>
 
         {transport === "http" ? (
-          <label className="block text-[12px] text-white/60">
+          <label className="block text-[12px] text-black/70">
             Endpoint URL
             <input
-              className={inputCls}
+              className={`${sketchInput} mt-1`}
               value={endpointUrl}
               onChange={(e) => setEndpointUrl(e.target.value)}
               placeholder="https://mcp.example.com/sse"
@@ -280,44 +262,35 @@ function ConnectForm({
           </label>
         ) : (
           <>
-            <label className="block text-[12px] text-white/60">
+            <label className="block text-[12px] text-black/70">
               Command
-              <input className={inputCls} value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" />
+              <input className={`${sketchInput} mt-1`} value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" />
             </label>
-            <label className="block text-[12px] text-white/60">
+            <label className="block text-[12px] text-black/70">
               Arguments (space-separated)
               <input
-                className={inputCls}
+                className={`${sketchInput} mt-1`}
                 value={args}
                 onChange={(e) => setArgs(e.target.value)}
                 placeholder="-y @modelcontextprotocol/server-filesystem /data"
               />
             </label>
-            <p className="text-[11px] text-white/35">
-              Local (stdio) servers run on the agent's hybrid runner and are discovered when it connects.
+            <p className="text-[11px] text-black/50">
+              Local (stdio) servers run on the agent&apos;s local app and are discovered when it connects.
             </p>
           </>
         )}
 
         {isOAuth ? (
           <>
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="text-[11px] text-white/40 hover:text-white/70"
-            >
-              {showAdvanced ? "Hide" : "Advanced:"} client ID / secret (only if the provider can't auto-register)
+            <button type="button" onClick={() => setShowAdvanced((v) => !v)} className={sketchButton}>
+              {showAdvanced ? "Hide" : "Advanced:"} client ID / secret
             </button>
             {showAdvanced && (
               <div className="space-y-2">
+                <input className={sketchInput} value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client ID" />
                 <input
-                  className={inputCls}
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  placeholder="Client ID"
-                />
-                <input
-                  className={inputCls}
+                  className={sketchInput}
                   type="password"
                   autoComplete="off"
                   value={clientSecret}
@@ -330,7 +303,7 @@ function ConnectForm({
               type="button"
               onClick={connectOAuth}
               disabled={busy || !name.trim() || !endpointUrl.trim()}
-              className="flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+              className={`${sketchButton} gap-1.5 disabled:opacity-40`}
             >
               {busy ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
               Connect {entry?.name ?? "account"}
@@ -339,32 +312,28 @@ function ConnectForm({
         ) : (
           <>
             {fields.map((f) => (
-              <label key={f.key} className="block text-[12px] text-white/60">
+              <label key={f.key} className="block text-[12px] text-black/70">
                 {f.label}
-                {f.required ? (
-                  <span className="text-red-300/70"> *</span>
-                ) : (
-                  <span className="text-white/30"> (optional)</span>
-                )}
+                {f.required ? <span className="text-black"> *</span> : <span className="text-black/40"> (optional)</span>}
                 <input
-                  className={inputCls}
+                  className={`${sketchInput} mt-1`}
                   type="password"
                   autoComplete="off"
                   value={secrets[f.key] ?? ""}
                   onChange={(e) => setSecrets((s) => ({ ...s, [f.key]: e.target.value }))}
                   placeholder={f.placeholder}
                 />
-                <span className="mt-1 block font-mono text-[10px] text-white/30">
+                <span className="mt-1 block font-mono text-[10px] text-black/40">
                   {f.kind === "header" ? `header ${f.key}` : `env ${f.key}`}
                 </span>
               </label>
             ))}
 
             {!entry && transport === "http" && (
-              <label className="block text-[12px] text-white/60">
+              <label className="block text-[12px] text-black/70">
                 Authorization header (optional)
                 <input
-                  className={inputCls}
+                  className={`${sketchInput} mt-1`}
                   type="password"
                   autoComplete="off"
                   value={customAuth}
@@ -374,17 +343,12 @@ function ConnectForm({
               </label>
             )}
 
-            <button
-              type="button"
-              onClick={submitToken}
-              disabled={busy || !canSubmit}
-              className="rounded bg-indigo-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
-            >
+            <button type="button" onClick={submitToken} disabled={busy || !canSubmit} className={`${sketchButton} disabled:opacity-40`}>
               {busy ? "Registering…" : "Register & discover"}
             </button>
           </>
         )}
       </div>
-    </ReflectiveCard>
+    </SketchBox>
   );
 }

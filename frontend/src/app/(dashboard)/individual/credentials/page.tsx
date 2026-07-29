@@ -1,6 +1,7 @@
-import { makePlaceholderPage } from "@/components/qlix/make-placeholder-page";
+"use client";
 
-export default makePlaceholderPage(
-  "Credentials",
-  "Issued VCs, DID document, and key management.",
-);
+import { CredentialsView } from "@/components/qlix/credentials-view";
+
+export default function IndividualCredentialsPage() {
+  return <CredentialsView />;
+}

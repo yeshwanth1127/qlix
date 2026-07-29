@@ -7,8 +7,9 @@ import { z } from 'zod';
 import { buildAgentCard } from '../agents/agentCard.js';
 import { resolveDockerBackendUrl } from '../agents/sdkAgentFile.js';
 import { AgentsService } from '../agents/agents.service.js';
-import { ALL_PERMISSION_SCOPES, type PermissionScope } from '../agents/agents.types.js';
+import { permissionScopeSchema } from '../agents/scopeValidation.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
+import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest } from '../lib/stepUpOrGuest.js';
 import {
   AgentConfirmNameMismatchError,
@@ -29,10 +30,13 @@ import {
   TeamScopeExceedsAgentError,
   TeamsService,
   TeamEmailConnectorRequiredError,
+  TeamRunNotPausedError,
+  TeamRunNoLeadCheckpointError,
+  TeamRunAlreadyApprovedError,
+  TeamNoEnrichWorkerError,
 } from '../teams/teams.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
 
-const permissionScopeSchema = z.enum(ALL_PERMISSION_SCOPES as [PermissionScope, ...PermissionScope[]]);
 
 const createTeamSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -98,7 +102,7 @@ export function createTeamsRouter(): Router {
 
   // ─── List & Create ──────────────────────────────────────────────────────────
 
-  router.get('/', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const teams = await service.listTeams(req.auth!.orgId);
       res.json({ teams });
@@ -108,7 +112,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.post('/', authenticateUser(true), async (req: Request, res: Response) => {
+  router.post('/', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = createTeamSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'Invalid team payload', issues: parsed.error.issues } });
@@ -144,7 +148,7 @@ export function createTeamsRouter(): Router {
 
   // ─── Single Team ─────────────────────────────────────────────────────────────
 
-  router.get('/:id/runners-status', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/:id/runners-status', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const status = await service.getRunnersStatus(req.params.id!, req.auth!.orgId);
       res.json(status);
@@ -157,7 +161,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.get('/:id', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/:id', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const team = await service.getTeam(req.params.id!, req.auth!.orgId);
       res.json({ team });
@@ -170,7 +174,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.delete('/:id', authenticateUser(true), async (req: Request, res: Response) => {
+  router.delete('/:id', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = deleteTeamBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'confirmName is required' } });
@@ -205,7 +209,7 @@ export function createTeamsRouter(): Router {
 
   // ─── Supervisor ───────────────────────────────────────────────────────────────
 
-  router.delete('/:id/supervisor', authenticateUser(true), async (req: Request, res: Response) => {
+  router.delete('/:id/supervisor', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = deleteTeamAgentBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'confirmName is required' } });
@@ -233,7 +237,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.patch('/:id/supervisor', authenticateUser(true), async (req: Request, res: Response) => {
+  router.patch('/:id/supervisor', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = setSupervisorSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'agentId is required' } });
@@ -258,7 +262,7 @@ export function createTeamsRouter(): Router {
 
   // ─── Members ─────────────────────────────────────────────────────────────────
 
-  router.post('/:id/members', authenticateUser(true), async (req: Request, res: Response) => {
+  router.post('/:id/members', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = addMemberSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'Invalid member payload' } });
@@ -283,7 +287,7 @@ export function createTeamsRouter(): Router {
    * the new stage (1-indexed). Must list every current member exactly once.
    * IMPORTANT: register before /:id/members/:agentId or Express treats "order" as agentId.
    */
-  router.patch('/:id/members/order', authenticateUser(true), async (req: Request, res: Response) => {
+  router.patch('/:id/members/order', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = reorderMembersSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'memberIds (array) is required' } });
@@ -311,18 +315,20 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.patch('/:id/members/:agentId', authenticateUser(true), async (req: Request, res: Response) => {
+  router.patch('/:id/members/:agentId', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = patchMemberSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'Invalid delegated scopes' } });
       return;
     }
     try {
+      const backendUrl = resolveDockerBackendUrl(req);
       const member = await service.updateMemberScopes(
         req.params.id!,
         req.auth!.orgId,
         req.params.agentId!,
         parsed.data.delegatedScopes,
+        backendUrl,
       );
       res.json({ member });
     } catch (err) {
@@ -334,7 +340,7 @@ export function createTeamsRouter(): Router {
   });
 
   /** Update team-level config (e.g. autoSequence on/off, pipelineMode on/off). */
-  router.patch('/:id/config', authenticateUser(true), async (req: Request, res: Response) => {
+  router.patch('/:id/config', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = updateConfigSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'Invalid config patch' } });
@@ -358,7 +364,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.delete('/:id/members/:agentId', authenticateUser(true), async (req: Request, res: Response) => {
+  router.delete('/:id/members/:agentId', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = deleteTeamAgentBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'confirmName is required' } });
@@ -389,7 +395,7 @@ export function createTeamsRouter(): Router {
 
   // ─── Runs ─────────────────────────────────────────────────────────────────────
 
-  router.get('/:id/runs', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/:id/runs', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const runs = await service.listRuns(req.params.id!, req.auth!.orgId);
       res.json({ runs });
@@ -399,7 +405,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.get('/:id/runs/:runId', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/:id/runs/:runId', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
       const events = await repo.listEvents(run.id);
@@ -411,7 +417,7 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.post('/:id/runs', authenticateUser(true), async (req: Request, res: Response) => {
+  router.post('/:id/runs', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = startRunSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: { code: 'invalid_body', message: 'goal is required' } });
@@ -419,11 +425,13 @@ export function createTeamsRouter(): Router {
     }
     try {
       const auth = req.auth!;
+      const backendUrl = resolveDockerBackendUrl(req);
       const { run } = await launchTeamRun({
         teamId: req.params.id!,
         orgId: auth.orgId,
         userId: auth.userId,
         goal: parsed.data.goal,
+        backendUrl,
         source: { channel: 'web' },
       });
 
@@ -438,7 +446,7 @@ export function createTeamsRouter(): Router {
   });
 
   // User: inject a guidance message into the active worker mid-run
-  router.post('/:id/runs/:runId/inject', authenticateUser(true), async (req: Request, res: Response) => {
+  router.post('/:id/runs/:runId/inject', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const schema = z.object({ message: z.string().trim().min(1).max(2000) });
     const body = schema.safeParse(req.body);
     if (!body.success) {
@@ -472,10 +480,10 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.post('/:id/runs/:runId/cancel', authenticateUser(true), async (req: Request, res: Response) => {
+  router.post('/:id/runs/:runId/cancel', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
-      if (!['queued', 'running'].includes(run.status)) {
+      if (!['queued', 'running', 'paused'].includes(run.status)) {
         res.status(409).json({ error: { code: 'run_not_cancelable', message: `Run is already ${run.status}` } });
         return;
       }
@@ -491,6 +499,68 @@ export function createTeamsRouter(): Router {
     }
   });
 
+  router.post('/:id/runs/:runId/approve-lead-outreach', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    try {
+      const run = await service.approveLeadOutreach(
+        req.params.id!,
+        req.params.runId!,
+        req.auth!.orgId,
+      );
+      res.json({ run });
+    } catch (err) {
+      if (err instanceof TeamNotFoundError) {
+        res.status(404).json({ error: { code: 'not_found', message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunNotPausedError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunNoLeadCheckpointError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunAlreadyApprovedError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      res.status(500).json({ error: { code: 'approve_failed', message: 'Failed to approve lead outreach' } });
+    }
+  });
+
+  router.post('/:id/runs/:runId/retry-lead-enrichment', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    try {
+      const run = await service.retryLeadEnrichment(
+        req.params.id!,
+        req.params.runId!,
+        req.auth!.orgId,
+      );
+      res.json({ run });
+    } catch (err) {
+      if (err instanceof TeamNotFoundError) {
+        res.status(404).json({ error: { code: 'not_found', message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunNotPausedError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunNoLeadCheckpointError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamRunAlreadyApprovedError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamNoEnrichWorkerError) {
+        res.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      res.status(500).json({ error: { code: 'retry_enrichment_failed', message: 'Failed to retry lead enrichment' } });
+    }
+  });
+
   // ─── SSE Stream ──────────────────────────────────────────────────────────────
 
   /**
@@ -498,7 +568,7 @@ export function createTeamsRouter(): Router {
    * Server-Sent Events: streams TeamRunEvent records in real time.
    * Also replays any events that occurred before the client connected (cursor via ?afterSeq=N).
    */
-  router.get('/:id/runs/:runId/stream', authenticateUser(true), async (req: Request, res: Response) => {
+  router.get('/:id/runs/:runId/stream', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const auth = req.auth!;
       const run = await service.getRun(req.params.id!, req.params.runId!, auth.orgId);
@@ -519,12 +589,19 @@ export function createTeamsRouter(): Router {
       const pastEvents = await repo.listEventsSince(run.id, afterSeq);
       for (const e of pastEvents) send('event', e);
 
-      // If already terminal, close immediately
+      // If already terminal, close immediately (paused runs keep streaming)
       const currentRun = await repo.findRun(run.id);
       if (currentRun && ['completed', 'failed', 'canceled'].includes(currentRun.status)) {
         send('complete', { status: currentRun.status, result: currentRun.result });
         res.end();
         return;
+      }
+      if (currentRun?.status === 'paused') {
+        send('paused', {
+          status: 'paused',
+          campaignId: currentRun.leadCampaignId,
+          teamRunId: currentRun.id,
+        });
       }
 
       // Poll for new events every 800ms
@@ -544,6 +621,13 @@ export function createTeamsRouter(): Router {
           send('complete', { status: latest.status, result: latest.result });
           res.end();
           return;
+        }
+        if (latest?.status === 'paused' && !closed) {
+          send('paused', {
+            status: 'paused',
+            campaignId: latest.leadCampaignId,
+            teamRunId: latest.id,
+          });
         }
         if (!closed) setTimeout(() => { poll().catch(console.error); }, 800);
       };

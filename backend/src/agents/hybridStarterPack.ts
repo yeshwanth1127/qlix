@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import archiver from 'archiver';
 
-import { sdkAgentFolderName } from './sdkAgentFile.js';
+import { ensureHybridAgentJsonBackendUrl, sdkAgentFolderName } from './sdkAgentFile.js';
 
 export type HybridStarterPlatform = 'windows' | 'macos' | 'linux';
 
@@ -49,8 +49,10 @@ export async function buildHybridStarterPackZip(
   agentJson: Record<string, unknown>,
   _agentName: string,
   platform: HybridStarterPlatform,
+  request?: { protocol?: string; get(name: string): string | undefined },
 ): Promise<Buffer> {
   const launcherName = LAUNCHER_BY_PLATFORM[platform];
+  const packedJson = ensureHybridAgentJsonBackendUrl(agentJson, request);
 
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -64,7 +66,7 @@ export async function buildHybridStarterPackZip(
 
     archive.pipe(out);
 
-    archive.append(JSON.stringify(agentJson, null, 2) + '\n', { name: 'agent.json' });
+    archive.append(JSON.stringify(packedJson, null, 2) + '\n', { name: 'agent.json' });
 
     const readmePath = join(STARTER_TEMPLATES_DIR, 'README.txt');
     if (existsSync(readmePath)) {

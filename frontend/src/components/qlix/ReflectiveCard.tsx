@@ -1,36 +1,7 @@
 "use client";
 
-import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { useId, type CSSProperties, type ReactNode } from "react";
 import "./ReflectiveCard.css";
-
-/* ─── Shared webcam stream (one permission prompt, many cards) ───────────── */
-let _stream: MediaStream | null = null;
-let _refs = 0;
-
-async function acquireStream(): Promise<MediaStream | null> {
-  if (_stream) {
-    _refs++;
-    return _stream;
-  }
-  try {
-    _stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-    });
-    _refs = 1;
-    return _stream;
-  } catch {
-    // webcam unavailable — visual degrades gracefully to noise + sheen only
-    return null;
-  }
-}
-
-function releaseStream() {
-  _refs = Math.max(0, _refs - 1);
-  if (_refs === 0 && _stream) {
-    _stream.getTracks().forEach((t) => t.stop());
-    _stream = null;
-  }
-}
 
 /* ─── Component ─────────────────────────────────────────────────────────── */
 
@@ -79,22 +50,9 @@ export function ReflectiveCard({
   contentClassName = "",
   style = {},
 }: ReflectiveCardProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
   // Sanitise React's `:r0:` format to a valid CSS id fragment
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const filterId = `rcf-${uid}`;
-
-  useEffect(() => {
-    let active = true;
-    void acquireStream().then((s) => {
-      if (!active || !s || !videoRef.current) return;
-      videoRef.current.srcObject = s;
-    });
-    return () => {
-      active = false;
-      releaseStream();
-    };
-  }, []);
 
   const baseFreq = 0.03 / Math.max(0.1, noiseScale);
   const saturation = 1 - Math.max(0, Math.min(1, grayscale));
@@ -164,9 +122,6 @@ export function ReflectiveCard({
           </filter>
         </defs>
       </svg>
-
-      {/* Webcam reflection — gracefully absent when permissions denied */}
-      <video ref={videoRef} autoPlay playsInline muted className="rc-video" />
 
       {/* Layered visual effects */}
       <div className="rc-noise" />

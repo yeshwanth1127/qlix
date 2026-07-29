@@ -49,7 +49,19 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "name": "email_send",
             "description": (
                 "Send an email via the connected Gmail account. "
-                "Requires email.send scope; may require user JIT approval."
+                "CRITICAL: only send to REAL email addresses obtained from tools such as "
+                "list_leads / gmb_search_leads or provided by the user. NEVER invent or guess "
+                "addresses (e.g. info@cafe1.com, contact@business2.com) — fabricated recipients "
+                "are rejected by the server. For lead outreach you MUST follow this order: "
+                "(1) gmb_search_leads, (2) list_leads includeAll=true, "
+                "(3) for EACH lead in needsBrowserEnrichment: browser_ab_open(website) "
+                "then update_lead_email or record_lead_enrichment(no_email_on_site), "
+                "(4) list_leads contactable and present verified emails to the user, "
+                "(5) only then email_send. Sends are blocked while website leads lack browser enrichment. "
+                "Never use Wix placeholders like info@mysite.com. "
+                "The first send in a chat may pause for one-time dashboard approval; "
+                "after you approve, later sends in the same conversation proceed automatically. "
+                "If Gmail is not connected, tell the user to open Connectors → Google (Gmail) → Connect Google."
             ),
             "parameters": {
                 "type": "object",
@@ -65,9 +77,13 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         "type": "string",
                         "description": "Optional Gmail message id to reply in-thread.",
                     },
-                    "jitToken": {
-                        "type": "string",
-                        "description": "Optional JIT approval token if email.send requires human approval.",
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional outreach metadata for lead campaigns.",
+                        "properties": {
+                            "campaignId": { "type": "string" },
+                            "leadId": { "type": "string" },
+                        },
                     },
                 },
                 "required": ["to", "subject", "bodyText"],
@@ -79,6 +95,13 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 def _effective_granted_scopes(identity: AgentIdentity) -> set[str]:
     return set(identity.permission_scopes) | set(identity.always_scopes)
+
+
+def email_send_needs_jit(identity: AgentIdentity) -> bool:
+    """True when email.send is JIT-gated (not in always_scopes)."""
+    jit = set(identity.jit_scopes)
+    always = set(identity.always_scopes)
+    return "email.send" in jit and "email.send" not in always
 
 
 def openai_email_tool_definitions(
@@ -134,6 +157,9 @@ def _post_email_tool(
         if isinstance(err, dict):
             code = err.get("code", "error")
             message = err.get("message", text[:500])
+            instructions = err.get("connectInstructions")
+            if instructions and code == "connector_not_configured":
+                return f"[failed] {code}: {message}\n\n{instructions}"
             return f"[failed] {code}: {message}"
         return f"[failed] HTTP {resp.status_code}: {text[:500]}"
 
@@ -148,6 +174,7 @@ def build_email_tool_executors(
     run_id: str,
     backend_url: str,
     runner_token: str,
+    qlix_sdk: Any = None,
 ) -> dict[str, callable]:
     """Pre-bind email tool executors for the inference loop."""
     executors: dict[str, callable] = {}
@@ -179,7 +206,7 @@ def build_email_tool_executors(
 
     if "email_send" in allowed:
 
-        def _email_send(args_json: str) -> str:
+        async def _email_send(args_json: str) -> str:
             params = json.loads(args_json) if args_json.strip() else {}
             if not isinstance(params, dict):
                 params = {}
@@ -191,8 +218,38 @@ def build_email_tool_executors(
             }
             if params.get("replyToMessageId"):
                 body["replyToMessageId"] = params["replyToMessageId"]
-            if params.get("jitToken"):
-                body["jitToken"] = params["jitToken"]
+            meta = params.get("metadata")
+            if isinstance(meta, dict) and (meta.get("campaignId") or meta.get("leadId")):
+                body["metadata"] = {
+                    k: meta[k]
+                    for k in ("campaignId", "leadId")
+                    if meta.get(k)
+                }
+
+            jit_token = params.get("jitToken")
+            if email_send_needs_jit(identity) and not jit_token:
+                if qlix_sdk is None:
+                    return (
+                        "[failed] email.send requires dashboard approval but the runner "
+                        "could not initialize the approval client"
+                    )
+                try:
+                    approval = await qlix_sdk.jit.request_and_wait(
+                        action_type="email.send",
+                        payload={
+                            "runId": run_id,
+                            "tool": "email_send",
+                            "to": body.get("to"),
+                            "subject": body.get("subject"),
+                        },
+                    )
+                    jit_token = getattr(approval, "jit_token", None)
+                except Exception as exc:  # noqa: BLE001
+                    return f"[failed] JIT approval not granted: {exc}"
+
+            if jit_token:
+                body["jitToken"] = jit_token
+
             return _post_email_tool(
                 backend_url=backend_url,
                 runner_token=runner_token,

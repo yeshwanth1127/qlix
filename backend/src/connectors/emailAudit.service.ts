@@ -32,7 +32,7 @@ async function computePrevHashForAgent(agentId: string): Promise<string> {
 export async function appendEmailActionLog(input: {
   agentId: string;
   userId: string;
-  actionType: 'email.read' | 'email.send';
+  actionType: 'email.read' | 'email.send' | 'social.read' | 'social.publish';
   payload: Record<string, unknown>;
   status: 'success' | 'blocked' | 'failed';
   riskLevel: 'low' | 'medium' | 'high';
@@ -65,7 +65,7 @@ export async function appendEmailActionLog(input: {
       } as Prisma.InputJsonValue,
       riskLevel: input.riskLevel,
       status: input.status,
-      approvalStatus: input.actionType === 'email.send' ? 'not_required' : 'not_required',
+      approvalStatus: 'not_required',
       signature,
       prevHash,
       timestampMs,

@@ -24,7 +24,9 @@ export function SignInForm() {
         return;
       }
       router.push(
-        consoleHomePath(result.data.user.workspaceKind ?? result.data.organization.workspaceKind),
+        result.data.user.isSuperAdmin
+          ? "/admin/overview"
+          : consoleHomePath(result.data.user.workspaceKind ?? result.data.organization.workspaceKind),
       );
       router.refresh();
     } finally {

@@ -5,6 +5,7 @@ import { createDashboardRouter } from '../routes/createDashboardRouter.js';
 import { createHealthRouter } from '../routes/createHealthRouter.js';
 import { createOrganizationRouter } from '../routes/createOrganizationRouter.js';
 import { createPassportsRouter } from '../routes/createPassportsRouter.js';
+import { createCredentialsRouter } from '../routes/createCredentialsRouter.js';
 import { createWebauthnRouter } from '../routes/createWebauthnRouter.js';
 import { createAgentsRouter } from '../routes/createAgentsRouter.js';
 import { createAgentChatRouter } from '../routes/createAgentChatRouter.js';
@@ -25,6 +26,13 @@ import { createAdminBillingRouter } from '../billings/routes/createAdminBillingR
 import { createUsageRouter } from '../routes/createUsageRouter.js';
 import { createWalletRouter } from '../routes/createWalletRouter.js';
 import { createMobileRouter } from '../routes/createMobileRouter.js';
+import { createLeadsRouter } from '../routes/createLeadsRouter.js';
+import { createInternalLeadsRouter } from '../routes/createInternalLeadsRouter.js';
+import { createJobsRouter } from '../routes/createJobsRouter.js';
+import { createInternalJobsRouter } from '../routes/createInternalJobsRouter.js';
+import { createSandboxRouter } from '../routes/createSandboxRouter.js';
+import { createWaitlistRouter } from '../routes/createWaitlistRouter.js';
+import { createHomepageVisitsRouter } from '../routes/createHomepageVisitsRouter.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -37,6 +45,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/auth', createAuthRouter());
   application.use('/api/v1/dashboard', createDashboardRouter());
   application.use('/api/v1/passports', createPassportsRouter());
+  application.use('/api/v1/credentials', createCredentialsRouter());
   application.use('/api/v1/organization', createOrganizationRouter());
   application.use('/api/v1/billing', createBillingRouter());
   application.use('/api/v1/billing/ingest', createBillingIngestRouter());
@@ -57,6 +66,13 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/wallet', createWalletRouter());
   application.use('/api/v1/whatsapp', createWhatsAppRouter());
   application.use('/api/v1/internal', createInternalRouter());
+  application.use('/api/v1/internal/leads', createInternalLeadsRouter());
+  application.use('/api/v1/leads', createLeadsRouter());
+  application.use('/api/v1/internal/jobs', createInternalJobsRouter());
+  application.use('/api/v1/jobs', createJobsRouter());
+  application.use('/api/v1/sandbox', createSandboxRouter());
+  application.use('/api/v1/waitlist', createWaitlistRouter());
+  application.use('/api/v1/homepage-visits', createHomepageVisitsRouter());
   application.use(createPublicPassportRouter());
   application.use('/api/v1/mobile', createMobileRouter());
   application.use('/api/v1', createHealthRouter());

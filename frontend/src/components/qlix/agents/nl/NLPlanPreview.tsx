@@ -11,7 +11,8 @@ import {
   type PermissionScope,
   type AgentRuntime,
 } from "@/lib/agents-api";
-import { cn } from "@/lib/utils/cn";
+import { scopesRequireHybrid } from "@/lib/agent-runtime";
+import { SketchBox, sketchInput, sketchLabel } from "@/components/qlix/sketch";
 
 interface NLPlanPreviewProps {
   readonly plan: AgentCreationPlan;
@@ -78,156 +79,162 @@ interface AgentCardProps {
   readonly onChange: (patch: Partial<NLAgentSpec>) => void;
 }
 
+function reconcileSpecRuntime(spec: NLAgentSpec | NLWorkerSpec): Partial<NLAgentSpec> | null {
+  if (!scopesRequireHybrid(spec.permissionScopes) || spec.runtime === "hybrid" || spec.runtime === "local") {
+    return null;
+  }
+  return applyRuntimeDefaults(spec, "hybrid");
+}
+
 function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
   const availableModels = modelsForRuntime(spec.runtime);
 
+  const patch = (fields: Partial<NLAgentSpec>) => {
+    const next = { ...spec, ...fields } as NLAgentSpec | NLWorkerSpec;
+    const runtimeFix = reconcileSpecRuntime(next);
+    onChange(runtimeFix ? { ...fields, ...runtimeFix } : fields);
+  };
+
   return (
-    <div
-      className={cn(
-        "rounded-lg border bg-[--bg-base] p-4 space-y-3",
-        accent ? "border-violet-500/30 ring-1 ring-violet-400/10" : "border-[--border-subtle]",
-      )}
-    >
+    <SketchBox className="p-4">
       {label && (
-        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[--text-tertiary]">
-          {accent && <ShieldCheck className="size-3 text-violet-400" aria-hidden />}
-          {label}
+        <div className="mb-4 flex items-center gap-1.5">
+          {accent && <ShieldCheck className="size-3 text-black/50" aria-hidden />}
+          <span className={sketchLabel}>{label}</span>
         </div>
       )}
 
-      {/* Name */}
-      <label className="block">
-        <span className="text-[11px] text-[--text-tertiary]">Name</span>
-        <input
-          type="text"
-          value={spec.name}
-          maxLength={120}
-          onChange={(e) => onChange({ name: e.target.value })}
-          className="mt-0.5 w-full rounded border border-[--border-subtle] bg-[--bg-subtle] px-2.5 py-1 text-[12px] text-[--text-primary] outline-none focus:border-[--accent]"
-        />
-      </label>
+      <div className="space-y-5">
+        {/* Name */}
+        <label className="block">
+          <span className={`${sketchLabel} normal-case tracking-normal`}>Name</span>
+          <input
+            type="text"
+            value={spec.name}
+            maxLength={120}
+            onChange={(e) => patch({ name: e.target.value })}
+            className={`${sketchInput} mt-1.5`}
+          />
+        </label>
 
-      {/* Description */}
-      <label className="block">
-        <span className="text-[11px] text-[--text-tertiary]">Description / system prompt</span>
-        <textarea
-          value={spec.description}
-          rows={3}
-          onChange={(e) => onChange({ description: e.target.value })}
-          className="mt-0.5 w-full resize-none rounded border border-[--border-subtle] bg-[--bg-subtle] px-2.5 py-1 text-[12px] text-[--text-primary] outline-none focus:border-[--accent]"
-        />
-      </label>
+        {/* Description */}
+        <label className="block">
+          <span className={`${sketchLabel} normal-case tracking-normal`}>Description / system prompt</span>
+          <textarea
+            value={spec.description}
+            rows={3}
+            onChange={(e) => patch({ description: e.target.value })}
+            className={`${sketchInput} mt-1.5 resize-none`}
+          />
+        </label>
 
-      {/* Runtime + Model row */}
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <span className="text-[11px] text-[--text-tertiary]">Runtime</span>
-          <div className="mt-0.5 relative">
+        {/* Runtime + Model row */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <span className={`${sketchLabel} normal-case tracking-normal`}>Runtime</span>
+            <div className="relative mt-1.5">
+              <select
+                value={spec.runtime}
+                onChange={(e) => {
+                  const rt = e.target.value as AgentRuntime;
+                  patch(applyRuntimeDefaults(spec, rt));
+                }}
+                className={`${sketchInput} appearance-none pl-8`}
+              >
+                {(["cloud", "hybrid", "local"] as AgentRuntime[]).map((rt) => (
+                  <option key={rt} value={rt} className="bg-white text-black">
+                    {RUNTIME_LABELS[rt]}
+                  </option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-black/50">
+                {RUNTIME_ICON[spec.runtime]}
+              </span>
+            </div>
+          </div>
+          <div>
+            <span className={`${sketchLabel} normal-case tracking-normal`}>Model</span>
             <select
-              value={spec.runtime}
-              onChange={(e) => {
-                const rt = e.target.value as AgentRuntime;
-                onChange(applyRuntimeDefaults(spec, rt));
-              }}
-              className="w-full appearance-none rounded border border-[--border-subtle] bg-[--bg-subtle] pl-6 pr-2.5 py-1 text-[12px] text-[--text-primary] outline-none focus:border-[--accent]"
+              value={spec.model}
+              onChange={(e) => patch({ model: e.target.value })}
+              className={`${sketchInput} mt-1.5`}
             >
-              {(["cloud", "hybrid", "local"] as AgentRuntime[]).map((rt) => (
-                <option key={rt} value={rt} className="bg-white text-black">
-                  {RUNTIME_LABELS[rt]}
+              {availableModels.map((m) => (
+                <option key={m} value={m} className="bg-white text-black">
+                  {m.replace("openrouter/", "")}
                 </option>
               ))}
             </select>
-            <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-[--text-tertiary]">
-              {RUNTIME_ICON[spec.runtime]}
-            </span>
           </div>
         </div>
+
+        {/* Scopes */}
         <div>
-          <span className="text-[11px] text-[--text-tertiary]">Model</span>
-          <select
-            value={spec.model}
-            onChange={(e) => onChange({ model: e.target.value })}
-            className="mt-0.5 w-full rounded border border-[--border-subtle] bg-[--bg-subtle] px-2.5 py-1 text-[12px] text-[--text-primary] outline-none focus:border-[--accent]"
-          >
-            {availableModels.map((m) => (
-              <option key={m} value={m} className="bg-white text-black">
-                {m.replace("openrouter/", "")}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+          <p className={sketchLabel}>Permissions</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {spec.permissionScopes.map((s) => {
+              const isJit = FORCE_JIT_SCOPES.includes(s as never);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  title={`Remove ${s}`}
+                  onClick={() => patch(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
+                  className="group inline-flex items-center gap-1 border border-black bg-white px-2 py-0.5 font-mono text-[10.5px] text-black transition-colors hover:bg-black hover:text-white"
+                >
+                  {isJit && <ShieldAlert className="size-2.5 opacity-70" aria-hidden />}
+                  {s}
+                  <X className="ml-0.5 size-2.5 opacity-50 transition-opacity group-hover:opacity-100" aria-hidden />
+                </button>
+              );
+            })}
 
-      {/* Scopes */}
-      <div>
-        <p className="mb-1.5 text-[11px] text-[--text-tertiary]">Permissions</p>
-        <div className="flex flex-wrap gap-1">
-          {spec.permissionScopes.map((s) => {
-            const isJit = FORCE_JIT_SCOPES.includes(s as never);
-            return (
-              <button
-                key={s}
-                type="button"
-                title={`Remove ${s}`}
-                onClick={() => onChange(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] transition-opacity hover:opacity-70",
-                  isJit
-                    ? "border border-amber-500/40 bg-amber-500/10 text-amber-300"
-                    : "border border-[--border-subtle] bg-[--bg-subtle] text-[--text-secondary]",
-                )}
-              >
-                {isJit && <ShieldAlert className="size-2.5" aria-hidden />}
-                {s}
-                <X className="size-2.5 ml-0.5 opacity-60" aria-hidden />
-              </button>
-            );
-          })}
-
-          {/* Add scope dropdown */}
-          {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).length > 0 && (
-            <div className="relative group">
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded border border-dashed border-[--border-subtle] px-1.5 py-0.5 text-[10px] text-[--text-tertiary] hover:border-[--accent]/40 hover:text-[--text-primary] transition-colors"
-              >
-                <Plus className="size-2.5" aria-hidden />
-                Add
-              </button>
-              <div className="absolute left-0 top-full z-10 mt-1 hidden group-focus-within:block min-w-[180px] rounded-lg border border-[--border-subtle] bg-[--bg-elevated] py-1 shadow-lg">
-                {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).map((s) => {
-                  const isJit = FORCE_JIT_SCOPES.includes(s as never);
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => onChange(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
-                      className="flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-[--bg-subtle]"
-                    >
-                      <span className="font-mono text-[10px] text-[--text-primary]">{s}</span>
-                      {isJit && <ShieldAlert className="size-2.5 mt-0.5 shrink-0 text-amber-400" aria-hidden />}
-                      <span className="text-[10px] text-[--text-tertiary]">
-                        {PERMISSION_SCOPE_LABELS[s]}
-                      </span>
-                    </button>
-                  );
-                })}
+            {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).length > 0 && (
+              <div className="group relative">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 border border-dashed border-black/40 bg-white px-2 py-0.5 text-[10.5px] text-black/50 transition-colors hover:border-black hover:text-black"
+                >
+                  <Plus className="size-2.5" aria-hidden />
+                  Add
+                </button>
+                <div className="absolute left-0 top-full z-10 mt-1.5 hidden min-w-[200px] border border-black bg-white py-1.5 group-focus-within:block">
+                  {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).map((s) => {
+                    const isJit = FORCE_JIT_SCOPES.includes(s as never);
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => patch(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
+                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-black/5"
+                      >
+                        <span className="font-mono text-[10.5px] text-black">{s}</span>
+                        {isJit && <ShieldAlert className="mt-0.5 size-2.5 shrink-0 text-black/50" aria-hidden />}
+                        <span className="text-[10px] leading-relaxed text-black/50">
+                          {PERMISSION_SCOPE_LABELS[s]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
+          </div>
+          {spec.jitScopes.length > 0 && (
+            <p className="mt-1.5 text-[10px] text-black/55">
+              <ShieldAlert className="mr-0.5 inline size-2.5" aria-hidden />
+              JIT scopes require approval on every invocation
+            </p>
           )}
         </div>
-        {spec.jitScopes.length > 0 && (
-          <p className="mt-1 text-[10px] text-amber-400/80">
-            <ShieldAlert className="inline size-2.5 mr-0.5" aria-hidden />
-            JIT scopes require approval on every invocation
+
+        {spec.rationale && (
+          <p className="mt-1 border-t border-black/15 pt-3 text-[11.5px] italic leading-relaxed text-black/50">
+            {spec.rationale}
           </p>
         )}
       </div>
-
-      {spec.rationale && (
-        <p className="text-[11px] leading-relaxed text-[--text-tertiary] italic">{spec.rationale}</p>
-      )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -242,7 +249,7 @@ export function NLPlanPreview({ plan, onPlanChange }: NLPlanPreviewProps) {
           onChange={(patch) => onPlanChange({ ...plan, agent: { ...agent, ...patch } as NLAgentSpec })}
         />
         {plan.rationale && (
-          <p className="rounded-md border border-[--border-subtle] bg-[--bg-subtle]/40 px-3 py-2 text-[11px] text-[--text-tertiary]">
+          <p className="px-0 text-[11px] italic text-black/50">
             {plan.rationale}
           </p>
         )}
@@ -253,8 +260,8 @@ export function NLPlanPreview({ plan, onPlanChange }: NLPlanPreviewProps) {
   const team = plan.team;
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 text-[12px] font-medium text-[--text-primary]">
-        <Users className="size-4 text-[--accent]" aria-hidden />
+      <div className="flex items-center gap-2 text-[12px] font-medium text-black">
+        <Users className="size-4" aria-hidden />
         {team.name}
       </div>
 
@@ -285,7 +292,7 @@ export function NLPlanPreview({ plan, onPlanChange }: NLPlanPreviewProps) {
       ))}
 
       {plan.rationale && (
-        <p className="rounded-md border border-[--border-subtle] bg-[--bg-subtle]/40 px-3 py-2 text-[11px] text-[--text-tertiary]">
+        <p className="px-0 text-[11px] italic text-black/50">
           {plan.rationale}
         </p>
       )}

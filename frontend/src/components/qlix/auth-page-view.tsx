@@ -4,11 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
-import { Terminal } from "lucide-react";
 import { postLogin, postSignup } from "@/lib/auth-api";
 import { consoleHomePath } from "@/lib/workspace";
 import { cn } from "@/lib/utils/cn";
-import { ReflectiveCard } from "./ReflectiveCard";
+import { QlixWordmark } from "./landing/QlixWordmark";
 import PixelBlast from "./PixelBlast";
 
 const GITHUB_LOGO =
@@ -111,7 +110,9 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
         return;
       }
       router.push(
-        consoleHomePath(result.data.user.workspaceKind ?? result.data.organization.workspaceKind),
+        result.data.user.isSuperAdmin
+          ? "/admin/overview"
+          : consoleHomePath(result.data.user.workspaceKind ?? result.data.organization.workspaceKind),
       );
       router.refresh();
     } finally {
@@ -146,16 +147,19 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
   }
 
   const inputFocus =
-    "focus:border-[#4d8eff] focus:ring-1 focus:ring-[#4d8eff] focus:outline-none transition-all";
+    "focus:border-[#1c1830]/50 focus:ring-1 focus:ring-[#1c1830]/25 focus:outline-none transition-all";
+
+  const glassCard =
+    "rounded-2xl border border-black/10 bg-white/65 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_70px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl";
 
   return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-[#0A0A0A] text-[#e5e2e1]">
-      {/* PixelBlast animated background */}
+    <div className="relative flex h-screen w-full overflow-hidden bg-[#f2efe8] text-[#1c1830]">
+      {/* PixelBlast animated background — ink pixels on paper */}
       <div className="absolute inset-0">
         <PixelBlast
           variant="circle"
           pixelSize={6}
-          color="#4d8eff"
+          color="#1c1830"
           patternScale={3}
           patternDensity={1.2}
           pixelSizeJitter={0.5}
@@ -169,27 +173,24 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
         />
       </div>
       {/* Readability scrim over the background */}
-      <div className="pointer-events-none absolute inset-0 bg-[#0A0A0A]/60" aria-hidden />
+      <div className="pointer-events-none absolute inset-0 bg-[#f2efe8]/80" aria-hidden />
 
       {/* Foreground — pointer-events-none so the background keeps tracking the
           pointer for parallax; re-enabled on the interactive controls below. */}
       <div className="pointer-events-none relative z-10 flex w-full flex-col overflow-y-auto">
         {/* Top nav */}
         <div className="flex h-14 shrink-0 items-center justify-between px-6 sm:px-10">
-          <Link href="/" className="pointer-events-auto flex items-center gap-2">
-            <div className="flex size-7 items-center justify-center rounded-md bg-[#4d8eff]">
-              <Terminal className="size-4 text-[#00285d]" strokeWidth={2} aria-hidden />
-            </div>
-            <span className="text-[16px] font-semibold tracking-tight text-white">Qlix</span>
+          <Link href="/" className="pointer-events-auto flex items-center text-[#1c1830]">
+            <QlixWordmark className="text-[34px]" />
           </Link>
           <div className="pointer-events-auto ml-auto flex items-center gap-3 text-[13px]">
-            <span className="hidden text-[#8c909f] sm:inline">
+            <span className="hidden text-black/50 sm:inline">
               {mode === "sign-in" ? "New to Qlix?" : "Already have an account?"}
             </span>
             <button
               type="button"
               onClick={() => setAuthMode(mode === "sign-in" ? "sign-up" : "sign-in")}
-              className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] font-medium text-[#e5e2e1] transition-colors hover:bg-white/10"
+              className="rounded-full border border-black/15 bg-white/60 px-4 py-1.5 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/30 hover:bg-white/90"
             >
               {mode === "sign-in" ? "Create account" : "Sign in"}
             </button>
@@ -202,10 +203,10 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
             {mode === "sign-in" ? (
               <>
                 <div className="mb-8">
-                  <h1 className="text-2xl font-semibold tracking-tight text-white">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[#1c1830]">
                     Welcome back
                   </h1>
-                  <p className="mt-1 text-[14px] text-[#8c909f]">
+                  <p className="mt-1 text-[14px] text-black/55">
                     Sign in to your Qlix workspace
                   </p>
                 </div>
@@ -213,14 +214,14 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                 <div className="mb-6 grid gap-3">
                   <button
                     type="button"
-                    className="flex h-10 w-full items-center justify-center gap-3 rounded-lg border border-white/10 bg-white/5 text-[14px] font-medium text-[#e5e2e1] transition-colors hover:bg-white/10 active:opacity-80"
+                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                   >
-                    <Image src={GITHUB_LOGO} alt="" width={18} height={18} className="size-[18px] invert" />
+                    <Image src={GITHUB_LOGO} alt="" width={18} height={18} className="size-[18px]" />
                     Continue with GitHub
                   </button>
                   <button
                     type="button"
-                    className="flex h-10 w-full items-center justify-center gap-3 rounded-lg border border-white/10 bg-white/5 text-[14px] font-medium text-[#e5e2e1] transition-colors hover:bg-white/10 active:opacity-80"
+                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                   >
                     <Image src={GOOGLE_LOGO} alt="" width={18} height={18} className="size-[18px]" />
                     Continue with Google
@@ -229,24 +230,24 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
 
                 <div className="relative mb-6">
                   <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-white/[0.08]" />
+                    <div className="w-full border-t border-black/10" />
                   </div>
                   <div className="relative flex justify-center">
-                    <span className="bg-[#0A0A0A] px-3 text-[12px] uppercase tracking-widest text-[#424754]">
+                    <span className="rounded-full bg-[#f2efe8] px-3 text-[12px] uppercase tracking-widest text-black/40">
                       or
                     </span>
                   </div>
                 </div>
 
-                <ReflectiveCard contentClassName="p-6">
+                <div className={cn(glassCard, "p-6")}>
                   <form className="space-y-4" onSubmit={onSignIn}>
                     {signInError ? (
-                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-400">
+                      <p className="rounded-lg border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-[13px] text-red-700">
                         {signInError}
                       </p>
                     ) : null}
                     <div className="space-y-1.5">
-                      <label htmlFor="email" className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                      <label htmlFor="email" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Email
                       </label>
                       <input
@@ -259,17 +260,17 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignInEmail(ev.target.value)}
                         placeholder="dev@qlix.io"
                         className={cn(
-                          "qlix-glass-input h-10 w-full rounded-lg px-3 text-[14px] text-[#e5e2e1] placeholder:text-[#424754]",
+                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
                     </div>
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
-                        <label htmlFor="password" className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                        <label htmlFor="password" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                           Password
                         </label>
-                        <a href="#" className="text-[12px] text-[#adc6ff] transition-colors hover:text-[#4d8eff]">
+                        <a href="#" className="text-[12px] text-black/45 transition-colors hover:text-[#1c1830]">
                           Forgot?
                         </a>
                       </div>
@@ -283,7 +284,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignInPassword(ev.target.value)}
                         placeholder="••••••••"
                         className={cn(
-                          "qlix-glass-input h-10 w-full rounded-lg px-3 text-[14px] text-[#e5e2e1] placeholder:text-[#424754]",
+                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -291,45 +292,45 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="submit"
                       disabled={signInLoading}
-                      className="mt-2 flex h-10 w-full items-center justify-center rounded-lg bg-[#4d8eff] text-[14px] font-semibold text-[#00285d] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#1c1830] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
                     >
                       {signInLoading ? "Signing in…" : "Sign In"}
                     </button>
                   </form>
-                </ReflectiveCard>
+                </div>
               </>
             ) : (
               <>
                 <div className="mb-8">
-                  <h1 className="text-2xl font-semibold tracking-tight text-white">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[#1c1830]">
                     Create your account
                   </h1>
-                  <p className="mt-1 text-[14px] text-[#8c909f]">
+                  <p className="mt-1 text-[14px] text-black/55">
                     Start building autonomous AI agents with Qlix.
                   </p>
                 </div>
 
-                <ReflectiveCard className="rounded-xl" contentClassName="p-6">
+                <div className={cn(glassCard, "p-6")}>
                   <form className="space-y-4" onSubmit={onSignUp}>
                     {signUpError ? (
-                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-400">
+                      <p className="rounded-lg border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-[13px] text-red-700">
                         {signUpError}
                       </p>
                     ) : null}
 
                     <fieldset className="space-y-2">
-                      <legend className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                      <legend className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Workspace type
                       </legend>
                       {inviteFromUrl ? (
-                        <p className="text-[12px] leading-relaxed text-[#adc6ff]">
+                        <p className="text-[12px] leading-relaxed text-[#1c1830]/80">
                           You&apos;re joining an organization via invitation.
                         </p>
                       ) : null}
                       <div className="flex gap-4">
                         <label
                           className={cn(
-                            "flex items-center gap-2 text-[13px] text-[#c2c6d6]",
+                            "flex items-center gap-2 text-[13px] text-black/70",
                             inviteFromUrl ? "cursor-not-allowed opacity-50" : "cursor-pointer",
                           )}
                         >
@@ -345,11 +346,11 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                               params.set("workspace", "individual");
                               router.replace(`/sign-in?${params.toString()}`, { scroll: false });
                             }}
-                            className="accent-[#4d8eff]"
+                            className="accent-[#1c1830]"
                           />
                           Individual
                         </label>
-                        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-[#c2c6d6]">
+                        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-black/70">
                           <input
                             type="radio"
                             name="workspaceType"
@@ -362,7 +363,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                               params.set("workspace", "organization");
                               router.replace(`/sign-in?${params.toString()}`, { scroll: false });
                             }}
-                            className="accent-[#4d8eff]"
+                            className="accent-[#1c1830]"
                           />
                           Organization
                         </label>
@@ -370,7 +371,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     </fieldset>
 
                     <div className="space-y-1.5">
-                      <label htmlFor="name" className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                      <label htmlFor="name" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Full Name
                       </label>
                       <input
@@ -382,13 +383,13 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpName(ev.target.value)}
                         placeholder="Alan Turing"
                         className={cn(
-                          "qlix-glass-input h-10 w-full rounded-lg px-3 text-[14px] text-[#e5e2e1] placeholder:text-[#424754]",
+                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label htmlFor="signup-email" className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                      <label htmlFor="signup-email" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Email
                       </label>
                       <input
@@ -401,13 +402,13 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpEmail(ev.target.value)}
                         placeholder="name@company.com"
                         className={cn(
-                          "qlix-glass-input h-10 w-full rounded-lg px-3 text-[14px] text-[#e5e2e1] placeholder:text-[#424754]",
+                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label htmlFor="signup-password" className="text-[11px] font-semibold uppercase tracking-widest text-[#8c909f]">
+                      <label htmlFor="signup-password" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Password
                       </label>
                       <input
@@ -421,7 +422,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpPassword(ev.target.value)}
                         placeholder="••••••••"
                         className={cn(
-                          "qlix-glass-input h-10 w-full rounded-lg px-3 text-[14px] text-[#e5e2e1] placeholder:text-[#424754]",
+                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -429,7 +430,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="submit"
                       disabled={signUpLoading}
-                      className="mt-2 flex h-10 w-full items-center justify-center rounded-lg bg-[#4d8eff] text-[14px] font-semibold text-[#00285d] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#1c1830] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
                     >
                       {signUpLoading ? "Creating account…" : "Create Account"}
                     </button>
@@ -437,24 +438,24 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
 
                   <div className="relative my-6">
                     <div className="absolute inset-0 flex items-center">
-                      <span className="w-full border-t border-white/[0.08]" />
+                      <span className="w-full border-t border-black/10" />
                     </div>
                     <div className="relative flex justify-center text-[11px] font-medium uppercase tracking-widest">
-                      <span className="bg-transparent px-3 text-[#424754]">Or continue with</span>
+                      <span className="bg-transparent px-3 text-black/40">Or continue with</span>
                     </div>
                   </div>
 
                   <div className="grid gap-3">
                     <button
                       type="button"
-                      className="flex h-10 w-full items-center justify-center gap-3 rounded-lg border border-white/10 bg-white/5 text-[13px] font-medium text-[#e5e2e1] transition-colors hover:bg-white/10 active:opacity-80"
+                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                     >
                       <GitHubMark />
                       Sign up with GitHub
                     </button>
                     <button
                       type="button"
-                      className="flex h-10 w-full items-center justify-center gap-3 rounded-lg border border-white/10 bg-white/5 text-[13px] font-medium text-[#e5e2e1] transition-colors hover:bg-white/10 active:opacity-80"
+                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                     >
                       <GoogleMark />
                       Sign up with Google
@@ -464,23 +465,23 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                   <div className="mt-4">
                     <Link
                       href="/super-admin/sign-up"
-                      className="flex w-full items-center justify-center rounded-lg border border-amber-500/35 bg-amber-500/5 py-2.5 text-[13px] font-medium text-amber-100/90 transition-colors hover:border-amber-500/50 hover:bg-amber-500/10"
+                      className="flex w-full items-center justify-center rounded-xl border border-amber-600/30 bg-amber-500/10 py-2.5 text-[13px] font-medium text-amber-900/80 transition-colors hover:border-amber-600/45 hover:bg-amber-500/15"
                     >
                       Super admin sign-up
                     </Link>
-                    <p className="mt-2 text-center text-[11px] leading-snug text-[#424754]">
+                    <p className="mt-2 text-center text-[11px] leading-snug text-black/40">
                       Platform operators only — requires server access password.
                     </p>
                   </div>
-                </ReflectiveCard>
+                </div>
 
-                <p className="mt-6 text-center text-[11px] uppercase leading-relaxed tracking-wider text-[#424754]">
+                <p className="mt-6 text-center text-[11px] uppercase leading-relaxed tracking-wider text-black/40">
                   By signing up, you agree to our{" "}
-                  <a className="text-[#adc6ff] transition-all hover:underline" href="#">
+                  <a className="text-[#1c1830]/70 transition-all hover:underline" href="#">
                     Terms
                   </a>{" "}
                   and{" "}
-                  <a className="text-[#adc6ff] transition-all hover:underline" href="#">
+                  <a className="text-[#1c1830]/70 transition-all hover:underline" href="#">
                     Privacy Policy
                   </a>
                   .
@@ -491,13 +492,13 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
         </main>
 
         {/* Footer */}
-        <footer className="pointer-events-auto shrink-0 border-t border-white/[0.06] px-6 py-4 sm:px-10">
-          <div className="flex flex-wrap items-center justify-between gap-4 text-[11px] uppercase tracking-widest text-[#424754]">
+        <footer className="pointer-events-auto shrink-0 border-t border-black/10 px-6 py-4 sm:px-10">
+          <div className="flex flex-wrap items-center justify-between gap-4 text-[11px] uppercase tracking-widest text-black/40">
             <span>© {new Date().getFullYear()} Qlix</span>
             <div className="flex gap-6">
-              <a href="#" className="transition-colors hover:text-[#8c909f]">Privacy</a>
-              <a href="#" className="transition-colors hover:text-[#8c909f]">Terms</a>
-              <a href="#" className="transition-colors hover:text-[#8c909f]">Status</a>
+              <a href="#" className="transition-colors hover:text-black/70">Privacy</a>
+              <a href="#" className="transition-colors hover:text-black/70">Terms</a>
+              <a href="#" className="transition-colors hover:text-black/70">Status</a>
             </div>
           </div>
         </footer>

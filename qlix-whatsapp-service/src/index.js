@@ -2,8 +2,9 @@ import 'dotenv/config';
 import express from 'express';
 import { createApiRouter } from './api.js';
 import { resumeSavedSessions } from './sessionManager.js';
+import { resumePendingApprovals } from './handlers.js';
 
-const REQUIRED = ['PORT', 'QLIX_URL', 'SERVICE_SECRET'];
+const REQUIRED = ['PORT', 'QLIX_URL', 'SERVICE_SECRET', 'WHATSAPP_AUTH_ENCRYPTION_KEY'];
 
 function validateEnv() {
   const missing = REQUIRED.filter((k) => !process.env[k]?.trim());
@@ -29,9 +30,13 @@ async function main() {
   const app = express();
   app.use(createApiRouter());
 
-  httpServer = app.listen(port, () => {
-    console.log(`[qlix-whatsapp] HTTP listening on :${port}`);
+  // Internal service API — bind to loopback so it is never exposed on a public interface.
+  // Override with WHATSAPP_BIND_HOST only for containerized/private-network setups.
+  const host = process.env.WHATSAPP_BIND_HOST?.trim() || '127.0.0.1';
+  httpServer = app.listen(port, host, () => {
+    console.log(`[qlix-whatsapp] HTTP listening on ${host}:${port}`);
     void resumeSavedSessions();
+    resumePendingApprovals();
   });
 
   const shutdown = async (signal) => {

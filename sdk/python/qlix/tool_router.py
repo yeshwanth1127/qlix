@@ -9,9 +9,10 @@ from typing import Any, Literal
 from .agents3_runtime import is_read_only_file_intent
 from .identity import AgentIdentity
 
-ToolGroup = Literal["web", "files", "code", "gui", "comms", "knowledge", "always"]
+ToolGroup = Literal["research", "web", "files", "code", "gui", "comms", "knowledge", "always"]
 
 GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
+    "research": ("web.research",),
     "web": ("web.read", "web.click", "web.transaction"),
     "files": ("system.file_read", "system.file_write"),
     "code": ("system.file_read",),
@@ -22,6 +23,7 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
 }
 
 GROUP_RUNTIMES: dict[ToolGroup, frozenset[str]] = {
+    "research": frozenset({"cloud", "hybrid"}),
     "web": frozenset({"cloud"}),
     "files": frozenset({"hybrid"}),
     "code": frozenset({"hybrid"}),
@@ -31,26 +33,131 @@ GROUP_RUNTIMES: dict[ToolGroup, frozenset[str]] = {
     "always": frozenset({"cloud", "hybrid"}),
 }
 
+# Browser interaction intent — keeps web group when user needs hands, not just eyes.
+WEB_INTERACTION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "login",
+        "sign in",
+        "sign-in",
+        "fill",
+        "submit",
+        "checkout",
+        "upload",
+        "form",
+        "navigate to",
+        "click",
+        "type into",
+        "log in",
+    }
+)
+
+# Lead website email enrichment — must load browser tools, not research or a re-scrape.
+LEAD_BROWSER_ENRICHMENT_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "browser enrichment",
+        "enrich lead",
+        "enrich the lead",
+        "enrich these leads",
+        "find email on",
+        "find emails on",
+        "search their website",
+        "search the website",
+        "search website for email",
+        "search websites for email",
+        "visit their website",
+        "visit the website",
+        "check their website",
+        "check the website",
+        "website for email",
+        "email on their website",
+        "email on the website",
+        "needsbrowserenrichment",
+        "update_lead_email",
+        "record_lead_enrichment",
+        "contact page",
+    }
+)
+
+_GROUP_ORDER: tuple[ToolGroup, ...] = (
+    "research",
+    "web",
+    "files",
+    "code",
+    "gui",
+    "comms",
+    "knowledge",
+    "always",
+)
+
 KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
+    "research": frozenset(
+        {
+            "research",
+            "competitor",
+            "competitors",
+            "competitive",
+            "competition",
+            "competitive analysis",
+            "competitive intelligence",
+            "market landscape",
+            "swot",
+            "pricing",
+            "rival",
+            "deep research",
+            "deep dive",
+            "调研",
+            "learn",
+            "learn about",
+            "read",
+            "read about",
+            "read up on",
+            "understand",
+            "look up",
+            "find out",
+            "search for",
+            "investigate",
+            "study",
+            "what do people say",
+            "reviews",
+            "sentiment",
+            "twitter",
+            "x.com",
+            "reddit",
+            "bilibili",
+            "b站",
+            "哔哩哔哩",
+            "youtube",
+            "github",
+            "xiaohongshu",
+            "小红书",
+            "linkedin",
+            "v2ex",
+            "rss",
+        }
+    ),
     "web": frozenset(
         {
             "browse",
             "website",
             "url",
             "google",
-            "search online",
-            "search the web",
-            "search for",
-            "navigate to",
             "http",
             "https",
             "web page",
             "scrape",
             "internet",
-            "research",
-            "look up",
-            "find out",
             "online",
+            "login",
+            "sign in",
+            "sign-in",
+            "fill",
+            "submit",
+            "checkout",
+            "upload",
+            "form",
+            "navigate to",
+            "click",
+            "log in",
         }
     ),
     "files": frozenset(
@@ -155,6 +262,92 @@ def _group_allowed(group: ToolGroup, identity: AgentIdentity, runner_runtime: st
     return any(s in granted for s in required)
 
 
+def _has_web_interaction_intent(text: str) -> bool:
+    return any(kw in text for kw in WEB_INTERACTION_KEYWORDS)
+
+
+def _granted_scope_set(identity: AgentIdentity) -> set[str]:
+    return set(identity.permission_scopes) | set(identity.always_scopes)
+
+
+def has_qlix_leads_scope(identity: AgentIdentity) -> bool:
+    return any(s.startswith("mcp.qlix-leads.") for s in _granted_scope_set(identity))
+
+
+def is_lead_browser_enrichment_intent(text: str) -> bool:
+    """True when the user wants emails from lead websites (post-scrape), not a new GMB search."""
+    lower = text.lower()
+    if any(kw in lower for kw in LEAD_BROWSER_ENRICHMENT_KEYWORDS):
+        return True
+    # Short follow-ups: "search ... website ... email"
+    if "website" in lower and "email" in lower:
+        if any(v in lower for v in ("search", "find", "visit", "check", "scrape", "look")):
+            return True
+    return False
+
+
+def lead_enrichment_run_guidance() -> str:
+    return (
+        "## Lead website email enrichment (this run)\n"
+        "The user wants emails from existing lead websites — NOT a new Google Maps scrape.\n"
+        "1. Call list_leads with includeAll=true and the campaignId from this conversation. "
+        "Do NOT call gmb_search_leads again.\n"
+        "2. For EACH lead in needsBrowserEnrichment: browser_ab_open(website), check /contact, "
+        "then update_lead_email (if found) or record_lead_enrichment with outcome=no_email_on_site.\n"
+        "3. Call list_leads again and summarize which businesses have verified emails.\n"
+        "Never invent emails. Wix placeholders like info@mysite.com are rejected."
+    )
+
+
+LEAD_GENERATION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "generate leads",
+        "find leads",
+        "lead gen",
+        "lead generation",
+        "scrape leads",
+        "google maps",
+        "gmb",
+        "local business",
+        "local businesses",
+    }
+)
+
+
+def is_lead_generation_intent(text: str) -> bool:
+    """True when the user wants a new GMB scrape / lead list (not enrichment-only)."""
+    if is_lead_browser_enrichment_intent(text):
+        return False
+    lower = text.lower()
+    if any(kw in lower for kw in LEAD_GENERATION_KEYWORDS):
+        return True
+    if "generate" in lower and any(
+        w in lower for w in ("lead", "leads", "cafe", "cafes", "business", "restaurant", "shop")
+    ):
+        return True
+    if re.search(r"\bgenerate\s+\d+\b", lower) and any(
+        w in lower for w in ("cafe", "cafes", "salon", "salons", "lead", "leads", "business", "bangalore", "bengaluru")
+    ):
+        return True
+    if "gmb_search_leads" in lower or "google maps" in lower:
+        return True
+    return False
+
+
+def lead_generation_run_guidance() -> str:
+    return (
+        "## Lead generation (this run)\n"
+        "The user wants NEW leads scraped from Google Maps.\n"
+        "1. Call gmb_search_leads FIRST with searchQuery (business type), location, and maxResults. "
+        "Example: searchQuery='cafes', location='Bangalore', maxResults=5.\n"
+        "2. Do NOT call start_outreach, get_campaign, or list_leads until gmb_search_leads returns a campaignId.\n"
+        "3. After scrape: list_leads with includeAll=true, present the businesses to the user.\n"
+        "4. Browser-enrich websites (browser_ab_open → update_lead_email / record_lead_enrichment).\n"
+        "5. Only then offer or run outreach to verified emails.\n"
+        "Never invent a campaignId — use only the id returned by gmb_search_leads."
+    )
+
+
 def classify_groups(
     instruction: str,
     identity: AgentIdentity,
@@ -177,10 +370,18 @@ def classify_groups(
                     selected.add(group)
             if not selected and "web.read" in filt:
                 selected.add("web")
+            if not selected and "web.research" in filt:
+                selected.add("research")
+            if is_lead_browser_enrichment_intent(instruction.lower()) and _group_allowed(
+                "web", identity, runner_runtime
+            ):
+                selected.add("web")
+                selected.discard("research")
             selected.add("always")
-            return tuple(g for g in ("web", "files", "code", "gui", "comms", "knowledge", "always") if g in selected)
+            return tuple(g for g in _GROUP_ORDER if g in selected)
 
     text = instruction.lower()
+    lead_enrich = is_lead_browser_enrichment_intent(text)
     scores: dict[ToolGroup, int] = {g: 0 for g in KEYWORD_MAP}
     for group, keywords in KEYWORD_MAP.items():
         for kw in keywords:
@@ -188,6 +389,10 @@ def classify_groups(
                 scores[group] += 1
 
     selected = {g for g, score in scores.items() if score > 0}
+    if lead_enrich and _group_allowed("web", identity, runner_runtime):
+        selected.add("web")
+        # Website email lookup is live browsing, not curated research APIs.
+        selected.discard("research")
     if not selected:
         if runner_runtime == "hybrid":
             selected = {"files"} if is_read_only_file_intent(instruction) else {"files", "code"}
@@ -196,6 +401,18 @@ def classify_groups(
         # / greetings don't spin up the browser. Real browse requests match `web` keywords
         # (or the agent's description does) and load web tools then.
 
+    # Passive research (platform names, 调研, etc.) should not load the full browser suite —
+    # UNLESS the agent was explicitly granted web.read (e.g. competitor research), where the
+    # browser is a silent fallback for blocked platform APIs.
+    if "research" in selected and not lead_enrich:
+        research_has_browser = "web.read" in _granted_scopes(identity) and _group_allowed(
+            "web", identity, runner_runtime
+        )
+        if research_has_browser:
+            selected.add("web")
+        elif not _has_web_interaction_intent(text):
+            selected.discard("web")
+
     if runner_runtime == "hybrid" and "comms" in selected:
         # Email-on-hybrid shouldn't drag the browser in, but WhatsApp file delivery
         # is commonly paired with a browser screenshot/PDF — keep web in that case.
@@ -203,7 +420,7 @@ def classify_groups(
             selected.discard("web")
 
     final: list[ToolGroup] = []
-    for g in ("web", "files", "code", "gui", "comms", "knowledge", "always"):
+    for g in _GROUP_ORDER:
         if g == "always" or g in selected:
             if _group_allowed(g, identity, runner_runtime):
                 final.append(g)
@@ -259,7 +476,9 @@ class ToolRouter:
         mcp_servers: Any = None,
     ) -> list[dict[str, Any]]:
         from .cloud_browser_runtime import openai_browser_tool_definitions
+        from .cloud_document_runtime import openai_document_tool_definitions
         from .cloud_email_runtime import openai_email_tool_definitions
+        from .cloud_research_runtime import openai_research_tool_definitions
         from .cloud_whatsapp_runtime import openai_whatsapp_tool_definitions
         from .agents3_runtime import openai_agents3_tool_definitions
         from .local_tool_definitions import (
@@ -270,6 +489,9 @@ class ToolRouter:
         tools: list[dict[str, Any]] = []
         sf = plan.skill_filter if plan.skill_filter else None
 
+        if "research" in plan.groups:
+            tools.extend(openai_research_tool_definitions(self.identity, sf))
+            tools.extend(openai_document_tool_definitions(self.identity, sf))
         if "web" in plan.groups:
             tools.extend(openai_browser_tool_definitions(self.identity, sf))
         if self.runner_runtime == "hybrid" and any(
@@ -328,13 +550,34 @@ class ToolRouter:
             _remap_legacy_params,
             _effective_granted_scopes,
         )
+        from .cloud_document_runtime import build_document_tool_executors
         from .cloud_email_runtime import build_email_tool_executors
+        from .cloud_research_runtime import build_research_tool_executors
         from .cloud_whatsapp_runtime import build_whatsapp_tool_executors
         from .agents3_runtime import build_agents3_executors
         from .luna.core.registry import ToolRegistry
 
         executor_map: dict[str, callable] = {}
         sf = plan.skill_filter
+
+        if "research" in plan.groups:
+            executor_map.update(
+                build_research_tool_executors(
+                    identity=self.identity,
+                    skill_filter=sf,
+                    qlix_sdk=qlix_sdk,
+                )
+            )
+            executor_map.update(
+                build_document_tool_executors(
+                    identity=self.identity,
+                    skill_filter=sf,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                )
+            )
 
         if "web" in plan.groups:
             tools_list = openai_browser_tool_definitions(self.identity, sf)
@@ -414,6 +657,7 @@ class ToolRouter:
                 run_id=run_id,
                 backend_url=backend_url,
                 runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
             )
             executor_map.update(email_executors)
             whatsapp_executors = build_whatsapp_tool_executors(

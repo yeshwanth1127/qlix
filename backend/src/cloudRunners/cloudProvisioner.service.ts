@@ -1,26 +1,35 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import type { AgentDTO } from '../agents/agents.types.js';
 import { buildSdkAgentJson, resolveDockerBackendUrl } from '../agents/sdkAgentFile.js';
 import { AgentsRepository } from '../agents/agents.repository.js';
+import { resolvePlatformResearchProvisioning } from './platformResearchSecrets.js';
 import { decryptForAgentSecrets, encryptForAgentSecrets } from './agentSecrets.js';
 import { prisma } from '../lib/prisma.js';
-import {
-  DockerNotAvailableError,
-} from './dockerClient.js';
+import { DockerNotAvailableError } from './dockerClient.js';
 import { DockerRunnerOrchestrator, type RunnerOrchestrator } from './runnerOrchestrator.js';
 import {
   type DockerAgentIdentity,
   type DockerTeamContext,
   dockerContainerName,
-  dockerImageListPrefix,
-  dockerImageRef,
   dockerTeamContainerName,
   dockerTeamNetworkName,
   legacyDockerContainerName,
   mergeDockerLabels,
 } from './dockerNaming.js';
+import { ensureSharedRunnerImage } from './runnerImage.js';
+import { resolveRunnerResourceLimits } from './runnerResourceLimits.js';
+import { pruneAgentRunnerState } from './runnerPruning.js';
+import {
+  clearPendingTeamContext,
+  readPendingTeamContext,
+} from './pendingTeamContext.js';
+import { ProvisioningQueue, type ProvisionJob } from './provisioningQueue.js';
 
 export class CloudProvisionFailedError extends Error {
   constructor(message = 'Cloud runner provisioning failed') {
@@ -30,27 +39,26 @@ export class CloudProvisionFailedError extends Error {
 
 function safeProvisioningErrorMessage(input: unknown): string {
   const raw = String((input as any)?.message ?? input ?? 'Cloud runner provisioning failed');
-  // Keep this UI-safe: trim + cap length, avoid dumping megabytes of logs.
   return raw.length > 2000 ? `${raw.slice(0, 2000)}…(truncated)` : raw;
 }
 
-function runnerBaseImageRef(): string {
-  return process.env.QLIX_CLOUD_RUNNER_IMAGE?.trim() || 'qlix-cloud-runner:dev';
+/** When DOCKER_HOST=ssh://…, bind-mount paths resolve on the remote daemon host. */
+function dockerSshTarget(): string | null {
+  const host = process.env.DOCKER_HOST?.trim();
+  if (!host?.startsWith('ssh://')) return null;
+  return host.slice('ssh://'.length);
 }
 
-function runnerDockerfileAbsPath(): string {
-  // Default: repo ships the Dockerfile under sdk/python.
-  const repoRoot = path.resolve(process.cwd(), '..');
-  return path.join(repoRoot, 'sdk', 'python', 'docker', 'cloud-runner', 'Dockerfile');
-}
-
-function repoRootAbsPath(): string {
-  const repoRoot = path.resolve(process.cwd(), '..');
-  return repoRoot;
-}
-
-function shouldAlwaysBuildRunnerImage(): boolean {
-  return process.env.QLIX_CLOUD_RUNNER_ALWAYS_BUILD?.trim() === 'true';
+async function syncAgentRunnerStateToDockerHost(agentId: string, stateRoot: string): Promise<void> {
+  const sshTarget = dockerSshTarget();
+  if (!sshTarget) return;
+  const localDir = path.join(stateRoot, agentId);
+  const remoteDir = localDir;
+  await execFileAsync('ssh', [sshTarget, `mkdir -p ${remoteDir}/adk`], { timeout: 60_000 });
+  await execFileAsync('rsync', ['-az', '--delete', `${localDir}/`, `${sshTarget}:${remoteDir}/`], {
+    timeout: 120_000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
 }
 
 function randomRunnerToken(): string {
@@ -63,26 +71,67 @@ export class CloudProvisionerService {
     private readonly orchestrator: RunnerOrchestrator = new DockerRunnerOrchestrator(),
   ) {}
 
-  private async ensureRunnerImageAvailable(): Promise<void> {
-    await this.orchestrator.ensureAvailable();
-    if (shouldAlwaysBuildRunnerImage()) {
-      await this.orchestrator.buildImage({
-        imageRef: runnerBaseImageRef(),
-        dockerfilePath: runnerDockerfileAbsPath(),
-        contextPath: repoRootAbsPath(),
-      });
-    }
+  runnerStateRoot(): string {
+    return process.env.QLIX_CLOUD_RUNNER_STATE_DIR?.trim() || path.join(process.cwd(), '.qlix-runners');
   }
 
-  private runnerStateRoot(): string {
-    return process.env.QLIX_CLOUD_RUNNER_STATE_DIR?.trim() || path.join(process.cwd(), '.qlix-runners');
+  registerQueueHandler(): void {
+    const queue = ProvisioningQueue.getInstance();
+    queue.setHandler((job) => this.runQueuedJob(job));
+  }
+
+  private enqueue(job: ProvisionJob): void {
+    ProvisioningQueue.getInstance().enqueue(job);
+  }
+
+  private async runQueuedJob(job: ProvisionJob): Promise<void> {
+    try {
+      switch (job.kind) {
+        case 'provision':
+          await this._doProvisionCloudRunner({
+            agent: job.agent,
+            privateKey: job.privateKey,
+            backendUrl: job.backendUrl,
+          });
+          break;
+        case 'restart':
+          await this.restartCloudRunner({ agentId: job.agentId, backendUrl: job.backendUrl });
+          break;
+        case 'team':
+          await this.applyTeamContext({
+            agentId: job.agentId,
+            teamId: job.teamContext.id,
+            teamName: job.teamContext.name,
+            role: job.teamContext.role,
+            backendUrl: job.backendUrl,
+          });
+          break;
+      }
+    } catch (err) {
+      const agentId =
+        job.kind === 'provision' ? job.agent.id : job.agentId;
+      const message =
+        err instanceof CloudProvisionFailedError
+          ? err.message
+          : err instanceof DockerNotAvailableError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'Cloud runner provisioning failed';
+      console.warn('[cloudProvision]', agentId, message);
+      await this.repo
+        .updateCloudFields(agentId, {
+          cloudProvisioningStatus: 'failed',
+          cloudProvisioningError: safeProvisioningErrorMessage(message),
+        })
+        .catch(() => {});
+    }
   }
 
   private async createAdkArtifact(agent: AgentDTO): Promise<{
     adkDir: string;
     manifestPath: string;
     modulePath: string;
-    versionHash: string;
   }> {
     const stateRoot = this.runnerStateRoot();
     const adkDir = path.join(stateRoot, agent.id, 'adk');
@@ -124,93 +173,11 @@ export class CloudProvisionerService {
       '',
     ].join('\n');
     await writeFile(modulePath, modulePy, 'utf8');
-    const repoRoot = repoRootAbsPath();
-    const runnerFingerprintPaths = [
-      path.join(repoRoot, 'sdk', 'python', 'qlix', 'cloud_runner.py'),
-      path.join(repoRoot, 'sdk', 'python', 'qlix', 'backend_inference_client.py'),
-      path.join(repoRoot, 'sdk', 'python', 'qlix', 'http_client.py'),
-      path.join(repoRoot, 'sdk', 'python', 'qlix', 'cloud_browser_runtime.py'),
-      path.join(repoRoot, 'sdk', 'python', 'qlix', 'cloud_email_runtime.py'),
-    ];
-    const h = crypto.createHash('sha256');
-    h.update(await readFile(manifestPath, 'utf8'));
-    h.update(await readFile(modulePath, 'utf8'));
-    for (const fp of runnerFingerprintPaths) {
-      try {
-        h.update(await readFile(fp, 'utf8'));
-      } catch {
-        // dev layout may differ; omit if missing
-      }
-    }
-    const versionHash = h.digest('hex').slice(0, 16);
-    return { adkDir, manifestPath, modulePath, versionHash };
+    return { adkDir, manifestPath, modulePath };
   }
 
-  private async buildPerAgentImage(agent: DockerAgentIdentity, versionHash: string): Promise<string> {
-    const imageRef = dockerImageRef(agent, versionHash);
-    const stateRoot = this.runnerStateRoot();
-    const agentRoot = path.join(stateRoot, agent.id);
-    const dockerfilePath = path.join(agentRoot, 'Dockerfile');
-    const repoRoot = repoRootAbsPath();
-    const dockerfile = [
-      'FROM python:3.12-slim',
-      '',
-      'ARG AGENT_BROWSER_VERSION=0.9.4',
-      'ARG NODE_VERSION=22.16.0',
-      '',
-      'ENV PYTHONDONTWRITEBYTECODE=1 \\',
-      '    PYTHONUNBUFFERED=1 \\',
-      '    LUNA_BROWSER_HEADLESS=1 \\',
-      '    LUNA_BROWSER_ENGINE=agent_browser \\',
-      '    AGENT_BROWSER_BIN=/usr/local/bin/agent-browser \\',
-      '    AGENT_BROWSER_SOCKET_DIR=/tmp/agent-browser',
-      '',
-      'WORKDIR /app',
-      'RUN apt-get update && apt-get install -y --no-install-recommends \\',
-      '    ca-certificates curl xz-utils \\',
-      '    && rm -rf /var/lib/apt/lists/*',
-      '',
-      'RUN set -eux; \\',
-      '    arch="$(uname -m)"; \\',
-      '    case "${arch}" in \\',
-      '      x86_64) node_arch="x64" ;; \\',
-      '      aarch64) node_arch="arm64" ;; \\',
-      '      *) echo "unsupported arch: ${arch}"; exit 1 ;; \\',
-      '    esac; \\',
-      '    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \\',
-      '      | tar -xJ -C /usr/local --strip-components=1',
-      '',
-      'RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \\',
-      '    && npx --yes playwright install-deps chromium \\',
-      '    && npx --yes playwright install chromium \\',
-      '    && mkdir -p /tmp/agent-browser \\',
-      '    && AGENT_BROWSER_SESSION=image-warmup AGENT_BROWSER_SOCKET_DIR=/tmp/agent-browser \\',
-      '       agent-browser --json open about:blank \\',
-      '    && agent-browser --json close',
-      'COPY sdk/python /app/sdk/python',
-      'RUN pip install --no-cache-dir -e "/app/sdk/python"',
-      `COPY backend/.qlix-runners/${agent.id}/adk /app/adk`,
-      'CMD ["python", "-m", "qlix.cloud_runner"]',
-      '',
-    ].join('\n');
-    await writeFile(dockerfilePath, dockerfile, 'utf8');
-    const imagePrefix = dockerImageListPrefix(agent);
-    const all = await this.orchestrator.listImages(imagePrefix);
-    const exists = all.includes(imageRef);
-    if (!exists || shouldAlwaysBuildRunnerImage()) {
-      await this.orchestrator.buildImage({
-        imageRef,
-        dockerfilePath,
-        contextPath: repoRoot,
-      });
-    }
-    const afterBuild = await this.orchestrator.listImages(imagePrefix);
-    for (const ref of afterBuild) {
-      if (ref !== imageRef) {
-        await this.orchestrator.removeImageIfExists(ref);
-      }
-    }
-    return imageRef;
+  private async resolveRunnerImageRef(): Promise<string> {
+    return ensureSharedRunnerImage(this.orchestrator);
   }
 
   private async startContainer(params: {
@@ -224,39 +191,58 @@ export class CloudProvisionerService {
     imageRef: string;
     teamContext?: DockerTeamContext | null;
   }): Promise<string> {
-    await this.ensureRunnerImageAvailable();
-
-    // Use a persistent host path per agent so Docker Desktop binds stay valid
-    // after container start (temp files can disappear and break /run/agent.json).
     const runnerStateRoot = this.runnerStateRoot();
     const dir = path.join(runnerStateRoot, params.agent.id);
-    await mkdir(dir, { recursive: true });
+    // 0o700 dir / 0o600 file: agent.json carries the agent signing private key, so it must not be
+    // world- or group-readable on a shared host (defeats the at-rest encryption used in the DB).
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const identityPath = path.join(dir, 'agent.json');
-    await writeFile(identityPath, JSON.stringify(params.identityJson, null, 2) + '\n', 'utf8');
+    await writeFile(identityPath, JSON.stringify(params.identityJson, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    await chmod(identityPath, 0o600); // enforce even if the file pre-existed with looser perms
+    await syncAgentRunnerStateToDockerHost(params.agent.id, runnerStateRoot);
 
-    const containerName = params.teamContext
-      ? dockerTeamContainerName(params.agent, params.teamContext)
+    let teamContext = params.teamContext ?? null;
+    if (!teamContext) {
+      teamContext = await readPendingTeamContext(runnerStateRoot, params.agent.id);
+    }
+
+    const containerName = teamContext
+      ? dockerTeamContainerName(params.agent, teamContext)
       : dockerContainerName(params.agent);
     await this.orchestrator.removeContainerIfExists(legacyDockerContainerName(params.agent.id));
     await this.orchestrator.removeContainerIfExists(containerName);
     await this.orchestrator.removeContainerIfExists(dockerContainerName(params.agent));
-    if (params.teamContext) {
+    if (teamContext) {
       await this.orchestrator.removeContainerIfExists(
-        dockerTeamContainerName(params.agent, params.teamContext),
+        dockerTeamContainerName(params.agent, teamContext),
       );
     }
 
     let network: string | undefined;
-    if (params.teamContext) {
-      network = dockerTeamNetworkName(params.teamContext.id);
+    if (teamContext) {
+      network = dockerTeamNetworkName(teamContext.id);
       await this.orchestrator.ensureNetwork(network);
     }
 
+    const { mounts: researchMounts, env: researchEnv } =
+      await resolvePlatformResearchProvisioning();
+    const mounts = [
+      { hostPath: identityPath, containerPath: '/run/agent.json', readOnly: true },
+      { hostPath: params.adkManifestPath, containerPath: '/run/adk/manifest.json', readOnly: true },
+      { hostPath: params.adkModulePath, containerPath: '/run/adk/adk_agent.py', readOnly: true },
+      ...researchMounts,
+    ];
+
+    const resourceLimits = resolveRunnerResourceLimits();
     const runnerId = await this.orchestrator.runContainer({
       name: containerName,
       imageRef: params.imageRef,
-      labels: mergeDockerLabels(params.agent, params.teamContext),
+      labels: mergeDockerLabels(params.agent, teamContext),
       network,
+      memoryLimit: resourceLimits.memoryLimit,
+      memoryReservation: resourceLimits.memoryReservation,
+      cpuLimit: resourceLimits.cpuLimit,
+      pidsLimit: resourceLimits.pidsLimit,
       env: {
         QLIX_AGENT_FILE: '/run/agent.json',
         QLIX_BACKEND_URL: params.backendUrl,
@@ -265,37 +251,30 @@ export class CloudProvisionerService {
         QLIX_ADK_MANIFEST: '/run/adk/manifest.json',
         QLIX_ADK_MODULE: '/run/adk/adk_agent.py',
         QLIX_ADK_CLASS: params.adkClassName,
+        ...researchEnv,
       },
-      mounts: [
-        { hostPath: identityPath, containerPath: '/run/agent.json', readOnly: true },
-        { hostPath: params.adkManifestPath, containerPath: '/run/adk/manifest.json', readOnly: true },
-        { hostPath: params.adkModulePath, containerPath: '/run/adk/adk_agent.py', readOnly: true },
-      ],
+      mounts,
       cmd: ['python', '-m', 'qlix.cloud_runner'],
     });
+
+    if (teamContext) {
+      await clearPendingTeamContext(runnerStateRoot, params.agent.id);
+    }
+
     return runnerId || containerName;
   }
 
-  /**
-   * Provision (docker-local) cloud runner for a just-created cloud agent.
-   * Stores encrypted private key and runner metadata on the agent row.
-   */
-  async provisionCloudRunner(params: {
+  private async _doProvisionCloudRunner(params: {
     agent: AgentDTO;
     privateKey: string;
-    requestForBackendUrl: { protocol?: string; get(name: string): string | undefined };
+    backendUrl: string;
   }): Promise<void> {
-    const { agent } = params;
-    if (agent.runtime !== 'cloud') return;
-
-    const backendUrl = resolveDockerBackendUrl(params.requestForBackendUrl);
-    const identity = buildSdkAgentJson(agent, params.privateKey, backendUrl);
+    const { agent, privateKey, backendUrl } = params;
+    const identity = buildSdkAgentJson(agent, privateKey, backendUrl);
     const adk = await this.createAdkArtifact(agent);
-    const imageRef = await this.buildPerAgentImage(agent, adk.versionHash);
+    const imageRef = await this.resolveRunnerImageRef();
 
-    // Encrypt private key for at-rest storage (cloud agents only).
-    const enc = encryptForAgentSecrets(params.privateKey);
-    // Runner token for agent<->backend polling/logging.
+    const enc = encryptForAgentSecrets(privateKey);
     const runnerToken = randomRunnerToken();
     const runnerTokenEnc = encryptForAgentSecrets(runnerToken);
     await this.repo.updateCloudFields(agent.id, {
@@ -330,30 +309,33 @@ export class CloudProvisionerService {
     }
   }
 
-  /**
-   * Returns immediately; provisioning continues in the background. Poll runtime-status for outcome.
-   */
-  scheduleRestartCloudRunner(params: { agentId: string; backendUrl: string }): void {
-    // Defer until after the HTTP response is flushed (avoids client "Failed to fetch" on slow Docker work).
-    setImmediate(() => {
-      void this.restartCloudRunner(params).catch(async (err) => {
-        const message =
-          err instanceof CloudProvisionFailedError
-            ? err.message
-            : err instanceof DockerNotAvailableError
-              ? err.message
-              : err instanceof Error
-                ? err.message
-                : 'Cloud runner restart failed';
-        console.warn('[cloudRestart]', params.agentId, message);
-        await this.repo
-          .updateCloudFields(params.agentId, {
-            cloudProvisioningStatus: 'failed',
-            cloudProvisioningError: safeProvisioningErrorMessage(message),
-          })
-          .catch(() => {});
-      });
+  async provisionCloudRunner(params: {
+    agent: AgentDTO;
+    privateKey: string;
+    requestForBackendUrl: { protocol?: string; get(name: string): string | undefined };
+  }): Promise<void> {
+    if (params.agent.runtime !== 'cloud') return;
+    const backendUrl = resolveDockerBackendUrl(params.requestForBackendUrl);
+    await this._doProvisionCloudRunner({ agent: params.agent, privateKey: params.privateKey, backendUrl });
+  }
+
+  scheduleProvisionCloudRunner(params: {
+    agent: AgentDTO;
+    privateKey: string;
+    requestForBackendUrl: { protocol?: string; get(name: string): string | undefined };
+  }): void {
+    if (params.agent.runtime !== 'cloud') return;
+    const backendUrl = resolveDockerBackendUrl(params.requestForBackendUrl);
+    this.enqueue({
+      kind: 'provision',
+      agent: params.agent,
+      privateKey: params.privateKey,
+      backendUrl,
     });
+  }
+
+  scheduleRestartCloudRunner(params: { agentId: string; backendUrl: string }): void {
+    this.enqueue({ kind: 'restart', agentId: params.agentId, backendUrl: params.backendUrl });
   }
 
   async restartCloudRunner(params: { agentId: string; backendUrl: string }): Promise<void> {
@@ -371,6 +353,7 @@ export class CloudProvisionerService {
         runtime: true,
         cloudPrivateKeyEnc: true,
         agentKind: true,
+        description: true,
       },
     });
     if (!row || row.runtime !== 'cloud') {
@@ -391,10 +374,10 @@ export class CloudProvisionerService {
         : (() => {
             const t = randomRunnerToken();
             const enc = encryptForAgentSecrets(t);
-            // Backfill token so future restarts work.
             void this.repo.updateCloudFields(row.id, { cloudRunnerTokenEnc: enc }).catch(() => {});
             return t;
           })();
+
     const agentDto: AgentDTO = {
       id: row.id,
       userId: '',
@@ -406,11 +389,11 @@ export class CloudProvisionerService {
       runtime: 'cloud',
       model: '',
       localInferenceMode: null,
-      llmMode: row.llmMode as any,
-      permissionScopes: row.permissionScopes as any,
-      jitScopes: row.jitScopes as any,
-      alwaysScopes: row.alwaysScopes as any,
-      description: (row as any).description ?? null,
+      llmMode: row.llmMode as AgentDTO['llmMode'],
+      permissionScopes: row.permissionScopes as AgentDTO['permissionScopes'],
+      jitScopes: row.jitScopes as AgentDTO['jitScopes'],
+      alwaysScopes: row.alwaysScopes as AgentDTO['alwaysScopes'],
+      description: row.description ?? null,
       webauthnCredentialId: null,
       keypairDeliveredAt: null,
       lastConnectedAt: null,
@@ -420,12 +403,14 @@ export class CloudProvisionerService {
       cloudRunnerId: null,
       cloudLastHeartbeatAt: null,
       cloudProvisioningError: null,
-      agentKind: ((row.agentKind as AgentDTO['agentKind']) ?? 'standard'),
+      hybridLastHeartbeatAt: null,
+      agentKind: (row.agentKind as AgentDTO['agentKind']) ?? 'standard',
     };
+
     const identity = buildSdkAgentJson(agentDto, privateKey, backendUrl);
     const adk = await this.createAdkArtifact(agentDto);
     const agentIdentity: DockerAgentIdentity = { id: row.id, name: row.name, did: row.did };
-    const imageRef = await this.buildPerAgentImage(agentIdentity, adk.versionHash);
+    const imageRef = await this.resolveRunnerImageRef();
 
     await this.repo.updateCloudFields(row.id, { cloudProvisioningStatus: 'provisioning' });
     try {
@@ -452,9 +437,6 @@ export class CloudProvisionerService {
     }
   }
 
-  /**
-   * Re-label and reconnect a cloud agent's runner to a team network (restarts container).
-   */
   async applyTeamContext(params: {
     agentId: string;
     teamId: string;
@@ -464,7 +446,7 @@ export class CloudProvisionerService {
   }): Promise<void> {
     const row = await prisma.agent.findUnique({
       where: { id: params.agentId },
-      select: { id: true, name: true, did: true, runtime: true, cloudPrivateKeyEnc: true },
+      select: { id: true, name: true, did: true, runtime: true, cloudPrivateKeyEnc: true, cloudRunnerId: true },
     });
     if (!row || row.runtime !== 'cloud') {
       throw new CloudProvisionFailedError('Agent must be cloud runtime to join a team runner pool');
@@ -505,6 +487,7 @@ export class CloudProvisionerService {
         runtime: true,
         cloudPrivateKeyEnc: true,
         agentKind: true,
+        description: true,
       },
     });
     if (!row || row.runtime !== 'cloud' || !row.cloudPrivateKeyEnc) {
@@ -541,7 +524,7 @@ export class CloudProvisionerService {
       permissionScopes: row.permissionScopes as AgentDTO['permissionScopes'],
       jitScopes: row.jitScopes as AgentDTO['jitScopes'],
       alwaysScopes: row.alwaysScopes as AgentDTO['alwaysScopes'],
-      description: (row as any).description ?? null,
+      description: row.description ?? null,
       webauthnCredentialId: null,
       keypairDeliveredAt: null,
       lastConnectedAt: null,
@@ -551,13 +534,14 @@ export class CloudProvisionerService {
       cloudRunnerId: null,
       cloudLastHeartbeatAt: null,
       cloudProvisioningError: null,
+      hybridLastHeartbeatAt: null,
       agentKind: (row.agentKind as AgentDTO['agentKind']) ?? 'standard',
     };
 
     const identity = buildSdkAgentJson(agentDto, privateKey, backendUrl);
     const adk = await this.createAdkArtifact(agentDto);
     const agentIdentity: DockerAgentIdentity = { id: row.id, name: row.name, did: row.did };
-    const imageRef = await this.buildPerAgentImage(agentIdentity, adk.versionHash);
+    const imageRef = await this.resolveRunnerImageRef();
 
     await this.repo.updateCloudFields(row.id, { cloudProvisioningStatus: 'provisioning' });
     try {
@@ -597,16 +581,18 @@ export class CloudProvisionerService {
     role: 'supervisor' | 'worker';
     backendUrl: string;
   }): void {
-    setImmediate(() => {
-      void this.applyTeamContext(params).catch((err) => {
-        console.warn('[applyTeamContext]', params.agentId, err);
-      });
+    this.enqueue({
+      kind: 'team',
+      agentId: params.agentId,
+      backendUrl: params.backendUrl,
+      teamContext: {
+        id: params.teamId,
+        name: params.teamName,
+        role: params.role,
+      },
     });
   }
 
-  /**
-   * Stop and remove cloud runner containers/images for an agent (all known naming variants).
-   */
   async teardownCloudRunner(params: {
     agentId: string;
     name: string;
@@ -632,11 +618,6 @@ export class CloudProvisionerService {
       await this.orchestrator.removeContainerIfExists(name);
     }
 
-    const prefix = dockerImageListPrefix(identity);
-    const images = await this.orchestrator.listImages(prefix);
-    for (const ref of images) {
-      await this.orchestrator.removeImageIfExists(ref);
-    }
+    await pruneAgentRunnerState(params.agentId);
   }
 }
-

@@ -81,7 +81,8 @@ class AuthRepository {
   }
 
   /// Rehydrates the current session from the stored token. Returns null when
-  /// there is no valid session.
+  /// there is no valid session. Clears a stale JWT on 401 / invalid response
+  /// so bootstrap does not keep retrying a dead token.
   Future<Session?> me() async {
     final token = await store.readToken();
     if (token == null || token.isEmpty) return null;
@@ -91,8 +92,14 @@ class AuthRepository {
       if (res.statusCode == 200 && data is Map<String, dynamic>) {
         return Session.fromJson(data);
       }
+      if (res.statusCode == 401) {
+        await store.clear();
+      }
       return null;
-    } on DioException {
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        await store.clear();
+      }
       return null;
     }
   }

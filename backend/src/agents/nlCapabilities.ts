@@ -36,7 +36,7 @@ function agentPropertiesSchema(scopeIds: string[]): Record<string, unknown> {
       enum: ['cloud', 'hybrid', 'local'],
       description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
     },
-    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/anthropic/claude-sonnet-4.6"' },
+    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/openai/gpt-4o-mini"' },
     llmMode: {
       type: 'string',
       enum: ['proxy', 'direct'],
@@ -159,13 +159,36 @@ Call EXACTLY ONE of the provided tools — plan_single_agent or plan_team — ba
 - plan_single_agent: user describes a single agent's purpose.
 - plan_team: user describes multiple coordinating agents, a pipeline, supervisor/workers, or a team.
 
-## Available scopes (use minimum required)
+## Available scopes
 ${scopeList}
 
 ## Runtime rules
-- cloud (default): runs on Qlix servers. llmMode must be "proxy", localInferenceMode must be null.
-- hybrid: Qlix-hosted but tool execution on the user's local machine (files, desktop apps). Use only when user mentions local files, apps, or desktop control. llmMode must be "proxy", localInferenceMode must be null.
+- cloud (default): runs on Qlix servers. Use for web research, browsing, cloud automation. llmMode must be "proxy", localInferenceMode must be null.
+- hybrid: Qlix-hosted brain, tools execute on the user's local machine. REQUIRED whenever the user mentions: local machine, my machine, my computer, desktop apps, GUI control, open apps, type/click on screen, local files, or screen automation. llmMode must be "proxy", localInferenceMode must be null.
 - local: SDK-only, entirely on user's machine. llmMode can be "proxy" or "direct". localInferenceMode must be "local_llm" (local model) or "cloud_api" (proxy through Qlix).
+
+## Scope combinations for common tasks
+Pick ALL scopes that apply — err toward completeness over minimalism:
+- Web research only (cloud): web.research
+- Competitor / competitive research (cloud): web.research (add brain.query if it should factor in internal company context). Use the curated research tools — NOT web.read browsing — to produce a cited SWOT / executive report. PDF report generation is built in on cloud, so do NOT add system.file_write / system.file_read for "make a PDF" — that would force hybrid. Keep runtime cloud; the report is delivered in chat, and as a PDF over WhatsApp when whatsapp.send is granted (email cannot attach files).
+- Web browsing + clicking (cloud): web.read + web.click
+- Web automation with form submission (cloud or hybrid): web.read + web.click + web.transaction
+- Desktop GUI automation on user's machine (hybrid): system.gui_control + web.read + web.click + web.transaction
+- Open apps, type, click, submit on local machine (hybrid): system.gui_control + web.read + web.click + web.transaction
+- Read local files (hybrid): system.file_read
+- Read + write local files (hybrid): system.file_read + system.file_write
+- Financial transactions: add finance.spend_50 (up to $50) or finance.spend_100 (up to $100)
+- Job applications / send resume to job boards or career pages (cloud): web.read + web.click + web.transaction + mcp.qlix-jobs.* (search_jobs, queue_applications, get_apply_brief, record_application_result, upsert_candidate_profile, stage_resume). Target Greenhouse / Lever / Ashby company career pages only — NOT LinkedIn Easy Apply or Indeed. Always put web.transaction in jitScopes so every submit needs user approval.
+- Job apply agent description should instruct: stage or upsert candidate profile + resume first, queue apply URLs or search ATS boards, get_apply_brief per application, browser fill + upload, pause for JIT before Submit, then record_application_result.
+- Google Business / Maps lead scraping (cloud): mcp.qlix-leads.gmb_search_leads + mcp.qlix-leads.get_campaign + mcp.qlix-leads.list_leads (+ mcp.qlix-leads.export_leads if CSV export is needed)
+- mcp.qlix-leads.list_leads returns contactable leads (verified website emails) by default — use includeAll=true to see every scraped business before enrichment
+- NEVER use web.read or web.click for Google Maps / GMB scraping — use mcp.qlix-leads.gmb_search_leads only for Maps
+- Lead website email enrichment (cloud): after gmb_search_leads, call list_leads with includeAll=true, then for EACH lead in needsBrowserEnrichment: browser_ab_open(website) → check /contact → update_lead_email OR record_lead_enrichment(no_email_on_site). Email domain must match website — never use Wix placeholders like info@mysite.com. Outreach is blocked until every website lead is browser-enriched.
+- Lead email outreach after enrichment: add email.send plus mcp.qlix-leads.start_outreach (start_outreach is JIT — include in jitScopes)
+- Lead gen pipeline team: supervisor orchestrates; finder worker scrapes GMB (mcp.qlix-leads.*), qualifier worker enriches websites (web.read + web.click + update_lead_email), outreach worker sends (email.send + start_outreach)
+
+## MCP scopes
+Scopes starting with mcp.<server>.<tool> are MCP server tools registered for this org. Request them like any other scope when the task needs that capability — bindings are created automatically at agent creation.
 
 ## JIT scope rules
 JIT-forced scopes: ${forceJitList || '(none)'}
@@ -174,11 +197,11 @@ JIT-forced scopes: ${forceJitList || '(none)'}
 - jitScopes must always be a subset of permissionScopes.
 
 ## Scope selection rule
-Only request a scope when the agent's core task needs it. The dashboard and notifications are built-in delivery channels — never request a scope just to deliver results somewhere.
+Request every scope the agent's core task requires — incomplete permissions prevent the agent from working.
 Connector-gated scopes (e.g. email, WhatsApp) MAY be requested even if the connector isn't linked yet — the user links it in Connectors and the link is verified when the agent runs. Request such a scope only when the task explicitly involves that channel.
 
 ## Defaults
-- model: "openrouter/anthropic/claude-sonnet-4.6"
+- model: "openrouter/openai/gpt-4o-mini"
 - runtime: "cloud"
 - llmMode: "proxy"
 - localInferenceMode: null`;

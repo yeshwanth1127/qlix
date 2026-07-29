@@ -5,6 +5,7 @@ import {
   AgentConfirmNameMismatchError,
   AgentDeleteForbiddenError,
   AgentNotFoundError,
+  AgentScopeUpdateError,
   AgentsService,
   DeviceNotVerifiedError,
   OrgMembershipError,
@@ -27,11 +28,14 @@ import {
   hybridStarterPackFilename,
   resolveHybridStarterPlatform,
 } from '../agents/hybridStarterPack.js';
-import { ALL_PERMISSION_SCOPES, type PermissionScope } from '../agents/agents.types.js';
+import { reconcileRuntimeWithScopes, scopesRequireHybrid, getBuildableScopes } from '../agents/scopeCatalog.js';
+import { permissionScopeSchema, permissionScopesArraySchema } from '../agents/scopeValidation.js';
+import { wireAgentMcpFromScopes } from '../agents/agentMcpWire.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
+import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest, checkGuestAgentCap } from '../lib/stepUpOrGuest.js';
-import { CloudProvisionFailedError, CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
-import { dockerLogs, DockerNotAvailableError } from '../cloudRunners/dockerClient.js';
+import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
+import { dockerLogs } from '../cloudRunners/dockerClient.js';
 import { dockerContainerName, legacyDockerContainerName } from '../cloudRunners/dockerNaming.js';
 import { AgentsRepository } from '../agents/agents.repository.js';
 import { BrainAgentService } from '../aiBrain/brainAgent.service.js';
@@ -50,13 +54,12 @@ import {
   BrainWrongOrgError,
 } from '../aiBrain/agentBrainAccess.js';
 
-const permissionScopeSchema = z.enum(ALL_PERMISSION_SCOPES as [PermissionScope, ...PermissionScope[]]);
 
 const createAgentSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().max(10000).optional().nullable(),
-    permissionScopes: z.array(permissionScopeSchema).min(1).max(ALL_PERMISSION_SCOPES.length),
+    permissionScopes: permissionScopesArraySchema,
     jitScopes: z.array(permissionScopeSchema).default([]),
     runtime: z.enum(['cloud', 'local', 'hybrid']),
     model: z.string().trim().min(1).max(120),
@@ -82,7 +85,7 @@ const createAgentSchema = z
           path: ['localInferenceMode'],
         });
       }
-    } else if (data.runtime !== 'local' && data.localInferenceMode != null) {
+    } else if ((data.runtime as string) !== 'local' && data.localInferenceMode != null) {
       ctx.addIssue({
         code: 'custom',
         message: 'localInferenceMode must be null when runtime is cloud or hybrid',
@@ -106,7 +109,7 @@ export function createAgentsRouter(): Router {
   const cloudProvisioner = new CloudProvisionerService();
   const agentsRepo = new AgentsRepository();
 
-  router.post('/', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/', authenticateUser(true), requireSubscriptionAccess, async (request: Request, response: Response) => {
     const parsed = createAgentSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
@@ -129,7 +132,34 @@ export function createAgentsRouter(): Router {
     }
 
     try {
-      const result = await service.createAgent(request.auth!.userId, parsed.data);
+      let createInput = parsed.data;
+      if (stepUp.isGuest && !scopesRequireHybrid(createInput.permissionScopes)) {
+        createInput = {
+          ...createInput,
+          runtime: 'cloud',
+          llmMode: 'proxy',
+          localInferenceMode: null,
+          model: createInput.model,
+        };
+      }
+      const runtime = reconcileRuntimeWithScopes(createInput.runtime, createInput.permissionScopes);
+      if (runtime !== createInput.runtime) {
+        createInput = {
+          ...createInput,
+          runtime,
+          llmMode: runtime === 'local' ? createInput.llmMode : 'proxy',
+          localInferenceMode: runtime === 'local' ? createInput.localInferenceMode : null,
+        };
+      }
+      console.log('[createAgent] runtime=%s name=%s', createInput.runtime, createInput.name);
+      const result = await service.createAgent(request.auth!.userId, createInput);
+      await wireAgentMcpFromScopes({
+        userId: request.auth!.userId,
+        orgId: createInput.orgId,
+        agentId: result.agent.id,
+        scopes: createInput.permissionScopes,
+      });
+      console.log('[createAgent] stored runtime=%s id=%s', result.agent.runtime, result.agent.id);
       const backendUrl =
         result.agent.runtime === 'hybrid' || result.agent.runtime === 'local'
           ? resolveHybridRunnerBackendUrl(request)
@@ -161,28 +191,11 @@ export function createAgentsRouter(): Router {
             })
             .catch(() => {});
         }
-        try {
-          await cloudProvisioner.provisionCloudRunner({
-            agent: result.agent,
-            privateKey: result.privateKey,
-            requestForBackendUrl: request,
-          });
-        } catch (provErr) {
-          const message =
-            provErr instanceof DockerNotAvailableError
-              ? provErr.message
-              : provErr instanceof CloudProvisionFailedError
-                ? provErr.message
-                : 'Cloud runner provisioning failed';
-          console.warn('[cloudProvision]', message);
-          await agentsRepo
-            .updateCloudFields(result.agent.id, {
-              cloudProvisioningStatus: 'failed',
-              cloudRunnerId: null,
-              cloudProvisioningError: message,
-            })
-            .catch(() => {});
-        }
+        cloudProvisioner.scheduleProvisionCloudRunner({
+          agent: result.agent,
+          privateKey: result.privateKey,
+          requestForBackendUrl: request,
+        });
         sdkAgentFile = buildSdkAgentJsonPublic(result.agent, backendUrl);
       } else if (result.agent.runtime === 'hybrid') {
         // Generate one-time runner token; store HMAC hash, return plaintext once.
@@ -202,7 +215,7 @@ export function createAgentsRouter(): Router {
             parsed.data.clientPlatform,
             request.headers['user-agent'],
           );
-          const zip = await buildHybridStarterPackZip(sdkAgentFile, result.agent.name, platform);
+          const zip = await buildHybridStarterPackZip(sdkAgentFile, result.agent.name, platform, request);
           hybridStarterPack = {
             filename: hybridStarterPackFilename(result.agent.name, platform),
             base64: zip.toString('base64'),
@@ -245,7 +258,7 @@ export function createAgentsRouter(): Router {
     model: z.string().trim().min(1).max(200).optional(),
   });
 
-  router.post('/nl-parse', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/nl-parse', authenticateUser(true), requireSubscriptionAccess, async (request: Request, response: Response) => {
     const parsed = nlParseSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
@@ -279,7 +292,7 @@ export function createAgentsRouter(): Router {
 
   const nlCreationService = new NLCreationService();
 
-  router.post('/nl-create', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/nl-create', authenticateUser(true), requireSubscriptionAccess, async (request: Request, response: Response) => {
     const parsed = nlCreateSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
@@ -443,6 +456,23 @@ export function createAgentsRouter(): Router {
     }
   });
 
+  router.get('/scope-catalog', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      const auth = request.auth!;
+      const orgId =
+        typeof request.query.orgId === 'string' && request.query.orgId.trim()
+          ? request.query.orgId.trim()
+          : auth.orgId;
+      const scopes = await getBuildableScopes(orgId);
+      response.json({ scopes });
+    } catch (err) {
+      console.error('scope-catalog error', err);
+      response.status(500).json({
+        error: { code: 'scope_catalog_failed', message: 'Failed to load scope catalog' },
+      });
+    }
+  });
+
   router.get('/:id', authenticateUser(true), async (request: Request, response: Response) => {
     try {
       const id = String(request.params.id);
@@ -578,7 +608,7 @@ export function createAgentsRouter(): Router {
           backendUrl,
         );
         const platform = resolveHybridStarterPlatform(platformInput, request.headers['user-agent']);
-        const zip = await buildHybridStarterPackZip(sdkAgentFile, rotated.agent.name, platform);
+        const zip = await buildHybridStarterPackZip(sdkAgentFile, rotated.agent.name, platform, request);
 
         response.json({
           ok: true,
@@ -717,6 +747,48 @@ export function createAgentsRouter(): Router {
     }
   });
 
+  router.patch('/:id/scopes', authenticateUser(true), async (request: Request, response: Response) => {
+    const body = z
+      .object({
+        permissionScopes: permissionScopesArraySchema,
+        jitScopes: z.array(permissionScopeSchema).optional(),
+      })
+      .safeParse(request.body);
+    if (!body.success) {
+      response.status(400).json({
+        error: { code: 'validation_error', message: 'Invalid permission scopes' },
+      });
+      return;
+    }
+    const agent = await agentsRepo.findById(String(request.params.id));
+    if (!agent) {
+      response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+      return;
+    }
+    const auth = request.auth!;
+    try {
+      const updated = await service.updateAgentScopes(auth.userId, auth.orgId, agent.id, body.data);
+      response.json({ agent: updated });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) {
+        response.status(404).json({ error: { code: 'not_found', message: err.message } });
+        return;
+      }
+      if (err instanceof AgentDeleteForbiddenError) {
+        response.status(403).json({ error: { code: 'forbidden', message: err.message } });
+        return;
+      }
+      if (err instanceof AgentScopeUpdateError) {
+        response.status(400).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('update scopes error', err);
+      response.status(500).json({
+        error: { code: 'update_scopes_failed', message: 'Failed to update scopes' },
+      });
+    }
+  });
+
   router.patch('/:id/description', authenticateUser(true), async (request: Request, response: Response) => {
     const schema = z.object({ description: z.string().trim().max(10000).nullable() });
     const body = schema.safeParse(request.body);
@@ -820,7 +892,7 @@ export function createAgentsRouter(): Router {
 
   const queryService = new BrainQueryService();
 
-  router.post('/:id/brain/query', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/:id/brain/query', authenticateUser(true), requireSubscriptionAccess, async (request: Request, response: Response) => {
     const parsed = agentBrainQueryBody.safeParse(request.body ?? {});
     if (!parsed.success) {
       response.status(400).json({

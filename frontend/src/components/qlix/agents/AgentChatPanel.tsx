@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   Bot,
   Brain,
   Loader2,
@@ -13,6 +14,7 @@ import {
   Sparkles,
   Trash2,
   UserRound,
+  ChevronDown,
 } from "lucide-react";
 import type { AgentDTO, AgentRuntime, OpenRouterCatalogEntry } from "@/lib/agents-api";
 import {
@@ -20,21 +22,24 @@ import {
   fetchConversationMessages,
   fetchOpenRouterCatalog,
   getAgent,
+  getRuntimeStatus,
   normalizeQlixInferenceModelId,
 } from "@/lib/agents-api";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import { decideJit } from "@/lib/jit-api";
 import { useSession } from "@/components/qlix/session-context";
+import { agentStatusHint, deriveAgentDisplayStatus } from "@/components/qlix/agents/agentStatus";
 import {
-  AgentStatusBadge,
-  agentStatusHint,
-  deriveAgentDisplayStatus,
-} from "@/components/qlix/agents/agentStatus";
+  SketchBox,
+  sketchButton,
+  sketchButtonDanger,
+  sketchButtonGhost,
+  sketchButtonPrimary,
+  sketchButtonSecondary,
+  sketchLabel,
+  sketchToneBg,
+  type SketchTone,
+} from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
-
-/** Cloud and hybrid agents use dashboard chat + backend inference proxy. */
-function isHostedChatRuntime(runtime: AgentRuntime | undefined): boolean {
-  return runtime === "cloud" || runtime === "hybrid";
-}
 import { ActivityTimeline } from "@/components/qlix/agents/AgentRunActivity";
 import {
   type ActivityStep,
@@ -45,6 +50,133 @@ import {
   AgentBrowserLiveView,
   type BrowserFrame,
 } from "@/components/qlix/agents/AgentBrowserLiveView";
+import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
+
+function statusBadgeTone(status: string): SketchTone {
+  const s = status.toLowerCase();
+  if (s.includes("online") || s.includes("ready") || s === "running") return "green";
+  if (s.includes("provision")) return "amber";
+  if (s.includes("fail") || s.includes("offline")) return "rose";
+  return "blue";
+}
+
+function SketchStatusBadge({ status }: { readonly status: string }) {
+  const tone = statusBadgeTone(status);
+  const s = status.toLowerCase();
+  const live = s.includes("online") || s.includes("ready") || s === "running";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-black/10 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-black/70",
+        sketchToneBg[tone],
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          live && "bg-[color:var(--sketch-green)]",
+          tone === "rose" && "bg-[color:var(--sketch-red)]",
+          tone === "amber" && "bg-[color:var(--warning)]",
+          !live && tone !== "rose" && tone !== "amber" && "bg-black/30",
+        )}
+        aria-hidden
+      />
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+/** Cloud and hybrid agents use dashboard chat + backend inference proxy. */
+function isHostedChatRuntime(runtime: AgentRuntime | undefined): boolean {
+  return runtime === "cloud" || runtime === "hybrid";
+}
+
+function ModelPicker({
+  value,
+  options,
+  agentDefaultId,
+  disabled,
+  onChange,
+}: {
+  readonly value: string;
+  readonly options: OpenRouterCatalogEntry[];
+  readonly agentDefaultId: string;
+  readonly disabled?: boolean;
+  readonly onChange: (qlixModelId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  const current =
+    options.find((m) => m.qlixModelId === value) ??
+    (value.trim()
+      ? ({ qlixModelId: value, name: value.replace(/^openrouter\//, "") } as OpenRouterCatalogEntry)
+      : null);
+
+  const label = current
+    ? agentDefaultId && current.qlixModelId.toLowerCase() === agentDefaultId.toLowerCase()
+      ? `${current.name} (default)`
+      : current.name
+    : "Select model";
+
+  return (
+    <div ref={rootRef} className="relative px-2 pb-1">
+      <button
+        type="button"
+        disabled={disabled || options.length === 0}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex max-w-full items-center gap-1 rounded-sm py-1 pr-1 text-left text-[10px] font-medium text-black/60 transition-colors hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className="truncate">{label}</span>
+        <ChevronDown
+          className={cn("size-3 shrink-0 text-black/40 transition-transform", open && "rotate-180")}
+          aria-hidden
+        />
+      </button>
+      {open && options.length > 0 ? (
+        <ul
+          role="listbox"
+          className="absolute bottom-full left-2 z-50 mb-1 max-h-52 w-[min(18rem,calc(100vw-4rem))] overflow-y-auto overscroll-contain border border-black bg-white py-1 shadow-[4px_4px_0_rgba(0,0,0,0.08)]"
+        >
+          {options.map((m) => {
+            const isDefault =
+              agentDefaultId.length > 0 &&
+              m.qlixModelId.toLowerCase() === agentDefaultId.toLowerCase();
+            const selected = m.qlixModelId === value;
+            return (
+              <li key={m.qlixModelId} role="option" aria-selected={selected}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange(m.qlixModelId);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "block w-full truncate px-2.5 py-1.5 text-left text-[11px] text-black transition-colors hover:bg-black/5",
+                    selected && "bg-[var(--sketch-tint-purple)] font-medium",
+                  )}
+                >
+                  {isDefault ? `${m.name} (default)` : m.name}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 type ChatMsg = {
   id: string;
@@ -53,6 +185,49 @@ type ChatMsg = {
   activity?: ActivityStep[];
   browserFrames?: BrowserFrame[];
 };
+
+// Render message text with clickable links (no markdown dependency). Supports
+// [label](url) and bare URLs; only http(s) is linkified — never sandbox:/javascript:.
+// Newlines are preserved by the parent's whitespace-pre-wrap.
+const MD_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+const BARE_URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"])/g;
+
+function renderWithLinks(text: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  let key = 0;
+  const link = (href: string, label: string) => (
+    <a
+      key={`k${key++}`}
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline underline-offset-2 break-all hover:opacity-70"
+    >
+      {label}
+    </a>
+  );
+  const pushPlain = (segment: string) => {
+    let li = 0;
+    let bm: RegExpExecArray | null;
+    BARE_URL_RE.lastIndex = 0;
+    while ((bm = BARE_URL_RE.exec(segment)) !== null) {
+      if (bm.index > li) nodes.push(segment.slice(li, bm.index));
+      nodes.push(link(bm[1], bm[1]));
+      li = bm.index + bm[1].length;
+    }
+    if (li < segment.length) nodes.push(segment.slice(li));
+  };
+  let last = 0;
+  let m: RegExpExecArray | null;
+  MD_LINK_RE.lastIndex = 0;
+  while ((m = MD_LINK_RE.exec(text)) !== null) {
+    if (m.index > last) pushPlain(text.slice(last, m.index));
+    nodes.push(link(m[2], m[1]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) pushPlain(text.slice(last));
+  return nodes;
+}
 
 async function apiBase(): Promise<string> {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000").replace(/\/$/, "");
@@ -114,9 +289,11 @@ function mergeServerMessages(
 
 export function AgentChatPanel({
   agentId,
+  backHref,
   aiBrainHref,
 }: {
   readonly agentId: string;
+  readonly backHref: string;
   readonly aiBrainHref?: string;
 }) {
   const { session } = useSession();
@@ -150,10 +327,45 @@ export function AgentChatPanel({
   const [useBrain, setUseBrain] = useState(false);
   const [browserFrames, setBrowserFrames] = useState<BrowserFrame[]>([]);
   const [selectedImage, setSelectedImage] = useState<BrowserFrame | null>(null);
+  /** JIT requests being resolved from the chat (id -> in-flight) to disable buttons. */
+  const [jitDeciding, setJitDeciding] = useState<Record<string, boolean>>({});
+  const [jitError, setJitError] = useState<string | null>(null);
 
   useEffect(() => {
     selectedModelRef.current = selectedQlixModelId;
   }, [selectedQlixModelId]);
+
+  const handleJitDecision = async (jitRequestId: string, approved: boolean) => {
+    if (jitDeciding[jitRequestId]) return;
+    setJitDeciding((p) => ({ ...p, [jitRequestId]: true }));
+    setJitError(null);
+    const res = await decideJit(jitRequestId, approved);
+    if (!res.ok) {
+      setJitError(res.errorMessage);
+      setJitDeciding((p) => ({ ...p, [jitRequestId]: false }));
+      return;
+    }
+    // Resolve the pending step locally so buttons disappear immediately; the runner
+    // polls jit/poll and continues the run, streaming any further activity.
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (!m.activity) return m;
+        return {
+          ...m,
+          activity: m.activity.map((s) =>
+            s.kind === "jit_pending" && s.jitRequestId === jitRequestId
+              ? {
+                  ...s,
+                  kind: "jit_resolved" as const,
+                  tone: approved ? ("success" as const) : ("warn" as const),
+                  label: approved ? "You approved the action" : "You denied the action",
+                }
+              : s,
+          ),
+        };
+      }),
+    );
+  };
 
   useEffect(() => {
     return () => {
@@ -180,6 +392,43 @@ export function AgentChatPanel({
       cancelled = true;
     };
   }, [agentId]);
+
+  /** Keep hybrid/cloud online badge in sync — status uses a 20s heartbeat window. */
+  useEffect(() => {
+    if (!agent || (agent.runtime !== "cloud" && agent.runtime !== "hybrid")) return;
+    let cancelled = false;
+    const tick = async () => {
+      const s = await getRuntimeStatus(agent.id);
+      if (cancelled || !s) return;
+      setAgent((prev) => {
+        if (!prev || prev.id !== agent.id) return prev;
+        if (prev.runtime === "hybrid") {
+          if (prev.hybridLastHeartbeatAt === s.lastHeartbeatAt) return prev;
+          return { ...prev, hybridLastHeartbeatAt: s.lastHeartbeatAt };
+        }
+        const nextStatus =
+          s.provisioningStatus === "provisioning" ? "running" : (s.provisioningStatus ?? prev.cloudProvisioningStatus);
+        if (
+          prev.cloudLastHeartbeatAt === s.lastHeartbeatAt &&
+          prev.cloudProvisioningStatus === nextStatus
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          cloudLastHeartbeatAt: s.lastHeartbeatAt ?? prev.cloudLastHeartbeatAt,
+          cloudProvisioningStatus: nextStatus,
+          cloudProvisioningError: s.provisioningError ?? null,
+        };
+      });
+    };
+    void tick();
+    const t = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [agent?.id, agent?.runtime]);
 
   useEffect(() => {
     setCatalogModels([]);
@@ -294,7 +543,10 @@ export function AgentChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [agentId, agent]);
+    // Depend on the agent's identity only — the heartbeat poll replaces the `agent`
+    // object every few seconds, and re-booting the conversation on each tick nulls
+    // conversationId, which disables (and blurs) the composer while the user types.
+  }, [agentId, agent?.id, agent?.agentKind]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -322,12 +574,6 @@ export function AgentChatPanel({
       isHostedChatRuntime(agent.runtime) && selectedQlixModelId ? selectedQlixModelId : agent.model;
     return raw.replace(/^openrouter\//, "");
   }, [agent?.runtime, agent?.model, selectedQlixModelId]);
-
-  const browserScopesOk = useMemo(() => {
-    if (!agent) return true;
-    const ps = new Set(agent.permissionScopes);
-    return ps.has("web.read") && ps.has("web.click");
-  }, [agent?.permissionScopes]);
 
   const canUseBrain = useMemo(() => {
     if (!agent) return false;
@@ -507,7 +753,7 @@ export function AgentChatPanel({
         }
         if (runStatus === "failed") {
           setError(
-            "The agent run failed. Check the brown system line in the thread for the error text, or Docker/API logs.",
+            "The agent run failed. Check the system line in the thread for the error details.",
           );
         }
       })();
@@ -599,8 +845,19 @@ export function AgentChatPanel({
     messages[messages.length - 1]?.role === "agent" &&
     messages[messages.length - 1]?.content === "";
 
+  /** Latest unresolved JIT request across the thread (for sticky composer banner). */
+  const stickyJitPending = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m?.role !== "agent" || !m.activity) continue;
+      const step = getPendingJitStep(m.activity);
+      if (step) return step;
+    }
+    return null;
+  }, [messages]);
+
   const runnerStatus = agent ? deriveAgentDisplayStatus(agent) : null;
-  const statusHint = runnerStatus ? agentStatusHint(runnerStatus) : null;
+  const statusHint = runnerStatus ? agentStatusHint(runnerStatus, agent?.runtime) : null;
   const runnerDegraded =
     agent?.agentKind !== "org_brain" &&
     (runnerStatus === "runner_failed" || runnerStatus === "offline" || runnerStatus === "provisioning");
@@ -617,109 +874,118 @@ export function AgentChatPanel({
 
   if (!loading && isOrgBrain) {
     return (
-      <ReflectiveCard
-        className="relative flex h-[calc(100vh-10rem)] min-h-[520px] flex-col items-center justify-center overflow-hidden rounded-xl border border-violet-500/15 p-8 text-center ring-1 ring-violet-400/15 dark:border-violet-400/25"
-        contentClassName="flex flex-col items-center justify-center gap-4"
-      >
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-violet-500/15 ring-1 ring-violet-400/30">
-          <Brain className="size-7 text-violet-600 dark:text-violet-300" aria-hidden />
+      <SketchBox className="relative flex h-full min-h-[min(520px,70dvh)] flex-col items-center justify-center overflow-hidden p-4 text-center sm:min-h-[520px] sm:p-8">
+        <Link
+          href={backHref}
+          className={cn(
+            sketchButtonGhost,
+            "group absolute left-3 top-3 inline-flex items-center gap-1.5 normal-case tracking-normal",
+          )}
+        >
+          <ArrowLeft className="size-3.5 transition-transform duration-200 group-hover:-translate-x-0.5" aria-hidden />
+          Back to agents
+        </Link>
+        <div className="qlix-empty-glow flex size-14 items-center justify-center rounded-2xl border border-black/12 bg-[var(--sketch-tint-purple)]">
+          <Brain className="size-7 text-black" aria-hidden />
         </div>
-        <div className="space-y-2">
-          <h2 className="text-[15px] font-semibold text-[--text-primary]">{agent.name}</h2>
-          {runnerStatus ? <AgentStatusBadge status={runnerStatus} /> : null}
-          <p className="max-w-sm text-[13px] leading-relaxed text-[--text-secondary]">
-            The org AI brain answers knowledge queries on the AI Brain page — it does not use a chat runner.
+        <div className="mt-4 space-y-2">
+          <h2 className="text-[15px] font-semibold tracking-tight text-black">{agent.name}</h2>
+          {runnerStatus ? <SketchStatusBadge status={runnerStatus} /> : null}
+          <p className="max-w-sm text-[13px] leading-relaxed text-black/55">
+            The org AI brain answers knowledge queries on the AI Brain page — it does not use a chat agent.
           </p>
         </div>
         {aiBrainHref ? (
-          <Link
-            href={aiBrainHref}
-            className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-[13px] font-medium text-white transition-colors hover:bg-violet-500 dark:bg-violet-500 dark:hover:bg-violet-400"
-          >
+          <Link href={aiBrainHref} className={cn(sketchButtonPrimary, "mt-4 gap-2")}>
             Open AI Brain
           </Link>
         ) : null}
-      </ReflectiveCard>
+      </SketchBox>
     );
   }
 
   return (
-    <ReflectiveCard
-      className="relative h-[calc(100vh-10rem)] min-h-[520px] overflow-hidden rounded-xl border border-violet-500/15 ring-1 ring-violet-400/15 dark:border-violet-400/25"
-      contentClassName="h-full"
-    >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-violet-400/50 to-transparent" />
-
+    <SketchBox tone="blue" className="relative flex h-full min-h-[min(520px,70dvh)] flex-col overflow-hidden sm:min-h-[520px]">
       <div className="flex h-full min-h-0 flex-col">
-        <div className="border-b border-[--border-subtle] bg-gradient-to-r from-violet-500/[0.06] via-transparent to-cyan-500/[0.05] px-4 py-3.5 dark:from-violet-500/10 dark:to-cyan-500/10">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500/25 to-cyan-500/15 ring-1 ring-violet-400/25">
-                  <Bot className="size-4 text-violet-600 dark:text-violet-300" aria-hidden />
-                </div>
-                <div className="min-w-0">
-                  <h2 className="truncate text-[14px] font-semibold tracking-tight text-[--text-primary]">
-                    {header}
-                  </h2>
-                  {agent ? (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      {runnerStatus ? <AgentStatusBadge status={runnerStatus} /> : null}
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ring-1 ring-inset",
-                          agent.runtime === "cloud"
-                            ? "bg-violet-500/12 text-violet-700 ring-violet-500/25 dark:text-violet-300"
-                            : "bg-teal-500/12 text-teal-800 ring-teal-500/25 dark:text-teal-300",
-                        )}
-                      >
-                        {agent.runtime}
-                      </span>
-                      {activeModelLabel ? (
-                        <span
-                          className="inline-flex max-w-[220px] items-center gap-1 rounded-full bg-black/20 px-2 py-0.5 ring-1 ring-[--border-subtle]"
-                          title={`Default: ${agent.model}`}
-                        >
-                          <Sparkles className="size-2.5 shrink-0 text-[--accent]" aria-hidden />
-                          <span className="truncate font-mono text-[10px] text-[--text-secondary]">
-                            {activeModelLabel}
-                          </span>
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+        <div className={cn("border-b border-black/10 px-3 py-2.5 sm:px-4", sketchToneBg.blue)}>
+          <div className="flex min-w-0 items-center gap-2">
+            <Link
+              href={backHref}
+              className={cn(
+                sketchButtonGhost,
+                "group inline-flex shrink-0 items-center gap-1 px-2 py-1 normal-case tracking-normal",
+              )}
+            >
+              <ArrowLeft className="size-3 transition-transform duration-200 group-hover:-translate-x-0.5" aria-hidden />
+              <span className="hidden sm:inline">Back</span>
+            </Link>
+            <div
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-xl border border-black/10",
+                sketchToneBg.amber,
+              )}
+            >
+              <Bot className="size-4 text-black" aria-hidden />
             </div>
+            <h2 className="min-w-0 shrink truncate text-[13px] font-semibold tracking-tight text-black">
+              {header}
+            </h2>
+            {agent ? (
+              <>
+                {runnerStatus ? <SketchStatusBadge status={runnerStatus} /> : null}
+                <span
+                  className={cn(
+                    sketchLabel,
+                    "shrink-0 rounded-full border border-black/8 px-2 py-0.5 text-[10px] capitalize",
+                    sketchToneBg.green,
+                  )}
+                >
+                  {agent.runtime}
+                </span>
+                {activeModelLabel ? (
+                  <span
+                    className={cn(
+                      "hidden max-w-[180px] shrink items-center gap-1 rounded-full border border-black/8 px-2 py-0.5 sm:inline-flex",
+                      sketchToneBg.purple,
+                    )}
+                    title={`Default: ${agent.model}`}
+                  >
+                    <Sparkles className="size-2.5 shrink-0 text-black/40" aria-hidden />
+                    <span className="truncate font-mono text-[10px] text-black/60">
+                      {activeModelLabel}
+                    </span>
+                  </span>
+                ) : null}
+              </>
+            ) : null}
+            {agent && runnerDegraded && statusHint ? (
+              <p
+                className={cn(
+                  "hidden min-w-0 flex-1 truncate rounded-full border border-black/8 px-2.5 py-1 text-[10px] text-black/60 md:block",
+                  sketchToneBg.amber,
+                )}
+                role="status"
+                title={statusHint}
+              >
+                {statusHint}
+              </p>
+            ) : (
+              <div className="min-w-0 flex-1" />
+            )}
             <button
               type="button"
               onClick={() => void clearChat()}
               disabled={!conversationId || clearing || sending || messages.length === 0}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[--border-subtle] px-2.5 py-1.5 text-[11px] font-medium text-[--text-secondary] transition-colors hover:border-[--danger]/40 hover:bg-red-950/20 hover:text-[--danger] disabled:opacity-40"
+              className={cn(sketchButtonDanger, "shrink-0 gap-1.5")}
             >
               <Trash2 className="size-3.5" aria-hidden />
               {clearing ? "Clearing…" : "Clear"}
             </button>
           </div>
-          {agent && runnerDegraded && statusHint ? (
-            <p
-              className={cn(
-                "mt-3 rounded-lg border px-3 py-2 text-[11px] leading-relaxed",
-                runnerStatus === "runner_failed"
-                  ? "border-rose-500/35 bg-rose-500/10 text-rose-800 dark:text-rose-200"
-                  : runnerStatus === "provisioning"
-                    ? "border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-100"
-                    : "border-slate-500/30 bg-slate-500/10 text-[--text-secondary]",
-              )}
-              role="status"
-            >
-              {statusHint}
-            </p>
-          ) : null}
         </div>
 
         {showBrowserLive ? (
-          <div className="border-b border-[--border-subtle] lg:hidden">
+          <div className="border-b border-black lg:hidden">
             <AgentBrowserLiveView
               frames={browserFrames.length > 0 ? browserFrames : (lastMsgFrames ?? [])}
               active={sending}
@@ -732,73 +998,90 @@ export function AgentChatPanel({
         <div className="flex min-h-0 flex-1">
           <div
             ref={scrollRef}
-            className="min-h-0 flex-1 overflow-y-scroll px-4 py-4 [scrollbar-gutter:stable]"
-            style={{ scrollbarWidth: "thin" }}
+            className={cn(
+              "thin-scrollbar min-h-0 flex-1 overflow-y-scroll px-3 py-3 sm:px-5 sm:py-5 [scrollbar-gutter:stable]",
+              sketchToneBg.default,
+            )}
           >
           {loading ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 py-16 text-[--text-secondary]">
-              <Loader2 className="size-8 animate-spin text-[--accent]" aria-hidden />
-              <p className="text-[13px]">Opening conversation…</p>
+            <div className="flex h-full flex-col items-center justify-center gap-3 py-16 text-black/50">
+              <Loader2 className="size-8 animate-spin text-[color:var(--sketch-purple)]" aria-hidden />
+              <p className="font-serif text-[12px] uppercase tracking-widest">Opening conversation…</p>
             </div>
           ) : error ? (
-            <p className="rounded-lg border border-red-500/30 bg-red-950/25 px-3 py-2 text-[12px] text-red-200">{error}</p>
+            <p
+              className={cn(
+                "qlix-msg-in border border-black px-3 py-2 text-[12px] text-black",
+                sketchToneBg.rose,
+              )}
+            >
+              {error}
+            </p>
           ) : (
-            <div className="mx-auto flex max-w-2xl flex-col gap-4">
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
               {messages.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">
-                  <div className="flex size-14 items-center justify-center rounded-2xl bg-[--accent]/10 ring-1 ring-[--accent]/25">
-                    <MessageSquare className="size-7 text-[--accent]" aria-hidden />
+                <div className="flex flex-col items-center justify-center gap-5 py-20 text-center">
+                  <div className="qlix-empty-glow flex size-16 items-center justify-center border border-black bg-[var(--sketch-tint-blue)]">
+                    <MessageSquare className="size-8 text-black" aria-hidden />
                   </div>
-                  <div className="space-y-1.5">
-                    <p className="text-[14px] font-medium text-[--text-primary]">Start a conversation</p>
-                    <p className="max-w-xs text-[12px] leading-relaxed text-[--text-tertiary]">
-                      Messages stream in real time while the runner processes your request. Activity steps appear above
+                  <div
+                    className={cn(
+                      "qlix-msg-in max-w-sm space-y-2 border border-black px-4 py-3",
+                      sketchToneBg.green,
+                    )}
+                  >
+                    <p className="text-[15px] font-semibold tracking-tight text-black">Start a conversation</p>
+                    <p className="text-[13px] leading-relaxed text-black/55">
+                      Messages stream in real time while your agent processes your request. Activity steps appear above
                       each reply when the backend reports them.
                     </p>
                   </div>
                 </div>
               ) : (
-                messages.map((m) => {
+                messages.map((m, msgIndex) => {
                   const isLast = m.id === messages[messages.length - 1]?.id;
                   const thisStreaming = sending && m.role === "agent" && isLast;
-                  const jitPendingStep =
-                    thisStreaming && m.activity ? getPendingJitStep(m.activity) : null;
+                  // Show approval UI whenever a request is outstanding — not only while
+                  // the SSE stream is open (hybrid runs often pause for JIT after logs land).
+                  const jitPendingStep = m.activity ? getPendingJitStep(m.activity) : null;
                   return (
                   <div
                     key={m.id}
                     className={cn(
-                      "flex gap-2",
+                      "qlix-msg-in flex gap-3",
                       m.role === "user" ? "flex-row-reverse" : "flex-row",
                       m.role === "system" && "justify-center",
                     )}
+                    style={{ "--qlix-stagger-i": Math.min(msgIndex, 8) } as React.CSSProperties}
                   >
                     {m.role !== "system" ? (
                       <div
                         className={cn(
-                          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full ring-1",
+                          "mt-1 flex size-8 shrink-0 items-center justify-center rounded-full border border-black/10 transition-transform duration-300",
                           m.role === "user"
-                            ? "bg-[--accent]/20 ring-[--accent]/30"
-                            : "bg-[var(--glass-muted-bg)] ring-[--border-subtle]",
+                            ? cn("text-black", sketchToneBg.purple)
+                            : cn("text-black", sketchToneBg.blue),
                         )}
                         aria-hidden
                       >
                         {m.role === "user" ? (
-                          <UserRound className="size-4 text-[--accent]" />
+                          <UserRound className="size-3.5" />
                         ) : (
-                          <Bot className="size-4 text-[--text-secondary]" />
+                          <Bot className="size-3.5" />
                         )}
                       </div>
                     ) : null}
 
                     <div
                       className={cn(
-                        "min-w-0 max-w-[min(100%,28rem)] rounded-2xl px-3.5 py-3 text-[13px] leading-relaxed shadow-sm",
-                        m.role === "user" &&
-                          "rounded-br-md bg-gradient-to-br from-[--accent]/20 to-[--accent]/10 text-[--text-primary] ring-1 ring-[--accent]/25",
-                        m.role === "agent" &&
-                          "rounded-bl-md bg-[var(--glass-row-hover)]/90 text-[--text-primary] ring-1 ring-[--border-subtle]",
+                        "min-w-0 max-w-[min(100%,32rem)] rounded-2xl border border-black/10 px-4 py-3.5 text-[13px] leading-relaxed shadow-[var(--sketch-shadow)] transition-shadow duration-300",
+                        m.role === "user" && sketchToneBg.purple,
+                        m.role === "agent" && sketchToneBg.blue,
                         m.role === "system" &&
-                          "max-w-full rounded-lg bg-amber-950/30 px-3 py-2 text-center text-[12px] text-amber-100/90 ring-1 ring-amber-500/20",
+                          cn(
+                            "max-w-full rounded-full px-3 py-1.5 text-center text-[12px] text-black/55 shadow-none",
+                            sketchToneBg.green,
+                          ),
                       )}
                     >
                       {m.role === "agent" && m.activity && m.activity.length > 0 ? (
@@ -810,32 +1093,96 @@ export function AgentChatPanel({
                         />
                       ) : null}
                       {jitPendingStep ? (
-                        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
-                          <ShieldCheck
-                            className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-200"
-                            aria-hidden
-                          />
-                          <div className="min-w-0 text-[11px] leading-snug text-amber-950 dark:text-amber-50">
-                            <span className="font-semibold">{jitPendingStep.label}</span>
-                            {jitPendingStep.detail ? (
-                              <span className="mt-0.5 block text-[10px] opacity-90">
-                                {jitPendingStep.detail}
+                        <div
+                          role="status"
+                          aria-live="polite"
+                          className={cn(
+                            "mb-3 rounded-xl border-2 border-amber-700/40 px-3 py-3 shadow-[inset_3px_0_0_rgb(180,83,9)]",
+                            sketchToneBg.amber,
+                          )}
+                        >
+                          <div className="flex items-start gap-2">
+                            <ShieldCheck
+                              className="mt-0.5 size-4 shrink-0 text-amber-900"
+                              aria-hidden
+                            />
+                            <div className="min-w-0 text-[12px] leading-snug text-black">
+                              <span className="font-semibold tracking-tight">
+                                {jitPendingStep.label}
                               </span>
-                            ) : null}
+                              {jitPendingStep.detail ? (
+                                <span className="mt-0.5 block text-[11px] text-black/65">
+                                  {jitPendingStep.detail}
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
+                          {jitPendingStep.jitWhatsappExpected ? (
+                            <p className="mt-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
+                              {jitPendingStep.jitWhatsappStatus === "not_linked"
+                                ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
+                                : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
+                            </p>
+                          ) : null}
+                          {jitPendingStep.jitRequestId ? (
+                            <>
+                              <div className="mt-2.5 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={Boolean(jitDeciding[jitPendingStep.jitRequestId])}
+                                  onClick={() => handleJitDecision(jitPendingStep.jitRequestId!, true)}
+                                  className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
+                                >
+                                  {jitDeciding[jitPendingStep.jitRequestId] ? (
+                                    <Loader2 className="size-3 animate-spin" aria-hidden />
+                                  ) : null}
+                                  Approve
+                                  {jitPendingStep.jitScope === "email.send" ||
+                                  jitPendingStep.jitScope === "social.publish"
+                                    ? " for this chat"
+                                    : ""}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(jitDeciding[jitPendingStep.jitRequestId])}
+                                  onClick={() => handleJitDecision(jitPendingStep.jitRequestId!, false)}
+                                  className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
+                                >
+                                  Deny
+                                </button>
+                              </div>
+                              {jitPendingStep.jitChannel === "whatsapp" ? (
+                                <p className="mt-2 text-[11px] font-medium text-black/60">
+                                  Or reply Approve or Deny on WhatsApp.
+                                </p>
+                              ) : null}
+                            </>
+                          ) : jitPendingStep.jitChannel === "whatsapp" ? (
+                            <p className="mt-2 text-[11px] font-medium text-black/70">
+                              Reply Approve or Deny on WhatsApp to continue.
+                            </p>
+                          ) : null}
+                          {jitError ? (
+                            <p className="mt-1.5 text-[10px] text-black">{jitError}</p>
+                          ) : null}
                         </div>
                       ) : null}
                       {m.role === "agent" && (!m.content || m.content.trim() === "") && lastAgentStreaming && m.id === messages[messages.length - 1]?.id ? (
-                        <div className="flex items-center gap-1.5 py-1 text-[12px] text-[--text-tertiary]">
-                          <span className="inline-flex gap-1">
-                            <span className="animate-bounce [animation-delay:-0.2s]">●</span>
-                            <span className="animate-bounce [animation-delay:-0.1s]">●</span>
-                            <span className="animate-bounce">●</span>
+                        <div className="flex items-center gap-2 py-1 text-black/50">
+                          <span className="relative flex size-2.5 items-center justify-center" aria-hidden>
+                            <span className="qlix-orb-ping absolute inline-flex size-2.5 rounded-full bg-[color:var(--sketch-purple)]/50" />
+                            <span className="qlix-orb-core relative inline-flex size-1.5 rounded-full bg-[color:var(--sketch-purple)]" />
                           </span>
-                          <span>Thinking…</span>
+                          <span className={cn("qlix-text-shimmer", sketchLabel)}>Thinking…</span>
                         </div>
+                      ) : m.role === "agent" ? (
+                        <AgentMessageContent
+                          content={m.content}
+                          completed={!thisStreaming}
+                          activity={m.activity}
+                        />
                       ) : (
-                        <div className="whitespace-pre-wrap text-[13px]">{m.content}</div>
+                        <div className="whitespace-pre-wrap text-[13px]">{renderWithLinks(m.content)}</div>
                       )}
                     </div>
                   </div>
@@ -856,91 +1203,76 @@ export function AgentChatPanel({
           ) : null}
         </div>
 
-        <div className="border-t border-[--border-subtle] bg-[var(--glass-inset-bg)]/30 px-4 py-3">
-          <div className="mx-auto max-w-2xl space-y-2">
-            {isHostedChatRuntime(agent?.runtime) && catalogError ? (
-              <p className="text-[10px] leading-snug text-amber-300/90">{catalogError}</p>
-            ) : null}
-
-            <div className="rounded-2xl border border-[--border-subtle] bg-[--bg-base]/70 shadow-inner transition-[border-color,box-shadow] focus-within:border-[--accent]/60 focus-within:ring-2 focus-within:ring-[--accent]/15">
-              {isHostedChatRuntime(agent?.runtime) || canUseBrain ? (
-                <div className="flex flex-wrap items-center gap-2 border-b border-[--border-subtle]/60 px-2.5 py-1.5">
-                  {isHostedChatRuntime(agent?.runtime) ? (
-                    catalogLoading ? (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] text-[--text-tertiary]">
-                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                        Loading models…
-                      </span>
-                    ) : catalogModels.length > 0 ? (
-                      <label className="inline-flex min-w-0 items-center gap-1.5 text-[--text-secondary]">
-                        <Sparkles className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
-                        <select
-                          value={selectedQlixModelId}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSelectedQlixModelId(v);
-                            selectedModelRef.current = v;
-                          }}
-                          disabled={!conversationId || pickerModels.length === 0}
-                          title="Model used for each reply (OpenRouter catalog)"
-                          className="max-w-[220px] truncate rounded-md border border-transparent bg-transparent py-1 pl-1 pr-5 text-[11px] font-medium text-[--text-primary] outline-none hover:border-[--border-subtle] focus:border-violet-500/50 disabled:opacity-50"
-                        >
-                          {pickerModels.length === 0 ? (
-                            selectedQlixModelId.trim() ? (
-                              <option className="bg-white text-black" value={selectedQlixModelId}>
-                                {selectedQlixModelId}
-                              </option>
-                            ) : (
-                              <option className="bg-white text-black" value="">
-                                No matches
-                              </option>
-                            )
-                          ) : (
-                            pickerModels.map((m) => {
-                              const isAgentDefault =
-                                agentDefaultModelId.length > 0 &&
-                                m.qlixModelId.toLowerCase() === agentDefaultModelId.toLowerCase();
-                              return (
-                                <option
-                                  key={m.qlixModelId}
-                                  className="bg-white text-black"
-                                  value={m.qlixModelId}
-                                >
-                                  {isAgentDefault ? `${m.name} (agent default)` : m.name}
-                                </option>
-                              );
-                            })
-                          )}
-                        </select>
-                      </label>
-                    ) : (
-                      <span className="text-[11px] text-[--text-tertiary]">
-                        {catalogError ? "Model catalog unavailable" : "No models returned"}
-                      </span>
-                    )
-                  ) : null}
-                  {canUseBrain ? (
-                    <button
-                      type="button"
-                      onClick={() => setUseBrain((v) => !v)}
-                      disabled={!conversationId || sending}
-                      aria-pressed={useBrain}
-                      title="When on, the runner pulls snippets from your org AI Brain before answering (requires a provisioned brain and ingested documents)."
-                      className={cn(
-                        "ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition-colors disabled:opacity-50",
-                        useBrain
-                          ? "bg-[--accent]/15 text-[--accent] ring-[--accent]/35"
-                          : "bg-transparent text-[--text-tertiary] ring-[--border-subtle] hover:text-[--text-secondary]",
-                      )}
-                    >
-                      <Brain className="size-3.5 shrink-0" aria-hidden />
-                      Company knowledge
-                    </button>
-                  ) : null}
+        <div className="relative z-10 shrink-0 overflow-visible border-t border-black/8 px-3 py-3 sm:px-5 sm:py-4">
+          <div className="mx-auto w-full max-w-3xl overflow-visible">
+            {stickyJitPending ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className={cn(
+                  "mb-3 rounded-xl border-2 border-amber-700/45 px-3 py-3 shadow-[0_8px_24px_-12px_rgba(180,83,9,0.45)]",
+                  sketchToneBg.amber,
+                )}
+              >
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="mt-0.5 size-4 shrink-0 text-amber-900" aria-hidden />
+                  <div className="min-w-0 flex-1 text-[12px] leading-snug text-black">
+                    <p className="font-semibold tracking-tight">{stickyJitPending.label}</p>
+                    {stickyJitPending.detail ? (
+                      <p className="mt-0.5 text-[11px] text-black/65">{stickyJitPending.detail}</p>
+                    ) : null}
+                  </div>
                 </div>
-              ) : null}
-
-              <div className="flex items-end gap-2 p-2">
+                {stickyJitPending.jitWhatsappExpected ? (
+                  <p className="mt-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
+                    {stickyJitPending.jitWhatsappStatus === "not_linked"
+                      ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
+                      : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
+                  </p>
+                ) : null}
+                {stickyJitPending.jitRequestId ? (
+                  <>
+                    <div className="mt-2.5 flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={Boolean(jitDeciding[stickyJitPending.jitRequestId])}
+                        onClick={() => handleJitDecision(stickyJitPending.jitRequestId!, true)}
+                        className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
+                      >
+                        {jitDeciding[stickyJitPending.jitRequestId] ? (
+                          <Loader2 className="size-3 animate-spin" aria-hidden />
+                        ) : null}
+                        Approve
+                        {stickyJitPending.jitScope === "email.send" ||
+                        stickyJitPending.jitScope === "social.publish"
+                          ? " for this chat"
+                          : ""}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(jitDeciding[stickyJitPending.jitRequestId])}
+                        onClick={() => handleJitDecision(stickyJitPending.jitRequestId!, false)}
+                        className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
+                      >
+                        Deny
+                      </button>
+                    </div>
+                    {stickyJitPending.jitChannel === "whatsapp" ? (
+                      <p className="mt-2 text-[11px] font-medium text-black/60">
+                        Or reply Approve or Deny on WhatsApp.
+                      </p>
+                    ) : null}
+                  </>
+                ) : stickyJitPending.jitChannel === "whatsapp" ? (
+                  <p className="mt-2 text-[11px] font-medium text-black/70">
+                    Reply Approve or Deny on WhatsApp to continue.
+                  </p>
+                ) : null}
+                {jitError ? <p className="mt-1.5 text-[10px] text-black">{jitError}</p> : null}
+              </div>
+            ) : null}
+            <div className="chat-composer relative flex items-end gap-2 overflow-visible rounded-[1.35rem] border border-black/12 bg-white/85 p-2 shadow-[0_-4px_28px_-14px_rgba(17,12,34,0.1)] backdrop-blur-xl">
+              <div className="flex min-w-0 flex-1 flex-col">
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -954,39 +1286,66 @@ export function AgentChatPanel({
                   placeholder={conversationId ? "Message your agent…" : "Initializing…"}
                   disabled={!conversationId || sending}
                   rows={1}
-                  className="min-h-[40px] max-h-[160px] w-full resize-none self-center border-0 bg-transparent px-2 py-2 text-[13px] leading-snug text-[--text-primary] outline-none placeholder:text-[--text-tertiary] disabled:opacity-60"
+                  className={cn(
+                    "max-h-[180px] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-[14px] leading-snug text-black outline-none transition-[min-height,opacity] duration-200 placeholder:text-black/30 disabled:opacity-60",
+                    input ? "min-h-[72px] sm:min-h-[44px]" : "min-h-[44px]",
+                  )}
                 />
-                {sending ? (
-                  <button
-                    type="button"
-                    onClick={() => void stopRun()}
-                    title="Stop the current execution"
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-sm shadow-red-500/25 motion-safe:transition-[filter] hover:brightness-110 dark:from-red-500 dark:to-orange-500"
-                  >
-                    <Square className="size-4 fill-current" aria-hidden />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void send()}
-                    disabled={
-                      !conversationId ||
-                      input.trim().length === 0 ||
-                      (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
-                    }
-                    title="Send (Enter · Shift+Enter for newline)"
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 text-white shadow-sm shadow-violet-500/25 motion-safe:transition-[filter] hover:brightness-110 disabled:pointer-events-none disabled:opacity-40 dark:from-violet-500 dark:to-cyan-500"
-                  >
-                    <SendHorizonal className="size-4" aria-hidden />
-                  </button>
-                )}
+                {isHostedChatRuntime(agent?.runtime) ? (
+                  catalogLoading ? (
+                    <span className="inline-flex items-center gap-1 px-3 pb-1 text-[10px] text-black/40">
+                      <Loader2 className="size-3 animate-spin" aria-hidden />
+                      Loading models…
+                    </span>
+                  ) : (
+                    <ModelPicker
+                      value={selectedQlixModelId}
+                      options={pickerModels}
+                      agentDefaultId={agentDefaultModelId}
+                      disabled={!conversationId || sending}
+                      onChange={(v) => {
+                        setSelectedQlixModelId(v);
+                        selectedModelRef.current = v;
+                      }}
+                    />
+                  )
+                ) : null}
               </div>
+              {sending ? (
+                <button
+                  type="button"
+                  onClick={() => void stopRun()}
+                  title="Stop the current execution"
+                  className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-black text-white transition-transform duration-200 hover:scale-[1.03]"
+                >
+                  <Square className="size-3.5 fill-current" aria-hidden />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void send()}
+                  disabled={
+                    !conversationId ||
+                    input.trim().length === 0 ||
+                    (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
+                  }
+                  title="Send (Enter · Shift+Enter for newline)"
+                  className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-black text-white transition-all duration-200 hover:border-[color:var(--sketch-purple)] hover:bg-[color:var(--sketch-purple)] hover:scale-[1.03] disabled:opacity-30 disabled:hover:scale-100 disabled:hover:border-black/90 disabled:hover:bg-black"
+                >
+                  <SendHorizonal className="size-3.5" aria-hidden />
+                </button>
+              )}
             </div>
-
-            {agent?.runtime === "cloud" && !browserScopesOk ? (
-              <p className="text-[10px] leading-snug text-amber-300/90">
-                Grant this agent <span className="font-mono">web.read</span> and{" "}
-                <span className="font-mono">web.click</span> (create/edit agent) to enable browser tools.
+            {isHostedChatRuntime(agent?.runtime) && catalogError ? (
+              <p className="mt-1.5 text-[10px] text-black/45">{catalogError}</p>
+            ) : null}
+            {isHostedChatRuntime(agent?.runtime) &&
+            agent &&
+            new Set(agent.permissionScopes).has("web.research") &&
+            /mini|haiku|flash|nano|-8b|small/i.test(selectedQlixModelId || agent.model || "") ? (
+              <p className="mt-1.5 text-[10px] text-amber-700">
+                Tip: research is more accurate with a stronger model — smaller models may skip
+                research and guess. Choose a more capable model above.
               </p>
             ) : null}
           </div>
@@ -995,23 +1354,26 @@ export function AgentChatPanel({
 
       {selectedImage ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-[2px]"
           onClick={() => setSelectedImage(null)}
           onKeyDown={(e) => e.key === "Escape" && setSelectedImage(null)}
           role="dialog"
           aria-modal="true"
         >
-          <div className="relative flex h-full max-h-[90vh] max-w-4xl items-center justify-center" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="qlix-scale-in relative flex h-full max-h-[90vh] max-w-4xl items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={`data:${selectedImage.mime || "image/png"};base64,${selectedImage.imageBase64}`}
               alt={selectedImage.label}
-              className="max-h-full max-w-full object-contain rounded-lg"
+              className="max-h-full max-w-full border border-white object-contain"
             />
             <button
               type="button"
               onClick={() => setSelectedImage(null)}
-              className="absolute top-4 right-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-black/50 text-white transition-colors hover:bg-black/75"
+              className={`${sketchButton} absolute right-4 top-4 size-10 p-0`}
               title="Close fullscreen"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1019,14 +1381,14 @@ export function AgentChatPanel({
               </svg>
             </button>
             {selectedImage.label && (
-              <div className="absolute bottom-4 left-4 rounded-lg bg-black/75 px-3 py-2 text-white text-sm">
+              <div className="absolute bottom-4 left-4 border border-white bg-white px-3 py-2 text-sm text-black">
                 <p className="font-medium">{selectedImage.label}</p>
-                <p className="text-xs text-gray-300">{selectedImage.tool}</p>
+                <p className="text-xs text-black/60">{selectedImage.tool}</p>
               </div>
             )}
           </div>
         </div>
       ) : null}
-    </ReflectiveCard>
+    </SketchBox>
   );
 }

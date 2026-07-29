@@ -3,6 +3,7 @@
 import type { PermissionScope } from "@/lib/agents-api";
 import { ALL_PERMISSION_SCOPES, PERMISSION_SCOPE_LABELS } from "@/lib/agents-api";
 import { cn } from "@/lib/utils/cn";
+import { sketchButton } from "@/components/qlix/sketch";
 
 interface DelegatedScopePickerProps {
   readonly availableScopes: PermissionScope[];
@@ -38,12 +39,16 @@ export function DelegatedScopePicker({
             type="button"
             disabled={disabled}
             onClick={() => toggle(scope)}
-            className={cn(
-              "rounded-full border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-40",
+            style={
               on
-                ? "border-indigo-400/50 bg-indigo-500/15 text-indigo-200"
-                : "border-white/10 bg-white/5 text-white/45 hover:border-white/20",
-            )}
+                ? {
+                    backgroundColor: "var(--sketch-purple)",
+                    borderColor: "var(--sketch-purple)",
+                    color: "#ffffff",
+                  }
+                : undefined
+            }
+            className={cn(sketchButton, "px-2.5 py-1 normal-case tracking-normal")}
           >
             {PERMISSION_SCOPE_LABELS[scope]}
           </button>

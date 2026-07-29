@@ -16,10 +16,18 @@ type Props = {
   readonly active?: boolean;
   readonly className?: string;
   readonly compact?: boolean;
+  readonly actionHint?: string | null;
   readonly onImageClick?: (frame: BrowserFrame) => void;
 };
 
-export function AgentBrowserLiveView({ frames, active = false, className, compact = false, onImageClick }: Props) {
+export function AgentBrowserLiveView({
+  frames,
+  active = false,
+  className,
+  compact = false,
+  actionHint,
+  onImageClick,
+}: Props) {
   const latest = frames.length > 0 ? frames[frames.length - 1] : null;
   const dataUrl = latest
     ? `data:${latest.mime || "image/png"};base64,${latest.imageBase64}`
@@ -46,6 +54,12 @@ export function AgentBrowserLiveView({ frames, active = false, className, compac
           </span>
         ) : null}
       </div>
+
+      {(actionHint || (active && latest?.label)) && (
+        <p className="border-b border-[--border-subtle] px-3 py-1.5 text-[10px] leading-snug text-[--text-secondary]">
+          {actionHint ?? latest?.label}
+        </p>
+      )}
 
       <div className={cn("relative flex-1 overflow-hidden bg-[#0a0a0c]", compact ? "aspect-video max-h-48" : "min-h-[200px]")}>
         {dataUrl ? (
@@ -103,7 +117,7 @@ export function AgentBrowserLiveView({ frames, active = false, className, compac
       ) : null}
 
       <p className="border-t border-[--border-subtle] px-3 py-1.5 text-[9px] leading-snug text-[--text-tertiary]">
-        Headless Chromium in your cloud runner — snapshots after each browser tool, not a full video stream.
+        Live snapshots from your agent's browser — captured after each step, not a continuous video.
       </p>
     </aside>
   );

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/agent.dart';
 import '../../models/chat.dart';
 import '../../theme.dart';
+import '../../ui/sketch.dart';
 import 'chat_controller.dart';
 
 /// Cloud models offered in the picker (mirrors `CLOUD_MODELS` in agents-api.ts).
@@ -78,53 +79,56 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final hosted = state.agent?.isHostedChatRuntime ?? true;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.agentName ?? state.agent?.name ?? 'Chat'),
-        actions: [
-          IconButton(
-            tooltip: 'Clear conversation',
-            icon: state.clearing
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.delete_outline),
-            onPressed: state.clearing ? null : controller.clear,
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (state.error != null) _Banner(message: state.error!),
-          Expanded(
-            child: state.loading
-                ? const Center(child: CircularProgressIndicator())
-                : state.messages.isEmpty
-                    ? _EmptyChat(agentName: widget.agentName)
-                    : ListView.builder(
-                        controller: _scroll,
-                        padding: const EdgeInsets.all(16),
-                        itemCount: state.messages.length,
-                        itemBuilder: (context, i) =>
-                            _MessageBubble(message: state.messages[i]),
-                      ),
-          ),
-          _Composer(
-            input: _input,
-            sending: state.sending,
-            hosted: hosted,
-            canUseBrain: state.canUseBrain,
-            useBrain: _useBrain,
-            onBrainChanged: (v) => setState(() => _useBrain = v),
-            selectedModel: _selectedModel,
-            modelOptions: _modelOptions(state.agent?.model),
-            onModelChanged: (v) => setState(() => _selectedModel = v),
-            onSend: () => _send(controller),
-            onStop: controller.stop,
-          ),
-        ],
+    return SketchBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          title: Text(widget.agentName ?? state.agent?.name ?? 'Chat'),
+          actions: [
+            IconButton(
+              tooltip: 'Clear conversation',
+              icon: state.clearing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.delete_outline),
+              onPressed: state.clearing ? null : controller.clear,
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            if (state.error != null) _Banner(message: state.error!),
+            Expanded(
+              child: state.loading
+                  ? const Center(child: OrbitLoader())
+                  : state.messages.isEmpty
+                      ? _EmptyChat(agentName: widget.agentName)
+                      : ListView.builder(
+                          controller: _scroll,
+                          padding: const EdgeInsets.all(16),
+                          itemCount: state.messages.length,
+                          itemBuilder: (context, i) =>
+                              _MessageBubble(message: state.messages[i]),
+                        ),
+            ),
+            _Composer(
+              input: _input,
+              sending: state.sending,
+              hosted: hosted,
+              canUseBrain: state.canUseBrain,
+              useBrain: _useBrain,
+              onBrainChanged: (v) => setState(() => _useBrain = v),
+              selectedModel: _selectedModel,
+              modelOptions: _modelOptions(state.agent?.model),
+              onModelChanged: (v) => setState(() => _selectedModel = v),
+              onSend: () => _send(controller),
+              onStop: controller.stop,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -183,13 +187,26 @@ class _MessageBubble extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isUser ? scheme.primary : scheme.surfaceContainerHighest,
+                color: isUser ? QlixColors.ink : QlixColors.glass,
                 borderRadius: BorderRadius.circular(16),
+                border: isUser
+                    ? null
+                    : Border.all(color: QlixColors.inkBorder),
+                boxShadow: isUser
+                    ? [
+                        BoxShadow(
+                          color: QlixColors.accent.withValues(alpha: 0.18),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                          spreadRadius: -8,
+                        ),
+                      ]
+                    : null,
               ),
               child: isUser
                   ? Text(
                       message.content,
-                      style: TextStyle(color: scheme.onPrimary),
+                      style: const TextStyle(color: QlixColors.white),
                     )
                   : (message.content.trim().isEmpty
                       ? _TypingDots()
@@ -218,8 +235,9 @@ class _ActivityTimeline extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainer,
+        color: QlixColors.glass,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: QlixColors.inkBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -420,12 +438,10 @@ class _Composer extends StatelessWidget {
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
+        decoration: const BoxDecoration(
+          color: Color(0xD6FFFFFF),
           border: Border(
-            top: BorderSide(
-              color: Theme.of(context).dividerColor.withValues(alpha: 0.3),
-            ),
+            top: BorderSide(color: QlixColors.inkBorder),
           ),
         ),
         child: Column(
@@ -447,6 +463,8 @@ class _Composer extends StatelessWidget {
                       avatar: const Icon(Icons.psychology_outlined, size: 18),
                       label: const Text('Brain'),
                       selected: useBrain,
+                      selectedColor: QlixColors.accentSoft,
+                      checkmarkColor: QlixColors.accent,
                       onSelected: onBrainChanged,
                     ),
                   ],
@@ -473,15 +491,17 @@ class _Composer extends StatelessWidget {
                         onPressed: onStop,
                         icon: const Icon(Icons.stop),
                         style: IconButton.styleFrom(
-                          backgroundColor:
-                              Theme.of(context).colorScheme.errorContainer,
-                          foregroundColor:
-                              Theme.of(context).colorScheme.onErrorContainer,
+                          backgroundColor: QlixColors.redSoft,
+                          foregroundColor: QlixColors.red,
                         ),
                       )
                     : IconButton.filled(
                         onPressed: onSend,
-                        icon: const Icon(Icons.send),
+                        icon: const Icon(Icons.arrow_upward_rounded),
+                        style: IconButton.styleFrom(
+                          backgroundColor: QlixColors.ink,
+                          foregroundColor: QlixColors.white,
+                        ),
                       ),
               ],
             ),
@@ -540,21 +560,21 @@ class _EmptyChat extends StatelessWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.chat_bubble_outline,
-              size: 56,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Start chatting with ${agentName ?? 'your agent'}',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ],
+        child: SectionIn(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const OrbitLoader(size: 56),
+              const SizedBox(height: 20),
+              Text(
+                'Start chatting with ${agentName ?? 'your agent'}',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const SketchLabel('Streaming replies · live activity'),
+            ],
+          ),
         ),
       ),
     );
@@ -569,16 +589,16 @@ class _Banner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      color: const Color(0xFF2A1416),
+      color: QlixColors.redSoft,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
-          const Icon(Icons.error_outline, color: Color(0xFFF87171), size: 20),
+          const Icon(Icons.error_outline, color: QlixColors.red, size: 20),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(color: Color(0xFFFCA5A5)),
+              style: const TextStyle(color: QlixColors.red, fontSize: 13),
             ),
           ),
         ],

@@ -1,7 +1,9 @@
-export type PermissionScope =
+/** Built-in SDK / connector scopes (static catalog). */
+export type BuiltinPermissionScope =
   | 'web.read'
   | 'web.click'
   | 'web.transaction'
+  | 'web.research'
   | 'system.file_read'
   | 'system.file_write'
   | 'system.gui_control'
@@ -11,7 +13,14 @@ export type PermissionScope =
   | 'brain.knowledge_read'
   | 'email.read'
   | 'email.send'
-  | 'whatsapp.send';
+  | 'whatsapp.send'
+  | 'social.read'
+  | 'social.publish';
+
+/** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
+export type McpPermissionScope = `mcp.${string}`;
+
+export type PermissionScope = BuiltinPermissionScope | McpPermissionScope;
 
 // Derived from the canonical catalog (single source of truth). Re-exported here so
 // existing importers keep working.

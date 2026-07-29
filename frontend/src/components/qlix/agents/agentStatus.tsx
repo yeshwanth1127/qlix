@@ -72,7 +72,7 @@ const STATUS_META: Record<
     className: "bg-slate-500/12 text-slate-600 ring-slate-500/25 dark:text-slate-400",
   },
   provisioning: {
-    label: "Provisioning",
+    label: "Setting up",
     className:
       "bg-amber-500/15 text-amber-800 ring-amber-500/35 dark:bg-amber-500/20 dark:text-amber-200",
     pulse: true,
@@ -90,7 +90,7 @@ const STATUS_META: Record<
     pulse: true,
   },
   runner_failed: {
-    label: "Runner failed",
+    label: "Couldn't start",
     className:
       "bg-rose-500/15 text-rose-800 ring-rose-500/40 dark:bg-rose-500/20 dark:text-rose-300",
     icon: "warn",
@@ -169,16 +169,19 @@ export function RuntimeBadge({
   );
 }
 
-export function agentStatusHint(status: string): string | null {
+export function agentStatusHint(status: string, runtime?: AgentRuntime): string | null {
   switch (status.toLowerCase()) {
     case "runner_failed":
-      return "Cloud runner failed to start. Open agent details and restart the runner, or check Docker on the API host.";
+      return "Your agent couldn't start. Open agent details and restart it.";
     case "offline":
-      return "No recent heartbeat. Unzip the starter pack and double-click Start Qlix Agent on your computer.";
+      // Cloud agents run on Qlix's servers — there's no starter pack to run locally.
+      return runtime === "cloud"
+        ? "Your agent is offline right now — it should reconnect shortly. If it stays offline, restart it from the agent's page."
+        : "Offline. Unzip the starter pack and double-click Start Qlix Agent on your computer.";
     case "provisioning":
-      return "Runner is starting. This usually completes within a minute.";
+      return "Your agent is starting. This usually completes within a minute.";
     case "restarting":
-      return "Rebuilding the runner Docker image (often 3–10 minutes). Keep this page open or check back shortly.";
+      return "Getting your agent ready (usually a few minutes). Keep this page open or check back shortly.";
     default:
       return null;
   }

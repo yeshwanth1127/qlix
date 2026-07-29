@@ -98,6 +98,21 @@ export function createInternalRouter(): Router {
     response.json({ ok: true });
   });
 
+  router.post('/whatsapp/:connectorId/logged-out', async (request: Request, response: Response) => {
+    const connectorId = request.params.connectorId;
+    if (!connectorId) {
+      response.status(400).json({ error: { code: 'invalid_id', message: 'connectorId required' } });
+      return;
+    }
+    try {
+      await repo.markWhatsAppDisconnected(connectorId);
+      response.json({ ok: true });
+    } catch (err) {
+      console.error('[whatsapp] logged-out', err);
+      response.status(500).json({ error: { code: 'update_failed', message: 'Failed to record disconnect' } });
+    }
+  });
+
   router.post('/whatsapp/:connectorId/linked', async (request: Request, response: Response) => {
     const parsed = linkedBody.safeParse(request.body);
     if (!parsed.success) {

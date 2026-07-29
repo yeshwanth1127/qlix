@@ -246,6 +246,27 @@ export class AgentsRepository {
     return toDTO(updated);
   }
 
+  async updatePermissionScopes(
+    agentId: string,
+    patch: {
+      permissionScopes: PermissionScope[];
+      jitScopes: PermissionScope[];
+      alwaysScopes: PermissionScope[];
+      runtime?: AgentRuntime;
+    },
+  ): Promise<AgentDTO> {
+    const updated = await prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        permissionScopes: patch.permissionScopes,
+        jitScopes: patch.jitScopes,
+        alwaysScopes: patch.alwaysScopes,
+        ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
+      },
+    });
+    return toDTO(updated);
+  }
+
   /**
    * Removes the agent row; DB cascades delete VCs and action log rows linked to this agent.
    * Billing event rows keep history with `agent_id` set null (`SetNull`).

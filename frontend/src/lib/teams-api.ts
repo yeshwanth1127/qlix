@@ -33,7 +33,8 @@ export type TeamRunEventType =
   | "run_completed"
   | "run_failed"
   | "result_delivered"
-  | "user_injection";
+  | "user_injection"
+  | "lead_review_required";
 
 export interface TeamConfig {
   maxParallelWorkers: number;
@@ -129,6 +130,8 @@ export interface TeamRunDTO {
   scopeEscalations: ScopeEscalation[];
   result: unknown | null;
   errorMessage: string | null;
+  leadCampaignId?: string | null;
+  leadOutreachApprovedAt?: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -225,15 +228,12 @@ export interface CreateTeamBody {
 
 export async function createTeam(
   body: CreateTeamBody,
-  stepUpToken: string,
+  _stepUpToken?: string,
 ): Promise<TeamDTO> {
   const res = await fetch(`${apiBase()}/api/v1/teams`, {
     method: "POST",
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      "X-QLIX-Device-Step-Up": stepUpToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -429,6 +429,32 @@ export async function cancelTeamRun(teamId: string, runId: string): Promise<void
   }
 }
 
+export async function approveLeadOutreach(teamId: string, runId: string): Promise<TeamRunDTO> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/approve-lead-outreach`,
+    { method: "POST", credentials: "include" },
+  );
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new Error(err?.error?.message ?? "Failed to approve outreach");
+  }
+  const data = (await res.json()) as { run: TeamRunDTO };
+  return data.run;
+}
+
+export async function retryLeadEnrichment(teamId: string, runId: string): Promise<TeamRunDTO> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/retry-lead-enrichment`,
+    { method: "POST", credentials: "include" },
+  );
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new Error(err?.error?.message ?? "Failed to retry enrichment");
+  }
+  const data = (await res.json()) as { run: TeamRunDTO };
+  return data.run;
+}
+
 export async function startTeamRun(teamId: string, goal: string): Promise<TeamRunDTO> {
   const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs`, {
     method: "POST",
@@ -454,6 +480,7 @@ export function streamTeamRun(
   handlers: {
     onEvent: (event: TeamRunEventDTO) => void;
     onComplete: (data: { status: string; result: unknown }) => void;
+    onPaused?: (data: { status: string; campaignId?: string | null; teamRunId?: string }) => void;
     onError?: (msg: string) => void;
   },
   afterSeq = -1,
@@ -476,6 +503,20 @@ export function streamTeamRun(
       // ignore
     }
     es.close();
+  });
+
+  es.addEventListener("paused", (e: MessageEvent) => {
+    try {
+      handlers.onPaused?.(
+        JSON.parse(e.data as string) as {
+          status: string;
+          campaignId?: string | null;
+          teamRunId?: string;
+        },
+      );
+    } catch {
+      // ignore
+    }
   });
 
   es.addEventListener("error", () => {

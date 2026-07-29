@@ -1,25 +1,29 @@
-import { ReflectiveCard } from "./ReflectiveCard";
+import type { ReactNode } from "react";
+import { SketchBox, SketchPageHeader } from "./sketch";
 
 interface PlaceholderConsolePageProps {
   readonly title: string;
   readonly description?: string;
+  readonly children?: ReactNode;
 }
 
-/** Temporary stub until feature routes are implemented. */
-export function PlaceholderConsolePage({ title, description }: PlaceholderConsolePageProps) {
+/** Sketch-styled page shell for console routes. */
+export function PlaceholderConsolePage({ title, description, children }: PlaceholderConsolePageProps) {
   return (
-    <div className="animate-qlix-fade-in">
-      <h1 className="text-base font-medium tracking-[-0.01em] text-[--text-primary]">{title}</h1>
+    <div className="flex h-full min-h-0 flex-col">
+      <SketchPageHeader title={title} />
       {description ? (
-        <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[--text-secondary]">
+        <p className="mb-4 max-w-xl font-serif text-[11px] uppercase tracking-widest text-black/50">
           {description}
         </p>
       ) : null}
-      <ReflectiveCard className="mt-8 rounded" contentClassName="p-5">
-        <p className="text-[13px] text-[--text-tertiary]">
-          This section will connect to the Qlix API when backend routes are wired.
-        </p>
-      </ReflectiveCard>
+      {children ?? (
+        <SketchBox className="flex-1 p-5">
+          <p className="font-serif text-[11px] uppercase tracking-widest text-black/40">
+            Content area
+          </p>
+        </SketchBox>
+      )}
     </div>
   );
 }

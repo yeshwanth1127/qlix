@@ -1,6 +1,7 @@
 import {
   dockerBuildImage,
   dockerEnsureNetwork,
+  dockerImageExists,
   dockerIsAvailable,
   dockerListImages,
   dockerLogs,
@@ -24,12 +25,17 @@ export interface RunRunnerContainerInput {
   network?: string;
   mounts?: Array<{ hostPath: string; containerPath: string; readOnly?: boolean }>;
   cmd?: string[];
+  memoryLimit?: string;
+  memoryReservation?: string;
+  cpuLimit?: string;
+  pidsLimit?: string;
 }
 
 export interface RunnerOrchestrator {
   ensureAvailable(): Promise<void>;
   ensureNetwork(networkName: string): Promise<void>;
   buildImage(input: BuildRunnerImageInput): Promise<void>;
+  imageExists(imageRef: string): Promise<boolean>;
   runContainer(input: RunRunnerContainerInput): Promise<string>;
   removeContainerIfExists(containerName: string): Promise<void>;
   logs(containerName: string, tail?: number): Promise<string>;
@@ -51,6 +57,10 @@ export class DockerRunnerOrchestrator implements RunnerOrchestrator {
     await dockerBuildImage(input);
   }
 
+  async imageExists(imageRef: string): Promise<boolean> {
+    return dockerImageExists(imageRef);
+  }
+
   async runContainer(input: RunRunnerContainerInput): Promise<string> {
     return dockerRunDetached({
       name: input.name,
@@ -60,6 +70,10 @@ export class DockerRunnerOrchestrator implements RunnerOrchestrator {
       network: input.network,
       mounts: input.mounts,
       cmd: input.cmd,
+      memoryLimit: input.memoryLimit,
+      memoryReservation: input.memoryReservation,
+      cpuLimit: input.cpuLimit,
+      pidsLimit: input.pidsLimit,
     });
   }
 

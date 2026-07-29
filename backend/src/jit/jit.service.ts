@@ -5,7 +5,10 @@ import { canonicalize } from '../actions/canonical.js';
 import { scopeRequiresJit } from '../actions/jitScope.js';
 import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
 import { prisma } from '../lib/prisma.js';
-import { getWhatsAppConnectorForAgent } from '../connectors/whatsappConnector.service.js';
+import {
+  getWhatsAppConnectionForAgent,
+  getWhatsAppConnectorForAgent,
+} from '../connectors/whatsappConnector.service.js';
 import { isWhatsAppJitEnabled, sendApproval } from './whatsappNotifier.js';
 
 /** ±5 minutes — same window as actions. */
@@ -29,6 +32,34 @@ export class NotJitScopeError extends Error {
 
 export class JitRequestNotFoundError extends Error {
   readonly code = 'jit_request_not_found';
+}
+
+export class JitForbiddenError extends Error {
+  readonly code = 'jit_forbidden';
+}
+
+export class JitPollUnauthorizedError extends Error {
+  readonly code = 'jit_poll_unauthorized';
+}
+
+/**
+ * Stateless capability token for polling a JIT request. It is HMAC(server key, requestId), so only
+ * the caller who received it from POST /request (the agent that signed the request) can present it.
+ * This stops anyone who merely learns the request UUID (logs, chat, referrer) from polling and
+ * stealing the one-time jitToken. No storage needed — recomputed and compared on each poll.
+ */
+export function computeJitPollToken(jitRequestId: string): string {
+  const key = process.env.AGENT_SECRETS_KEY?.trim();
+  if (!key) throw new Error('AGENT_SECRETS_KEY is required for JIT poll authentication');
+  return crypto.createHmac('sha256', key).update(`jit-poll:${jitRequestId}`).digest('hex');
+}
+
+function jitPollTokenMatches(jitRequestId: string, provided: string): boolean {
+  const expected = computeJitPollToken(jitRequestId);
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 /** Signed body for POST /api/v1/jit/request — keys must match SDK canonical JSON. */
@@ -120,6 +151,15 @@ function extractRunId(payload: unknown): string | null {
 function formatJitApprovalContext(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return String(payload ?? '');
   const p = payload as Record<string, unknown>;
+  const subject = typeof p.subject === 'string' ? p.subject.trim() : '';
+  const to = Array.isArray(p.to) ? p.to.filter((x) => typeof x === 'string').slice(0, 3) : [];
+  if (subject || to.length > 0) {
+    const parts = [
+      subject ? `Subject: ${subject}` : '',
+      to.length > 0 ? `To: ${to.join(', ')}` : '',
+    ].filter(Boolean);
+    return parts.join(' · ').slice(0, 500);
+  }
   const tool = typeof p.tool === 'string' ? p.tool : '';
   const path = typeof p.path === 'string' ? p.path : '';
   const command = typeof p.command === 'string' ? p.command : '';
@@ -166,6 +206,65 @@ async function hasRunScopedJitGrant(
   return false;
 }
 
+/** Scopes for which one human approval covers the whole conversation ("approve once per session"). */
+const CONVERSATION_SCOPED_GRANT_SCOPES = new Set(['email.send']);
+
+/** Safety expiry for a conversation-scoped grant; slid forward each time it auto-approves a request. */
+const CONVERSATION_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function resolveConversationId(runId: string | null): Promise<string | null> {
+  if (!runId) return null;
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: { conversationId: true },
+  });
+  return run?.conversationId ?? null;
+}
+
+/** True when an un-revoked, un-expired conversation grant exists for this scope. */
+async function hasConversationScopedGrant(
+  conversationId: string | null,
+  scope: string,
+): Promise<boolean> {
+  if (!conversationId) return false;
+  const grant = await prisma.jitScopeGrant.findUnique({
+    where: { conversationId_scope: { conversationId, scope } },
+    select: { revokedAt: true, expiresAt: true },
+  });
+  if (!grant || grant.revokedAt) return false;
+  if (grant.expiresAt && grant.expiresAt.getTime() < Date.now()) return false;
+  return true;
+}
+
+/** Create or re-arm a conversation-scoped grant after a human approves the scope. */
+async function recordConversationScopedGrant(params: {
+  conversationId: string;
+  agentId: string;
+  scope: string;
+  userId: string;
+}): Promise<void> {
+  const expiresAt = new Date(Date.now() + CONVERSATION_GRANT_TTL_MS);
+  await prisma.jitScopeGrant.upsert({
+    where: { conversationId_scope: { conversationId: params.conversationId, scope: params.scope } },
+    create: {
+      conversationId: params.conversationId,
+      agentId: params.agentId,
+      scope: params.scope,
+      grantedByUserId: params.userId,
+      expiresAt,
+    },
+    update: { expiresAt, revokedAt: null, grantedByUserId: params.userId },
+  });
+}
+
+/** Slide the safety TTL forward whenever the grant auto-approves a request. */
+async function touchConversationScopedGrant(conversationId: string, scope: string): Promise<void> {
+  await prisma.jitScopeGrant.updateMany({
+    where: { conversationId, scope, revokedAt: null },
+    data: { expiresAt: new Date(Date.now() + CONVERSATION_GRANT_TTL_MS) },
+  });
+}
+
 function formatScopeLabel(scope: string): string {
   const labels: Record<string, string> = {
     'system.file_write': 'Write files',
@@ -208,6 +307,16 @@ async function autoApproveJitRequest(actionLogId: string): Promise<void> {
   ]);
 }
 
+export interface ConversationGrantDTO {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  agentName: string | null;
+  scope: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
 export class JitService {
   /**
    * Creates a pending JIT approval row (append-only action log + approval).
@@ -216,6 +325,7 @@ export class JitService {
   async request(input: { signedPayload: JitRequestSignedPayload; signature: string }): Promise<{
     jitRequestId: string;
     expiresAtMs: number;
+    pollToken: string;
   }> {
     const { signedPayload, signature } = input;
     assertFreshTimestamp(signedPayload.timestampMs);
@@ -281,23 +391,45 @@ export class JitService {
       memoryGrant ||
       (runId != null && (await hasRunScopedJitGrant(agent.id, signedPayload.actionType, runId)));
 
+    // Conversation-scoped grant: one earlier "yes" covers this scope for the whole
+    // conversation (across tasks/runs), until revoked or the safety TTL lapses.
+    const conversationId = CONVERSATION_SCOPED_GRANT_SCOPES.has(signedPayload.actionType)
+      ? await resolveConversationId(runId)
+      : null;
+    const conversationGrant =
+      conversationId != null &&
+      (await hasConversationScopedGrant(conversationId, signedPayload.actionType));
+
     console.log(
       `[jit] request created: actionId=${actionLog.id} agent=${agent.name} actionType=${signedPayload.actionType} ttl=${ttlSeconds}s ` +
-        `runId=${runId ?? 'NULL'} envAuto=${envAutoApprove} whatsappRunAuto=${whatsappRunAuto} memoryGrant=${memoryGrant} runScopedReuse=${runScopedReuse} ` +
-        `auto=${envAutoApprove || whatsappRunAuto || runScopedReuse}`,
+        `runId=${runId ?? 'NULL'} envAuto=${envAutoApprove} whatsappRunAuto=${whatsappRunAuto} memoryGrant=${memoryGrant} runScopedReuse=${runScopedReuse} conversationGrant=${conversationGrant} ` +
+        `auto=${envAutoApprove || whatsappRunAuto || runScopedReuse || conversationGrant}`,
     );
 
-    if (envAutoApprove || whatsappRunAuto || runScopedReuse) {
+    if (envAutoApprove || whatsappRunAuto || runScopedReuse || conversationGrant) {
       await autoApproveJitRequest(actionLog.id);
       // Remember this run+scope so all later requests in the run auto-approve too.
       recordRunScopedGrant(runId, signedPayload.actionType);
-      console.log(`[jit] auto-approved: actionId=${actionLog.id} reason=${envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : memoryGrant ? 'memory-grant' : 'run-scoped-db'}`);
+      // Slide the conversation grant's safety TTL forward on each use.
+      if (conversationGrant && conversationId) {
+        await touchConversationScopedGrant(conversationId, signedPayload.actionType);
+      }
+      const reason = envAutoApprove
+        ? 'env'
+        : whatsappRunAuto
+          ? 'whatsapp-run'
+          : conversationGrant
+            ? 'conversation-grant'
+            : memoryGrant
+              ? 'memory-grant'
+              : 'run-scoped-db';
+      console.log(`[jit] auto-approved: actionId=${actionLog.id} reason=${reason}`);
       void emitJitRunLog(runId, {
         message: 'jit_approval_granted',
         scope: signedPayload.actionType,
         scopeLabel: formatScopeLabel(signedPayload.actionType),
         auto: true,
-        reason: envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : 'run-scoped',
+        reason: envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : conversationGrant ? 'conversation' : 'run-scoped',
       });
     } else if (isWhatsAppJitEnabled()) {
       const wa = await getWhatsAppConnectorForAgent(agent.id);
@@ -335,10 +467,17 @@ export class JitService {
             context: formatJitApprovalContext(signedPayload.payload),
             jitRequestId: actionLog.id,
             whatsappError: sent.error ?? 'delivery failed',
+            // Connector was linked but the message couldn't be delivered (session
+            // reconnecting/down) — tell the user WhatsApp isn't reachable right now.
+            whatsappExpected: true,
+            whatsappStatus: 'disconnected',
           });
         }
       } else {
-        console.log(`[jit] no WhatsApp connector found for agent: agentId=${agent.id}`);
+        const waConn = await getWhatsAppConnectionForAgent(agent.id);
+        console.log(
+          `[jit] WhatsApp not connected for agent: agentId=${agent.id} exists=${waConn.exists} connected=${waConn.connected}`,
+        );
         void emitJitRunLog(runId, {
           message: 'jit_approval_pending',
           scope: signedPayload.actionType,
@@ -346,6 +485,10 @@ export class JitService {
           channel: 'dashboard',
           context: formatJitApprovalContext(signedPayload.payload),
           jitRequestId: actionLog.id,
+          // WhatsApp is the configured approval channel for this deployment but it
+          // isn't connected — surface it so the user can reconnect (or approve here).
+          whatsappExpected: true,
+          whatsappStatus: waConn.exists ? 'disconnected' : 'not_linked',
         });
       }
     } else {
@@ -360,7 +503,7 @@ export class JitService {
       });
     }
 
-    return { jitRequestId: actionLog.id, expiresAtMs };
+    return { jitRequestId: actionLog.id, expiresAtMs, pollToken: computeJitPollToken(actionLog.id) };
   }
 
   /**
@@ -435,6 +578,22 @@ export class JitService {
           );
         }
       }
+      // For session-scoped scopes (e.g. email.send), this one "yes" covers the whole
+      // conversation: write a durable grant so every later run in the chat auto-approves.
+      if (CONVERSATION_SCOPED_GRANT_SCOPES.has(row.actionType)) {
+        const convoId = await resolveConversationId(runId);
+        if (convoId) {
+          await recordConversationScopedGrant({
+            conversationId: convoId,
+            agentId: row.agentId,
+            scope: row.actionType,
+            userId: row.userId,
+          });
+          console.log(
+            `[jit] recorded conversation-scoped grant: conversationId=${convoId} scope=${row.actionType} (future ${row.actionType} requests in this conversation auto-approve)`,
+          );
+        }
+      }
       void emitJitRunLog(runId, {
         message: 'jit_approval_granted',
         scope: row.actionType,
@@ -477,11 +636,56 @@ export class JitService {
     return { ok: true, status: decision };
   }
 
+  /**
+   * Authenticated dashboard decision: verifies the requesting user owns the agent
+   * (personally or via its org) before resolving the pending request.
+   */
+  async decideAsUser(input: {
+    jitRequestId: string;
+    userId: string;
+    orgId: string | null;
+    approved: boolean;
+  }): Promise<{ ok: true; status: 'approved' | 'denied' | 'expired' }> {
+    const row = await prisma.actionLog.findUnique({
+      where: { id: input.jitRequestId },
+      select: { agent: { select: { userId: true, orgId: true } } },
+    });
+    if (!row?.agent) throw new JitRequestNotFoundError();
+    const owns =
+      row.agent.userId === input.userId ||
+      (row.agent.orgId != null && row.agent.orgId === input.orgId);
+    if (!owns) throw new JitForbiddenError();
+
+    return this.decide({
+      jitRequestId: input.jitRequestId,
+      approved: input.approved,
+      reason: input.approved ? 'dashboard' : 'denied_by_user',
+    });
+  }
+
   /** Poll JIT status; returns jitToken only when approved and token is still valid. */
-  async poll(jitRequestId: string): Promise<{
+  async poll(jitRequestId: string, pollToken: string): Promise<{
     status: 'pending' | 'approved' | 'denied' | 'expired';
     jitToken?: string;
   }> {
+    // Backward compatibility: the poll token is a capability check layered on top of
+    // the real gate — /api/v1/actions/start re-verifies the agent's Ed25519 signature
+    // before a jitToken can be spent, so a leaked jitToken is useless without the
+    // agent's private key. Runners provisioned before the poll-token change (or behind
+    // a proxy that drops the header) send no token at all; hard-failing them silently
+    // bricks every already-deployed runner — the JIT poll never returns, so the agent
+    // never receives an approval it can see. So: reject a token that is PRESENT but
+    // WRONG (tamper/probe), but allow a MISSING token as a legacy runner.
+    if (pollToken) {
+      if (!jitPollTokenMatches(jitRequestId, pollToken)) {
+        throw new JitPollUnauthorizedError('Invalid JIT poll token');
+      }
+    } else {
+      console.warn(
+        `[jit] poll without token (legacy runner) actionId=${jitRequestId} — ` +
+          'update the runner (re-download the starter pack / reinstall the qlix wheel) to restore poll-token auth',
+      );
+    }
     const row = await prisma.actionLog.findUnique({
       where: { id: jitRequestId },
       include: { approval: true },
@@ -511,5 +715,77 @@ export class JitService {
     }
 
     return { status: 'pending' };
+  }
+
+  /** Active session grants (e.g. "email.send approved for this conversation") for a user's agents. */
+  async listGrantsForUser(input: {
+    userId: string;
+    orgId: string | null;
+  }): Promise<ConversationGrantDTO[]> {
+    const agents = await prisma.agent.findMany({
+      where: input.orgId ? { OR: [{ userId: input.userId }, { orgId: input.orgId }] } : { userId: input.userId },
+      select: { id: true, name: true },
+    });
+    const agentName = new Map(agents.map((a) => [a.id, a.name]));
+    if (agentName.size === 0) return [];
+
+    const now = Date.now();
+    const grants = await prisma.jitScopeGrant.findMany({
+      where: { agentId: { in: [...agentName.keys()] }, revokedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    return grants
+      .filter((g) => !g.expiresAt || g.expiresAt.getTime() > now)
+      .map((g) => ({
+        id: g.id,
+        conversationId: g.conversationId,
+        agentId: g.agentId,
+        agentName: agentName.get(g.agentId) ?? null,
+        scope: g.scope,
+        createdAt: g.createdAt.toISOString(),
+        expiresAt: g.expiresAt?.toISOString() ?? null,
+      }));
+  }
+
+  /** Revoke a session grant; verifies the requesting user owns the grant's agent. */
+  async revokeGrant(input: {
+    grantId: string;
+    userId: string;
+    orgId: string | null;
+  }): Promise<{ ok: true }> {
+    const grant = await prisma.jitScopeGrant.findUnique({
+      where: { id: input.grantId },
+      select: { agentId: true, revokedAt: true },
+    });
+    if (!grant) throw new JitRequestNotFoundError();
+    const agent = await prisma.agent.findUnique({
+      where: { id: grant.agentId },
+      select: { userId: true, orgId: true },
+    });
+    const owns =
+      agent != null &&
+      (agent.userId === input.userId || (agent.orgId != null && agent.orgId === input.orgId));
+    if (!owns) throw new JitForbiddenError();
+
+    if (!grant.revokedAt) {
+      await prisma.jitScopeGrant.update({
+        where: { id: input.grantId },
+        data: { revokedAt: new Date() },
+      });
+    }
+    return { ok: true };
+  }
+
+  /** Whether this chat conversation already has an active grant for a JIT scope. */
+  async hasActiveConversationGrantForRun(runId: string | null, scope: string): Promise<boolean> {
+    const conversationId = await resolveConversationId(runId);
+    if (!conversationId) return false;
+    return hasConversationScopedGrant(conversationId, scope);
+  }
+
+  /** Slide conversation grant TTL on each auto-approved send. */
+  async touchConversationGrantForRun(runId: string | null, scope: string): Promise<void> {
+    const conversationId = await resolveConversationId(runId);
+    if (conversationId) await touchConversationScopedGrant(conversationId, scope);
   }
 }

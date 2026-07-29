@@ -1,17 +1,11 @@
-import { Inter, Saira } from "next/font/google";
+import { Inter } from "next/font/google";
 import { ChatLanding } from "@/components/qlix/landing/ChatLanding";
+import { BetaAccessGate } from "@/components/qlix/landing/BetaAccessGate";
 
 const inter = Inter({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-landing",
-});
-
-const saira = Saira({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-landing-logo",
-  weight: ["500", "600", "700"],
 });
 
 /**
@@ -21,8 +15,10 @@ const saira = Saira({
  */
 export default function HomePage() {
   return (
-    <div className={`${inter.variable} ${saira.variable} ${inter.className}`}>
-      <ChatLanding />
+    <div className={`${inter.variable} ${inter.className}`}>
+      <BetaAccessGate>
+        <ChatLanding />
+      </BetaAccessGate>
     </div>
   );
 }

@@ -1,9 +1,5 @@
 import express from 'express';
-import {
-  clearPendingApproval,
-  pendingApprovals,
-  registerPendingApproval,
-} from './handlers.js';
+import { pendingApprovals, registerPendingApproval } from './handlers.js';
 import * as qlix from './qlix-client.js';
 import {
   getSessionStatus,
@@ -15,6 +11,9 @@ import {
   stopSession,
 } from './sessionManager.js';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 
 const MIME_MAP = {
   '.pdf':  'application/pdf',
@@ -33,21 +32,58 @@ const SERVICE_SECRET = process.env.SERVICE_SECRET || '';
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
 const startedAt = Date.now();
 
+function timingSafeEqualStr(a, b) {
+  const ab = Buffer.from(String(a), 'utf8');
+  const bb = Buffer.from(String(b), 'utf8');
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 function requireSecret(req, res, next) {
+  if (!SERVICE_SECRET) {
+    res.status(503).json({ ok: false, error: 'Service secret not configured' });
+    return;
+  }
   const secret = req.header('X-Service-Secret');
-  if (!secret || secret !== SERVICE_SECRET) {
+  if (!secret || !timingSafeEqualStr(secret, SERVICE_SECRET)) {
     res.status(401).json({ ok: false, error: 'Unauthorized' });
     return;
   }
   next();
 }
 
+/**
+ * Documents to send must live under an allowlisted staging directory (the backend writes them to
+ * the OS temp dir before calling us). This stops a caller from exfiltrating arbitrary host files
+ * (e.g. `/etc/passwd`, `backend/.env`) over WhatsApp via a crafted `file_path`.
+ */
+const DOC_ALLOWED_ROOTS = (process.env.WHATSAPP_DOC_ALLOWED_DIRS?.trim()
+  ? process.env.WHATSAPP_DOC_ALLOWED_DIRS.split(',').map((d) => d.trim()).filter(Boolean)
+  : [os.tmpdir()]
+).map((d) => path.resolve(d));
+
+function isPathWithinAllowedRoots(filePath) {
+  const resolved = path.resolve(filePath);
+  return DOC_ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+}
+
+// Neutralize WhatsApp markdown / control chars in agent-supplied text so a crafted agent name or
+// context can't spoof the approval prompt's structure or inject misleading formatting.
+function sanitizeField(value, max = 300) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[*_~`]/g, '')
+    .replace(/[\u0000-\u001f]/g, '')
+    .slice(0, max)
+    .trim();
+}
+
 function formatApprovalMessage({ context, action_id, scope, agent_name }) {
   return (
     `🤖 *Qlix — approval required*\n\n` +
-    `Agent: ${agent_name}\n` +
-    `Scope: ${scope}\n` +
-    `Action: ${context}\n\n` +
+    `Agent: ${sanitizeField(agent_name, 120)}\n` +
+    `Scope: ${sanitizeField(scope, 120)}\n` +
+    `Action: ${sanitizeField(context, 500)}\n\n` +
     `Reply with: *yes*, *approve*, *ok*, *yep*, etc. to approve\n` +
     `Or reply with: *no*, *reject*, *cancel*, *nope*, etc. to reject.\n` +
     `This request expires in 5 minutes.\n\n` +
@@ -162,14 +198,7 @@ export function createApiRouter() {
       return;
     }
 
-    const timeout = setTimeout(async () => {
-      if (!pendingApprovals.has(action_id)) return;
-      await qlix.resolveApproval(action_id, false, 'timeout');
-      clearPendingApproval(action_id);
-      await sendToConnector(connector_id, '⏱️ Approval timed out. Action cancelled.');
-    }, APPROVAL_TTL_MS);
-
-    registerPendingApproval(connector_id, action_id, agent_name, timeout);
+    registerPendingApproval(connector_id, action_id, agent_name, APPROVAL_TTL_MS);
     res.json({ ok: true, action_id });
   });
 
@@ -177,6 +206,21 @@ export function createApiRouter() {
     const { connector_id, file_path, file_name, mimetype } = req.body ?? {};
     if (!connector_id || typeof file_path !== 'string' || !file_path.trim()) {
       res.status(400).json({ ok: false, error: 'connector_id and file_path required' });
+      return;
+    }
+    // Reject path traversal / arbitrary host-file reads before touching the filesystem.
+    if (!isPathWithinAllowedRoots(file_path)) {
+      res.status(400).json({ ok: false, error: 'file_path is outside the allowed directory' });
+      return;
+    }
+    try {
+      const stat = await fs.stat(file_path);
+      if (!stat.isFile()) {
+        res.status(400).json({ ok: false, error: 'file_path is not a regular file' });
+        return;
+      }
+    } catch {
+      res.status(404).json({ ok: false, error: 'file not found' });
       return;
     }
     if (!isSessionConnected(connector_id)) {

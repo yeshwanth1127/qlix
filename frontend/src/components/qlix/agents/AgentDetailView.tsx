@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, ChevronLeft, Copy, Download, Fingerprint, Loader2, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Copy, Download, Fingerprint, Loader2, MessageSquare, Pencil, RefreshCw, Trash2, X } from "lucide-react";
 import {
   type AgentDTO,
   type VerifiableCredentialDTO,
@@ -15,10 +15,20 @@ import {
   reissueHybridStarterPack,
   updateAgentDescription,
 } from "@/lib/agents-api";
-import { downloadBase64File } from "@/lib/download";
+import { downloadBase64File, getStashedStarterPack, type StarterPack } from "@/lib/download";
 import { canDeleteAgent } from "@/lib/org-permissions";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import {
+  SketchBox,
+  SketchListSkeleton,
+  SketchPageHeader,
+  SketchRow,
+  SketchSkeleton,
+  sketchButton,
+  sketchInput,
+  sketchLabel,
+} from "@/components/qlix/sketch";
 import { AgentMcpBindings } from "@/components/qlix/mcp/AgentMcpBindings";
+import { AgentScopesEditor } from "@/components/qlix/agents/AgentScopesEditor";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
 
@@ -82,6 +92,13 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
   const [descDraft, setDescDraft] = useState("");
   const [descSaving, setDescSaving] = useState(false);
   const [descError, setDescError] = useState<string | null>(null);
+  // Starter pack captured at creation time (this browser session). Lets the agent
+  // page offer the ZIP download without re-issuing / rotating the signing key.
+  const [stashedPack, setStashedPack] = useState<StarterPack | null>(null);
+
+  useEffect(() => {
+    setStashedPack(getStashedStarterPack(agentId));
+  }, [agentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,20 +177,21 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
 
   if (loading) {
     return (
-      <div className="animate-qlix-fade-in space-y-6">
-        <div className="h-4 w-24 animate-pulse rounded bg-[var(--glass-muted-bg)]" />
-        <ReflectiveCard className="rounded-xl" contentClassName="p-5">
+      <div className="space-y-6" role="status" aria-label="Loading agent">
+        <SketchSkeleton className="h-4 w-28 rounded-full" />
+        <SketchBox className="p-5">
           <div className="space-y-4">
-            <div className="h-6 w-2/3 max-w-xs animate-pulse rounded bg-[var(--glass-muted-bg)]" />
-            <div className="h-4 w-full max-w-md animate-pulse rounded bg-[var(--glass-muted-bg)]" />
+            <SketchSkeleton className="h-6 max-w-xs w-2/3 rounded-lg" />
+            <SketchSkeleton className="h-4 max-w-md w-full rounded-full" />
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="h-16 animate-pulse rounded-lg bg-[var(--glass-muted-bg)]" />
-              <div className="h-16 animate-pulse rounded-lg bg-[var(--glass-muted-bg)]" />
-              <div className="h-16 animate-pulse rounded-lg bg-[var(--glass-muted-bg)]" />
-              <div className="h-16 animate-pulse rounded-lg bg-[var(--glass-muted-bg)]" />
+              <SketchSkeleton className="h-16 rounded-xl" />
+              <SketchSkeleton className="h-16 rounded-xl" />
+              <SketchSkeleton className="h-16 rounded-xl" />
+              <SketchSkeleton className="h-16 rounded-xl" />
             </div>
           </div>
-        </ReflectiveCard>
+        </SketchBox>
+        <SketchListSkeleton rows={3} />
       </div>
     );
   }
@@ -183,11 +201,11 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
       <div className="space-y-3">
         <Link
           href={`${routePrefix}/agents`}
-          className="inline-flex items-center gap-1 text-[12px] text-[--text-tertiary] hover:text-[--text-primary]"
+          className="inline-flex items-center gap-1 text-[12px] text-black/50 hover:text-black"
         >
           <ChevronLeft className="size-3.5" aria-hidden /> Back
         </Link>
-        <p className="text-[12px] text-[--danger]">{error ?? "Failed to load agent."}</p>
+        <p className="text-[12px] text-black">{error ?? "Failed to load agent."}</p>
       </div>
     );
   }
@@ -243,28 +261,37 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
   };
 
   return (
-    <div className="animate-qlix-fade-in space-y-6">
+    <div className="space-y-6 bg-white">
       <Link
         href={`${routePrefix}/agents`}
-        className="inline-flex items-center gap-1 text-[12px] text-[--text-tertiary] hover:text-[--text-primary]"
+        className="inline-flex items-center gap-1 text-[12px] text-black/50 hover:text-black"
       >
         <ChevronLeft className="size-3.5" aria-hidden /> All agents
       </Link>
 
-      <ReflectiveCard className="rounded-xl" contentClassName="p-5 sm:p-6">
-        <div className="flex flex-col gap-1 border-b border-[--border-subtle] pb-4">
+      <SketchBox className="p-5 sm:p-6">
+        <div className="flex flex-col gap-1 border-b border-black pb-4">
           <div className="flex items-start gap-2">
-            <Fingerprint className="mt-0.5 size-5 shrink-0 text-[--accent]" aria-hidden />
+            <Fingerprint className="mt-0.5 size-5 shrink-0 text-black" aria-hidden />
             <div className="min-w-0 flex-1">
-              <h1 className="text-[17px] font-medium tracking-[-0.02em] text-[--text-primary]">{agent.name}</h1>
+              <h1 className="text-[17px] font-medium tracking-[-0.02em] text-black">{agent.name}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[12px] text-[--text-secondary]" title={agent.did}>
+                <span className="font-mono text-[12px] text-black/70" title={agent.did}>
                   {shortDid(agent.did)}
                 </span>
                 <CopyInline value={agent.did} label="DID" />
               </div>
             </div>
-            <StatusPill status={derivedRunnerStatus()} />
+            <div className="flex shrink-0 flex-col items-end gap-2">
+              <StatusLabel status={derivedRunnerStatus()} />
+              <Link
+                href={`${routePrefix}/agents/${agent.id}/chat`}
+                className={sketchButton}
+              >
+                <MessageSquare className="size-3.5" aria-hidden />
+                Start chat
+              </Link>
+            </div>
           </div>
 
           {/* Description */}
@@ -276,7 +303,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                   onChange={(e) => setDescDraft(e.target.value)}
                   rows={8}
                   placeholder="Describe what this agent does — this becomes its system prompt."
-                  className="w-full resize-none rounded-md border border-[--border-default] bg-[--bg-base] px-3 py-2 text-[13px] text-[--text-primary] outline-none focus:border-[--accent] focus:ring-2 focus:ring-[--accent]/20 placeholder:text-[--text-tertiary]"
+                  className={`${sketchInput} resize-none`}
                 />
                 <div className="flex items-center gap-2">
                   <button
@@ -291,7 +318,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                       setData((prev) => prev ? { ...prev, agent: res.agent } : prev);
                       setDescEditing(false);
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-[--accent] px-3 py-1.5 text-[12px] font-medium text-[--accent-contrast] hover:opacity-90 disabled:opacity-50"
+                    className={sketchButton}
                   >
                     {descSaving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
                     Save
@@ -300,24 +327,24 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                     type="button"
                     disabled={descSaving}
                     onClick={() => { setDescEditing(false); setDescError(null); }}
-                    className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-[12px] text-[--text-tertiary] hover:text-[--text-primary]"
+                    className={sketchButton}
                   >
                     <X className="size-3.5" aria-hidden />
                     Cancel
                   </button>
-                  <span className="ml-auto text-[11px] text-[--text-tertiary]">{descDraft.length}/500</span>
+                  <span className="ml-auto text-[11px] text-black/50">{descDraft.length}/500</span>
                 </div>
-                {descError && <p className="text-[12px] text-[--danger]">{descError}</p>}
+                {descError && <p className="text-[12px] text-black">{descError}</p>}
               </div>
             ) : (
               <div className="group flex items-start gap-2">
-                <p className={cn("flex-1 text-[13px] leading-relaxed", agent.description ? "text-[--text-secondary]" : "italic text-[--text-tertiary]")}>
+                <p className={cn("flex-1 text-[13px] leading-relaxed", agent.description ? "text-black/70" : "italic text-black/50")}>
                   {agent.description ?? "No description — click to add one."}
                 </p>
                 <button
                   type="button"
                   onClick={() => { setDescDraft(agent.description ?? ""); setDescEditing(true); setDescError(null); }}
-                  className="shrink-0 rounded p-1 text-[--text-tertiary] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[--text-primary] hover:bg-[--bg-hover]"
+                  className="shrink-0 border border-black p-1 text-black/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-black"
                   title="Edit description"
                 >
                   <Pencil className="size-3.5" aria-hidden />
@@ -328,42 +355,42 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
         </div>
 
         {agent.runtime === "cloud" || agent.runtime === "hybrid" ? (
-          <section className="mt-4 rounded-lg border border-[--border-subtle] bg-black/10 p-3">
+          <SketchBox className="mt-4 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-[12px] font-medium text-[--text-primary]">
-                  {agent.runtime === "hybrid" ? "Local daemon" : "Cloud runner"}
+                <p className="text-[12px] font-medium text-black">
+                  {agent.runtime === "hybrid" ? "Local agent" : "Cloud agent"}
                 </p>
-                <p className="mt-0.5 text-[11px] text-[--text-tertiary]">
+                <p className="mt-0.5 text-[11px] text-black/50">
                   {agent.runtime === "hybrid"
                     ? runtimeStatus?.heartbeatFresh
-                      ? "Daemon is online on your computer"
+                      ? "Online on your computer"
                       : "Offline — unzip the starter pack and double-click Start Qlix Agent"
                     : runnerBusy
-                      ? "Restarting runner — building Docker image (often 3–10 minutes)."
+                      ? "Getting your agent ready — this can take a few minutes."
                       : runtimeStatus?.heartbeatFresh
-                        ? "Runner is online"
+                        ? "Online and ready"
                         : runtimeStatus?.provisioningStatus === "failed" ||
                             agent.cloudProvisioningStatus === "failed"
-                          ? "Runner is not running (provisioning failed)."
-                          : "Runner is offline or still provisioning."}
+                          ? "Your agent isn't running (setup didn't finish)."
+                          : "Offline or still starting up."}
                   {runtimeStatus?.lastHeartbeatAt
-                    ? ` Last heartbeat: ${formatDateTime(runtimeStatus.lastHeartbeatAt)}`
+                    ? ` Last seen: ${formatDateTime(runtimeStatus.lastHeartbeatAt)}`
                     : ""}
                 </p>
                 {runnerBusy ? (
-                  <p className="mt-2 flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-200">
+                  <p className="mt-2 flex items-center gap-1.5 text-[11px] text-black/60">
                     <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
-                    Provisioning in progress — status updates every few seconds.
+                    Setting up — this updates automatically every few seconds.
                   </p>
                 ) : null}
                 {runtimeStatus?.provisioningError ? (
-                  <p className="mt-2 whitespace-pre-wrap text-[11px] text-[--danger]">
+                  <p className="mt-2 whitespace-pre-wrap text-[11px] text-black">
                     {runtimeStatus.provisioningError}
                   </p>
                 ) : null}
                 {runtimeStatus?.inferenceError ? (
-                  <p className="mt-1 whitespace-pre-wrap text-[11px] text-[--danger]">
+                  <p className="mt-1 whitespace-pre-wrap text-[11px] text-black">
                     {runtimeStatus.inferenceError}
                   </p>
                 ) : null}
@@ -371,6 +398,18 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
 
               {canManageRunner && agent.runtime === "hybrid" ? (
                 <div className="flex flex-col items-end gap-1">
+                  {stashedPack ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadBase64File(stashedPack.base64, stashedPack.filename, "application/zip")
+                      }
+                      className={sketchButton}
+                    >
+                      <Download className="size-3.5" aria-hidden />
+                      Download starter pack
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={reissuing}
@@ -405,7 +444,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                         setReissuing(false);
                       }
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-[--accent] px-3 py-1.5 text-[12px] font-medium text-[--accent-contrast] transition-colors hover:bg-[--accent-hover] disabled:opacity-50"
+                    className={sketchButton}
                   >
                     {reissuing ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -420,11 +459,11 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                         ? "Downloaded — re-issue again"
                         : "Re-issue starter pack"}
                   </button>
-                  <p className="max-w-[260px] text-right text-[10px] leading-snug text-[--text-tertiary]">
+                  <p className="max-w-[260px] text-right text-[10px] leading-snug text-black/50">
                     Lost the ZIP? This rotates the signing key and runner token and downloads a fresh
                     starter pack. The old pack stops working.
                   </p>
-                  {reissueError ? <p className="text-[11px] text-[--danger]">{reissueError}</p> : null}
+                  {reissueError ? <p className="text-[11px] text-black">{reissueError}</p> : null}
                 </div>
               ) : null}
 
@@ -437,7 +476,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                       if (
                         runnerOnline &&
                         !window.confirm(
-                          "Restart the cloud runner? The agent will be briefly unavailable while the container rebuilds (often 3–10 minutes).",
+                          "Restart this agent? It'll be briefly unavailable while it starts back up (usually a few minutes).",
                         )
                       ) {
                         return;
@@ -493,21 +532,16 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                         setRestartSubmitting(false);
                       }
                     }}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-50",
-                      runnerOnline && !runnerBusy
-                        ? "border border-[--border-subtle] bg-[var(--glass-muted-bg)] text-[--text-primary] hover:border-[--accent]/40 hover:bg-[--accent]/10"
-                        : "bg-[--accent] text-[--accent-contrast] hover:bg-[--accent-hover]",
-                    )}
+                    className={sketchButton}
                   >
                     {runnerBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
-                    {runnerBusy ? "Rebuilding…" : "Rebuild container"}
+                    {runnerBusy ? "Restarting…" : "Restart agent"}
                   </button>
                   {agent.cloudProvisioningStatus && (
                     <button
                       type="button"
                       onClick={async () => {
-                        if (!window.confirm("Clear the stuck provisioning status? You can then try restarting again.")) {
+                        if (!window.confirm("Clear the stuck status? You can then try restarting again.")) {
                           return;
                         }
                         try {
@@ -532,20 +566,20 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                           setRestartError(err instanceof Error ? err.message : "Failed to clear status");
                         }
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+                      className={sketchButton}
                     >
                       Clear status
                     </button>
                   )}
-                  {restartError ? <p className="text-[11px] text-[--danger]">{restartError}</p> : null}
+                  {restartError ? <p className="text-[11px] text-black">{restartError}</p> : null}
                 </div>
               ) : null}
             </div>
-          </section>
+          </SketchBox>
         ) : null}
 
         <section className="mt-5">
-          <h2 className="text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">Lifecycle</h2>
+          <h2 className={sketchLabel}>Lifecycle</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <DetailTile label="Created" value={formatDateTime(agent.createdAt)} />
             <DetailTile label="Last active" value={formatDateTime(agent.lastActive)} />
@@ -558,7 +592,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
         </section>
 
         <section className="mt-6">
-          <h2 className="text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">Runtime</h2>
+          <h2 className={sketchLabel}>Runtime</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <DetailTile label="Runtime" value={agent.runtime} capitalize />
             <DetailTile label="Model" value={agent.model} mono />
@@ -577,9 +611,9 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
         </section>
 
         <section className="mt-6">
-          <h2 className="text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">Public key</h2>
-          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-[--border-subtle] bg-black/20 px-3 py-2">
-            <span className="min-w-0 flex-1 font-mono text-[11px] text-[--text-secondary]" title={agent.publicKey}>
+          <h2 className={sketchLabel}>Public key</h2>
+          <div className="mt-2 flex flex-wrap items-center gap-2 border border-black bg-white px-3 py-2">
+            <span className="min-w-0 flex-1 font-mono text-[11px] text-black/70" title={agent.publicKey}>
               {shortHexKey(agent.publicKey)}
             </span>
             <CopyInline value={agent.publicKey} label="public key" />
@@ -587,22 +621,27 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
         </section>
 
         <section className="mt-6">
-          <h2 className="text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">Permission scopes</h2>
-          <p className="mt-1 text-[11px] text-[--text-tertiary]">
+          <h2 className={sketchLabel}>Permission scopes</h2>
+          <p className="mt-1 text-[11px] text-black/50">
             Always-on grants run without JIT prompts; JIT scopes require approval each time.
           </p>
+          <AgentScopesEditor
+            agent={agent}
+            orgId={session?.organization.id ?? null}
+            onUpdated={(updated) => setData((prev) => (prev ? { ...prev, agent: updated } : prev))}
+          />
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <ScopeBlock title="Always-on" scopes={agent.alwaysScopes} variant="always" />
             <ScopeBlock title="Just-in-time" scopes={agent.jitScopes} variant="jit" />
           </div>
           {agent.permissionScopes.length > 0 ? (
             <div className="mt-4">
-              <p className="text-[11px] font-medium text-[--text-tertiary]">All configured scopes</p>
+              <p className={`${sketchLabel} mt-4`}>All configured scopes</p>
               <ul className="mt-2 flex flex-wrap gap-1.5">
                 {agent.permissionScopes.map((s) => (
                   <li
                     key={s}
-                    className="rounded-md border border-[--border-subtle] bg-[var(--glass-muted-bg)] px-2 py-0.5 font-mono text-[11px] text-[--text-primary]"
+                    className="border border-black px-2 py-0.5 font-mono text-[11px] text-black"
                   >
                     {s}
                   </li>
@@ -611,28 +650,28 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
             </div>
           ) : null}
         </section>
-      </ReflectiveCard>
+      </SketchBox>
 
-      <ReflectiveCard className="rounded-xl" contentClassName="p-5">
-        <h2 className="text-[12px] font-medium text-[--text-secondary]">Verifiable credentials</h2>
+      <SketchBox className="p-5">
+        <h2 className="text-[12px] font-medium text-black">Verifiable credentials</h2>
         {credentials.length === 0 ? (
-          <p className="mt-2 text-[12px] text-[--text-tertiary]">No credentials issued.</p>
+          <p className="mt-2 text-[12px] text-black/50">No credentials issued.</p>
         ) : (
           <ul className="mt-3 space-y-3">
             {credentials.map((vc) => (
-              <li key={vc.id} className="rounded-md border border-[--border-subtle] p-3">
+              <li key={vc.id} className="border border-black p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-medium text-[--text-primary] capitalize">{vc.type} VC</span>
-                  <span className="shrink-0 text-[11px] text-[--text-tertiary]">
+                  <span className="text-[12px] font-medium capitalize text-black">{vc.type} VC</span>
+                  <span className="shrink-0 text-[11px] text-black/50">
                     issued {formatDateTime(vc.issuedAt)}
                   </span>
                 </div>
-                <p className="mt-1 font-mono text-[11px] text-[--text-tertiary]">issuer: {vc.issuerDid}</p>
-                <pre className="mt-2 overflow-x-auto rounded bg-black/30 px-2 py-1.5 font-mono text-[11px] text-[--text-secondary]">
+                <p className="mt-1 font-mono text-[11px] text-black/50">issuer: {vc.issuerDid}</p>
+                <pre className="mt-2 overflow-x-auto border border-black bg-white px-2 py-1.5 font-mono text-[11px] text-black/70">
                   {JSON.stringify(vc.claims, null, 2)}
                 </pre>
                 <p
-                  className="mt-1 break-all font-mono text-[10px] text-[--text-tertiary]"
+                  className="mt-1 break-all font-mono text-[10px] text-black/50"
                   title={vc.signature}
                 >
                   sig: {vc.signature.slice(0, 24)}…
@@ -641,14 +680,14 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
             ))}
           </ul>
         )}
-      </ReflectiveCard>
+      </SketchBox>
 
       <AgentMcpBindings agentId={agentId} canManage={canDelete} />
 
       {canDelete ? (
-        <ReflectiveCard className="rounded-xl border border-[--danger]/35" contentClassName="p-5">
-          <h2 className="text-[12px] font-medium text-[--danger]">Danger zone</h2>
-          <p className="mt-1 text-[12px] text-[--text-secondary]">
+        <SketchBox className="p-5">
+          <h2 className={sketchLabel}>Danger zone</h2>
+          <p className="mt-1 text-[12px] text-black/70">
             Permanently delete this agent, its verifiable credentials, and audit rows stored for it in Qlix.
             This cannot be undone.
           </p>
@@ -660,7 +699,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                 setDeleteNameInput("");
                 setDeleteError(null);
               }}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[--danger]/50 bg-[--danger]/10 px-3 py-1.5 text-[12px] font-medium text-[--danger] transition-colors hover:bg-[--danger]/20"
+              className={`${sketchButton} mt-3 gap-1.5`}
             >
               <Trash2 className="size-3.5" aria-hidden />
               Delete agent…
@@ -668,27 +707,27 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
           ) : (
             <div className="mt-4 space-y-3">
               <label className="block">
-                <span className="text-[12px] text-[--text-secondary]">
-                  Type <span className="font-medium text-[--text-primary]">{agent.name}</span> to confirm.
+                <span className="text-[12px] text-black/70">
+                  Type <span className="font-medium text-black">{agent.name}</span> to confirm.
                 </span>
                 <input
                   type="text"
                   value={deleteNameInput}
                   onChange={(e) => setDeleteNameInput(e.target.value)}
                   autoComplete="off"
-                  className="mt-1.5 w-full max-w-md rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--danger]"
+                  className={`${sketchInput} mt-1.5 max-w-md`}
                   placeholder={agent.name}
                 />
               </label>
               {deleteError ? (
-                <p className="text-[12px] text-[--danger]">{deleteError}</p>
+                <p className="text-[12px] text-black">{deleteError}</p>
               ) : null}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={!nameMatchesDelete || deleteSubmitting}
                   onClick={() => void handleDelete()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-[--danger] px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`${sketchButton} disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   {deleteSubmitting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
                   Delete permanently
@@ -701,31 +740,22 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                     setDeleteNameInput("");
                     setDeleteError(null);
                   }}
-                  className="rounded-md px-3 py-1.5 text-[12px] font-medium text-[--text-tertiary] hover:text-[--text-primary]"
+                  className={sketchButton}
                 >
                   Cancel
                 </button>
               </div>
             </div>
           )}
-        </ReflectiveCard>
+        </SketchBox>
       ) : null}
     </div>
   );
 }
 
-function StatusPill({ status }: { readonly status: string }) {
-  const s = status.toLowerCase();
-  const active = s === "active" || s === "online";
+function StatusLabel({ status }: { readonly status: string }) {
   return (
-    <span
-      className={cn(
-        "shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium capitalize",
-        active
-          ? "bg-emerald-950/50 text-emerald-400"
-          : "bg-[var(--glass-muted-bg)] text-[--text-secondary]",
-      )}
-    >
+    <span className="shrink-0 font-serif text-[10px] uppercase tracking-widest text-black/60">
       {status}
     </span>
   );
@@ -745,57 +775,47 @@ function DetailTile({
   readonly className?: string;
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-[--border-subtle] bg-black/15 px-3 py-2.5",
-        className,
-      )}
-    >
-      <p className="text-[11px] text-[--text-tertiary]">{label}</p>
+    <SketchBox className={cn("px-3 py-2.5", className)}>
+      <p className="text-[11px] text-black/50">{label}</p>
       <p
         className={cn(
-          "mt-0.5 text-[13px] text-[--text-primary]",
+          "mt-0.5 text-[13px] text-black",
           mono && "font-mono text-[12px]",
           capitalize && "capitalize",
         )}
       >
         {value}
       </p>
-    </div>
+    </SketchBox>
   );
 }
 
 function ScopeBlock({
   title,
   scopes,
-  variant,
 }: {
   readonly title: string;
   readonly scopes: string[];
   readonly variant: "always" | "jit";
 }) {
-  const borderAccent =
-    variant === "jit"
-      ? "border-amber-500/25 bg-amber-500/[0.06]"
-      : "border-[--border-subtle] bg-black/15";
   return (
-    <div className={cn("rounded-lg border p-3", borderAccent)}>
-      <p className="text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">{title}</p>
+    <SketchBox className="p-3">
+      <p className={sketchLabel}>{title}</p>
       {scopes.length === 0 ? (
-        <p className="mt-2 text-[12px] text-[--text-tertiary]">None</p>
+        <p className="mt-2 text-[12px] text-black/50">None</p>
       ) : (
         <ul className="mt-2 flex flex-wrap gap-1.5">
           {scopes.map((s) => (
             <li
               key={s}
-              className="rounded border border-[--border-subtle]/80 bg-[var(--glass-muted-bg)] px-2 py-0.5 font-mono text-[11px] text-[--text-primary]"
+              className="border border-black px-2 py-0.5 font-mono text-[11px] text-black"
             >
               {s}
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -816,11 +836,11 @@ function CopyInline({ value, label }: { readonly value: string; readonly label: 
     <button
       type="button"
       onClick={() => void onCopy()}
-      className="qlix-glass-muted inline-flex size-7 shrink-0 items-center justify-center rounded-md text-[--text-tertiary] transition-colors hover:bg-[var(--glass-surface-bg-hover)] hover:text-[--text-primary]"
+      className="inline-flex size-7 shrink-0 items-center justify-center border border-black bg-white text-black/50 transition-colors hover:bg-black hover:text-white"
       title={`Copy ${label}`}
       aria-label={`Copy ${label}`}
     >
-      {ok ? <Check className="size-[14px] text-green-500" aria-hidden /> : <Copy className="size-[14px]" aria-hidden />}
+      {ok ? <Check className="size-[14px] text-black" aria-hidden /> : <Copy className="size-[14px]" aria-hidden />}
     </button>
   );
 }

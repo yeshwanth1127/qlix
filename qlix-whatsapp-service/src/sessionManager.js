@@ -1,4 +1,5 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
+import { migratePlaintextAuthDir, useEncryptedMultiFileAuthState } from './encryptedAuthState.js';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import fs from 'node:fs';
@@ -193,6 +194,31 @@ function backoffMs(attempt) {
   return Math.min(30_000, 1000 * 2 ** attempt);
 }
 
+/**
+ * Outbound sends had no throttling at all — a bulk operation (e.g. lead outreach) could
+ * fire many messages back-to-back and trip WhatsApp's own anti-spam limits. This enforces
+ * a minimum spacing between sends, per connector, queuing bursts instead of dropping them.
+ */
+const MIN_SEND_INTERVAL_MS = Number(process.env.WHATSAPP_MIN_SEND_INTERVAL_MS || 1100);
+const sendQueues = new Map();
+const lastSentAt = new Map();
+
+function throttledSend(connectorId, fn) {
+  const prev = sendQueues.get(connectorId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    const last = lastSentAt.get(connectorId) ?? 0;
+    const wait = Math.max(0, MIN_SEND_INTERVAL_MS - (Date.now() - last));
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    lastSentAt.set(connectorId, Date.now());
+    return fn();
+  });
+  sendQueues.set(
+    connectorId,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
 async function notifyLinked(connectorId, ownerJid) {
   await qlix.notifyLinked(connectorId, ownerJid);
 }
@@ -260,7 +286,10 @@ export async function startSession(connectorId) {
   };
   sessions.set(connectorId, entry);
 
-  const { state, saveCreds } = await useMultiFileAuthState(dir);
+  await migratePlaintextAuthDir(dir).catch((err) =>
+    console.warn(`[qlix-whatsapp] auth-dir encryption migration failed for ${connectorId}:`, err?.message ?? err),
+  );
+  const { state, saveCreds } = await useEncryptedMultiFileAuthState(dir);
 
   const connect = async () => {
     if (entry.sock) {
@@ -317,6 +346,11 @@ export async function startSession(connectorId) {
           console.error(`[qlix-whatsapp] logged out ${connectorId}`);
           fs.rmSync(dir, { recursive: true, force: true });
           sessions.delete(connectorId);
+          // Previously silent (console.error only) — the dashboard's Connectors page kept
+          // showing "connected" forever even though WhatsApp had actually unlinked the device.
+          await qlix.notifyLoggedOut(connectorId).catch((err) =>
+            console.error(`[qlix-whatsapp] failed to report logout for ${connectorId}:`, err?.message ?? err),
+          );
           return;
         }
 
@@ -428,26 +462,28 @@ export async function sendToConnector(connectorId, text) {
   if (targets.length === 0) {
     return { ok: false, error: 'Owner JID not known yet' };
   }
-  let lastError = 'Send failed';
   const selfChatJid = entry.selfChatRemoteJid ?? entry.ownerLid;
   const ordered =
     selfChatJid && targets.includes(selfChatJid)
       ? [selfChatJid, ...targets.filter((j) => j !== selfChatJid)]
       : targets;
 
-  for (const jid of ordered) {
-    try {
-      const sent = await entry.sock.sendMessage(jid, { text });
-      rememberOutbound(entry, text);
-      rememberOutboundMessageId(entry, sent?.key);
-      console.log(`[qlix-whatsapp] sent connector=${connectorId} to=${jid}`);
-      return { ok: true, timestamp: new Date().toISOString(), jid };
-    } catch (err) {
-      lastError = err.message || lastError;
-      console.warn(`[qlix-whatsapp] send failed connector=${connectorId} to=${jid}:`, lastError);
+  return throttledSend(connectorId, async () => {
+    let lastError = 'Send failed';
+    for (const jid of ordered) {
+      try {
+        const sent = await entry.sock.sendMessage(jid, { text });
+        rememberOutbound(entry, text);
+        rememberOutboundMessageId(entry, sent?.key);
+        console.log(`[qlix-whatsapp] sent connector=${connectorId} to=${jid}`);
+        return { ok: true, timestamp: new Date().toISOString(), jid };
+      } catch (err) {
+        lastError = err.message || lastError;
+        console.warn(`[qlix-whatsapp] send failed connector=${connectorId} to=${jid}:`, lastError);
+      }
     }
-  }
-  return { ok: false, error: lastError };
+    return { ok: false, error: lastError };
+  });
 }
 
 export async function sendDocumentToConnector(connectorId, filePath, fileName, mimetype) {
@@ -473,23 +509,25 @@ export async function sendDocumentToConnector(connectorId, filePath, fileName, m
       ? [selfChatJid, ...targets.filter((j) => j !== selfChatJid)]
       : targets;
 
-  let lastError = 'Send failed';
-  for (const jid of ordered) {
-    try {
-      const sent = await entry.sock.sendMessage(jid, {
-        document: buffer,
-        mimetype,
-        fileName,
-      });
-      rememberOutboundMessageId(entry, sent?.key);
-      console.log(`[qlix-whatsapp] sent document connector=${connectorId} to=${jid} file=${fileName}`);
-      return { ok: true, timestamp: new Date().toISOString(), jid };
-    } catch (err) {
-      lastError = err.message || lastError;
-      console.warn(`[qlix-whatsapp] send document failed connector=${connectorId} to=${jid}:`, lastError);
+  return throttledSend(connectorId, async () => {
+    let lastError = 'Send failed';
+    for (const jid of ordered) {
+      try {
+        const sent = await entry.sock.sendMessage(jid, {
+          document: buffer,
+          mimetype,
+          fileName,
+        });
+        rememberOutboundMessageId(entry, sent?.key);
+        console.log(`[qlix-whatsapp] sent document connector=${connectorId} to=${jid} file=${fileName}`);
+        return { ok: true, timestamp: new Date().toISOString(), jid };
+      } catch (err) {
+        lastError = err.message || lastError;
+        console.warn(`[qlix-whatsapp] send document failed connector=${connectorId} to=${jid}:`, lastError);
+      }
     }
-  }
-  return { ok: false, error: lastError };
+    return { ok: false, error: lastError };
+  });
 }
 
 export function getSessionStatus(connectorId) {

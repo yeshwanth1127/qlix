@@ -5,7 +5,43 @@ import { prisma } from '../lib/prisma.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { ConnectorsRepository } from './connectors.repository.js';
 import { refreshGoogleAccessToken } from './googleOAuth.service.js';
+import { gmailList, gmailSend } from './gmailApi.service.js';
 import type { EmailReadInput, EmailReadResult, EmailSendInput, EmailSendResult } from './connectors.types.js';
+import { gmailConnectorNotConnectedMessage } from './connectorUserMessages.js';
+import { isPlaceholderEmail, isFabricatedRecipientBatch } from '../leads/leadEmailTrust.js';
+import {
+  hasListedLeadsRecently,
+  hasListedLeadsRecentlyForTeamRun,
+  isCampaignOutreachApproved,
+} from '../leads/leadOutreachGate.js';
+import { LeadsService, LeadEnrichmentRequiredError } from '../leads/leads.service.js';
+import { McpRepository } from '../mcp/mcp.repository.js';
+import { safeFetch } from '../mcp/ssrfGuard.js';
+import { JitService } from '../jit/jit.service.js';
+
+const jitService = new JitService();
+const mcpRepo = new McpRepository();
+
+/**
+ * True when this agent is wired for lead outreach: bound to the qlix-leads MCP server
+ * or holding any mcp.qlix-leads.* scope. Such agents must only email verified scraped
+ * leads, so we can safely reject any recipient that isn't in the lead DB.
+ */
+async function agentDoesLeadOutreach(
+  agentId: string,
+  ctx: { permissionScopes: string[]; alwaysScopes: string[] },
+): Promise<boolean> {
+  const hasLeadScope = [...ctx.permissionScopes, ...ctx.alwaysScopes].some((s) =>
+    s.startsWith('mcp.qlix-leads.'),
+  );
+  if (hasLeadScope) return true;
+  try {
+    const bindings = await mcpRepo.listBindingsForAgent(agentId);
+    return bindings.some((b) => b.serverSlug === 'qlix-leads');
+  } catch {
+    return false;
+  }
+}
 
 export class ConnectorNotConfiguredError extends Error {
   readonly code = 'connector_not_configured';
@@ -28,6 +64,7 @@ export class EmailToolError extends Error {
 
 const repo = new ConnectorsRepository();
 const actionsService = new ActionsService();
+const leadsService = new LeadsService();
 
 function effectiveScopes(params: {
   permissionScopes: string[];
@@ -59,6 +96,7 @@ async function loadAgentRunContext(agentId: string, runId: string | null): Promi
       permissionScopes: true,
       alwaysScopes: true,
       jitScopes: true,
+      user: { select: { orgId: true } },
     },
   });
   if (!agent) throw new EmailToolError('Agent not found');
@@ -76,11 +114,17 @@ async function loadAgentRunContext(agentId: string, runId: string | null): Promi
     }
   }
 
+  // Guest/chat-created agents have `agent.orgId = null` even though the owning user
+  // always belongs to a workspace org (every User.orgId is non-null). Connector tokens
+  // are keyed on that same user org (auth.orgId at connect time), so fall back to it —
+  // this lets guest agents use the connector without inventing a throwaway org.
+  const resolvedOrgId = agent.orgId ?? agent.user.orgId;
+
   return {
     runSkills,
     teamRunId,
     userId: agent.userId,
-    orgId: agent.orgId,
+    orgId: resolvedOrgId,
     permissionScopes: agent.permissionScopes as string[],
     alwaysScopes: agent.alwaysScopes as string[],
     jitScopes: agent.jitScopes as string[],
@@ -89,7 +133,7 @@ async function loadAgentRunContext(agentId: string, runId: string | null): Promi
 
 async function getFreshAccessToken(orgId: string): Promise<string> {
   const tokens = await repo.loadTokens(orgId, 'google');
-  if (!tokens) throw new ConnectorNotConfiguredError('Google connector not connected');
+  if (!tokens) throw new ConnectorNotConfiguredError(gmailConnectorNotConnectedMessage());
 
   const bufferMs = 60_000;
   if (tokens.expiresAtMs && tokens.expiresAtMs - Date.now() > bufferMs) {
@@ -118,7 +162,7 @@ async function callN8nWebhook(params: {
   const secret = decryptForAgentSecrets(settings.n8nWebhookSecretEnc);
   const url = `${settings.n8nBaseUrl.replace(/\/$/, '')}${params.path.startsWith('/') ? params.path : `/${params.path}`}`;
 
-  const resp = await fetch(url, {
+  const resp = await safeFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -155,18 +199,26 @@ export async function executeEmailRead(params: {
 
   const accessToken = await getFreshAccessToken(ctx.orgId);
   const settings = await repo.getN8nSettings(ctx.orgId);
-  const path = settings?.n8nEmailReadPath ?? '/webhook/qlix-email-read';
-
-  const n8nBody = {
-    accessToken,
-    query: params.input.query ?? 'is:unread',
-    maxResults: Math.min(Math.max(params.input.maxResults ?? 10, 1), 25),
-    messageId: params.input.messageId ?? null,
-  };
+  // In-house Gmail API is the default; n8n is only used when an org explicitly
+  // configured it (backward compat), keeping existing webhook setups working.
+  const useN8n = Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
+  const query = params.input.query ?? 'is:unread';
+  const maxResults = Math.min(Math.max(params.input.maxResults ?? 10, 1), 25);
+  const messageId = params.input.messageId ?? null;
 
   try {
-    const result = await callN8nWebhook({ orgId: ctx.orgId, path, body: n8nBody });
-    const messages = Array.isArray(result.messages) ? result.messages : [];
+    let messages: EmailReadResult['messages'];
+    if (useN8n) {
+      const path = settings!.n8nEmailReadPath ?? '/webhook/qlix-email-read';
+      const result = await callN8nWebhook({
+        orgId: ctx.orgId,
+        path,
+        body: { accessToken, query, maxResults, messageId },
+      });
+      messages = (Array.isArray(result.messages) ? result.messages : []) as EmailReadResult['messages'];
+    } else {
+      ({ messages } = await gmailList({ accessToken, query, maxResults, messageId }));
+    }
     await appendEmailActionLog({
       agentId: params.agentId,
       userId: ctx.userId,
@@ -174,13 +226,9 @@ export async function executeEmailRead(params: {
       status: 'success',
       riskLevel: 'low',
       teamRunId: ctx.teamRunId,
-      payload: {
-        query: n8nBody.query,
-        messageId: n8nBody.messageId,
-        resultCount: messages.length,
-      },
+      payload: { query, messageId, resultCount: messages.length, via: useN8n ? 'n8n' : 'gmail_api' },
     });
-    return { messages: messages as EmailReadResult['messages'] };
+    return { messages };
   } catch (err) {
     await appendEmailActionLog({
       agentId: params.agentId,
@@ -191,7 +239,7 @@ export async function executeEmailRead(params: {
       teamRunId: ctx.teamRunId,
       payload: { error: String((err as Error)?.message ?? err) },
     });
-    throw err;
+    throw err instanceof EmailToolError ? err : new EmailToolError(String((err as Error)?.message ?? err));
   }
 }
 
@@ -203,38 +251,134 @@ export async function executeEmailSend(params: {
   const ctx = await loadAgentRunContext(params.agentId, params.runId);
   const scopes = effectiveScopes(ctx);
   if (!scopes.has('email.send')) throw new EmailScopeDeniedError('email.send');
-  if (!ctx.orgId) throw new ConnectorNotConfiguredError('Agent must belong to an organization');
+  if (!ctx.orgId) throw new ConnectorNotConfiguredError(gmailConnectorNotConnectedMessage());
 
+  for (const to of params.input.to) {
+    if (isPlaceholderEmail(to)) {
+      throw new EmailToolError(
+        `Refusing to send to fake/placeholder address "${to}". This is not a real business email. ` +
+          `Do NOT invent addresses like info@cafe1.com. First run mcp.qlix-leads.gmb_search_leads, ` +
+          `then mcp.qlix-leads.list_leads, and send ONLY to the verified emails it returns.`,
+      );
+    }
+  }
+
+  // A whole batch of sequential invented recipients (info@cafe1.com, info@cafe2.com, …)
+  // is the classic signature of an agent skipping the scrape/list step. Refuse it outright.
+  if (isFabricatedRecipientBatch(params.input.to)) {
+    throw new EmailToolError(
+      'Refusing to send: the recipient list looks fabricated (sequential invented domains). ' +
+        'Scrape real leads with mcp.qlix-leads.gmb_search_leads and use the verified emails from list_leads.',
+    );
+  }
+
+  // Lead-gen enforcement: an agent wired for lead outreach must follow the UX order
+  // scrape -> list leads to the user -> send. Two structural checks:
+  //   1. leads must have been listed/scraped in this working session (present-first)
+  //   2. every recipient must exist as a verified scraped lead (no hallucinated emails)
+  if (await agentDoesLeadOutreach(params.agentId, ctx)) {
+    const listed =
+      hasListedLeadsRecently(params.agentId) ||
+      (ctx.teamRunId != null && hasListedLeadsRecentlyForTeamRun(ctx.teamRunId));
+    if (!listed) {
+      throw new EmailToolError(
+        'Refusing to send: you must scrape and present the leads to the user before any outreach. ' +
+          'First call mcp.qlix-leads.gmb_search_leads, then mcp.qlix-leads.list_leads, show the ' +
+          'resulting business names and emails to the user, and only send after that step.',
+      );
+    }
+    const campaignId =
+      (params.input.metadata?.campaignId as string | undefined)?.trim() ||
+      (await leadsService.resolveCampaignIdFromRecipients(ctx.orgId, params.input.to));
+    // Skip the campaign-wide enrichment-complete block when the user already reviewed
+    // this campaign's leads in the UI and approved outreach — they saw which leads
+    // still lack emails. Per-recipient verified-email checks below still apply.
+    if (campaignId && !isCampaignOutreachApproved(campaignId)) {
+      try {
+        await leadsService.assertBrowserEnrichmentComplete(ctx.orgId, campaignId);
+      } catch (err) {
+        if (err instanceof LeadEnrichmentRequiredError) {
+          throw new EmailToolError(err.message);
+        }
+        throw err;
+      }
+    }
+    for (const to of params.input.to) {
+      const isRealLead = await leadsService.isVerifiedLeadRecipient(ctx.orgId, to);
+      if (!isRealLead) {
+        throw new EmailToolError(
+          `Refusing to send to "${to}" — it is not a verified lead for this workspace. ` +
+            `Only send to emails returned by mcp.qlix-leads.list_leads after scraping. ` +
+            `If you have no leads yet, run mcp.qlix-leads.gmb_search_leads first.`,
+        );
+      }
+    }
+  }
+
+  // QLIX_JIT_AUTO_APPROVE bypasses approval in dev. Cloud email runtime requests JIT via
+  // /api/v1/jit/request before send; first approval in chat UI creates a conversation grant.
+  const jitAutoApprove =
+    process.env.QLIX_JIT_AUTO_APPROVE === '1' || process.env.QLIX_JIT_AUTO_APPROVE === 'true';
   const needsJit =
+    !jitAutoApprove &&
     (ctx.jitScopes as PermissionScope[]).includes('email.send') &&
     !(ctx.alwaysScopes as PermissionScope[]).includes('email.send');
 
   if (needsJit) {
-    if (!params.input.jitToken?.trim()) {
-      throw new JitTokenRequiredError('email.send requires an approved jitToken');
+    const token = params.input.jitToken?.trim();
+    if (!token) {
+      const sessionGranted = await jitService.hasActiveConversationGrantForRun(
+        params.runId,
+        'email.send',
+      );
+      if (!sessionGranted) {
+        throw new JitTokenRequiredError('email.send requires dashboard approval');
+      }
+      await jitService.touchConversationGrantForRun(params.runId, 'email.send');
+    } else {
+      const ok = await actionsService.consumeJitToken({
+        agentId: params.agentId,
+        actionType: 'email.send',
+        token,
+      });
+      if (!ok) throw new JitTokenInvalidError('Invalid or already used jitToken for email.send');
     }
-    const ok = await actionsService.consumeJitToken({
-      agentId: params.agentId,
-      actionType: 'email.send',
-      token: params.input.jitToken.trim(),
-    });
-    if (!ok) throw new JitTokenInvalidError('Invalid or already used jitToken for email.send');
   }
 
   const accessToken = await getFreshAccessToken(ctx.orgId);
   const settings = await repo.getN8nSettings(ctx.orgId);
-  const path = settings?.n8nEmailSendPath ?? '/webhook/qlix-email-send';
-
-  const n8nBody = {
-    accessToken,
-    to: params.input.to,
-    subject: params.input.subject,
-    bodyText: params.input.bodyText,
-    replyToMessageId: params.input.replyToMessageId ?? null,
-  };
+  // In-house Gmail API is the default; n8n only when an org explicitly configured it.
+  const useN8n = Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
 
   try {
-    const result = await callN8nWebhook({ orgId: ctx.orgId, path, body: n8nBody });
+    let result: EmailSendResult;
+    if (useN8n) {
+      const path = settings!.n8nEmailSendPath ?? '/webhook/qlix-email-send';
+      const raw = await callN8nWebhook({
+        orgId: ctx.orgId,
+        path,
+        body: {
+          accessToken,
+          to: params.input.to,
+          subject: params.input.subject,
+          bodyText: params.input.bodyText,
+          replyToMessageId: params.input.replyToMessageId ?? null,
+        },
+      });
+      result = {
+        messageId: String(raw.messageId ?? ''),
+        threadId: String(raw.threadId ?? ''),
+        status: String(raw.status ?? 'sent'),
+      };
+    } else {
+      result = await gmailSend({
+        accessToken,
+        to: params.input.to,
+        subject: params.input.subject,
+        bodyText: params.input.bodyText,
+        replyToMessageId: params.input.replyToMessageId ?? null,
+      });
+    }
     await appendEmailActionLog({
       agentId: params.agentId,
       userId: ctx.userId,
@@ -246,14 +390,24 @@ export async function executeEmailSend(params: {
         recipientDomains: recipientDomains(params.input.to),
         recipientCount: params.input.to.length,
         subjectPreview: params.input.subject.slice(0, 120),
-        messageId: result.messageId ?? null,
+        messageId: result.messageId || null,
+        via: useN8n ? 'n8n' : 'gmail_api',
+        campaignId: params.input.metadata?.campaignId ?? null,
+        leadId: params.input.metadata?.leadId ?? null,
       },
     });
-    return {
-      messageId: String(result.messageId ?? ''),
-      threadId: String(result.threadId ?? ''),
-      status: String(result.status ?? 'sent'),
-    };
+    if (params.input.metadata?.campaignId && params.input.metadata?.leadId) {
+      await leadsService.recordOutreachFromEmail({
+        campaignId: params.input.metadata.campaignId,
+        leadId: params.input.metadata.leadId,
+        channel: 'email',
+        provider: useN8n ? 'n8n' : 'gmail',
+        status: 'sent',
+        subject: params.input.subject,
+        bodyPreview: params.input.bodyText.slice(0, 200),
+      }).catch(() => undefined);
+    }
+    return result;
   } catch (err) {
     await appendEmailActionLog({
       agentId: params.agentId,
@@ -264,7 +418,7 @@ export async function executeEmailSend(params: {
       teamRunId: ctx.teamRunId,
       payload: { error: String((err as Error)?.message ?? err) },
     });
-    throw err;
+    throw err instanceof EmailToolError ? err : new EmailToolError(String((err as Error)?.message ?? err));
   }
 }
 

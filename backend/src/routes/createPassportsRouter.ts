@@ -35,6 +35,13 @@ export function createPassportsRouter(): Router {
         },
       });
 
+      const credentialCounts = await prisma.verifiableCredential.groupBy({
+        by: ['agentId'],
+        where: { agentId: { in: agents.map((a) => a.id) } },
+        _count: { id: true },
+      });
+      const countByAgentId = new Map(credentialCounts.map((c) => [c.agentId, c._count.id]));
+
       const workspaceKind =
         org.workspaceKind === 'organization' ? 'organization' : 'individual';
 
@@ -53,7 +60,7 @@ export function createPassportsRouter(): Router {
           publicKeyFull: a.publicKey,
           publicKeyShort: truncateIdentityToken(a.publicKey),
           status: a.status,
-          credentialsIssued: 0,
+          credentialsIssued: countByAgentId.get(a.id) ?? 0,
           createdAt: a.createdAt.toISOString(),
           lastActiveAt: a.lastActive ? a.lastActive.toISOString() : null,
         })),

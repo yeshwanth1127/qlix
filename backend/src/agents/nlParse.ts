@@ -1,11 +1,12 @@
 import { openRouterChatCompletion } from '../llm/openrouterClient.js';
 import { type PermissionScope } from './agents.types.js';
 import { FORCE_JIT_SCOPES } from './jit.js';
-import { getBuildableScopes, type ScopeDef } from './scopeCatalog.js';
+import { getBuildableScopes, reconcileRuntimeWithScopes, type ScopeDef } from './scopeCatalog.js';
 import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
+import { enrichLeadGenPlan, enrichCompetitorResearchPlan, enrichJobApplyPlan } from './nlPlanEnrichment.js';
 
-const DEFAULT_NL_PARSE_MODEL = 'openrouter/anthropic/claude-sonnet-4.6';
+const DEFAULT_NL_PARSE_MODEL = 'openrouter/openai/gpt-4o-mini';
 
 function sanitizeScopes(raw: unknown, allowed: Set<string>): PermissionScope[] {
   if (!Array.isArray(raw)) return [];
@@ -32,9 +33,10 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
     ]),
   ];
 
-  const runtime = ['cloud', 'hybrid', 'local'].includes(raw.runtime as string)
+  let runtime = ['cloud', 'hybrid', 'local'].includes(raw.runtime as string)
     ? (raw.runtime as 'cloud' | 'hybrid' | 'local')
     : 'cloud';
+  runtime = reconcileRuntimeWithScopes(runtime, permissionScopes);
 
   let llmMode: 'proxy' | 'direct' = 'proxy';
   let localInferenceMode: 'local_llm' | 'cloud_api' | null = null;
@@ -56,7 +58,7 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
     permissionScopes,
     jitScopes,
     runtime,
-    model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : DEFAULT_NL_PARSE_MODEL,
+    model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : 'openrouter/openai/gpt-4o-mini',
     llmMode,
     localInferenceMode,
     rationale: String(raw.rationale ?? ''),
@@ -129,19 +131,19 @@ export async function parseAgentCreationPrompt(
 
   const obj = args as Record<string, unknown>;
 
+  let plan: AgentCreationPlan;
+
   if (toolCall.function.name === 'plan_single_agent') {
     const agentRaw = obj.agent as Record<string, unknown> | undefined;
     if (!agentRaw || typeof agentRaw !== 'object') {
       throw new NLParseError('plan_single_agent: missing agent field');
     }
-    return {
+    plan = {
       type: 'single',
       agent: sanitizeAgentSpec(agentRaw, 'My Agent', allowed),
       rationale: String(obj.rationale ?? ''),
     };
-  }
-
-  if (toolCall.function.name === 'plan_team') {
+  } else if (toolCall.function.name === 'plan_team') {
     const teamRaw = obj.team as Record<string, unknown> | undefined;
     if (!teamRaw || typeof teamRaw !== 'object') {
       throw new NLParseError('plan_team: missing team field');
@@ -157,7 +159,7 @@ export async function parseAgentCreationPrompt(
     );
     const configRaw = (teamRaw.config ?? {}) as Record<string, unknown>;
 
-    return {
+    plan = {
       type: 'team',
       rationale: String(obj.rationale ?? ''),
       team: {
@@ -174,7 +176,11 @@ export async function parseAgentCreationPrompt(
         },
       },
     };
+  } else {
+    throw new NLParseError(`Unexpected tool name: ${toolCall.function.name}`);
   }
 
-  throw new NLParseError(`Unexpected tool name: ${toolCall.function.name}`);
+  const leadEnriched = enrichLeadGenPlan(userPrompt, plan, allowed);
+  const jobEnriched = enrichJobApplyPlan(userPrompt, leadEnriched, allowed);
+  return enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
 }

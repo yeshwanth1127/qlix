@@ -1,5 +1,3 @@
-import { DEVICE_STEP_UP_HEADER } from "./agents-api";
-
 const defaultBase = "http://localhost:4000";
 
 function apiBase(): string {
@@ -135,16 +133,12 @@ export async function getAiBrainStatus(): Promise<{ ok: true; data: AiBrainStatu
 }
 
 export async function ensureAiBrainAgent(
-  stepUpToken: string,
   hosting: AiBrainHosting = "cloud",
-): Promise<{ ok: true; brainId: string } | { ok: false; message: string; forbidden?: boolean; stepUpRequired?: boolean }> {
+): Promise<{ ok: true; brainId: string } | { ok: false; message: string; forbidden?: boolean }> {
   const res = await fetch(`${apiBase()}/api/v1/ai-brain/ensure-agent`, {
     method: "POST",
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      [DEVICE_STEP_UP_HEADER]: stepUpToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ hosting }),
   });
   const body = (await res.json().catch(() => null)) as { brain?: { id: string }; error?: { message?: string; code?: string } } | null;
@@ -153,7 +147,6 @@ export async function ensureAiBrainAgent(
       ok: false,
       message: body?.error?.message ?? "Failed to provision brain agent",
       forbidden: body?.error?.code === "forbidden_brain",
-      stepUpRequired: body?.error?.code === "step_up_required" || body?.error?.code === "step_up_invalid_or_expired",
     };
   }
   const id = body?.brain?.id;
@@ -235,12 +228,16 @@ export interface AiBrainQueryResponse {
 
 export async function queryAiBrain(
   question: string,
+  model?: string,
 ): Promise<{ ok: true; data: AiBrainQueryResponse } | { ok: false; message: string }> {
   const res = await fetch(`${apiBase()}/api/v1/ai-brain/query`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({
+      question,
+      ...(model?.trim() ? { model: model.trim() } : {}),
+    }),
   });
   const json = (await res.json().catch(() => null)) as { answer?: string; citations?: AiBrainQueryCitation[]; error?: { message?: string } } | null;
   if (!res.ok) {

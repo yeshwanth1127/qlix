@@ -1,0 +1,23 @@
+# Keep cloud-runner build context small (sdk/python only needs to ship).
+frontend/
+mobile/
+backend/node_modules/
+backend/dist/
+backend/.qlix-runners/
+qlix-mcp-service/node_modules/
+OpenJarvis/
+documents/
+.git/
+.cursor/
+*.md
+.env
+.env.*
+!.env.example
+# Never ship secrets / live session material into any build context
+**/auth_info/
+qlix-whatsapp-service/auth_info/
+secrets/
+**/youtube-cookies.txt
+qlix-PAT.txt
+*.pem
+*.key

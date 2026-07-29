@@ -31,7 +31,6 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
 
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? session?.organization.id ?? null : null;
-  const deviceVerified = session?.user.deviceVerified === true;
 
   const derivedStatus = (agent: AgentDTO): string => deriveAgentDisplayStatus(agent);
 
@@ -201,7 +200,6 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
         }}
         onCreated={handleCreated}
         orgId={orgId}
-        deviceVerified={deviceVerified}
       />
 
       {confirmOpen && (

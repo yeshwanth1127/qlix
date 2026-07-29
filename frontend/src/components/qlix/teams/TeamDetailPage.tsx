@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import { getTeam, type TeamDTO } from "@/lib/teams-api";
 import { useSession } from "@/components/qlix/session-context";
+import { sketchButton } from "@/components/qlix/sketch";
 import { TeamDetailView } from "./TeamDetailView";
 
 interface TeamDetailPageProps {
@@ -37,12 +38,12 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
   const backHref = `${routePrefix}/teams`;
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col bg-transparent">
-      {/* Top bar */}
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 px-4">
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-white">
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-black px-4">
         <button
+          type="button"
           onClick={() => router.push(backHref)}
-          className="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-white/40 transition-colors hover:bg-white/5 hover:text-white/80"
+          className={`${sketchButton} gap-1.5 py-1`}
         >
           <ArrowLeft size={13} />
           Teams
@@ -50,8 +51,8 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
 
         {team && (
           <>
-            <span className="text-white/20">/</span>
-            <span className="text-xs font-medium text-white/70 truncate max-w-xs">
+            <span className="text-black/30">/</span>
+            <span className="truncate max-w-xs text-xs font-medium text-black/70">
               {team.name}
             </span>
           </>
@@ -59,8 +60,9 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
 
         {!loading && (
           <button
+            type="button"
             onClick={load}
-            className="ml-auto rounded p-1 text-white/30 transition-colors hover:bg-white/5 hover:text-white/70"
+            className={`${sketchButton} ml-auto p-1`}
             title="Refresh"
           >
             <RefreshCw size={13} />
@@ -68,20 +70,16 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
         )}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {loading && (
-          <div className="flex h-full items-center justify-center text-sm text-white/30">
+          <div className="flex h-full items-center justify-center text-sm text-black/50">
             Loading team…
           </div>
         )}
         {error && (
           <div className="flex h-full flex-col items-center justify-center gap-3">
-            <p className="text-sm text-red-400">{error}</p>
-            <button
-              onClick={load}
-              className="rounded bg-white/5 px-3 py-1.5 text-xs text-white/60 transition-colors hover:bg-white/10"
-            >
+            <p className="text-sm text-black">{error}</p>
+            <button type="button" onClick={load} className={sketchButton}>
               Retry
             </button>
           </div>
@@ -90,7 +88,6 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
           <TeamDetailView
             team={team}
             routePrefix={routePrefix}
-            deviceVerified={session.user.deviceVerified}
             onDeleted={() => router.push(backHref)}
             onUpdated={(updated) => setTeam(updated)}
           />

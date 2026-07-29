@@ -1,0 +1,65 @@
+// PM2 process config for Qlix
+// Usage:
+//   pm2 start ecosystem.config.cjs
+//   pm2 save && pm2 startup   (persist across reboots)
+
+module.exports = {
+  apps: [
+    {
+      name: "qlix-backend",
+      cwd: "/var/www/qlix/backend",
+      script: "dist/main.js",
+      interpreter: "node",
+      env_file: "/var/www/qlix/backend/.env",
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "512M",
+      error_file: "/var/log/pm2/qlix-backend-error.log",
+      out_file: "/var/log/pm2/qlix-backend-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "qlix-frontend",
+      cwd: "/var/www/qlix/frontend",
+      script: "node_modules/.bin/next",
+      args: "start --port 3000",
+      env_file: "/var/www/qlix/frontend/.env",
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "512M",
+      error_file: "/var/log/pm2/qlix-frontend-error.log",
+      out_file: "/var/log/pm2/qlix-frontend-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "qlix-mcp",
+      cwd: "/var/www/qlix/qlix-mcp-service",
+      script: "src/index.js",
+      interpreter: "node",
+      env_file: "/var/www/qlix/qlix-mcp-service/.env",
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "512M",
+      error_file: "/var/log/pm2/qlix-mcp-error.log",
+      out_file: "/var/log/pm2/qlix-mcp-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "qlix-whatsapp",
+      cwd: "/var/www/qlix/qlix-whatsapp-service",
+      script: "src/index.js",
+      interpreter: "node",
+      env_file: "/var/www/qlix/qlix-whatsapp-service/.env",
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "512M",
+      error_file: "/var/log/pm2/qlix-whatsapp-error.log",
+      out_file: "/var/log/pm2/qlix-whatsapp-out.log",
+      merge_logs: true,
+    },
+  ],
+};

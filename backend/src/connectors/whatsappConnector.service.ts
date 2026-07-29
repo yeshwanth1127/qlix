@@ -43,6 +43,33 @@ export async function getWhatsAppConnectorForAgent(agentId: string): Promise<Con
   return getConnectedWhatsAppForOrg(user.orgId);
 }
 
+/**
+ * WhatsApp connection state for an agent's org, regardless of connected status.
+ * Lets callers distinguish "linked but offline" from "never set up" so the UI can
+ * tell the user their WhatsApp isn't connected when a task (e.g. JIT approval) needs it.
+ */
+export async function getWhatsAppConnectionForAgent(
+  agentId: string,
+): Promise<{ exists: boolean; connected: boolean }> {
+  const agent = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { orgId: true, userId: true },
+  });
+  if (!agent) return { exists: false, connected: false };
+  let orgId = agent.orgId;
+  if (!orgId) {
+    const user = await prisma.user.findUnique({
+      where: { id: agent.userId },
+      select: { orgId: true },
+    });
+    if (!user) return { exists: false, connected: false };
+    orgId = user.orgId;
+  }
+  const c = await getWhatsAppConnectorForOrg(orgId);
+  if (!c) return { exists: false, connected: false };
+  return { exists: true, connected: c.status === 'connected' && !!c.whatsappOwnerJid };
+}
+
 export async function startWhatsAppLink(orgId: string, userId: string): Promise<WhatsAppLinkStatusDTO> {
   if (!isWhatsAppServiceConfigured()) {
     throw new WhatsAppServiceNotConfiguredError(

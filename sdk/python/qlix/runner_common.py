@@ -11,6 +11,7 @@ import re
 import sys
 import time
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from .backend_inference_client import backend_proxy_chat_completion
 from .hybrid_document_pipeline import wants_pdf_output
@@ -18,6 +19,8 @@ from .cloud_browser_runtime import (
     browser_action_label,
     capture_browser_frame_for_ui,
     goal_requests_live_view,
+    is_browser_tool,
+    sanitize_tool_args_for_ui,
     should_capture_browser_frame,
     smart_truncate_tool_result,
 )
@@ -103,6 +106,33 @@ def brain_event_payload(resp: dict[str, Any]) -> dict[str, object]:
         "contextSections": context_sections,
         "contextExcerpt": block[:8000] if block else "",
     }
+
+
+def extract_tool_sources(name: str, args: str, output: str) -> list[dict[str, str]]:
+    """Source URLs (+titles) a tool drew its data from, for the activity feed.
+
+    Covers live browsing (browser_navigate / browser_ab_open → the visited URL) and
+    delegates web.research tools to the research runtime. Returns [] otherwise.
+    """
+    if name in ("browser_navigate", "browser_ab_open"):
+        try:
+            params = json.loads(args) if args and args.strip() else {}
+        except (json.JSONDecodeError, TypeError):
+            params = {}
+        url = str(params.get("url", "")).strip() if isinstance(params, dict) else ""
+        if url.startswith(("http://", "https://")):
+            host = urlparse(url).netloc.lower()
+            host = host[4:] if host.startswith("www.") else host
+            return [{"url": url, "title": host or url}]
+        return []
+    if name.startswith("research_"):
+        try:
+            from .cloud_research_runtime import extract_research_sources
+
+            return extract_research_sources(name, args, output)
+        except Exception:  # noqa: BLE001 - sources are best-effort, never fail a run
+            return []
+    return []
 
 
 async def maybe_prepend_brain_context(
@@ -219,7 +249,12 @@ _SCOPE_CAPABILITY: list[tuple[str, str]] = [
 ]
 
 
-def describe_capabilities(granted_scopes: set[str], tools: list[dict[str, Any]]) -> str:
+def describe_capabilities(
+    granted_scopes: set[str],
+    tools: list[dict[str, Any]],
+    *,
+    groups: tuple[str, ...] | None = None,
+) -> str:
     """Natural-language capability summary for the system prompt.
 
     Capabilities come from the agent's GRANTED SCOPES (stable regardless of which
@@ -228,7 +263,19 @@ def describe_capabilities(granted_scopes: set[str], tools: list[dict[str, Any]])
     (e.g. "I can't browse the internet") even when tools are attached.
     """
     phrases: list[str] = []
+    if "web.research" in granted_scopes:
+        phrases.append(
+            "search and read public content on major platforms via structured APIs (no browser)"
+        )
     for prefix, phrase in _SCOPE_CAPABILITY:
+        if prefix == "web.research":
+            continue
+        if prefix == "web.":
+            if any(
+                s.startswith("web.") and s != "web.research" for s in granted_scopes
+            ) and phrase not in phrases:
+                phrases.append(phrase)
+            continue
         if any(s.startswith(prefix) for s in granted_scopes) and phrase not in phrases:
             phrases.append(phrase)
 
@@ -253,6 +300,18 @@ def describe_capabilities(granted_scopes: set[str], tools: list[dict[str, Any]])
         parts.append("You are able to " + ", ".join(phrases) + ".")
     if tool_lines:
         parts.append("Tools you can call right now:\n" + "\n".join(tool_lines[:30]))
+    grp = set(groups or ())
+    if "research" in grp and "web" not in grp:
+        parts.append(
+            "For this run use research_* tools for read/search tasks. "
+            "Do not use browser tools — they are not loaded."
+        )
+    elif "research" in grp and "web" in grp:
+        parts.append(
+            "Use research_* tools for read/search on known platforms (Twitter, GitHub, "
+            "YouTube, Bilibili, Exa). Use browser_* only for login, forms, or when "
+            "research_* returns blocked."
+        )
     parts.append(
         "When the user asks what you can do, or whether you can do something, answer "
         "based on these capabilities. Never claim you are unable to do something your "
@@ -312,7 +371,9 @@ async def run_backend_proxy_inference(
     tool_repeat_limit = int(os.environ.get("QLIX_PROXY_MAX_TOOL_REPEAT", "2"))
     usage_acc: dict[str, Any] = {}
     temperature = float(os.environ.get("QLIX_PROXY_TEMPERATURE", "0.2"))
-    max_tokens = int(os.environ.get("QLIX_PROXY_MAX_TOKENS", "4096"))
+    # 8192 so a full grounded report (four-part SWOT + breakdown + sources) fits in one
+    # completion; it's a cap, not a target, so short replies still cost the same.
+    max_tokens = int(os.environ.get("QLIX_PROXY_MAX_TOKENS", "8192"))
     # Context engineering: keep only the most recent N tool outputs verbatim in the
     # re-sent message list; older ones are replaced with a tiny placeholder to save
     # context/cost (the full outputs are still preserved in `executed_tools`).
@@ -420,6 +481,26 @@ async def run_backend_proxy_inference(
                 break
 
             messages.append({"role": "assistant", "content": None, "tool_calls": assistant_calls})
+            tool_details: list[dict[str, object]] = []
+            for tc_item in tc_list:
+                if not isinstance(tc_item, dict):
+                    continue
+                fn_pre = tc_item.get("function") if isinstance(tc_item.get("function"), dict) else {}
+                pre_name = str(fn_pre.get("name", ""))
+                if not pre_name:
+                    continue
+                pre_args_raw = str(fn_pre.get("arguments", "") or "")
+                try:
+                    pre_params = json.loads(pre_args_raw) if pre_args_raw.strip() else {}
+                except json.JSONDecodeError:
+                    pre_params = {}
+                if not isinstance(pre_params, dict):
+                    pre_params = {}
+                detail: dict[str, object] = {"name": pre_name}
+                if is_browser_tool(pre_name) or pre_name.startswith("browser_"):
+                    detail["label"] = browser_action_label(pre_name, pre_params)
+                    detail["tool_args"] = sanitize_tool_args_for_ui(pre_params)
+                tool_details.append(detail)
             seq = await emit_event(
                 http,
                 agent_id=agent_id,
@@ -431,6 +512,7 @@ async def run_backend_proxy_inference(
                     "message": "inference_tool_round",
                     "round": round_idx + 1,
                     "tools": [c["function"]["name"] for c in assistant_calls],
+                    "tool_details": tool_details,
                 },
             )
 
@@ -468,10 +550,20 @@ async def run_backend_proxy_inference(
                 fn_pre = tc_item.get("function") if isinstance(tc_item.get("function"), dict) else {}
                 pre_name = str(fn_pre.get("name", ""))
                 if pre_name:
+                    pre_args_raw = str(fn_pre.get("arguments", "") or "")
+                    try:
+                        pre_params = json.loads(pre_args_raw) if pre_args_raw.strip() else {}
+                    except json.JSONDecodeError:
+                        pre_params = {}
+                    if not isinstance(pre_params, dict):
+                        pre_params = {}
                     started_data: dict[str, object] = {
                         "message": "tool_started",
                         "tool": pre_name,
                     }
+                    if is_browser_tool(pre_name) or pre_name.startswith("browser_"):
+                        started_data["label"] = browser_action_label(pre_name, pre_params)
+                        started_data["tool_args"] = sanitize_tool_args_for_ui(pre_params)
                     if pre_name == "gui_control" or pre_name.startswith("s3_"):
                         started_data["package"] = "agents3"
                     seq = await emit_event(
@@ -506,17 +598,41 @@ async def run_backend_proxy_inference(
                 executed_call_counts[sig] = executed_call_counts.get(sig, 0) + 1
                 messages.append({"role": "tool", "tool_call_id": tid, "content": tool_out_truncated})
                 # Surface tool failures to the UI: executors prefix failed results
-                # with "[failed] ". Carry an ok flag + short error so the activity
-                # timeline can render the failure inline instead of silently
-                # showing "Done".
+                # with "[failed] ". Research tools may return JSON blocked payloads.
                 tool_failed = isinstance(tool_out, str) and tool_out.startswith("[failed] ")
+                tool_error: str | None = None
+                if tool_failed:
+                    tool_error = tool_out[len("[failed] ") :].strip()[:500]
+                elif isinstance(tool_out, str) and name.startswith("research_"):
+                    try:
+                        from .cloud_research_runtime import parse_research_tool_result
+
+                        research_ok, research_err = parse_research_tool_result(tool_out)
+                        if not research_ok:
+                            tool_failed = True
+                            tool_error = research_err
+                    except Exception:
+                        pass
                 finished_data: dict[str, object] = {
                     "message": "tool_finished",
                     "tool": name,
                     "ok": not tool_failed,
                 }
-                if tool_failed:
-                    finished_data["error"] = tool_out[len("[failed] ") :].strip()[:500]
+                if tool_failed and tool_error:
+                    finished_data["error"] = tool_error
+                if not tool_failed:
+                    sources = extract_tool_sources(name, args, str(tool_out))
+                    if sources:
+                        finished_data["sources"] = sources
+                try:
+                    finish_params = json.loads(args) if args.strip() else {}
+                except json.JSONDecodeError:
+                    finish_params = {}
+                if not isinstance(finish_params, dict):
+                    finish_params = {}
+                if is_browser_tool(name) or name.startswith("browser_"):
+                    finished_data["label"] = browser_action_label(name, finish_params)
+                    finished_data["tool_args"] = sanitize_tool_args_for_ui(finish_params)
                 seq = await emit_event(
                     http,
                     agent_id=agent_id,
@@ -569,6 +685,78 @@ async def run_backend_proxy_inference(
                             )
                     except (json.JSONDecodeError, IndexError):
                         pass
+            # Lead generation / enrichment tool-order nudges.
+            try:
+                from .tool_router import (
+                    is_lead_browser_enrichment_intent,
+                    is_lead_generation_intent,
+                )
+
+                enrich_intent = is_lead_browser_enrichment_intent(enriched_prompt)
+                gen_intent = is_lead_generation_intent(enriched_prompt)
+            except Exception:
+                enrich_intent = False
+                gen_intent = False
+            gmb_called = any(
+                n.endswith("gmb_search_leads") or n == "gmb_search_leads" for n in tool_names_ran
+            )
+            premature_lead_tools = any(
+                n.endswith(t) or n == t
+                for n in tool_names_ran
+                for t in ("start_outreach", "get_campaign", "list_leads")
+            )
+            if gen_intent and not gmb_called and premature_lead_tools:
+                force_tool_next_round = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "No campaign exists yet. Call gmb_search_leads FIRST with searchQuery, "
+                            "location, and maxResults from the user's request. Do not call "
+                            "start_outreach or get_campaign until gmb_search_leads returns campaignId."
+                        ),
+                    }
+                )
+            # If the model is looping on think/done for lead generation, force a real scrape tool call.
+            only_meta_tools = set(tool_names_ran).issubset({"think", "done"})
+            has_gmb_tool = any(k.endswith("gmb_search_leads") for k in tool_executors.keys())
+            if gen_intent and not gmb_called and not premature_lead_tools and only_meta_tools and has_gmb_tool:
+                force_tool_next_round = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Call gmb_search_leads NOW to generate the leads. Use business type and location "
+                            "from the user request (e.g. salons in Bangalore) and maxResults=5. "
+                            "Return the campaignId."
+                        ),
+                    }
+                )
+
+            browser_called = any(
+                n in ("browser_ab_open", "browser_navigate")
+                or n.startswith("browser_ab_")
+                for n in tool_names_ran
+            )
+            if (
+                enrich_intent
+                and gmb_called
+                and not browser_called
+                and "browser_ab_open" in tool_executors
+            ):
+                force_tool_next_round = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Stop calling gmb_search_leads — leads are already scraped. "
+                            "Call list_leads with includeAll=true, then browser_ab_open on each "
+                            "website in needsBrowserEnrichment, then update_lead_email or "
+                            "record_lead_enrichment. Continue until every website lead is enriched."
+                        ),
+                    }
+                )
+
             # After reading a source file for a PDF task, force the next model turn to
             # call a tool (usually s3_create_pdf) instead of returning empty text.
             if (

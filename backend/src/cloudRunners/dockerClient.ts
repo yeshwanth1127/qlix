@@ -47,7 +47,7 @@ export async function dockerBuildImage(params: {
   contextPath: string;
 }): Promise<void> {
   await runDocker(['build', '-t', params.imageRef, '-f', params.dockerfilePath, params.contextPath], {
-    timeoutMs: 10 * 60_000,
+    timeoutMs: 20 * 60_000,
   });
 }
 
@@ -62,8 +62,14 @@ export async function dockerRemoveContainerIfExists(containerName: string): Prom
 export async function dockerEnsureNetwork(networkName: string): Promise<void> {
   try {
     await runDocker(['network', 'inspect', networkName], { timeoutMs: 15_000 });
+    return;
   } catch {
-    await runDocker(['network', 'create', networkName], { timeoutMs: 30_000 });
+    // Another provision may have created the network concurrently.
+    try {
+      await runDocker(['network', 'create', networkName], { timeoutMs: 30_000 });
+    } catch {
+      await runDocker(['network', 'inspect', networkName], { timeoutMs: 15_000 });
+    }
   }
 }
 
@@ -75,8 +81,28 @@ export async function dockerRunDetached(params: {
   network?: string;
   mounts?: Array<{ hostPath: string; containerPath: string; readOnly?: boolean }>;
   cmd?: string[];
+  /** Hard RAM ceiling, e.g. "1g" — Docker `--memory`. OOM-kills the container if exceeded. */
+  memoryLimit?: string;
+  /** Soft RAM target, e.g. "512m" — Docker `--memory-reservation`. */
+  memoryReservation?: string;
+  /** CPU ceiling in cores, e.g. "1.5" — Docker `--cpus`. */
+  cpuLimit?: string;
+  /** Caps forkbomb-style runaway process growth — Docker `--pids-limit`. */
+  pidsLimit?: string;
 }): Promise<string> {
   const args: string[] = ['run', '-d', '--restart', 'unless-stopped', '--name', params.name];
+  if (params.memoryLimit?.trim()) {
+    args.push('--memory', params.memoryLimit.trim());
+  }
+  if (params.memoryReservation?.trim()) {
+    args.push('--memory-reservation', params.memoryReservation.trim());
+  }
+  if (params.cpuLimit?.trim()) {
+    args.push('--cpus', params.cpuLimit.trim());
+  }
+  if (params.pidsLimit?.trim()) {
+    args.push('--pids-limit', params.pidsLimit.trim());
+  }
   if (params.network?.trim()) {
     args.push('--network', params.network.trim());
   }

@@ -1,0 +1,17 @@
+{
+  "name": "qlix-mcp-service",
+  "version": "1.0.0",
+  "description": "Qlix MCP server — lead generation tools (GMB scrape, outreach)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "playwright": "^1.51.0",
+    "undici": "^6.27.0"
+  }
+}

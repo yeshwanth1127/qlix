@@ -391,12 +391,18 @@ class ChatController extends StateNotifier<ChatState> {
 
   Future<void> stop() async {
     final runId = state.currentRunId;
+    final conversationId = state.conversationId;
     await _streamSub?.cancel();
     _streamSub = null;
     if (runId != null) {
       await _chat.stopRun(agentId, runId);
     }
     state = state.copyWith(sending: false, clearRunId: true);
+    // Reconcile so a partial/empty assistant bubble is replaced by the
+    // server's final messages (same path as a dropped stream).
+    if (conversationId != null) {
+      await _reconcile(conversationId, status: 'stopped');
+    }
   }
 
   Future<void> clear() async {

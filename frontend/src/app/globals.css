@@ -329,6 +329,7 @@
 
 html {
   color-scheme: light;
+  overflow-x: hidden;
 }
 
 html.dark {
@@ -342,6 +343,7 @@ body {
   font-size: 14px;
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
 @keyframes qlix-fade-in {
@@ -552,5 +554,504 @@ body {
   .minimal-scrollbar {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklab, var(--accent) 55%, transparent) transparent;
+  }
+}
+
+/* Dashboard console — "ink & glass": monochrome editorial surfaces floating
+   over a soft paper backdrop. Structure comes from ink hairlines and frosted
+   panels, never from hard wireframe boxes. Scoped to authenticated routes. */
+[data-sketch-console] {
+  --text-primary: #0e0d12;
+  --text-secondary: rgba(14, 13, 18, 0.62);
+  --text-tertiary: rgba(14, 13, 18, 0.42);
+
+  /* Minimal accent palette layered over the black & white UI.
+     `--sketch-purple` is the brand accent (orange — name kept for compatibility)
+     used for selected menu items, hovers and focus rings; green = positive status,
+     red = negative status. */
+  --sketch-purple: #f97316;
+  --sketch-purple-soft: rgba(249, 115, 22, 0.09);
+  --sketch-green: #15803d;
+  --sketch-green-soft: rgba(21, 128, 61, 0.1);
+  --sketch-red: #dc2626;
+  --sketch-red-soft: rgba(220, 38, 38, 0.08);
+
+  /* Ink hairlines — structure without the wireframe look. Every hardcoded
+     `border-black` in the console is remapped onto these (see overrides below). */
+  --ink-border: rgba(18, 16, 24, 0.13);
+  --ink-border-strong: rgba(18, 16, 24, 0.26);
+
+  /* Layered elevation for glass panels: contact line + ambient falloff + a
+     top inner highlight that sells the frosted edge. */
+  --sketch-shadow:
+    0 1px 1.5px rgba(16, 14, 22, 0.04),
+    0 10px 28px -14px rgba(16, 14, 22, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --sketch-shadow-hover:
+    0 2px 3px rgba(16, 14, 22, 0.05),
+    0 22px 48px -20px rgba(16, 14, 22, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+
+  /* Card fills — translucent monochrome glass. The old colored pastels are
+     retired; tones now differ only by a whisper so hierarchy survives without
+     the UI reading as colored boxes. Rose keeps a faint red cast for
+     destructive affordances. */
+  --sketch-tint: rgba(255, 255, 255, 0.58);
+  --sketch-tint-purple: rgba(255, 252, 249, 0.6);
+  --sketch-tint-blue: rgba(251, 252, 254, 0.6);
+  --sketch-tint-green: rgba(250, 253, 251, 0.6);
+  --sketch-tint-amber: rgba(254, 252, 248, 0.6);
+  --sketch-tint-rose: rgba(220, 38, 38, 0.06);
+
+  --accent: var(--sketch-purple);
+  --accent-hover: #ea580c;
+  --accent-contrast: #ffffff;
+  --accent-subtle: var(--sketch-purple-soft);
+  --accent-border: rgba(249, 115, 22, 0.35);
+  --bg-base: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --border-subtle: var(--ink-border);
+  --border-default: var(--ink-border-strong);
+  --danger: var(--sketch-red);
+  --danger-subtle: var(--sketch-red-soft);
+  --success: var(--sketch-green);
+  --success-subtle: var(--sketch-green-soft);
+  --warning: #b45309;
+  --warning-subtle: rgba(180, 83, 9, 0.1);
+
+  /* Shared motion curve for console interactions */
+  --sketch-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --sketch-duration: 200ms;
+
+  /* Frosted-glass variables retuned for the light console so `qlix-glass-*`
+     panels read as glass here instead of the dark-theme defaults. */
+  --glass-surface-bg: rgba(255, 255, 255, 0.55);
+  --glass-surface-border: rgba(18, 16, 24, 0.1);
+  --glass-surface-border-hover: rgba(18, 16, 24, 0.18);
+  --glass-surface-bg-hover: rgba(255, 255, 255, 0.72);
+  --glass-surface-shadow: var(--sketch-shadow);
+  --glass-muted-bg: rgba(255, 255, 255, 0.4);
+  --glass-muted-border: rgba(18, 16, 24, 0.08);
+  --glass-inset-bg: rgba(255, 255, 255, 0.45);
+  --glass-row-hover: rgba(255, 255, 255, 0.6);
+  --glass-input-bg: rgba(255, 255, 255, 0.65);
+  --glass-input-border: rgba(18, 16, 24, 0.12);
+  --glass-sidebar-bg: rgba(255, 255, 255, 0.55);
+  --glass-topbar-bg: rgba(255, 255, 255, 0.6);
+  --glass-grain-opacity: 0.05;
+  --glass-grain-blend: soft-light;
+
+  /* Layered paper backdrop: a faint accent bloom top-right, an ink shadow
+     bottom-left, and a barely-there dot grid that gives the frosted panels
+     real texture to blur. */
+  background-color: #f2f1ee;
+  background-image:
+    radial-gradient(1100px 520px at 92% -10%, rgba(249, 115, 22, 0.07), transparent 62%),
+    radial-gradient(900px 620px at -12% 112%, rgba(18, 16, 24, 0.05), transparent 58%),
+    radial-gradient(rgba(18, 16, 24, 0.05) 1px, transparent 1.4px),
+    linear-gradient(165deg, #faf9f7 0%, #f1f0ed 60%, #edecea 100%);
+  background-size: auto, auto, 26px 26px, auto;
+  background-attachment: fixed;
+}
+
+/* ── Console-wide overrides ─────────────────────────────────────────────────
+   Appended to the utilities layer so they beat the base `border-black`
+   utility (same specificity, later order) while still losing to explicit
+   variants like `hover:border-*` and `rounded-*`. Every view that hardcodes
+   `border-black` is re-themed here without touching it. */
+@layer utilities {
+  /* Hard black borders become ink hairlines. */
+  [data-sketch-console] :where(.border-black) {
+    border-color: var(--ink-border);
+  }
+
+  /* Fully-boxed elements that declare no radius of their own soften into
+     rounded panels; anything that picks its own `rounded-*` is left alone. */
+  :where([data-sketch-console] :is(.border, .border-2).border-black:not([class*="rounded"])) {
+    border-radius: 0.75rem;
+  }
+
+  /* Frosted treatment for sketch cards/frames. */
+  :where([data-sketch-console] .sketch-card) {
+    border-radius: 1rem;
+    background-clip: padding-box;
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    backdrop-filter: blur(18px) saturate(1.5);
+  }
+}
+
+/* Soft elevation for sketch cards/frames. */
+.sketch-card {
+  box-shadow: var(--sketch-shadow);
+}
+
+.sketch-card-hover {
+  transition:
+    box-shadow var(--sketch-duration, 200ms) ease,
+    border-color var(--sketch-duration, 200ms) ease,
+    transform var(--sketch-duration, 200ms) var(--sketch-ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.sketch-card-hover:hover {
+  box-shadow: var(--sketch-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.sketch-press:active {
+  transform: scale(0.98);
+}
+
+/* Skeleton shimmer — page-load placeholders */
+@keyframes sketch-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.sketch-skeleton {
+  background: linear-gradient(
+    105deg,
+    rgba(18, 16, 24, 0.04) 0%,
+    rgba(18, 16, 24, 0.04) 38%,
+    rgba(255, 255, 255, 0.55) 50%,
+    rgba(18, 16, 24, 0.04) 62%,
+    rgba(18, 16, 24, 0.04) 100%
+  );
+  background-size: 220% 100%;
+  animation: sketch-shimmer 1.35s var(--sketch-ease, cubic-bezier(0.22, 1, 0.36, 1)) infinite;
+  border-radius: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-skeleton {
+    animation: none;
+    background: rgba(18, 16, 24, 0.06);
+  }
+  .sketch-press:active {
+    transform: none;
+  }
+}
+
+/* Gentle staggered entrance for console content. */
+@keyframes sketch-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sketch-rise {
+  animation: sketch-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-rise {
+    animation: none;
+  }
+  .sketch-card-hover {
+    transition: none;
+  }
+  .sketch-card-hover:hover {
+    transform: none;
+  }
+}
+
+/* ReflectiveCard → frosted ink panel inside the console (its stock dark
+   video/sheen layers are hidden — they're tuned for dark pages). */
+[data-sketch-console] .rc-container {
+  background: rgba(255, 255, 255, 0.6) !important;
+  box-shadow: var(--sketch-shadow) !important;
+  border: 1px solid var(--ink-border) !important;
+  border-radius: 1rem !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+}
+
+[data-sketch-console] .rc-video,
+[data-sketch-console] .rc-noise,
+[data-sketch-console] .rc-sheen,
+[data-sketch-console] .rc-border {
+  display: none !important;
+}
+
+[data-sketch-console] .rc-content {
+  color: #0e0d12 !important;
+  background: transparent !important;
+}
+
+[data-sketch-console] .animate-qlix-fade-in {
+  animation: sketch-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* ── Shared UI motion (chat, pages, nav) ─────────────────────────────────── */
+
+@keyframes qlix-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.qlix-msg-in {
+  animation: qlix-msg-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--qlix-stagger-i, 0) * 50ms);
+}
+
+@keyframes qlix-empty-glow {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+.qlix-empty-glow {
+  animation: qlix-empty-glow 4.5s ease-in-out infinite;
+}
+
+@keyframes qlix-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.qlix-thinking-dot {
+  display: inline-block;
+  animation: qlix-dot-pulse 1.15s ease-in-out infinite;
+}
+
+.qlix-thinking-dot:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.qlix-thinking-dot:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+/* Agent run activity — "thinking" feed: a light travels down the line, the active
+   step shows a live pulsing orb, and its label + the Thinking… label shimmer. */
+@keyframes qlix-line-travel {
+  0% {
+    top: -32%;
+    opacity: 0;
+  }
+  18%,
+  82% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+
+.qlix-think-line-travel {
+  background: linear-gradient(to bottom, transparent, var(--accent), transparent);
+  animation: qlix-line-travel 1.9s ease-in-out infinite;
+}
+
+@keyframes qlix-orb-core {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes qlix-orb-ping {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.qlix-orb-core {
+  animation: qlix-orb-core 1.5s ease-in-out infinite;
+}
+
+.qlix-orb-ping {
+  animation: qlix-orb-ping 1.6s ease-out infinite;
+}
+
+@keyframes qlix-text-shimmer {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -180% 0;
+  }
+}
+
+.qlix-text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 38%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 62%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: qlix-text-shimmer 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qlix-think-line-travel,
+  .qlix-orb-core,
+  .qlix-orb-ping {
+    animation: none;
+  }
+  .qlix-text-shimmer {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: inherit;
+  }
+}
+
+@keyframes qlix-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.qlix-backdrop-in {
+  animation: qlix-backdrop-in 0.22s ease-out backwards;
+}
+
+@keyframes qlix-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.qlix-scale-in {
+  animation: qlix-scale-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes qlix-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.qlix-section-in {
+  animation: qlix-section-in 0.44s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--qlix-stagger-i, 0) * 65ms);
+}
+
+@keyframes qlix-nav-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.qlix-nav-in {
+  animation: qlix-nav-in 0.38s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--qlix-stagger-i, 0) * 45ms);
+}
+
+/* Chat composer — soft focus ring on the input area */
+.chat-composer {
+  transition:
+    box-shadow 0.28s var(--sketch-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.chat-composer:focus-within {
+  border-color: rgba(249, 115, 22, 0.35);
+  box-shadow:
+    0 0 0 3px var(--sketch-purple-soft),
+    var(--sketch-shadow-hover);
+}
+
+/* Nav / panel enter — quieter than scale-in */
+@keyframes sketch-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sketch-panel-in {
+  animation: sketch-panel-in 0.28s var(--sketch-ease, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qlix-msg-in,
+  .qlix-empty-glow,
+  .qlix-thinking-dot,
+  .qlix-backdrop-in,
+  .qlix-scale-in,
+  .qlix-section-in,
+  .qlix-nav-in,
+  .sketch-panel-in {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .chat-composer,
+  .chat-composer:focus-within {
+    transition: none;
+    box-shadow: none;
   }
 }

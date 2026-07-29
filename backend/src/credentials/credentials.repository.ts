@@ -15,7 +15,7 @@ export interface CreateCredentialInput {
 
 function toDTO(record: {
   id: string;
-  agentId: string;
+  agentId: string | null;
   agentDid: string;
   type: string;
   issuerDid: string;

@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, raw, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,10 +9,12 @@ import { enqueueAgentRun } from '../agentChat/agentRunService.js';
 import {
   buildMemoryBlock,
   extractAndStoreMemories,
+  storeRunnerLocalEnvironmentFacts,
   updateConversationSummary,
 } from '../agentChat/agentMemory.service.js';
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
+import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
 import { McpRepository } from '../mcp/mcp.repository.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
@@ -33,6 +35,16 @@ import {
   executeEmailSend,
   N8nNotConfiguredError,
 } from '../connectors/emailTool.service.js';
+import { GMAIL_CONNECT_INSTRUCTIONS } from '../connectors/connectorUserMessages.js';
+import {
+  executeSocialAnalytics,
+  executeSocialChannels,
+  executeSocialPostsList,
+  executeSocialPublish,
+  OrbitConnectorNotConfiguredError,
+  SocialScopeDeniedError,
+  SocialToolError,
+} from '../connectors/socialTool.service.js';
 import { JitTokenInvalidError, JitTokenRequiredError } from '../actions/actions.service.js';
 import { getWhatsAppConnectorForAgent } from '../connectors/whatsappConnector.service.js';
 import {
@@ -43,6 +55,7 @@ import {
 } from '../connectors/whatsappServiceClient.js';
 import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
 import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
+import { storeSandboxFile } from '../sandbox/sandboxClient.js';
 
 const createConversationBody = z.object({});
 
@@ -63,6 +76,11 @@ const runnerBrainQueryBody = z.object({
 
 const pollBody = z.object({
   maxWaitMs: z.number().int().min(0).max(30_000).default(0),
+});
+
+const runnerLocalEnvironmentBody = z.object({
+  facts: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+  fingerprint: z.string().trim().min(8).max(128),
 });
 
 const runnerLogBody = z.object({
@@ -125,6 +143,33 @@ const emailSendBody = z.object({
   bodyText: z.string().trim().min(1).max(50_000),
   replyToMessageId: z.string().trim().max(120).nullable().optional(),
   jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+  metadata: z
+    .object({
+      campaignId: z.string().trim().min(1).max(80).optional(),
+      leadId: z.string().trim().min(1).max(80).optional(),
+    })
+    .optional(),
+});
+
+const socialChannelsBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+});
+
+const socialPostsListBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  startDate: z.string().trim().max(40).optional(),
+  endDate: z.string().trim().max(40).optional(),
+});
+
+const socialAnalyticsBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  integrationId: z.string().trim().min(1).max(120),
+});
+
+const socialPublishBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+  payload: z.unknown(),
 });
 
 const whatsappSendDocumentBody = z.object({
@@ -141,6 +186,9 @@ const whatsappSendFileBody = z.object({
   mimetype: z.string().trim().max(255).optional(),
   content_base64: z.string().min(1).max(28_000_000),
 });
+
+// Report PDF upload cap — large enough for a ~25-page PDF with images.
+const REPORT_PDF_MAX_BYTES = 50 * 1024 * 1024;
 
 /**
  * Shared WhatsApp document delivery: verify the service + linked connector + live
@@ -263,7 +311,7 @@ export function createAgentChatRouter(): Router {
   const router = Router({ mergeParams: true });
 
   // UI: create or get default conversation (per agent + user).
-  router.post('/:agentId/conversations', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/:agentId/conversations', authenticateUser(true), requireSubscriptionAccess, async (request: Request, response: Response) => {
     const parsed = createConversationBody.safeParse(request.body ?? {});
     if (!parsed.success) {
       response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid body' } });
@@ -296,6 +344,7 @@ export function createAgentChatRouter(): Router {
   router.get(
     '/:agentId/conversations/:conversationId/messages',
     authenticateUser(true),
+    requireSubscriptionAccess,
     async (request: Request, response: Response) => {
       try {
         const agentId = String(request.params.agentId);
@@ -336,6 +385,7 @@ export function createAgentChatRouter(): Router {
   router.delete(
     '/:agentId/conversations/:conversationId/messages',
     authenticateUser(true),
+    requireSubscriptionAccess,
     async (request: Request, response: Response) => {
       try {
         const agentId = String(request.params.agentId);
@@ -375,6 +425,7 @@ export function createAgentChatRouter(): Router {
   router.post(
     '/:agentId/conversations/:conversationId/messages',
     authenticateUser(true),
+    requireSubscriptionAccess,
     async (request: Request, response: Response) => {
       const parsed = postMessageBody.safeParse(request.body);
       if (!parsed.success) {
@@ -585,6 +636,48 @@ export function createAgentChatRouter(): Router {
     }
   });
 
+  // Runner: sync probed local OS paths into agent factual memory (hybrid only).
+  router.post('/:agentId/local-environment', async (request: Request, response: Response) => {
+    const parsed = runnerLocalEnvironmentBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid local environment body' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { userId: true, orgId: true, runtime: true },
+      });
+      if (!agent) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+        return;
+      }
+      if (agent.runtime !== 'hybrid' && agent.runtime !== 'local') {
+        response.status(400).json({
+          error: { code: 'invalid_runtime', message: 'Local environment sync is for hybrid/local agents only' },
+        });
+        return;
+      }
+      await storeRunnerLocalEnvironmentFacts({
+        agentId,
+        userId: agent.userId,
+        orgId: agent.orgId,
+        facts: parsed.data.facts,
+        fingerprint: parsed.data.fingerprint,
+      });
+      response.json({ ok: true });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      console.error('[agent-memory] local-environment sync failed', e);
+      response.status(500).json({ error: { code: 'local_environment_failed', message: 'Failed to store local environment' } });
+    }
+  });
+
   // Runner: drain user-injected messages for mid-run guidance
   router.get('/:agentId/runs/:runId/injections', async (request: Request, response: Response) => {
     const agentId = String(request.params.agentId);
@@ -726,7 +819,7 @@ export function createAgentChatRouter(): Router {
         });
 
         void recordSuccessfulEvent(prisma, {
-          orgId: run.orgId,
+          orgId: run.orgId!,
           userId: run.userId,
           email: user.email,
           agentId,
@@ -747,6 +840,7 @@ export function createAgentChatRouter(): Router {
   router.get(
     '/:agentId/runs/:runId/stream',
     authenticateUser(true),
+    requireSubscriptionAccess,
     async (request: Request, response: Response) => {
       try {
         const agentId = String(request.params.agentId);
@@ -833,6 +927,7 @@ export function createAgentChatRouter(): Router {
   router.post(
     '/:agentId/runs/:runId/stop',
     authenticateUser(true),
+    requireSubscriptionAccess,
     async (request: Request, response: Response) => {
       try {
         const agentId = String(request.params.agentId);
@@ -864,6 +959,149 @@ export function createAgentChatRouter(): Router {
     },
   );
 
+  // Runner: Orbit social tools (channels / posts / analytics / publish)
+  router.post('/:agentId/tools/social/channels', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = socialChannelsBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid social channels payload' } });
+        return;
+      }
+      const result = await executeSocialChannels({ agentId, runId: parsed.data.runId ?? null });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof SocialScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitConnectorNotConfiguredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('social/channels', err);
+      response.status(500).json({
+        error: { code: 'social_channels_failed', message: err instanceof SocialToolError ? err.message : 'Failed' },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/social/posts/list', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = socialPostsListBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid social posts list payload' } });
+        return;
+      }
+      const result = await executeSocialPostsList({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        startDate: parsed.data.startDate,
+        endDate: parsed.data.endDate,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof SocialScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitConnectorNotConfiguredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('social/posts/list', err);
+      response.status(500).json({
+        error: { code: 'social_posts_list_failed', message: err instanceof SocialToolError ? err.message : 'Failed' },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/social/analytics', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = socialAnalyticsBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'integrationId is required' } });
+        return;
+      }
+      const result = await executeSocialAnalytics({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        integrationId: parsed.data.integrationId,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof SocialScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitConnectorNotConfiguredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('social/analytics', err);
+      response.status(500).json({
+        error: { code: 'social_analytics_failed', message: err instanceof SocialToolError ? err.message : 'Failed' },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/social/publish', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = socialPublishBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'payload is required' } });
+        return;
+      }
+      const result = await executeSocialPublish({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        payload: parsed.data.payload,
+        jitToken: parsed.data.jitToken,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof SocialScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
+        response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        return;
+      }
+      if (err instanceof OrbitConnectorNotConfiguredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('social/publish', err);
+      response.status(500).json({
+        error: { code: 'social_publish_failed', message: err instanceof SocialToolError ? err.message : 'Failed' },
+      });
+    }
+  });
+
   // Runner: email.read tool proxy (scoped + audited, forwards to n8n)
   router.post('/:agentId/tools/email/read', async (request: Request, response: Response) => {
     const agentId = String(request.params.agentId);
@@ -890,7 +1128,15 @@ export function createAgentChatRouter(): Router {
         return;
       }
       if (err instanceof ConnectorNotConfiguredError || err instanceof N8nNotConfiguredError) {
-        response.status(409).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        response.status(409).json({
+          error: {
+            code: (err as Error & { code: string }).code,
+            message: err.message,
+            ...(err instanceof ConnectorNotConfiguredError
+              ? { connectInstructions: GMAIL_CONNECT_INSTRUCTIONS }
+              : {}),
+          },
+        });
         return;
       }
       console.error('email/read', err);
@@ -930,7 +1176,15 @@ export function createAgentChatRouter(): Router {
         return;
       }
       if (err instanceof ConnectorNotConfiguredError || err instanceof N8nNotConfiguredError) {
-        response.status(409).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        response.status(409).json({
+          error: {
+            code: (err as Error & { code: string }).code,
+            message: err.message,
+            ...(err instanceof ConnectorNotConfiguredError
+              ? { connectInstructions: GMAIL_CONNECT_INSTRUCTIONS }
+              : {}),
+          },
+        });
         return;
       }
       console.error('email/send', err);
@@ -1013,6 +1267,39 @@ export function createAgentChatRouter(): Router {
       }
     }
   });
+
+  // Runner (cloud): upload a generated report PDF (raw binary) to the sandbox store and
+  // get back a browser-facing download link the agent can share in chat. Raw body (not
+  // base64 JSON) so large image PDFs avoid ~33% bloat and the global JSON limit.
+  router.post(
+    '/:agentId/runs/:runId/report-pdf',
+    raw({ type: () => true, limit: '60mb' }),
+    async (request: Request, response: Response) => {
+      const agentId = String(request.params.agentId);
+      try {
+        await assertRunnerAuth(agentId, request);
+        const buffer = request.body;
+        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+          response.status(400).json({ error: { code: 'invalid_body', message: 'request body (PDF bytes) is required' } });
+          return;
+        }
+        if (buffer.length > REPORT_PDF_MAX_BYTES) {
+          response.status(413).json({ error: { code: 'file_too_large', message: 'Report PDF exceeds the size limit' } });
+          return;
+        }
+        const fileName = String(request.header('x-file-name') || 'report.pdf');
+        const stored = await storeSandboxFile(buffer, fileName);
+        response.json({ ok: true, url: stored.url, expiresAt: stored.expiresAt });
+      } catch (err) {
+        if (err instanceof RunnerUnauthorizedError) {
+          response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+          return;
+        }
+        console.error('runs/report-pdf', err);
+        response.status(502).json({ error: { code: 'sandbox_upload_failed', message: 'Could not create download link' } });
+      }
+    },
+  );
 
   return router;
 }

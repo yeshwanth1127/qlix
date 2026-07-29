@@ -27,6 +27,18 @@ export class BrainAgentLocalHostingNotSupportedError extends Error {
 
 const BRAIN_SCOPES: PermissionScope[] = ['brain.query', 'brain.knowledge_read'];
 
+/** OpenRouter-canonical id (proxy strips the `openrouter/` prefix). */
+const DEFAULT_BRAIN_MODEL = 'openrouter/anthropic/claude-sonnet-4.6';
+
+function isLegacyBrainModel(model: string | null | undefined): boolean {
+  const m = (model ?? '').trim().toLowerCase();
+  if (!m) return true;
+  // Bare ids like `claude-sonnet-4-6` are rejected by OpenRouter.
+  if (!m.includes('/')) return true;
+  if (m === 'claude-sonnet-4-6' || m === 'openrouter/claude-sonnet-4-6') return true;
+  return false;
+}
+
 export class BrainAgentService {
   constructor(
     private readonly repo = new AgentsRepository(),
@@ -40,11 +52,20 @@ export class BrainAgentService {
     return row ? this.repo.findById(row.id) : null;
   }
 
-  /** Clears legacy cloud-runner fields for org brains provisioned before API-only RAG. */
+  /** Ensures the org brain is named `exa` and uses a valid OpenRouter model id. */
   async normalizeOrgBrain(orgId: string): Promise<AgentDTO | null> {
     const brain = await this.getOrgBrainAgent(orgId);
     if (!brain) return null;
     await this.clearStaleBrainRunnerFields(brain.id);
+    const patch: { name?: string; llmModel?: string } = {};
+    if (brain.name !== 'exa') patch.name = 'exa';
+    if (isLegacyBrainModel(brain.model)) patch.llmModel = DEFAULT_BRAIN_MODEL;
+    if (Object.keys(patch).length > 0) {
+      await prisma.agent.update({
+        where: { id: brain.id },
+        data: patch,
+      });
+    }
     return this.getOrgBrainAgent(orgId);
   }
 
@@ -72,6 +93,15 @@ export class BrainAgentService {
     const existing = await this.getOrgBrainAgent(orgId);
     if (existing) {
       await this.clearStaleBrainRunnerFields(existing.id);
+      const patch: { name?: string; llmModel?: string } = {};
+      if (existing.name !== 'exa') patch.name = 'exa';
+      if (isLegacyBrainModel(existing.model)) patch.llmModel = DEFAULT_BRAIN_MODEL;
+      if (Object.keys(patch).length > 0) {
+        await prisma.agent.update({
+          where: { id: existing.id },
+          data: patch,
+        });
+      }
       return (await this.getOrgBrainAgent(orgId)) ?? existing;
     }
 
@@ -88,7 +118,7 @@ export class BrainAgentService {
     const { publicKey } = await generateKeypair();
     const { webauthnCredentialId } = await this.repo.assertDeviceVerified(userId);
 
-    const name = `Company brain · ${org.name}`.slice(0, 120);
+    const name = 'exa';
     const agent = await this.repo.createAgent({
       userId,
       orgId,
@@ -97,7 +127,7 @@ export class BrainAgentService {
       publicKey,
       /** RAG runs on the Qlix API — no Docker cloud runner. */
       runtime: 'local',
-      model: 'claude-sonnet-4-6',
+      model: DEFAULT_BRAIN_MODEL,
       llmMode: 'proxy',
       localInferenceMode: 'cloud_api',
       permissionScopes: BRAIN_SCOPES,

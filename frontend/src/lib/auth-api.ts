@@ -6,6 +6,18 @@ function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultBase).replace(/\/$/, "");
 }
 
+export type SubscriptionStatus = "trialing" | "active" | "expired" | "canceled" | "past_due";
+export type SubscriptionAccess = "allowed" | "required";
+
+export interface OrgSubscriptionInfo {
+  status: SubscriptionStatus;
+  planName: string;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  /** `required` means the console should redirect to Subscriptions. */
+  access: SubscriptionAccess;
+}
+
 export interface AuthSuccessResponse {
   user: {
     id: string;
@@ -27,8 +39,9 @@ export interface AuthSuccessResponse {
     name: string;
     slug: string;
     workspaceKind: WorkspaceKind;
-    /** Matches `organizations.plan` (e.g. free, starter, pro, enterprise). */
+    /** Matches `organizations.plan` (e.g. trial, free, starter). */
     plan: string;
+    subscription: OrgSubscriptionInfo;
   };
 }
 
@@ -45,24 +58,28 @@ export async function postLogin(input: { email: string; password: string }): Pro
   data?: AuthSuccessResponse;
   errorMessage?: string;
 }> {
-  const response = await fetch(`${apiBase()}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(input),
-  });
+  try {
+    const response = await fetch(`${apiBase()}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    });
 
-  const status = response.status;
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
-    return {
-      ok: false,
-      status,
-      errorMessage: body?.error?.message ?? "Login failed",
-    };
+    const status = response.status;
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+      return {
+        ok: false,
+        status,
+        errorMessage: body?.error?.message ?? "Login failed",
+      };
+    }
+    const data = (await response.json()) as AuthSuccessResponse;
+    return { ok: true, status, data };
+  } catch {
+    return { ok: false, status: 0, errorMessage: "Network error — check your connection" };
   }
-  const data = (await response.json()) as AuthSuccessResponse;
-  return { ok: true, status, data };
 }
 
 export async function postSignup(input: {
@@ -77,24 +94,28 @@ export async function postSignup(input: {
   data?: AuthSuccessResponse;
   errorMessage?: string;
 }> {
-  const response = await fetch(`${apiBase()}/api/v1/auth/signup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(input),
-  });
+  try {
+    const response = await fetch(`${apiBase()}/api/v1/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    });
 
-  const status = response.status;
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
-    return {
-      ok: false,
-      status,
-      errorMessage: body?.error?.message ?? "Sign up failed",
-    };
+    const status = response.status;
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+      return {
+        ok: false,
+        status,
+        errorMessage: body?.error?.message ?? "Sign up failed",
+      };
+    }
+    const data = (await response.json()) as AuthSuccessResponse;
+    return { ok: true, status, data };
+  } catch {
+    return { ok: false, status: 0, errorMessage: "Network error — check your connection" };
   }
-  const data = (await response.json()) as AuthSuccessResponse;
-  return { ok: true, status, data };
 }
 
 export async function postSuperAdminSignup(input: {
@@ -173,6 +194,27 @@ export async function postClaimAccount(input: {
     }
     const data = (await response.json()) as AuthSuccessResponse;
     return { ok: true, data };
+  } catch {
+    return { ok: false, errorMessage: "Network error — check your connection" };
+  }
+}
+
+export async function postChangePassword(input: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<{ ok: boolean; errorMessage?: string }> {
+  try {
+    const response = await fetch(`${apiBase()}/api/v1/auth/change-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+      return { ok: false, errorMessage: body?.error?.message ?? "Could not change password" };
+    }
+    return { ok: true };
   } catch {
     return { ok: false, errorMessage: "Network error — check your connection" };
   }

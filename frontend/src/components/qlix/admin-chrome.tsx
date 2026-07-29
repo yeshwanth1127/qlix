@@ -4,15 +4,19 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils/cn";
-import { AppTopbar } from "./app-topbar";
+import { QlixWordmark } from "./landing/QlixWordmark";
+import { UserAccountMenu } from "./user-account-menu";
 import { useSession } from "./session-context";
 import { getAdminNavItems } from "./admin-nav";
+import { MobileChromeHeader } from "./mobile-chrome-header";
+import { SketchFrame, SketchShell } from "./sketch";
+import { sketchNavLink, SKETCH_SIDEBAR_WIDTH } from "./sketch/tokens";
 
 export function AdminChrome({ children }: { children: React.ReactNode }) {
-  const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const { session, loading } = useSession();
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
     if (loading) return;
@@ -30,7 +34,7 @@ export function AdminChrome({ children }: { children: React.ReactNode }) {
 
   if (loading || !session) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center text-[13px] text-[--text-tertiary]">
+      <div className="flex min-h-[40vh] items-center justify-center font-serif text-[13px] uppercase tracking-widest text-black/50">
         Loading…
       </div>
     );
@@ -39,113 +43,112 @@ export function AdminChrome({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  return (
-    <div>
-      <AppTopbar
-        onOpenMobileNav={() => setMobileOpen(true)}
-        workspaceLabel="Super admin"
-        homeHref="/admin/overview"
-        variant="organization"
-      />
+  const sidebar = (
+    <aside
+      className="fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-black/10 bg-white/55 shadow-[inset_-1px_0_0_rgba(255,255,255,0.6),10px_0_36px_-28px_rgba(16,14,22,0.35)] backdrop-blur-2xl md:flex"
+      style={{ width: SKETCH_SIDEBAR_WIDTH }}
+      aria-label="Admin navigation"
+    >
+      <div className="shrink-0 px-4 pt-5">
+        <Link href="/admin/overview" className="block text-black">
+          <QlixWordmark className="text-[34px]" />
+        </Link>
+      </div>
+      <nav className="flex min-h-0 flex-1 flex-col justify-end space-y-2 px-4 pb-6">
+        {items.map((item) => {
+          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              style={active ? { color: "var(--sketch-purple)" } : undefined}
+              className={cn(
+                sketchNavLink,
+                "rounded-md border-l-2 border-transparent py-1.5 pl-2.5 text-[10px] leading-snug transition-all duration-200",
+                active
+                  ? "border-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold"
+                  : "hover:border-[color:var(--sketch-purple)]/45 hover:bg-[color:var(--sketch-purple-soft)]/70 hover:pl-3",
+              )}
+            >
+              {item.label.toUpperCase()}
+            </Link>
+          );
+        })}
+        <UserAccountMenu variant="sidebar" />
+      </nav>
+    </aside>
+  );
 
-      {mobileOpen ? (
-        <div className="fixed inset-0 z-[60] md:hidden">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            aria-label="Close menu"
-            onClick={() => setMobileOpen(false)}
-          />
-          <div
-            className="qlix-glass-sidebar absolute left-0 top-0 flex h-full w-52 flex-col shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
-            role="dialog"
-            aria-modal="true"
-          >
-            <div className="flex h-12 items-center justify-between border-b border-[--border-subtle] px-3">
-              <span className="text-[13px] font-medium text-[--text-primary]">Admin</span>
+  const bottomNav = (
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-black/10 bg-white/80 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
+      <nav className="flex h-14 items-center gap-1 overflow-x-auto px-3" aria-label="Admin navigation">
+        {moreOpen ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setMoreOpen(false)}
+              className={cn(sketchNavLink, "shrink-0 whitespace-nowrap px-2 py-1 text-[10px]")}
+            >
+              ← BACK
+            </button>
+            {items.slice(3).map((item) => {
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setMoreOpen(false)}
+                  className={cn(
+                    sketchNavLink,
+                    "shrink-0 whitespace-nowrap px-2 py-1 text-[10px]",
+                    active && "font-semibold underline underline-offset-4",
+                  )}
+                >
+                  {item.label.toUpperCase()}
+                </Link>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            {items.slice(0, 3).map((item) => {
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    sketchNavLink,
+                    "shrink-0 whitespace-nowrap px-2 py-1 text-[10px]",
+                    active && "font-semibold underline underline-offset-4",
+                  )}
+                >
+                  {item.label.toUpperCase()}
+                </Link>
+              );
+            })}
+            {items.length > 3 ? (
               <button
                 type="button"
-                onClick={() => setMobileOpen(false)}
-                className="flex size-8 items-center justify-center rounded-md text-[--text-tertiary] hover:bg-[--bg-hover]"
-                aria-label="Close"
+                onClick={() => setMoreOpen(true)}
+                className={cn(sketchNavLink, "shrink-0 whitespace-nowrap px-2 py-1 text-[10px]")}
               >
-                ✕
+                + MORE
               </button>
-            </div>
-            <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-              {items.map((item) => {
-                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-                const Icon = item.icon;
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileOpen(false)}
-                    className={cn(
-                      "flex items-center gap-2.5 px-3 py-2 text-[13px] transition-colors duration-150",
-                      active
-                        ? "border-l-2 border-blue-500 bg-[--bg-active] font-medium text-white"
-                        : "border-l-2 border-transparent text-[--text-secondary] hover:bg-[--bg-hover]",
-                    )}
-                  >
-                    <Icon
-                      className={cn("size-4 shrink-0", active ? "text-[--accent]" : "text-[--text-tertiary]")}
-                      strokeWidth={1.75}
-                    />
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
-          </div>
-        </div>
-      ) : null}
-
-      <aside
-        className={cn(
-          "qlix-glass-sidebar fixed left-0 top-12 z-30 hidden h-[calc(100vh-3rem)] w-52 flex-col md:flex",
+            ) : null}
+          </>
         )}
-        aria-label="Admin navigation"
-      >
-        <div className="border-b border-[--border-subtle] px-4 pb-4 pt-2">
-          <div className="text-[10px] font-medium uppercase tracking-widest text-[--text-tertiary]">
-            Platform
-          </div>
-          <div className="mt-1 text-sm font-semibold text-white">Super admin</div>
-        </div>
-        <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-4">
-          {items.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "group relative flex items-center gap-3 px-4 py-2 text-[13px] transition-colors duration-150 ease-out",
-                  active
-                    ? "border-l-2 border-blue-500 bg-[--bg-active] font-medium text-white"
-                    : "border-l-2 border-transparent text-[--text-tertiary] hover:bg-[--bg-hover] hover:text-[--text-secondary]",
-                )}
-              >
-                <Icon
-                  className={cn(
-                    "size-4 shrink-0",
-                    active ? "text-[--accent]" : "text-[--text-tertiary] group-hover:text-[--text-secondary]",
-                  )}
-                  strokeWidth={1.75}
-                />
-                <span className="truncate">{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-      </aside>
-
-      <main className="bg-[--bg-base] pt-12 transition-[padding] duration-150 ease-out md:pl-52">
-        <div className="animate-qlix-fade-in mx-auto max-w-[1800px] px-6 py-6">{children}</div>
-      </main>
+      </nav>
     </div>
   );
-}
 
+  return (
+    <SketchShell
+      sidebar={sidebar}
+      topbar={<MobileChromeHeader homeHref="/admin/overview" workspaceLabel="Admin" />}
+      bottomNav={bottomNav}
+    >
+      <SketchFrame>{children}</SketchFrame>
+    </SketchShell>
+  );
+}

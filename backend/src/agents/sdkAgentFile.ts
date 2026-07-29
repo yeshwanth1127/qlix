@@ -76,12 +76,30 @@ function isDockerInternalBackendUrl(url: string): boolean {
   return /host\.docker\.internal/i.test(url);
 }
 
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return /\blocalhost\b|127\.0\.0\.1/i.test(url);
+  }
+}
+
+function trimUrl(url: string): string {
+  return url.replace(/\/$/, '');
+}
+
+/** True when a URL is unsuitable for hybrid starter packs (runs on the user's PC). */
+function isUnusableHybridBackendUrl(url: string): boolean {
+  return isDockerInternalBackendUrl(url) || isLoopbackUrl(url);
+}
+
 function rewriteDockerInternalUrl(url: string): string {
-  if (!isDockerInternalBackendUrl(url)) return url.replace(/\/$/, '');
+  if (!isDockerInternalBackendUrl(url)) return trimUrl(url);
   try {
     const u = new URL(url);
     u.hostname = 'localhost';
-    return u.toString().replace(/\/$/, '');
+    return trimUrl(u.toString());
   } catch {
     return url.replace(/host\.docker\.internal/gi, 'localhost').replace(/\/$/, '');
   }
@@ -91,39 +109,90 @@ function rewriteDockerInternalUrl(url: string): string {
 export function resolvePublicBackendUrl(request: { protocol?: string; get(name: string): string | undefined }): string {
   const fromEnv = process.env.PUBLIC_API_URL?.trim();
   if (fromEnv) {
-    return fromEnv.replace(/\/$/, '');
+    return trimUrl(fromEnv);
   }
   const xfProto = request.get('x-forwarded-proto');
   const proto = (xfProto || request.protocol || 'http').replace(/:$/, '');
   const host = request.get('x-forwarded-host') || request.get('host') || 'localhost:8080';
-  return `${proto}://${host}`.replace(/\/$/, '');
+  return trimUrl(`${proto}://${host}`);
 }
 
 /**
  * Backend URL baked into hybrid/local starter packs — runs on the user's machine, not in Docker.
- * Never use host.docker.internal here (that is for cloud containers only).
+ * Prefers PUBLIC_API_URL (your public API origin) over loopback request headers.
  */
 export function resolveHybridRunnerBackendUrl(request: {
   protocol?: string;
   get(name: string): string | undefined;
 }): string {
-  const explicit =
-    process.env.HYBRID_RUNNER_BACKEND_URL?.trim() || process.env.LOCAL_RUNNER_BACKEND_URL?.trim();
-  if (explicit) {
-    return rewriteDockerInternalUrl(explicit);
+  const isProd = process.env.NODE_ENV === 'production';
+  const candidates = [
+    process.env.PUBLIC_API_URL,
+    process.env.HYBRID_RUNNER_BACKEND_URL,
+    process.env.LOCAL_RUNNER_BACKEND_URL,
+    process.env.FRONTEND_URL,
+  ];
+
+  for (const raw of candidates) {
+    const c = raw?.trim();
+    if (!c) continue;
+    const url = trimUrl(c);
+    if (isDockerInternalBackendUrl(url)) continue;
+    if (isProd && isLoopbackUrl(url)) continue;
+    return url;
+  }
+
+  const xfProto = request.get('x-forwarded-proto');
+  const proto = (xfProto || request.protocol || 'https').replace(/:$/, '');
+  const host = request.get('x-forwarded-host') || request.get('host');
+  if (host) {
+    const fromRequest = trimUrl(`${proto}://${host}`);
+    if (!isDockerInternalBackendUrl(fromRequest) && !(isProd && isLoopbackUrl(fromRequest))) {
+      return fromRequest;
+    }
+  }
+
+  if (!isProd) {
+    for (const raw of [process.env.HYBRID_RUNNER_BACKEND_URL, process.env.LOCAL_RUNNER_BACKEND_URL]) {
+      const c = raw?.trim();
+      if (c) return rewriteDockerInternalUrl(c);
+    }
+    return 'http://localhost:4000';
   }
 
   const publicEnv = process.env.PUBLIC_API_URL?.trim();
-  if (publicEnv && !isDockerInternalBackendUrl(publicEnv)) {
-    return publicEnv.replace(/\/$/, '');
+  if (publicEnv) {
+    return trimUrl(publicEnv);
   }
 
-  const fromRequest = resolvePublicBackendUrl(request);
-  if (!isDockerInternalBackendUrl(fromRequest)) {
-    return fromRequest;
-  }
+  throw new Error(
+    'Cannot resolve hybrid runner backend URL — set PUBLIC_API_URL to your public API origin (e.g. https://qlix.exora.solutions)',
+  );
+}
 
-  return rewriteDockerInternalUrl(fromRequest);
+/**
+ * Last-chance guard before writing agent.json into a hybrid starter ZIP.
+ * Re-resolves when the baked URL is loopback or docker-internal.
+ */
+export function ensureHybridAgentJsonBackendUrl(
+  agentJson: Record<string, unknown>,
+  request?: { protocol?: string; get(name: string): string | undefined },
+): Record<string, unknown> {
+  const current = typeof agentJson.backend_url === 'string' ? agentJson.backend_url : '';
+  if (current && !isUnusableHybridBackendUrl(current)) {
+    return agentJson;
+  }
+  const resolved = resolveHybridRunnerBackendUrl(
+    request ?? { protocol: 'https', get: () => undefined },
+  );
+  if (resolved !== current) {
+    console.warn(
+      '[hybridStarterPack] backend_url %s → %s',
+      current || '(missing)',
+      resolved,
+    );
+  }
+  return { ...agentJson, backend_url: resolved };
 }
 
 /**

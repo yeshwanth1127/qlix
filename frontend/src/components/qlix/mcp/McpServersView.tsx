@@ -17,7 +17,6 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
 import { McpAddServer } from "@/components/qlix/mcp/McpAddServer";
 import { McpEditServer } from "@/components/qlix/mcp/McpEditServer";
 import {
@@ -34,29 +33,16 @@ import {
   type McpServerDTO,
   type McpServerToolDTO,
 } from "@/lib/mcp-api";
+import { SketchBox, SketchPageHeader, SketchRow, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 
-const riskColor: Record<string, string> = {
-  low: "text-emerald-400",
-  medium: "text-amber-400",
-  high: "text-red-400",
-};
-
-const statusColor: Record<string, string> = {
-  connected: "text-emerald-400",
-  pending: "text-amber-400",
-  error: "text-red-400",
-  revoked: "text-white/40",
-};
-
-/** Trust state of a tool: whether its current definition is approved & delivered to agents. */
-function toolStatus(tool: McpServerToolDTO): { label: string; cls: string; Icon: LucideIcon } {
+function toolStatus(tool: McpServerToolDTO): { label: string; Icon: LucideIcon } {
   if (tool.defaultGovernance === "blocked") {
-    return { label: "Blocked", cls: "border-white/15 text-white/40", Icon: ShieldOff };
+    return { label: "Blocked", Icon: ShieldOff };
   }
   if (tool.needsReapproval) {
-    return { label: "Withheld", cls: "border-red-500/40 bg-red-500/10 text-red-300", Icon: ShieldAlert };
+    return { label: "Withheld", Icon: ShieldAlert };
   }
-  return { label: "Approved", cls: "border-emerald-500/30 text-emerald-300", Icon: ShieldCheck };
+  return { label: "Approved", Icon: ShieldCheck };
 }
 
 function pretty(value: Record<string, unknown> | null): string | null {
@@ -94,7 +80,6 @@ export function McpServersView() {
     void refresh();
   }, [refresh]);
 
-  // The OAuth popup posts this when the provider redirect completes; refresh to reflect it.
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       if (e.data && typeof e.data === "object" && e.data.type === "qlix-mcp-oauth") {
@@ -177,29 +162,22 @@ export function McpServersView() {
   }
 
   return (
-    <div className="animate-qlix-fade-in mt-10 max-w-2xl">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Server size={18} className="text-indigo-400" />
-          <h2 className="text-base font-medium tracking-[-0.01em] text-[--text-primary]">MCP Servers</h2>
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded bg-indigo-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-indigo-500"
-        >
-          {showForm ? "Cancel" : "Add MCP server"}
-        </button>
-      </div>
-      <p className="mt-2 text-[13px] leading-relaxed text-[--text-secondary]">
+    <div className="mt-10 max-w-2xl bg-white">
+      <SketchPageHeader
+        title="MCP Servers"
+        actions={
+          <button type="button" onClick={() => setShowForm((v) => !v)} className={sketchButton}>
+            {showForm ? "Cancel" : "Add MCP server"}
+          </button>
+        }
+      />
+      <p className="mt-2 text-[13px] leading-relaxed text-black/70">
         Connect any Model Context Protocol server to give agents its tools. Every call is scoped,
         audited on the signed ledger, and gated by JIT approval — bind tools to an agent on its detail page.
       </p>
 
       {error && (
-        <p className="mt-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
-          {error}
-        </p>
+        <SketchBox className="mt-4 px-3 py-2 text-[13px] text-black">{error}</SketchBox>
       )}
 
       {showForm && (
@@ -213,46 +191,42 @@ export function McpServersView() {
       )}
 
       {loading ? (
-        <p className="mt-6 flex items-center gap-1 text-[12px] text-white/35">
+        <p className="mt-6 flex items-center gap-1 text-[12px] text-black/50">
           <Loader2 size={12} className="animate-spin" /> Loading…
         </p>
       ) : servers.length === 0 ? (
-        <p className="mt-6 text-[12px] text-white/40">No MCP servers yet.</p>
+        <p className="mt-6 text-[12px] text-black/50">No MCP servers yet.</p>
       ) : (
         servers.map((server) => {
           const boundAgents = agentsByServer[server.id] ?? [];
           return (
-            <ReflectiveCard key={server.id} className="mt-4 rounded" contentClassName="p-5">
+            <SketchBox key={server.id} className="mt-4 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3">
-                  <div className="rounded-lg bg-white/5 p-2">
-                    <Plug size={20} className="text-sky-400" />
+                  <div className="border border-black p-2">
+                    <Plug size={20} className="text-black" />
                   </div>
                   <div>
-                    <h3 className="text-[13px] font-medium text-white/90">
+                    <h3 className="text-[13px] font-medium text-black">
                       {server.name}{" "}
-                      <span className="text-[11px] text-white/35">
+                      <span className="text-[11px] text-black/50">
                         ({server.transport} · mcp.{server.slug})
                       </span>
                     </h3>
-                    <p className="mt-1 text-[12px] text-white/45">
+                    <p className="mt-1 text-[12px] text-black/60">
                       {server.transport === "http" ? server.endpointUrl : server.command}
                     </p>
-                    <p className={`mt-1 text-[12px] ${statusColor[server.status] ?? "text-white/40"}`}>
+                    <p className="mt-1 font-serif text-[10px] uppercase tracking-widest text-black/50">
                       {server.status}
                       {server.lastError ? ` — ${server.lastError}` : ""}
                     </p>
                     {boundAgents.length > 0 && (
-                      <p className="mt-1 flex items-center gap-1 text-[11px] text-white/40">
+                      <p className="mt-1 flex items-center gap-1 text-[11px] text-black/50">
                         <Users size={11} /> Used by {boundAgents.map((a) => a.agentName).join(", ")}
                       </p>
                     )}
                     {server.authType === "oauth" && (
-                      <p
-                        className={`mt-1 inline-flex items-center gap-1 text-[11px] ${
-                          server.oauthConnected ? "text-emerald-300" : "text-amber-300"
-                        }`}
-                      >
+                      <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-black/60">
                         <KeyRound size={11} />
                         {server.oauthConnected ? "OAuth connected" : "OAuth not connected"}
                       </p>
@@ -266,7 +240,7 @@ export function McpServersView() {
                       onClick={() => void handleReconnect(server.id)}
                       disabled={busyId === server.id}
                       title={server.oauthConnected ? "Reconnect account" : "Connect account"}
-                      className="rounded border border-white/10 p-1.5 text-emerald-300/90 hover:bg-emerald-500/10 disabled:opacity-40"
+                      className={`${sketchButton} p-1.5 disabled:opacity-40`}
                     >
                       <KeyRound size={14} />
                     </button>
@@ -277,7 +251,7 @@ export function McpServersView() {
                       onClick={() => void handleDisconnect(server.id)}
                       disabled={busyId === server.id}
                       title="Disconnect account"
-                      className="rounded border border-white/10 p-1.5 text-amber-300/80 hover:bg-amber-500/10 disabled:opacity-40"
+                      className={`${sketchButton} p-1.5 disabled:opacity-40`}
                     >
                       <Unplug size={14} />
                     </button>
@@ -286,9 +260,7 @@ export function McpServersView() {
                     type="button"
                     onClick={() => setEditingId((id) => (id === server.id ? null : server.id))}
                     title="Edit server"
-                    className={`rounded border border-white/10 p-1.5 hover:bg-white/5 ${
-                      editingId === server.id ? "text-indigo-300" : "text-white/70"
-                    }`}
+                    className={`${sketchButton} p-1.5`}
                   >
                     <Pencil size={14} />
                   </button>
@@ -297,7 +269,7 @@ export function McpServersView() {
                     onClick={() => void handleDiscover(server.id)}
                     disabled={busyId === server.id}
                     title="Re-discover tools"
-                    className="rounded border border-white/10 p-1.5 text-white/70 hover:bg-white/5 disabled:opacity-40"
+                    className={`${sketchButton} p-1.5 disabled:opacity-40`}
                   >
                     {busyId === server.id ? (
                       <Loader2 size={14} className="animate-spin" />
@@ -310,7 +282,7 @@ export function McpServersView() {
                     onClick={() => void handleDelete(server.id)}
                     disabled={busyId === server.id}
                     title="Delete server"
-                    className="rounded border border-white/10 p-1.5 text-red-300/80 hover:bg-red-500/10 disabled:opacity-40"
+                    className={`${sketchButton} p-1.5 disabled:opacity-40`}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -329,10 +301,8 @@ export function McpServersView() {
               )}
 
               {server.tools && server.tools.length > 0 && (
-                <div className="mt-4 border-t border-white/5 pt-3">
-                  <p className="text-[11px] uppercase tracking-wide text-white/30">
-                    Tools ({server.tools.length})
-                  </p>
+                <div className="mt-4 border-t border-black pt-3">
+                  <p className={sketchLabel}>Tools ({server.tools.length})</p>
                   <div className="mt-2 space-y-1.5">
                     {server.tools.map((tool) => {
                       const status = toolStatus(tool);
@@ -342,23 +312,19 @@ export function McpServersView() {
                         (a) => a.allowedTools.includes("*") || a.allowedTools.includes(tool.name),
                       );
                       return (
-                        <div key={tool.id} className="rounded-md border border-white/5">
+                        <SketchBox key={tool.id} className="overflow-hidden">
                           <div className="flex items-center justify-between gap-3 p-2">
                             <div className="min-w-0">
-                              <p className="truncate text-[12px] text-white/80">
+                              <p className="truncate text-[12px] text-black">
                                 {tool.name}{" "}
-                                <span className={`text-[11px] ${riskColor[tool.riskLevel] ?? ""}`}>
-                                  · {tool.riskLevel}
-                                </span>
+                                <span className="text-[11px] text-black/50">· {tool.riskLevel}</span>
                               </p>
                               {tool.description && (
-                                <p className="truncate text-[11px] text-white/40">{tool.description}</p>
+                                <p className="truncate text-[11px] text-black/50">{tool.description}</p>
                               )}
                             </div>
                             <div className="flex shrink-0 items-center gap-2">
-                              <span
-                                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${status.cls}`}
-                              >
+                              <span className="inline-flex items-center gap-1 border border-black px-1.5 py-0.5 text-[10px] text-black">
                                 <status.Icon size={11} /> {status.label}
                               </span>
                               {tool.needsReapproval && (
@@ -366,18 +332,15 @@ export function McpServersView() {
                                   <button
                                     type="button"
                                     onClick={() => setOpenDiff(open ? null : key)}
-                                    className="flex items-center gap-0.5 rounded border border-white/10 px-1.5 py-1 text-[11px] text-white/60 hover:bg-white/5"
+                                    className={`${sketchButton} gap-0.5 py-1 text-[11px]`}
                                   >
-                                    <ChevronDown
-                                      size={12}
-                                      className={`transition-transform ${open ? "rotate-180" : ""}`}
-                                    />
+                                    <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
                                     diff
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => void handleApprove(server.id, tool.name)}
-                                    className="rounded border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
+                                    className={`${sketchButton} py-1 text-[11px]`}
                                   >
                                     Re-approve
                                   </button>
@@ -388,7 +351,7 @@ export function McpServersView() {
                                 onChange={(e) =>
                                   void handleGovernance(server.id, tool.name, e.target.value as McpGovernance)
                                 }
-                                className="rounded border border-white/10 bg-transparent px-2 py-1 text-[11px] text-white/70"
+                                className="border border-black bg-white px-2 py-1 text-[11px] text-black"
                               >
                                 <option value="auto">auto</option>
                                 <option value="jit">jit</option>
@@ -398,10 +361,9 @@ export function McpServersView() {
                           </div>
 
                           {open && tool.needsReapproval && (
-                            <div className="border-t border-white/5 p-2">
-                              <p className="text-[11px] text-red-300/80">
-                                Withheld from agents: this tool's definition changed after it was approved.
-                                Review the change before re-approving.
+                            <div className="border-t border-black p-2">
+                              <p className="text-[11px] text-black/70">
+                                Withheld from agents: this tool&apos;s definition changed after it was approved.
                               </p>
                               <DiffRow label="Description" before={tool.approvedDescription} after={tool.description} />
                               <DiffRow
@@ -410,19 +372,19 @@ export function McpServersView() {
                                 after={pretty(tool.inputSchema)}
                               />
                               {affected.length > 0 && (
-                                <p className="mt-2 text-[11px] text-white/45">
+                                <p className="mt-2 text-[11px] text-black/50">
                                   Affects: {affected.map((a) => a.agentName).join(", ")}
                                 </p>
                               )}
                             </div>
                           )}
-                        </div>
+                        </SketchBox>
                       );
                     })}
                   </div>
                 </div>
               )}
-            </ReflectiveCard>
+            </SketchBox>
           );
         })
       )}
@@ -430,7 +392,6 @@ export function McpServersView() {
   );
 }
 
-/** One field's before/after when a tool definition drifts. Hidden when unchanged. */
 function DiffRow({
   label,
   before,
@@ -443,11 +404,11 @@ function DiffRow({
   if ((before ?? "") === (after ?? "")) return null;
   return (
     <div className="mt-2">
-      <p className="text-[10px] uppercase tracking-wide text-white/30">{label}</p>
-      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-200/80">
+      <p className={`${sketchLabel} text-[10px]`}>{label}</p>
+      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap border border-black bg-white px-2 py-1 text-[10px] text-black/70">
         − {before ?? "(none)"}
       </pre>
-      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200/80">
+      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap border border-black bg-white px-2 py-1 text-[10px] text-black">
         + {after ?? "(none)"}
       </pre>
     </div>

@@ -1,0 +1,71 @@
+{
+  "_comment": "Single source of truth for research-source credential injection. Consumed by both the Python cloud runner (qlix/research_sources.py -> cloud_research_runtime.configure_research_sources) and the backend provisioner (backend/src/cloudRunners/platformResearchSecrets.ts). Add a new source by appending one entry here + installing its CLI in sdk/python/docker/cloud-runner/Dockerfile. Credentials are platform-wide (Qlix ops): host files live in the research secrets dir, env vars are forwarded from the backend process env.",
+  "container_secrets_dir": "/run/platform",
+  "global_passthrough_env": ["AGENT_REACH_PROXY"],
+  "global_configure": [
+    {
+      "command": ["agent-reach", "configure", "proxy", "{AGENT_REACH_PROXY}"],
+      "requires_env": ["AGENT_REACH_PROXY"],
+      "requires_bin": "agent-reach"
+    }
+  ],
+  "sources": [
+    {
+      "id": "youtube",
+      "binaries": ["yt-dlp"],
+      "secret_file": {
+        "filename": "youtube-cookies.txt",
+        "container_path": "/run/platform/youtube-cookies.txt",
+        "host_path_env": "QLIX_PLATFORM_YOUTUBE_COOKIES_PATH",
+        "env_var": "YT_DLP_COOKIES_FILE",
+        "writable_copy": "/tmp/qlix-youtube-cookies.txt"
+      }
+    },
+    {
+      "id": "twitter",
+      "binaries": ["twitter"],
+      "passthrough_env": ["AGENT_REACH_TWITTER_AUTH_TOKEN", "AGENT_REACH_TWITTER_CT0"],
+      "configure": [
+        {
+          "command": ["agent-reach", "configure", "twitter-cookies", "auth_token={AGENT_REACH_TWITTER_AUTH_TOKEN}; ct0={AGENT_REACH_TWITTER_CT0}"],
+          "requires_env": ["AGENT_REACH_TWITTER_AUTH_TOKEN", "AGENT_REACH_TWITTER_CT0"],
+          "requires_bin": "agent-reach"
+        }
+      ],
+      "search": [
+        { "bin": "twitter", "command": ["twitter", "search", "{query}", "-n", "{limit}"] }
+      ],
+      "auth_failed_hint": "Twitter search failed — set AGENT_REACH_TWITTER_AUTH_TOKEN and AGENT_REACH_TWITTER_CT0 on the runner.",
+      "blocked_hint": "twitter-cli not installed."
+    },
+    {
+      "id": "reddit",
+      "binaries": ["rdt", "opencli"],
+      "secret_file": {
+        "filename": "reddit-credential.json",
+        "container_path": "/run/platform/reddit-credential.json",
+        "install_path": "/root/.config/rdt-cli/credential.json"
+      },
+      "search": [
+        { "bin": "opencli", "command": ["opencli", "reddit", "search", "{query}", "-f", "yaml", "-n", "{limit}"] },
+        { "bin": "rdt", "command": ["rdt", "search", "{query}", "--limit", "{limit}"] }
+      ],
+      "auth_failed_hint": "Reddit search failed — refresh secrets/reddit-credential.json (run `rdt login` on a workstation, then copy ~/.config/rdt-cli/credential.json).",
+      "blocked_hint": "Reddit requires login (rdt-cli or opencli) — add secrets/reddit-credential.json to the runner."
+    },
+    {
+      "id": "xiaohongshu",
+      "binaries": ["opencli"],
+      "secret_file": {
+        "filename": "xiaohongshu-cookies.json",
+        "container_path": "/run/platform/xiaohongshu-cookies.json",
+        "install_path": "/root/.xhs-mcp/cookies.json"
+      },
+      "search": [
+        { "bin": "opencli", "command": ["opencli", "xiaohongshu", "search", "{query}", "-f", "yaml", "-n", "{limit}"] }
+      ],
+      "auth_failed_hint": "Xiaohongshu search failed — refresh secrets/xiaohongshu-cookies.json (QR-login once via xiaohongshu-mcp, then copy ~/.xhs-mcp/cookies.json).",
+      "blocked_hint": "Xiaohongshu requires login — add secrets/xiaohongshu-cookies.json to the runner."
+    }
+  ]
+}

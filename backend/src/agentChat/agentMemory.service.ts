@@ -71,7 +71,9 @@ export async function buildMemoryBlock(input: {
   }
   const working = recent.slice(-WORKING_MESSAGES);
 
-  const facts = memories.filter((m) => m.kind === 'fact').slice(0, FACT_LIMIT);
+  const facts = memories
+    .filter((m) => m.kind === 'fact' && !m.content.startsWith('fingerprint:'))
+    .slice(0, FACT_LIMIT);
   const recipes = memories.filter((m) => m.kind === 'recipe').slice(0, RECIPE_LIMIT);
   const episodes = memories.filter((m) => m.kind === 'episode').slice(0, EPISODE_LIMIT);
 
@@ -200,6 +202,55 @@ interface ExtractionResult {
   facts?: unknown;
   episode?: unknown;
   recipe?: unknown;
+}
+
+/**
+ * Hybrid runner: replace prior local-environment facts with freshly probed OS paths.
+ * Stored as kind=fact, source=runner_local_env so buildMemoryBlock surfaces them.
+ */
+export async function storeRunnerLocalEnvironmentFacts(input: {
+  agentId: string;
+  userId: string;
+  orgId: string | null;
+  facts: string[];
+  fingerprint: string;
+}): Promise<void> {
+  const facts = input.facts.map((f) => f.trim()).filter(Boolean).slice(0, 20);
+  if (facts.length === 0) return;
+
+  const marker = `fingerprint:${input.fingerprint}`;
+  const existing = await prisma.agentMemory.findMany({
+    where: { agentId: input.agentId, userId: input.userId, source: 'runner_local_env' },
+    select: { id: true, content: true },
+    take: 30,
+  });
+  if (existing.some((row) => row.content === marker)) return;
+
+  await prisma.$transaction([
+    prisma.agentMemory.deleteMany({
+      where: { agentId: input.agentId, userId: input.userId, source: 'runner_local_env' },
+    }),
+    prisma.agentMemory.createMany({
+      data: [
+        {
+          agentId: input.agentId,
+          userId: input.userId,
+          orgId: input.orgId,
+          kind: 'fact',
+          content: marker,
+          source: 'runner_local_env',
+        },
+        ...facts.map((content) => ({
+          agentId: input.agentId,
+          userId: input.userId,
+          orgId: input.orgId,
+          kind: 'fact',
+          content: clip(content, 400),
+          source: 'runner_local_env',
+        })),
+      ],
+    }),
+  ]);
 }
 
 /**

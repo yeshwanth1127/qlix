@@ -1,7 +1,13 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { decryptForAgentSecrets, encryptForAgentSecrets } from '../cloudRunners/agentSecrets.js';
-import type { ConnectorAccountDTO, ConnectorProvider, ConnectorStatus, StoredOAuthTokens } from './connectors.types.js';
+import type {
+  ConnectorAccountDTO,
+  ConnectorProvider,
+  ConnectorStatus,
+  StoredOAuthTokens,
+  StoredOrbitCredentials,
+} from './connectors.types.js';
 
 function toDto(row: {
   id: string;
@@ -107,6 +113,58 @@ export class ConnectorsRepository {
     await prisma.connectorAccount.deleteMany({ where: { orgId, provider } });
   }
 
+  async upsertOrbit(params: {
+    orgId: string;
+    userId: string;
+    credentials: StoredOrbitCredentials;
+    label?: string | null;
+  }): Promise<ConnectorAccountDTO> {
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.credentials));
+    const row = await prisma.connectorAccount.upsert({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'orbit' } },
+      create: {
+        orgId: params.orgId,
+        userId: params.userId,
+        provider: 'orbit',
+        status: 'connected',
+        scopes: ['social.read', 'social.publish'],
+        emailAddress: params.label ?? params.credentials.baseUrl,
+        tokenEnc,
+        tokenExpiresAt: null,
+      },
+      update: {
+        userId: params.userId,
+        status: 'connected',
+        scopes: ['social.read', 'social.publish'],
+        emailAddress: params.label ?? params.credentials.baseUrl,
+        tokenEnc,
+        tokenExpiresAt: null,
+      },
+    });
+    return toDto(row);
+  }
+
+  async loadOrbitCredentials(orgId: string): Promise<StoredOrbitCredentials | null> {
+    const row = await prisma.connectorAccount.findUnique({
+      where: { orgId_provider: { orgId, provider: 'orbit' } },
+    });
+    if (!row || row.status !== 'connected') return null;
+    try {
+      const parsed = JSON.parse(decryptForAgentSecrets(row.tokenEnc)) as StoredOrbitCredentials;
+      if (!parsed?.apiKey || !parsed?.baseUrl) return null;
+      return {
+        apiKey: parsed.apiKey,
+        baseUrl: parsed.baseUrl.replace(/\/$/, ''),
+        channelIds: Array.isArray(parsed.channelIds) ? parsed.channelIds : [],
+        pendingClaimAtMs: parsed.pendingClaimAtMs ?? null,
+        groupId: parsed.groupId ?? null,
+        groupName: parsed.groupName ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async upsertWhatsAppPending(params: {
     orgId: string;
     userId: string;
@@ -143,6 +201,15 @@ export class ConnectorsRepository {
         whatsappOwnerJid: params.ownerJid,
         emailAddress: params.phoneDisplay,
       },
+    });
+    return toDto(row);
+  }
+
+  /** Baileys reported `loggedOut` (session invalidated, e.g. unlinked from the phone) — surface it in the dashboard instead of leaving `status: 'connected'` stale forever. */
+  async markWhatsAppDisconnected(connectorId: string): Promise<ConnectorAccountDTO> {
+    const row = await prisma.connectorAccount.update({
+      where: { id: connectorId },
+      data: { status: 'revoked' },
     });
     return toDto(row);
   }

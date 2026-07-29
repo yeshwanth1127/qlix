@@ -10,6 +10,7 @@ export type PermissionScope =
   | "web.read"
   | "web.click"
   | "web.transaction"
+  | "web.research"
   | "system.file_read"
   | "system.file_write"
   | "system.gui_control"
@@ -19,10 +20,13 @@ export type PermissionScope =
   | "brain.knowledge_read"
   | "email.read"
   | "email.send"
-  | "whatsapp.send";
+  | "whatsapp.send"
+  | "social.read"
+  | "social.publish";
 
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "web.read",
+  "web.research",
   "web.click",
   "web.transaction",
   "system.file_read",
@@ -35,6 +39,8 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "email.read",
   "email.send",
   "whatsapp.send",
+  "social.read",
+  "social.publish",
 ];
 
 export const FORCE_JIT_SCOPES: PermissionScope[] = [
@@ -44,10 +50,12 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   "finance.spend_50",
   "finance.spend_100",
   "email.send",
+  "social.publish",
 ];
 
 export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "web.read": "Read web pages",
+  "web.research": "Web research (platform APIs)",
   "web.click": "Click on web pages",
   "web.transaction": "Submit web forms / transactions",
   "system.file_read": "Read local files",
@@ -60,6 +68,8 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "email.read": "Read connected Gmail inbox",
   "email.send": "Send email via connected Gmail",
   "whatsapp.send": "Send messages/files on connected WhatsApp",
+  "social.read": "Read Orbit social channels & posts",
+  "social.publish": "Publish / schedule posts via Orbit",
 };
 
 export type AgentRuntime = "cloud" | "local" | "hybrid";
@@ -177,9 +187,9 @@ export interface RuntimeStatusResponse {
  * The inference proxy strips one `openrouter/` prefix before calling OpenRouter’s API (see `openrouterClient.ts`).
  */
 export const CLOUD_MODELS = [
-  "openrouter/anthropic/claude-sonnet-4.6",
-  "openrouter/openai/gpt-4o",
   "openrouter/openai/gpt-4o-mini",
+  "openrouter/openai/gpt-4o",
+  "openrouter/anthropic/claude-sonnet-4.6",
   "openrouter/google/gemini-2.5-flash",
   "openrouter/qwen/qwen-2.5-72b-instruct",
 ] as const;
@@ -232,16 +242,13 @@ export type CreateAgentResult =
   | { ok: true; data: CreateAgentResponse }
   | { ok: false; errorMessage: string; code: string | null };
 
-/** Sent after WebAuthn registration or authentication; short-lived (server-side TTL). */
+/** @deprecated Passkey step-up is no longer required; kept for older callers. */
 export const DEVICE_STEP_UP_HEADER = "X-QLIX-Device-Step-Up";
 
-export async function createAgent(body: CreateAgentBody, stepUpToken: string): Promise<CreateAgentResult> {
+export async function createAgent(body: CreateAgentBody, _stepUpToken?: string): Promise<CreateAgentResult> {
   const res = await fetch(`${apiBase()}/api/v1/agents`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      [DEVICE_STEP_UP_HEADER]: stepUpToken,
-    },
+    headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify(body),
   });
@@ -380,7 +387,7 @@ export async function clearCloudRunnerProvisioning(agentId: string): Promise<Res
       error?: { message?: string };
     } | null;
     if (res.ok) {
-      return { ok: true, message: body?.message };
+      return { ok: true, status: body?.message };
     }
     return {
       ok: false,
@@ -454,6 +461,41 @@ export async function updateAgentDescription(
   if (!res.ok) {
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
     return { ok: false, error: err?.error?.message ?? "Failed to update description" };
+  }
+  const data = (await res.json()) as { agent: AgentDTO };
+  return { ok: true, agent: data.agent };
+}
+
+export interface ScopeCatalogEntry {
+  id: string;
+  label: string;
+  description: string;
+  forceJit: boolean;
+}
+
+export async function fetchScopeCatalog(orgId: string | null): Promise<ScopeCatalogEntry[] | null> {
+  const url = new URL(`${apiBase()}/api/v1/agents/scope-catalog`);
+  if (orgId) url.searchParams.set("orgId", orgId);
+  const res = await fetch(url.toString(), { credentials: "include" });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { scopes: ScopeCatalogEntry[] };
+  return data.scopes ?? [];
+}
+
+export async function updateAgentScopes(
+  agentId: string,
+  permissionScopes: string[],
+  jitScopes?: string[],
+): Promise<{ ok: true; agent: AgentDTO } | { ok: false; error: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/scopes`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ permissionScopes, jitScopes }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    return { ok: false, error: err?.error?.message ?? "Failed to update scopes" };
   }
   const data = (await res.json()) as { agent: AgentDTO };
   return { ok: true, agent: data.agent };

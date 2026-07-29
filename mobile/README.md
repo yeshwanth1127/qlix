@@ -1,17 +1,48 @@
-# qlix_mobile
+# Qlix Mobile
 
-A new Flutter project.
+Flutter client for the Qlix backend — chat-first companion to the web console.
 
-## Getting Started
+## Status
 
-This project is a starting point for a Flutter application.
+**Phase 0** (backend bearer auth + app skeleton) — done  
+**Phase 1** (auth, Overview, Agents, streaming chat) — done  
+**Phase 2** (Active runs, Audit, Usage, Wallet, Settings) — not started  
+**Phase 3** (AI Builder shipped early; JIT approve UI, Teams, …) — partial
 
-A few resources to get you started if this is your first Flutter project:
+## Setup
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```bash
+cp .env.example .env
+# Edit QLIX_API_BASE_URL for your device:
+#   Android emulator  -> http://10.0.2.2:4000
+#   iOS simulator     -> http://localhost:4000
+#   Physical device   -> http://<LAN-IP>:4000
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+flutter pub get
+flutter run
+```
+
+Backend must accept `Authorization: Bearer <jwt>` (already shipped) and return `token` in login/signup/refresh JSON.
+
+## App structure
+
+```
+lib/src/
+  core/           # Dio client, secure store, providers
+  models/         # Session, Agent, Chat, Dashboard, NL builder
+  repositories/   # Auth, Agents, Chat, Dashboard, NL builder
+  features/
+    auth/         # Sign in / sign up
+    shell/        # Drawer navigation
+    overview/     # Home metrics + agents + recent audit
+    agents/       # List + detail
+    chat/         # SSE streaming chat
+    ai_builder/   # NL → create agent (mobile step-up)
+```
+
+## Next up (Phase 2)
+
+1. Active runs
+2. Audit log (full page + filters)
+3. Settings (profile / sign-out / danger zone)
+4. Usage + Wallet/Billing balances

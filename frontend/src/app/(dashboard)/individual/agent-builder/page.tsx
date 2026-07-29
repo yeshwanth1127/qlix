@@ -1,10 +1,18 @@
 "use client";
 
-import { useSession } from "@/components/qlix/session-context";
-import { NLAgentBuilderPage } from "@/components/qlix/agents/nl/NLAgentBuilderPage";
+import { Inter } from "next/font/google";
+import { ChatLanding } from "@/components/qlix/landing/ChatLanding";
+
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-landing",
+});
 
 export default function IndividualAgentBuilderPage() {
-  const { session } = useSession();
-  const deviceVerified = session?.user.deviceVerified === true;
-  return <NLAgentBuilderPage orgId={null} deviceVerified={deviceVerified} />;
+  return (
+    <div className={`${inter.variable} ${inter.className} size-full`}>
+      <ChatLanding variant="dashboard" orgId={null} />
+    </div>
+  );
 }

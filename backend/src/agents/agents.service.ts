@@ -4,9 +4,16 @@ import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.servic
 import { roleCan } from '../lib/orgPermissions.js';
 import { AgentsRepository, OrgMembershipError } from './agents.repository.js';
 import type { AgentDTO, CreateAgentInput } from './agents.types.js';
+import { reconcileRuntimeWithScopes } from './scopeCatalog.js';
 import { generateDID } from './did.js';
 import { enforceJitRules } from './jit.js';
 import { generateKeypair } from './keypair.js';
+import { isMcpScope } from '../mcp/mcpScopeCatalog.js';
+import { mcpService } from '../mcp/mcp.service.js';
+import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
+import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
+import { prisma } from '../lib/prisma.js';
+import type { PermissionScope } from './agents.types.js';
 
 export class AgentDeleteForbiddenError extends Error {
   readonly code = 'forbidden_delete';
@@ -29,6 +36,13 @@ export class AgentNotFoundError extends Error {
   }
 }
 
+export class AgentScopeUpdateError extends Error {
+  readonly code = 'invalid_scopes';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 export interface CreateAgentResult {
   agent: AgentDTO;
   credentials: VerifiableCredentialDTO[];
@@ -45,9 +59,20 @@ export class AgentsService {
     const { webauthnCredentialId } = await this.repo.assertDeviceVerified(userId);
     await this.repo.assertOrgMembership(userId, input.orgId);
 
+    const runtime = reconcileRuntimeWithScopes(input.runtime, input.permissionScopes);
+    const normalizedInput: CreateAgentInput =
+      runtime === input.runtime
+        ? input
+        : {
+            ...input,
+            runtime,
+            llmMode: runtime === 'local' ? input.llmMode : 'proxy',
+            localInferenceMode: runtime === 'local' ? input.localInferenceMode : null,
+          };
+
     const { jitScopes, alwaysScopes } = enforceJitRules(
-      input.permissionScopes,
-      input.jitScopes,
+      normalizedInput.permissionScopes,
+      normalizedInput.jitScopes,
     );
 
     const did = generateDID();
@@ -55,16 +80,16 @@ export class AgentsService {
 
     const agent = await this.repo.createAgent({
       userId,
-      orgId: input.orgId,
-      name: input.name,
-      description: input.description ?? null,
+      orgId: normalizedInput.orgId,
+      name: normalizedInput.name,
+      description: normalizedInput.description ?? null,
       did,
       publicKey,
-      runtime: input.runtime,
-      model: input.model,
-      llmMode: input.llmMode,
-      localInferenceMode: input.localInferenceMode,
-      permissionScopes: input.permissionScopes,
+      runtime: normalizedInput.runtime,
+      model: normalizedInput.model,
+      llmMode: normalizedInput.llmMode,
+      localInferenceMode: normalizedInput.localInferenceMode,
+      permissionScopes: normalizedInput.permissionScopes,
       jitScopes,
       alwaysScopes,
       webauthnCredentialId,
@@ -132,6 +157,72 @@ export class AgentsService {
     if (!agent) return null;
     await this.repo.markPing(agent.id);
     return this.repo.findById(agent.id);
+  }
+
+  /**
+   * Update permission scopes (and JIT split). Syncs MCP bindings when mcp.* scopes change.
+   */
+  async updateAgentScopes(
+    userId: string,
+    authOrgId: string | null,
+    agentId: string,
+    input: { permissionScopes: PermissionScope[]; jitScopes?: PermissionScope[] },
+  ): Promise<AgentDTO> {
+    const agent = await this.repo.findById(agentId);
+    if (!agent) throw new AgentNotFoundError();
+
+    const ownsAgent =
+      agent.userId === userId || (agent.orgId != null && agent.orgId === authOrgId);
+    if (!ownsAgent) {
+      throw new AgentDeleteForbiddenError('Not allowed to edit this agent');
+    }
+
+    const permissionScopes = input.permissionScopes;
+    if (permissionScopes.length === 0) {
+      throw new AgentScopeUpdateError('At least one permission scope is required');
+    }
+
+    const jitSet = new Set(
+      (input.jitScopes ?? agent.jitScopes).filter((s) => permissionScopes.includes(s)),
+    );
+    const requestedJit = permissionScopes.filter((s) => jitSet.has(s));
+    const { jitScopes, alwaysScopes } = enforceJitRules(permissionScopes, requestedJit);
+
+    const runtime = reconcileRuntimeWithScopes(agent.runtime, permissionScopes);
+
+    const nonMcpScopes = permissionScopes.filter((s) => !isMcpScope(s));
+    await this.repo.updatePermissionScopes(agentId, {
+      permissionScopes: nonMcpScopes,
+      jitScopes: jitScopes.filter((s) => !isMcpScope(s)),
+      alwaysScopes: alwaysScopes.filter((s) => !isMcpScope(s)),
+      runtime,
+    });
+
+    let workspaceOrgId = agent.orgId ?? authOrgId;
+    if (!workspaceOrgId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { orgId: true },
+      });
+      workspaceOrgId = user?.orgId ?? null;
+    }
+
+    if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-leads.'))) {
+      await ensureQlixLeadsMcpForOrg(workspaceOrgId, userId);
+    }
+    if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-jobs.'))) {
+      await ensureQlixJobsMcpForOrg(workspaceOrgId, userId);
+    }
+
+    if (workspaceOrgId && permissionScopes.some(isMcpScope)) {
+      await mcpService.syncMcpBindingsFromScopes(agentId, workspaceOrgId, permissionScopes);
+    } else if (workspaceOrgId) {
+      await mcpService.syncMcpBindingsFromScopes(agentId, workspaceOrgId, []);
+    }
+
+    const updated = await this.repo.findById(agentId);
+    if (!updated) throw new AgentNotFoundError();
+    return updated;
   }
 
   /**

@@ -8,6 +8,19 @@ const EMBEDDING_MODEL = 'openai/text-embedding-3-small';
 const TOP_K = 5;
 const BATCH_SIZE = Math.max(200, Number(process.env.BRAIN_QUERY_BATCH_SIZE || '2000'));
 
+/**
+ * Default system prompt for every brain query (console "Ask" tab, orb chat widget,
+ * and agent-to-agent brain access all funnel through queryBrain below).
+ * Kept server-side, not client-editable, so it can't be overridden from the UI.
+ */
+const BRAIN_SYSTEM_PROMPT = [
+  "You are exa — this organization's private knowledge assistant, built on its indexed documents and data.",
+  'Answer the question using ONLY the retrieved knowledge chunks below; never rely on outside or prior knowledge.',
+  "If the retrieved chunks don't contain the answer, say so plainly instead of guessing.",
+  'Cite the chunks you relied on inline using their bracket number, e.g. [1], [2].',
+  'Keep answers concise and conversational, as if replying in a chat.',
+].join('\n');
+
 function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   let dot = 0, normA = 0, normB = 0;
@@ -229,15 +242,7 @@ export class BrainQueryService {
       };
     }
 
-    const systemPrompt = [
-      'You are the company AI brain — an authoritative knowledge assistant for this organization.',
-      "Answer the user's question using ONLY the following retrieved knowledge chunks.",
-      'If the answer is not in the provided context, say so clearly.',
-      'Cite which chunks you used by their number [1], [2], etc.',
-      '',
-      'Retrieved context:',
-      contextBlock,
-    ].join('\n');
+    const systemPrompt = [BRAIN_SYSTEM_PROMPT, '', 'Retrieved context:', contextBlock].join('\n');
 
     const llmResult = await openRouterChatCompletion({
       model,

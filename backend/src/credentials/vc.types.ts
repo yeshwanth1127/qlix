@@ -19,7 +19,8 @@ export type VCClaims = IdentityClaims | ScopeClaims | Record<string, unknown>;
 
 export interface VerifiableCredentialDTO {
   id: string;
-  agentId: string;
+  /** Null once the issuing Agent row is deleted (SetNull) — `agentDid` still identifies it. */
+  agentId: string | null;
   agentDid: string;
   type: VCType;
   issuerDid: string;

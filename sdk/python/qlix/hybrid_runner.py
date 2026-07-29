@@ -26,6 +26,11 @@ from .runner_common import (
 from .sdk import QlixSDK
 from .agents3_proxy import Agents3RunContext
 from .hybrid_document_pipeline import verify_and_complete_outcomes
+from .local_environment import (
+    format_environment_prompt,
+    get_cached_environment,
+    sync_local_environment_to_backend,
+)
 from .tool_router import ToolRouter
 
 _log = default_log("hybrid_runner")
@@ -43,6 +48,8 @@ def _build_system_prompt(
     wa_connector_id: str,
     identity: AgentIdentity,
     tools: list[dict[str, Any]],
+    *,
+    groups: tuple[str, ...] | None = None,
 ) -> str | None:
     parts: list[str] = []
     if agent_description:
@@ -56,7 +63,11 @@ def _build_system_prompt(
         | set(identity.always_scopes)
         | set(identity.jit_scopes)
     )
-    parts.append(describe_capabilities(granted, tools))
+    parts.append(describe_capabilities(granted, tools, groups=groups))
+
+    local_env = get_cached_environment()
+    if local_env:
+        parts.append(format_environment_prompt(local_env))
 
     # Steer the model to the dedicated tools instead of refusing or hand-rolling.
     parts.append(
@@ -151,6 +162,12 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
 
     inference_http = QlixHttpClient(base_url=identity.backend_url, timeout_s=120.0)
     async with QlixHttpClient(base_url=identity.backend_url) as http:
+        await sync_local_environment_to_backend(
+            http,
+            agent_id=identity.agent_id,
+            headers=headers,
+            log=_log,
+        )
         async with QlixSDK(identity=identity, http=http) as qlix:
             seq = 0
             idle_polls = 0
@@ -223,6 +240,9 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         seq=seq,
                         log=_log,
                     )
+                    memory_block = run.get("memoryBlock")
+                    if isinstance(memory_block, str) and memory_block.strip():
+                        prompt_for_skills = f"{memory_block.strip()}\n\n---\n\n{prompt_for_skills}"
                     enriched_prompt = prompt_for_skills
                     if selected_skills:
                         enriched_prompt = (
@@ -368,7 +388,11 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             log=_log,
                             live_view_enabled=False,
                             system_prompt=_build_system_prompt(
-                                agent_description, wa_connector_id, identity, tools
+                                agent_description,
+                                wa_connector_id,
+                                identity,
+                                tools,
+                                groups=plan.groups,
                             ),
                         )
                     )
@@ -433,32 +457,75 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     # Fallback when the model ends on tool calls with no final text —
                     # avoids delivering an empty message to the user/WhatsApp.
                     final_content = content.strip() if isinstance(content, str) else ""
+                    run_ok = True
+                    run_error_msg: str | None = None
                     if not final_content:
                         # tool_calls is the list of executed tool names; use its length.
                         tool_call_count = (
                             len(tool_calls) if isinstance(tool_calls, list) else int(tool_calls or 0)
                         )
-                        if tool_call_count > 0:
+                        # A run whose only real work failed (e.g. approval denied, or the
+                        # JIT poll never authorized) must NOT report "Done" — that reads as
+                        # success for a task that never happened. Ignore always-on tools
+                        # (think/done) which never carry the outcome. Executors prefix
+                        # failed results with "[failed] ".
+                        substantive = [
+                            t for t in (executed_tools or [])
+                            if str(t.get("name", "")) not in ("think", "done")
+                        ]
+                        all_failed = bool(substantive) and all(
+                            str(t.get("output", "")).startswith("[failed] ")
+                            for t in substantive
+                        )
+                        if all_failed:
+                            reason = (
+                                str(substantive[-1].get("output", ""))[len("[failed] ") :].strip()
+                            )
+                            final_content = (
+                                f"I couldn't complete this — {reason}"
+                                if reason
+                                else "I couldn't complete this task — the required action did not succeed."
+                            )
+                            run_ok = False
+                            run_error_msg = reason or "task did not complete"
+                            _log(
+                                "all_tools_failed_fallback",
+                                run_id=run_id,
+                                tools=len(substantive),
+                                turns=turns,
+                            )
+                        elif tool_call_count > 0:
                             final_content = (
                                 f"Done — completed the task using {tool_call_count} tool "
                                 f"call{'s' if tool_call_count != 1 else ''} across {turns} "
                                 f"turn{'s' if turns != 1 else ''}."
                             )
+                            _log(
+                                "empty_content_fallback",
+                                run_id=run_id,
+                                tool_calls=tool_call_count,
+                                turns=turns,
+                            )
                         else:
                             final_content = "Done — task completed."
-                        _log(
-                            "empty_content_fallback",
-                            run_id=run_id,
-                            tool_calls=tool_call_count,
-                            turns=turns,
-                        )
+                            _log(
+                                "empty_content_fallback",
+                                run_id=run_id,
+                                tool_calls=tool_call_count,
+                                turns=turns,
+                            )
 
+                    complete_body = (
+                        {"ok": True, "result": final_content}
+                        if run_ok
+                        else {"ok": False, "errorMessage": run_error_msg, "result": final_content}
+                    )
                     await http.post_json(
                         f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
-                        {"ok": True, "result": final_content},
+                        complete_body,
                         headers=headers,
                     )
-                    _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms)
+                    _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms, ok=run_ok)
                 except Exception as exc:
                     import traceback as _tb
                     error_msg = str(exc)

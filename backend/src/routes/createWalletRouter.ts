@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
+import { assertCanViewBilling } from '../lib/billingAccess.js';
 import { billingCycleFromDateUtc } from '../billings/lib/billingCycle.js';
 import { Prisma } from '@prisma/client';
 
@@ -8,6 +9,9 @@ export function createWalletRouter(): Router {
   const router = Router();
 
   router.use(authenticateUser(true));
+  // Product RBAC: within an organization, billing/wallet data is owner-only — members and admins
+  // must not see it. Individual workspaces always see their own wallet.
+  router.use(assertCanViewBilling);
 
   // GET /api/v1/wallet/balance
   router.get('/balance', async (request: Request, response: Response) => {
@@ -23,7 +27,10 @@ export function createWalletRouter(): Router {
       if (!wallet) {
         response.json({
           balance: '0',
-          currency: 'USD',
+          freeBalance: '0',
+          paidBalance: '0',
+          freeExpiresAt: null,
+          currency: 'INR',
           billingCycle: billingCycleFromDateUtc(new Date()),
           monthToDate: { spend: '0', successfulEvents: 0 },
         });
@@ -46,6 +53,9 @@ export function createWalletRouter(): Router {
 
       response.json({
         balance: wallet.balance.toString(),
+        freeBalance: wallet.freeBalance.toString(),
+        paidBalance: wallet.paidBalance.toString(),
+        freeExpiresAt: wallet.freeExpiresAt ? wallet.freeExpiresAt.toISOString() : null,
         currency: wallet.currency,
         billingCycle: cycle,
         monthToDate: {

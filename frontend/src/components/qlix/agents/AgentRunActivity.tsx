@@ -2,42 +2,28 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import {
   type ActivityStep,
-  type ToolCategory,
   getActiveToolsFromSteps,
   getPendingJitStep,
   toolCategoryIcon,
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
 
-/** Red treatment for a failed tool step's icon chip. */
-const ERROR_DOT_CLASS = "bg-red-500/15 ring-red-500/40 text-red-600 dark:text-red-300";
-
-/** Per-category chip styling for the small step icon. */
-function categoryDotClass(category: ToolCategory | undefined): string {
-  switch (category) {
-    case "browser":
-      return "bg-sky-500/15 ring-sky-500/30 text-sky-600 dark:text-sky-300";
-    case "brain":
-      return "bg-violet-500/15 ring-violet-500/30 text-violet-600 dark:text-violet-300";
-    case "system":
-      return "bg-amber-500/10 ring-amber-500/25 text-amber-700 dark:text-amber-200";
-    case "agents3":
-      return "bg-emerald-500/12 ring-emerald-500/30 text-emerald-700 dark:text-emerald-300";
-    case "approval":
-      return "bg-amber-500/15 ring-amber-500/35 text-amber-800 dark:text-amber-100";
-    default:
-      return "bg-[var(--glass-muted-bg)] ring-[--border-subtle] text-[--text-secondary]";
+function hostnameOf(url: string): string {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h.startsWith("www.") ? h.slice(4) : h;
+  } catch {
+    return url;
   }
 }
 
 /**
- * Collapsible, animated agent-activity log. While `running`, it auto-expands and
- * shows the live tools in the header; when the run finishes it collapses to a
- * single summary line that the user can re-open. Pass `defaultOpen` to control the
- * initial state for non-streaming contexts (run history stays expanded).
+ * Chat-native activity stream. Steps appear as a lightly faded "thinking" feed —
+ * minimal lines with icon + label, no heavy borders. Collapses to a pill summary
+ * once the run finishes; click to expand.
  */
 export function ActivityTimeline({
   steps,
@@ -52,182 +38,149 @@ export function ActivityTimeline({
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const jitPending = getPendingJitStep(steps);
-  const activeTools = running ? getActiveToolsFromSteps(steps) : [];
+  // Keep the feed open while approval is outstanding so the wait state isn't buried.
+  const keepOpen = running || Boolean(jitPending);
 
-  const [open, setOpen] = useState(running || defaultOpen);
-  const prevRunning = useRef(running);
+  const [collapsed, setCollapsed] = useState(!keepOpen && !defaultOpen);
+  const prevKeepOpen = useRef(keepOpen);
   useEffect(() => {
-    // Auto-open when a run starts, auto-collapse to the summary when it ends.
-    if (running && !prevRunning.current) setOpen(true);
-    else if (!running && prevRunning.current) setOpen(false);
-    prevRunning.current = running;
-  }, [running]);
+    if (keepOpen && !prevKeepOpen.current) setCollapsed(false);
+    else if (!keepOpen && prevKeepOpen.current) setCollapsed(true);
+    prevKeepOpen.current = keepOpen;
+  }, [keepOpen]);
 
   if (steps.length === 0) return null;
 
   const lastStepIdx = steps.length - 1;
 
-  return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-xl border border-[--border-subtle] bg-black/20",
-        className,
-      )}
-    >
+  if (collapsed) {
+    return (
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-white/[0.03]"
+        onClick={() => setCollapsed(false)}
+        className={cn(
+          "mb-2 flex items-center gap-1.5 text-[10px] transition-opacity hover:opacity-90",
+          jitPending
+            ? "rounded-md border border-amber-600/30 bg-amber-500/15 px-2 py-1 font-medium text-amber-950 opacity-100"
+            : "text-[--text-tertiary] opacity-50 hover:opacity-80",
+          className,
+        )}
       >
-        <span
-          className={cn(
-            "flex size-5 shrink-0 items-center justify-center rounded-md ring-1",
-            running
-              ? "bg-[--accent]/12 text-[--accent] ring-[--accent]/30"
-              : jitPending
-                ? "bg-amber-500/15 text-amber-700 ring-amber-500/35 dark:text-amber-200"
-                : "bg-emerald-500/12 text-emerald-600 ring-emerald-500/30 dark:text-emerald-300",
-          )}
-          aria-hidden
-        >
-          {running ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : jitPending ? (
-            <ShieldCheck className="size-3" />
-          ) : (
-            <Check className="size-3" />
-          )}
+        {jitPending ? (
+          <ShieldCheck className="size-3 shrink-0 text-amber-700" aria-hidden />
+        ) : (
+          <Check className="size-3" aria-hidden />
+        )}
+        <span>
+          {jitPending
+            ? "Waiting for your approval"
+            : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
         </span>
-
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[--text-secondary]">
-          {running ? "Working" : "Agent activity"}
-        </span>
-
-        <span className="min-w-0 flex-1 truncate">
-          {running && activeTools.length > 0 ? (
-            <span className="inline-flex flex-wrap items-center gap-1 align-middle">
-              {activeTools.slice(0, 3).map((t) => {
-                const Icon = toolCategoryIcon(t.category);
-                return (
-                  <span
-                    key={t.toolId}
-                    className="inline-flex items-center gap-1 rounded-full bg-black/25 px-1.5 py-0.5 text-[9px] font-medium text-[--text-primary] ring-1 ring-[--border-subtle]"
-                  >
-                    <Icon className="size-2.5 text-[--accent]" aria-hidden />
-                    {t.short}
-                  </span>
-                );
-              })}
-              {activeTools.length > 3 ? (
-                <span className="text-[9px] text-[--text-tertiary]">+{activeTools.length - 3}</span>
-              ) : null}
-            </span>
-          ) : null}
-        </span>
-
-        <span className="shrink-0 font-mono text-[9px] tabular-nums text-[--text-tertiary]">
-          {steps.length} step{steps.length === 1 ? "" : "s"}
-        </span>
-        <ChevronDown
-          className={cn(
-            "size-3.5 shrink-0 text-[--text-tertiary] transition-transform duration-200",
-            open && "rotate-180",
-          )}
-          aria-hidden
-        />
+        <ChevronDown className="size-3 shrink-0" aria-hidden />
       </button>
+    );
+  }
+
+  return (
+    <div className={cn("relative mb-2 pl-3", className)}>
+      {/* Left thinking line — a light travels down it while the agent works */}
+      <span
+        className={cn(
+          "pointer-events-none absolute bottom-0 left-0 top-0 w-px overflow-hidden transition-colors duration-500",
+          running ? "bg-[--accent]/25" : "bg-[--border-subtle]/60",
+        )}
+        aria-hidden
+      >
+        {running && !reduceMotion ? (
+          <span className="qlix-think-line-travel absolute left-0 h-7 w-px" />
+        ) : null}
+      </span>
 
       <AnimatePresence initial={false}>
-        {open ? (
-          <motion.div
-            key="body"
-            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={reduceMotion ? undefined : { height: 0, opacity: 0 }}
-            transition={{ duration: 0.24, ease: "easeInOut" }}
-            className="overflow-hidden border-t border-[--border-subtle]"
-          >
-            <ol className="relative px-3 pb-2.5 pt-1.5">
-              <span
-                className="pointer-events-none absolute bottom-4 left-[1.375rem] top-4 w-px bg-[--border-subtle]"
-                aria-hidden
-              />
-              <AnimatePresence initial={false}>
-                {steps.map((s, i) => {
-                  const active = running && i === lastStepIdx;
-                  const isError = s.tone === "error";
-                  const Icon = isError
-                    ? AlertTriangle
-                    : s.category
-                      ? toolCategoryIcon(s.category)
-                      : Sparkles;
-                  return (
-                    <motion.li
-                      key={s.id}
-                      layout={!reduceMotion}
-                      initial={reduceMotion ? false : { opacity: 0, x: -6 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={reduceMotion ? undefined : { opacity: 0, x: 6 }}
-                      transition={{ duration: 0.22, ease: "easeOut" }}
-                      className="relative flex gap-2.5 py-1.5"
-                    >
-                      <span
-                        className={cn(
-                          "relative z-10 mt-px flex size-5 shrink-0 items-center justify-center rounded-md ring-1",
-                          isError ? ERROR_DOT_CLASS : categoryDotClass(s.category),
-                        )}
-                        aria-hidden
+        {steps.map((s, i) => {
+          const active = running && i === lastStepIdx;
+          const isError = s.tone === "error";
+          const isJitPending = s.kind === "jit_pending" && Boolean(jitPending) && s.id === jitPending?.id;
+          const Icon = isError
+            ? AlertTriangle
+            : isJitPending
+              ? ShieldCheck
+              : s.category
+                ? toolCategoryIcon(s.category)
+                : Sparkles;
+
+          return (
+            <motion.div
+              key={s.id}
+              layout={!reduceMotion}
+              initial={reduceMotion ? false : { opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? undefined : { opacity: 0 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className={cn(
+                "flex items-baseline gap-1.5 py-[3px] text-[11px] transition-opacity duration-300",
+                isError
+                  ? "opacity-80 text-red-400/90"
+                  : isJitPending
+                    ? "rounded-md bg-amber-500/15 px-1.5 py-1 -ml-1.5 opacity-100 font-medium text-amber-950"
+                    : active
+                      ? "opacity-100 text-[--text-primary]"
+                      : "opacity-40 text-[--text-secondary]",
+              )}
+            >
+              <span className="flex size-3.5 shrink-0 translate-y-px items-center justify-center">
+                {active && running && !isJitPending && !reduceMotion ? (
+                  <span className="relative flex size-2 items-center justify-center" aria-hidden>
+                    <span className="qlix-orb-ping absolute inline-flex size-2 rounded-full bg-[--accent]/60" />
+                    <span className="qlix-orb-core relative inline-flex size-[7px] rounded-full bg-[--accent]" />
+                  </span>
+                ) : (
+                  <Icon className={cn("size-3", isJitPending && "text-amber-700")} aria-hidden />
+                )}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col leading-snug">
+                <span>
+                  <span className={cn(active && running && !isJitPending && !reduceMotion && "qlix-text-shimmer")}>
+                    {s.label}
+                  </span>
+                  {s.detail && s.detail !== s.toolId ? (
+                    <span className="opacity-60"> · {s.detail}</span>
+                  ) : null}
+                </span>
+                {s.sources && s.sources.length > 0 ? (
+                  <span className="mt-1 flex flex-col gap-0.5">
+                    {s.sources.map((src) => (
+                      <a
+                        key={src.url}
+                        href={src.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={src.url}
+                        className="inline-flex items-center gap-1 text-[10px] text-[--accent] hover:underline"
                       >
-                        <Icon className="size-3" />
-                        {active && !reduceMotion ? (
-                          <motion.span
-                            className="absolute inset-0 rounded-md ring-1 ring-[--accent]/60"
-                            initial={{ opacity: 0.7, scale: 1 }}
-                            animate={{ opacity: 0, scale: 1.6 }}
-                            transition={{ duration: 1.2, repeat: Infinity, ease: "easeOut" }}
-                          />
-                        ) : null}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <span
-                          className={cn(
-                            "text-[11px] font-medium leading-snug",
-                            isError
-                              ? "text-red-600 dark:text-red-300"
-                              : active
-                                ? "text-[--text-primary]"
-                                : "text-[--text-primary]/90",
-                          )}
-                        >
-                          {s.label}
-                        </span>
-                        {s.detail ? (
-                          <span
-                            className={cn(
-                              "mt-0.5 block text-[10px] leading-snug",
-                              isError
-                                ? "break-words text-red-500/90 dark:text-red-300/80"
-                                : "text-[--text-secondary]",
-                            )}
-                          >
-                            {s.detail}
-                          </span>
-                        ) : null}
-                        {s.toolId ? (
-                          <span className="mt-0.5 block font-mono text-[9px] text-[--text-tertiary]">
-                            {s.toolId}
-                          </span>
-                        ) : null}
-                      </div>
-                    </motion.li>
-                  );
-                })}
-              </AnimatePresence>
-            </ol>
-          </motion.div>
-        ) : null}
+                        <Globe className="size-2.5 shrink-0" aria-hidden />
+                        <span className="truncate">{src.title ?? hostnameOf(src.url)}</span>
+                      </a>
+                    ))}
+                  </span>
+                ) : null}
+              </span>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
+
+      {/* Collapse toggle when not running and not waiting on approval */}
+      {!keepOpen && (
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          className="mt-0.5 flex items-center gap-1 text-[9px] text-[--text-tertiary] opacity-30 transition-opacity hover:opacity-60"
+        >
+          <ChevronDown className="size-2.5 rotate-180" aria-hidden />
+          <span>collapse</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -239,9 +192,13 @@ export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
   return (
     <div className="flex flex-col gap-2">
       {jitPending ? (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
-          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-200" aria-hidden />
-          <div className="min-w-0 text-[11px] leading-snug text-amber-950 dark:text-amber-50">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-2 rounded-lg border-2 border-amber-600/40 bg-amber-500/15 px-3 py-2.5"
+        >
+          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-amber-700" aria-hidden />
+          <div className="min-w-0 text-[11px] leading-snug text-amber-950">
             <span className="font-semibold">{jitPending.label}</span>
             {jitPending.detail ? (
               <span className="mt-0.5 block text-[10px] opacity-90">{jitPending.detail}</span>

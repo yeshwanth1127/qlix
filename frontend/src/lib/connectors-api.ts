@@ -6,7 +6,7 @@ function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultBase).replace(/\/$/, "");
 }
 
-export type ConnectorProvider = "google" | "whatsapp_baileys";
+export type ConnectorProvider = "google" | "whatsapp_baileys" | "orbit";
 
 export type ConnectorStatus = "connected" | "revoked" | "error" | "pending_qr";
 
@@ -107,6 +107,105 @@ export function googleConnector(connectors: ConnectorAccountDTO[]): ConnectorAcc
 
 export function whatsappConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "whatsapp_baileys");
+}
+
+export function orbitConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "orbit" && c.status === "connected");
+}
+
+/** Enable Orbit for this workspace using the platform key (no paste). */
+export async function enableOrbit(): Promise<{
+  connector: ConnectorAccountDTO;
+  channelCount: number;
+}> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/orbit/enable`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const data = await parseJson<{ connector: ConnectorAccountDTO; channelCount: number }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to enable Orbit");
+  }
+  return data as { connector: ConnectorAccountDTO; channelCount: number };
+}
+
+export async function getOrbitPlatformStatus(): Promise<{
+  platformConfigured: boolean;
+  defaultBaseUrl: string;
+}> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/orbit/status`, {
+    credentials: "include",
+  });
+  const data = await parseJson<{ platformConfigured: boolean; defaultBaseUrl: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to load Orbit status");
+  }
+  return data as { platformConfigured: boolean; defaultBaseUrl: string };
+}
+
+export async function disconnectOrbit(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/orbit`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Orbit");
+  }
+}
+
+export interface OrbitChannelDTO {
+  id: string;
+  name: string;
+  identifier: string;
+  picture: string | null;
+  disabled: boolean;
+  profile: string | null;
+}
+
+export async function listOrbitChannels(): Promise<OrbitChannelDTO[]> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/orbit/channels`, {
+    credentials: "include",
+  });
+  const data = await parseJson<{ channels: OrbitChannelDTO[] }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to list Orbit channels");
+  }
+  return (data as { channels: OrbitChannelDTO[] }).channels ?? [];
+}
+
+export async function startOrbitSocialOAuth(integration: string): Promise<{ url: string }> {
+  const response = await fetch(
+    `${apiBase()}/api/v1/connectors/orbit/social/${encodeURIComponent(integration)}/start`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start channel connect");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectOrbitChannel(channelId: string): Promise<void> {
+  const response = await fetch(
+    `${apiBase()}/api/v1/connectors/orbit/channels/${encodeURIComponent(channelId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect channel");
+  }
 }
 
 export async function startWhatsAppLink(): Promise<WhatsAppLinkStatusDTO> {

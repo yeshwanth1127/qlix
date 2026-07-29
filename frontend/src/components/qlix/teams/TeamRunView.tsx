@@ -11,6 +11,7 @@ import {
   Globe,
   ArrowRight,
   ChevronRight,
+  ChevronDown,
   Search,
   Terminal,
   Brain,
@@ -25,7 +26,9 @@ import {
 } from "lucide-react";
 import {
   cancelTeamRun,
+  getTeamRun,
   injectTeamRunMessage,
+  listTeamRuns,
   startTeamRun,
   streamTeamRun,
   type TeamDTO,
@@ -37,7 +40,19 @@ import {
   AgentBrowserLiveView,
   type BrowserFrame,
 } from "@/components/qlix/agents/AgentBrowserLiveView";
+import {
+  collectTeamReasoningSteps,
+  describeBrowserToolAction,
+  formatToolId,
+  isBrowserToolId,
+  parseInferenceToolDetails,
+  resolveBrowserToolIntent,
+  toolCategoryIcon,
+  type TeamReasoningStep,
+} from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
+import { SketchBox, SketchRow, sketchButton, sketchInput, sketchLabel } from "@/components/qlix/sketch";
+import { LeadReviewCard } from "@/components/qlix/teams/LeadReviewCard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +82,7 @@ interface ToolEntry {
   agentName: string;
   palette: ColorPalette;
   frame?: BrowserFrame;
+  actionLabel?: string;
   timestampMs: number;
 }
 
@@ -74,7 +90,7 @@ type ProcessedEvent =
   | { kind: "run_started"; eventId: string; timestampMs: number }
   | { kind: "supervisor_plan"; eventId: string; timestampMs: number; payload: Record<string, unknown> }
   | { kind: "task_delegated"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
-  | { kind: "tool_call"; eventId: string; timestampMs: number; tool: string; agentId: string }
+  | { kind: "tool_call"; eventId: string; timestampMs: number; tool: string; agentId: string; actionLabel?: string }
   | {
       kind: "brain_query";
       eventId: string;
@@ -95,7 +111,8 @@ type ProcessedEvent =
   | { kind: "run_result"; eventId: string; timestampMs: number }
   | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string }
   | { kind: "user_injection"; eventId: string; timestampMs: number; message: string }
-  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string };
+  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string }
+  | { kind: "lead_review"; eventId: string; timestampMs: number; campaignId: string };
 
 function brainQueryFromPayload(
   eventId: string,
@@ -135,26 +152,21 @@ function brainQueryFromPayload(
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SUPERVISOR_PALETTE: ColorPalette = {
-  bg: "bg-purple-500/15",
-  text: "text-purple-300",
-  border: "border-purple-500/25",
+const SKETCH_PALETTE: ColorPalette = {
+  bg: "bg-white",
+  text: "text-black",
+  border: "border-black",
 };
 
-const WORKER_PALETTES: ColorPalette[] = [
-  { bg: "bg-blue-500/15", text: "text-blue-300", border: "border-blue-500/25" },
-  { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/25" },
-  { bg: "bg-teal-500/15", text: "text-teal-300", border: "border-teal-500/25" },
-  { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/25" },
-  { bg: "bg-violet-500/15", text: "text-violet-300", border: "border-violet-500/25" },
-];
+const SUPERVISOR_PALETTE = SKETCH_PALETTE;
+const WORKER_PALETTES: ColorPalette[] = [SKETCH_PALETTE];
 
 const STATE_DOT: Record<AgentState, string> = {
-  idle: "bg-white/20",
-  thinking: "bg-blue-400 animate-pulse",
-  tool_active: "bg-amber-400 animate-pulse",
-  completed: "bg-emerald-400",
-  failed: "bg-red-400",
+  idle: "bg-black/20",
+  thinking: "bg-black/50 animate-pulse",
+  tool_active: "bg-black/70 animate-pulse",
+  completed: "bg-black",
+  failed: "bg-black/30",
 };
 
 const STATE_LABEL: Record<AgentState, string> = {
@@ -178,16 +190,8 @@ function getToolIcon(tool: string) {
   return Wrench;
 }
 
-function getToolIconColor(tool: string): string {
-  if (tool === "email_read") return "text-sky-400";
-  if (tool === "email_send") return "text-rose-400";
-  if (tool.startsWith("browser_ab_") || tool.startsWith("browser_")) return "text-sky-400";
-  if (tool === "web_search") return "text-blue-400";
-  if (tool === "http_request") return "text-cyan-400";
-  if (tool.startsWith("file_")) return "text-amber-400";
-  if (tool.startsWith("code_") || tool === "shell_exec" || tool === "repl") return "text-orange-400";
-  if (tool.startsWith("memory_") || tool.startsWith("knowledge_") || tool.startsWith("brain")) return "text-purple-400";
-  return "text-white/35";
+function getToolIconColor(_tool: string): string {
+  return "text-black/60";
 }
 
 function formatDuration(ms: number): string {
@@ -228,18 +232,16 @@ function AgentCard({
   const toolColor = status.currentTool ? getToolIconColor(status.currentTool) : "";
 
   return (
-    <div
+    <SketchBox
       className={cn(
-        "rounded-lg border px-3 py-2.5 transition-all duration-300",
-        isActive && status.state !== "completed" && status.state !== "failed"
-          ? cn(palette.border, palette.bg)
-          : "border-white/8 bg-white/[0.02]",
+        "px-3 py-2.5 transition-all duration-300",
+        isActive && status.state !== "completed" && status.state !== "failed" && "border-2",
       )}
     >
-      <div className="flex items-center gap-2 mb-1.5">
+      <div className="mb-1.5 flex items-center gap-2">
         <div
           className={cn(
-            "size-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0",
+            "flex size-7 shrink-0 items-center justify-center border border-black text-[11px] font-bold",
             palette.bg,
             palette.text,
           )}
@@ -247,36 +249,36 @@ function AgentCard({
           {status.name.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium text-white/75 truncate">{status.name}</p>
-          <p className={cn("text-[9px] font-semibold uppercase tracking-wider", palette.text)}>
+          <p className="truncate text-[11px] font-medium text-black">{status.name}</p>
+          <p className={cn("text-[9px] font-semibold uppercase tracking-wider text-black/50", palette.text)}>
             {status.role}
           </p>
         </div>
-        <div className={cn("size-2 rounded-full shrink-0", STATE_DOT[status.state])} />
+        <div className={cn("size-2 shrink-0 rounded-full", STATE_DOT[status.state])} />
       </div>
 
-      <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex min-w-0 items-center gap-1.5">
         {ToolIcon && status.state === "tool_active" && (
           <ToolIcon size={10} className={toolColor} />
         )}
-        <p className="text-[10px] text-white/35 truncate">
-          {status.state === "tool_active" && status.currentTool
-            ? status.currentTool
+        <p className="truncate text-[10px] text-black/50">
+          {status.state === "tool_active"
+            ? status.currentAction ?? status.currentTool ?? STATE_LABEL[status.state]
             : status.currentAction ?? STATE_LABEL[status.state]}
         </p>
       </div>
 
       {(status.toolCount > 0 || status.tasksDone > 0) && (
-        <div className="flex gap-3 mt-1.5">
+        <div className="mt-1.5 flex gap-3">
           {status.toolCount > 0 && (
-            <span className="text-[9px] text-white/20">{status.toolCount} tools</span>
+            <span className="text-[9px] text-black/40">{status.toolCount} tools</span>
           )}
           {status.tasksDone > 0 && (
-            <span className="text-[9px] text-emerald-500/50">{status.tasksDone} done</span>
+            <span className="text-[9px] text-black/50">{status.tasksDone} done</span>
           )}
         </div>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -285,9 +287,9 @@ function AgentCard({
 function RunStartedCard({ timestampMs }: { timestampMs: number }) {
   return (
     <div className="flex items-center gap-2.5 py-0.5">
-      <div className="size-1.5 rounded-full bg-white/15 shrink-0" />
-      <span className="text-[10px] text-white/25">Run started</span>
-      <span className="text-[10px] text-white/12">{formatTime(timestampMs)}</span>
+      <div className="size-1.5 shrink-0 rounded-full bg-black/30" />
+      <span className="text-[10px] text-black/50">Run started</span>
+      <span className="text-[10px] text-black/30">{formatTime(timestampMs)}</span>
     </div>
   );
 }
@@ -309,32 +311,32 @@ function SupervisorPlanCard({
   const subtasks = (payload.subtasks as SubtaskEntry[]) ?? [];
 
   return (
-    <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-purple-500/15">
-        <Brain size={12} className="text-purple-400 shrink-0" />
-        <span className="text-[11px] font-medium text-purple-300">{supervisorName}</span>
-        <span className="text-[10px] text-white/20 ml-1">planned {subtasks.length} subtask{subtasks.length !== 1 ? "s" : ""}</span>
-        <span className="text-[10px] text-white/15 ml-auto">{formatTime(timestampMs)}</span>
+    <SketchBox className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-black px-3 py-2">
+        <Brain size={12} className="shrink-0 text-black" />
+        <span className="text-[11px] font-medium text-black">{supervisorName}</span>
+        <span className="ml-1 text-[10px] text-black/40">planned {subtasks.length} subtask{subtasks.length !== 1 ? "s" : ""}</span>
+        <span className="ml-auto text-[10px] text-black/30">{formatTime(timestampMs)}</span>
       </div>
       {subtasks.length > 0 && (
-        <div className="px-3 py-2.5 space-y-2">
+        <div className="space-y-2 px-3 py-2.5">
           {subtasks.map((st, i) => {
             const palette = paletteById(st.agentId ?? null);
             return (
               <div key={st.subtaskId ?? i} className="flex items-start gap-2">
-                <ArrowRight size={10} className={cn("mt-0.5 shrink-0", palette.text)} />
+                <ArrowRight size={10} className={cn("mt-0.5 shrink-0 text-black/50", palette.text)} />
                 <div className="min-w-0">
-                  <span className={cn("text-[10px] font-medium", palette.text)}>
+                  <span className={cn("text-[10px] font-medium text-black", palette.text)}>
                     {agentNameById(st.agentId ?? null)}
                   </span>
-                  <p className="text-[10px] text-white/40 leading-relaxed mt-0.5">{st.goal}</p>
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-black/50">{st.goal}</p>
                 </div>
               </div>
             );
           })}
         </div>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -353,19 +355,19 @@ function TaskDelegatedCard({
   const goal = (payload.goal as string | undefined) ?? "";
 
   return (
-    <div className={cn("rounded-lg border overflow-hidden", palette.border)}>
-      <div className={cn("flex items-center gap-2 px-3 py-1.5 border-b", palette.border, palette.bg)}>
-        <span className="text-[10px] text-white/30">{supervisorName}</span>
-        <ArrowRight size={10} className={cn("shrink-0", palette.text)} />
-        <span className={cn("text-[10px] font-semibold", palette.text)}>{agentName}</span>
-        <span className="text-[10px] text-white/15 ml-auto">{formatTime(timestampMs)}</span>
+    <SketchBox className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-black px-3 py-1.5">
+        <span className="text-[10px] text-black/50">{supervisorName}</span>
+        <ArrowRight size={10} className="shrink-0 text-black/50" />
+        <span className="text-[10px] font-semibold text-black">{agentName}</span>
+        <span className="ml-auto text-[10px] text-black/30">{formatTime(timestampMs)}</span>
       </div>
       {goal && (
         <div className="px-3 py-2">
-          <p className="text-[11px] text-white/50 leading-relaxed">{goal}</p>
+          <p className="text-[11px] leading-relaxed text-black/60">{goal}</p>
         </div>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -405,73 +407,67 @@ function BrainQueryCard({
         }));
 
   return (
-    <div className="rounded-lg border border-purple-500/35 bg-purple-500/10 overflow-hidden ring-1 ring-purple-500/20">
+    <SketchBox className="overflow-hidden">
       <button
         type="button"
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-purple-500/15 transition-colors text-left"
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-black/5"
         onClick={() => setExpanded((v) => !v)}
       >
-        <Brain size={14} className="text-purple-300 shrink-0" />
-        <div className="flex-1 min-w-0">
-          <p className="text-[11px] font-medium text-purple-200">Company brain queried</p>
-          <p className="text-[10px] text-purple-200/60 truncate">
+        <Brain size={14} className="shrink-0 text-black" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium text-black">Company brain queried</p>
+          <p className="truncate text-[10px] text-black/50">
             {citationCount > 0
               ? `${citationCount} policy source${citationCount === 1 ? "" : "s"}`
               : "No matching policy"}
             {policyPreview ? ` — ${policyPreview}` : ""}
           </p>
         </div>
-        <span
-          className={cn(
-            "text-[9px] font-medium px-1.5 py-0.5 rounded shrink-0",
-            palette.bg,
-            palette.text,
-          )}
-        >
+        <span className="shrink-0 border border-black px-1.5 py-0.5 text-[9px] font-medium text-black">
           {agentName}
         </span>
-        <span className="text-[10px] text-white/20 shrink-0">{formatTime(timestampMs)}</span>
+        <span className="shrink-0 text-[10px] text-black/30">{formatTime(timestampMs)}</span>
         <ChevronRight
           size={11}
-          className={cn("text-purple-300/50 shrink-0 transition-transform", expanded && "rotate-90")}
+          className={cn("shrink-0 text-black/40 transition-transform", expanded && "rotate-90")}
         />
       </button>
       {expanded && (
-        <div className="border-t border-purple-500/25 px-3 py-2 space-y-2">
-          <p className="text-[10px] font-medium text-purple-100/90">
+        <div className="space-y-2 border-t border-black px-3 py-2">
+          <p className="text-[10px] font-medium text-black">
             Retrieved from ingested documents
           </p>
           {citationTitles.length > 0 && (
-            <ul className="list-disc list-inside text-[10px] text-purple-100/80 space-y-0.5">
+            <ul className="list-inside list-disc space-y-0.5 text-[10px] text-black/70">
               {citationTitles.map((t) => (
                 <li key={t}>{t}</li>
               ))}
             </ul>
           )}
           {sections.map((s, i) => (
-            <div key={i} className="rounded border border-purple-500/20 bg-black/20 px-2 py-1.5">
-              <p className="text-[10px] font-medium text-purple-200/90">
+            <SketchBox key={i} className="px-2 py-1.5">
+              <p className="text-[10px] font-medium text-black">
                 {s.index != null ? `[${s.index}] ` : ""}
                 {s.documentTitle ?? s.collectionName ?? "Policy excerpt"}
                 {s.collectionName && s.documentTitle ? (
-                  <span className="text-purple-200/50 font-normal"> · {s.collectionName}</span>
+                  <span className="font-normal text-black/50"> · {s.collectionName}</span>
                 ) : null}
               </p>
               {s.excerpt && (
-                <pre className="text-[10px] text-white/55 mt-1 leading-relaxed whitespace-pre-wrap font-sans max-h-48 overflow-y-auto">
+                <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap font-sans text-[10px] leading-relaxed text-black/60">
                   {s.excerpt}
                 </pre>
               )}
-            </div>
+            </SketchBox>
           ))}
           {citationCount === 0 && (
-            <p className="text-[10px] text-amber-300/80">
+            <p className="text-[10px] text-black/60">
               No policy chunks matched. Ingest documents in AI Brain and ensure this agent has brain.query scope.
             </p>
           )}
         </div>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -480,54 +476,156 @@ function ToolCallCard({ entry }: { entry: ToolEntry }) {
   const ToolIcon = getToolIcon(entry.tool);
   const iconColor = getToolIconColor(entry.tool);
   const hasFrame = !!entry.frame;
+  const intent =
+    entry.actionLabel ??
+    entry.frame?.label ??
+    formatToolId(entry.tool).short;
 
   return (
-    <div className="rounded-lg border border-white/8 bg-white/[0.02] overflow-hidden">
+    <SketchBox className="overflow-hidden">
       <button
         type="button"
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/[0.04] transition-colors text-left"
+        className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-black/5"
         onClick={() => setExpanded((v) => !v)}
       >
-        <ToolIcon size={12} className={cn(iconColor, "shrink-0")} />
-        <span className="font-mono text-[11px] text-white/55 flex-1 min-w-0 truncate">
-          {entry.tool}
+        <ToolIcon size={12} className={cn(iconColor, "mt-0.5 shrink-0")} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-medium leading-snug text-black/80">{intent}</span>
+          <span className="mt-0.5 block truncate font-mono text-[9px] text-black/40">{entry.tool}</span>
         </span>
-        <span
-          className={cn(
-            "text-[9px] font-medium px-1.5 py-0.5 rounded shrink-0",
-            entry.palette.bg,
-            entry.palette.text,
-          )}
-        >
+        <span className="shrink-0 border border-black px-1.5 py-0.5 text-[9px] font-medium text-black">
           {entry.agentName}
         </span>
-        {hasFrame && <Globe size={9} className="text-sky-400/50 shrink-0" />}
+        {hasFrame && <Globe size={9} className="shrink-0 text-black/40" />}
         <ChevronRight
           size={11}
-          className={cn("text-white/20 shrink-0 transition-transform", expanded && "rotate-90")}
+          className={cn("shrink-0 text-black/30 transition-transform", expanded && "rotate-90")}
         />
       </button>
 
       {expanded && hasFrame && entry.frame && (
-        <div className="border-t border-white/8 p-2 space-y-1.5">
+        <div className="space-y-1.5 border-t border-black p-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={`data:${entry.frame.mime};base64,${entry.frame.imageBase64}`}
             alt={entry.frame.label}
-            className="w-full rounded border border-white/10 object-contain max-h-52"
+            className="max-h-52 w-full border border-black object-contain"
           />
           {entry.frame.label && (
-            <p className="text-[10px] text-white/30 px-0.5">{entry.frame.label}</p>
+            <p className="px-0.5 text-[10px] text-black/50">{entry.frame.label}</p>
           )}
         </div>
       )}
 
       {expanded && !hasFrame && (
-        <div className="border-t border-white/8 px-3 py-2">
-          <p className="text-[10px] text-white/20">No browser frame captured for this tool.</p>
+        <div className="border-t border-black px-3 py-2">
+          <p className="text-[10px] text-black/40">No browser frame captured for this tool.</p>
         </div>
       )}
-    </div>
+    </SketchBox>
+  );
+}
+
+type ThinkingStep = TeamReasoningStep;
+
+function ThinkingGroupCard({
+  steps,
+  running,
+  isThinking,
+  activeLabel,
+}: {
+  steps: ThinkingStep[];
+  running: boolean;
+  isThinking: boolean;
+  activeLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const showLiveThinking = running && isThinking;
+
+  if (steps.length === 0 && !showLiveThinking) return null;
+
+  const lastIdx = steps.length - 1;
+  const headerLabel = showLiveThinking ? "Thinking" : "Reasoning";
+  const summary =
+    showLiveThinking && activeLabel
+      ? activeLabel
+      : showLiveThinking
+        ? "Working through the next step…"
+        : steps.length > 0
+          ? `${steps.length} step${steps.length === 1 ? "" : "s"}`
+          : undefined;
+
+  return (
+    <SketchBox className="overflow-hidden">
+      <button
+        type="button"
+        className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-black/5"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        {showLiveThinking ? (
+          <Loader2 size={11} className="mt-0.5 shrink-0 animate-spin text-black/50" />
+        ) : (
+          <Brain size={11} className="mt-0.5 shrink-0 text-black/50" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-medium text-black">{headerLabel}</span>
+          {!open && summary ? (
+            <span className="mt-0.5 block truncate text-[10px] text-black/45">{summary}</span>
+          ) : null}
+        </span>
+        <ChevronDown
+          size={11}
+          className={cn("mt-0.5 shrink-0 text-black/40 transition-transform", open && "rotate-180")}
+        />
+      </button>
+      {open && steps.length > 0 && (
+        <div className="relative max-h-40 overflow-y-auto overscroll-contain border-t border-black px-3 py-2">
+          <span
+            className="pointer-events-none absolute bottom-2 left-3 top-2 w-px bg-black/15"
+            aria-hidden
+          />
+          <div className="space-y-1 pl-3">
+            {steps.map((s, i) => {
+              const active = running && i === lastIdx;
+              const Icon =
+                s.tone === "error"
+                  ? XCircle
+                  : s.category
+                    ? toolCategoryIcon(s.category)
+                    : Brain;
+              return (
+                <div
+                  key={s.id}
+                  className={cn(
+                    "flex items-start gap-1.5 text-[10px] leading-snug",
+                    active ? "text-black/75" : "text-black/45",
+                  )}
+                >
+                  <Icon size={10} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    {s.label}
+                    {s.detail && s.detail !== s.toolId ? (
+                      <span className="text-black/40"> · {s.detail}</span>
+                    ) : null}
+                    {s.agentName ? (
+                      <span className="ml-1 border border-black/20 px-1 py-px text-[9px] text-black/50">
+                        {s.agentName}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {open && steps.length === 0 && showLiveThinking && (
+        <div className="border-t border-black px-3 py-2">
+          <p className="text-[10px] text-black/45">Waiting for the model…</p>
+        </div>
+      )}
+    </SketchBox>
   );
 }
 
@@ -548,22 +646,22 @@ function SubtaskCompletedCard({
   const duration = startTimestampMs ? formatDuration(timestampMs - startTimestampMs) : null;
 
   return (
-    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-emerald-500/15">
-        <CheckCircle size={11} className="text-emerald-400 shrink-0" />
-        <span className={cn("text-[10px] font-semibold", palette.text)}>{agentName}</span>
-        <span className="text-[10px] text-emerald-500/60">completed</span>
+    <SketchBox className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-black px-3 py-1.5">
+        <CheckCircle size={11} className="shrink-0 text-black" />
+        <span className="text-[10px] font-semibold text-black">{agentName}</span>
+        <span className="text-[10px] text-black/50">completed</span>
         {duration && (
-          <span className="text-[10px] text-white/20 ml-auto">{duration}</span>
+          <span className="ml-auto text-[10px] text-black/30">{duration}</span>
         )}
-        <span className="text-[10px] text-white/15 ml-1">{formatTime(timestampMs)}</span>
+        <span className="ml-1 text-[10px] text-black/30">{formatTime(timestampMs)}</span>
       </div>
       {summary && (
         <div className="px-3 py-2">
-          <p className="text-[11px] text-white/40 leading-relaxed line-clamp-3">{summary}</p>
+          <p className="line-clamp-3 text-[11px] leading-relaxed text-black/60">{summary}</p>
         </div>
       )}
-    </div>
+    </SketchBox>
   );
 }
 
@@ -575,16 +673,16 @@ function FinalResultCard({
   timestampMs: number;
 }) {
   return (
-    <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-emerald-500/15">
-        <Star size={12} className="text-emerald-400 shrink-0" />
-        <span className="text-[11px] font-semibold text-emerald-300">Final Result</span>
-        <span className="text-[10px] text-white/15 ml-auto">{formatTime(timestampMs)}</span>
+    <SketchBox className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-black px-3 py-2">
+        <Star size={12} className="shrink-0 text-black" />
+        <span className="text-[11px] font-semibold text-black">Final Result</span>
+        <span className="ml-auto text-[10px] text-black/30">{formatTime(timestampMs)}</span>
       </div>
       <div className="px-3 py-3">
-        <p className="text-[12px] text-white/65 leading-relaxed whitespace-pre-wrap">{result}</p>
+        <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-black/80">{result}</p>
       </div>
-    </div>
+    </SketchBox>
   );
 }
 
@@ -610,20 +708,20 @@ function ArtifactItem({
   }
 
   return (
-    <div className="flex items-center justify-between gap-2 rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2">
+    <SketchRow className="flex items-center justify-between gap-2 border-black">
       <div className="min-w-0">
-        <p className="text-[11px] font-medium text-white/55 truncate">{artifact.name}</p>
-        <p className="text-[10px] text-white/20">{agentNameById(artifact.agentId)}</p>
+        <p className="truncate text-[11px] font-medium text-black">{artifact.name}</p>
+        <p className="text-[10px] text-black/40">{agentNameById(artifact.agentId)}</p>
       </div>
       <button
         type="button"
         onClick={download}
-        className="shrink-0 rounded p-1 text-white/25 hover:text-white/60 hover:bg-white/8 transition-colors"
+        className={`${sketchButton} shrink-0 p-1`}
         title="Download"
       >
         <Download size={12} />
       </button>
-    </div>
+    </SketchRow>
   );
 }
 
@@ -646,14 +744,17 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [injectionText, setInjectionText] = useState("");
   const [injecting, setInjecting] = useState(false);
+  const [leadReviewCampaignId, setLeadReviewCampaignId] = useState<string | null>(null);
+  const [leadReviewApproved, setLeadReviewApproved] = useState(false);
 
   // Browser frames: agentId → frames[]
   const [browserFrames, setBrowserFrames] = useState<Record<string, BrowserFrame[]>>({});
   // Map from tool_finished event id → browser frame (arrives just after)
   const [toolFrames, setToolFrames] = useState<Record<string, BrowserFrame>>({});
+  const [mobilePane, setMobilePane] = useState<"agents" | "timeline" | "tools">("timeline");
 
   const streamCleanup = useRef<(() => void) | null>(null);
-  const timelineBottomRef = useRef<HTMLDivElement>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
   const frameCounterRef = useRef(0);
   // Track the last tool_finished event id per agent to link browser_frame to it
   const pendingToolEventByAgent = useRef<Record<string, string>>({});
@@ -718,9 +819,26 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       });
     }
 
+    const inferenceHintsByAgent = new Map<string, Map<string, string>>();
+
     for (const e of events) {
       const p = e.payload as Record<string, unknown>;
       const aid = e.agentId;
+
+      if (e.eventType === "task_status_update" && p.message === "inference_tool_round" && aid) {
+        const hints = new Map<string, string>();
+        for (const detail of parseInferenceToolDetails(p)) {
+          if (detail.label) {
+            hints.set(detail.name, detail.label);
+            continue;
+          }
+          if (detail.tool_args) {
+            const label = describeBrowserToolAction(detail.name, { tool_args: detail.tool_args });
+            if (label) hints.set(detail.name, label);
+          }
+        }
+        if (hints.size > 0) inferenceHintsByAgent.set(aid, hints);
+      }
 
       if (e.eventType === "run_started" && team.supervisorAgentId) {
         const s = states.get(team.supervisorAgentId);
@@ -756,7 +874,15 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         const s = states.get(aid);
         const tool = p.tool as string | undefined;
         const msg = p.message as string | undefined;
-        if (s && tool && msg === "tool_finished") {
+        if (s && tool && msg === "tool_started" && isBrowserToolId(tool)) {
+          const hints = inferenceHintsByAgent.get(aid);
+          states.set(aid, {
+            ...s,
+            state: "tool_active",
+            currentTool: tool,
+            currentAction: resolveBrowserToolIntent(tool, p, hints),
+          });
+        } else if (s && tool && msg === "tool_finished") {
           if (tool === "brain.query") {
             states.set(aid, {
               ...s,
@@ -827,9 +953,26 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   // ── Transform raw events into rich timeline items ──────────────────────────
   const processedEvents = useMemo<ProcessedEvent[]>(() => {
     const result: ProcessedEvent[] = [];
+    const inferenceHintsByAgent = new Map<string, Map<string, string>>();
+
     for (const e of events) {
       const p = e.payload as Record<string, unknown>;
       const ts = parseTimestampMs(e.timestampMs);
+
+      if (e.eventType === "task_status_update" && p.message === "inference_tool_round" && e.agentId) {
+        const hints = new Map<string, string>();
+        for (const detail of parseInferenceToolDetails(p)) {
+          if (detail.label) {
+            hints.set(detail.name, detail.label);
+            continue;
+          }
+          if (detail.tool_args) {
+            const label = describeBrowserToolAction(detail.name, { tool_args: detail.tool_args });
+            if (label) hints.set(detail.name, label);
+          }
+        }
+        if (hints.size > 0) inferenceHintsByAgent.set(e.agentId, hints);
+      }
 
       switch (e.eventType) {
         case "run_started":
@@ -854,7 +997,18 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             if (tool === "brain.query") {
               result.push(brainQueryFromPayload(e.id, ts, e.agentId, p));
             } else {
-              result.push({ kind: "tool_call", eventId: e.id, timestampMs: ts, tool, agentId: e.agentId ?? "" });
+              const hints = inferenceHintsByAgent.get(e.agentId ?? "");
+              const actionLabel = isBrowserToolId(tool)
+                ? resolveBrowserToolIntent(tool, p, hints)
+                : describeBrowserToolAction(tool, p) ?? undefined;
+              result.push({
+                kind: "tool_call",
+                eventId: e.id,
+                timestampMs: ts,
+                tool,
+                agentId: e.agentId ?? "",
+                actionLabel,
+              });
             }
           }
           break;
@@ -880,10 +1034,27 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             reason: typeof p.reason === "string" ? p.reason : undefined,
           });
           break;
+        case "lead_review_required":
+          if (typeof p.campaignId === "string") {
+            result.push({
+              kind: "lead_review",
+              eventId: e.id,
+              timestampMs: ts,
+              campaignId: p.campaignId,
+            });
+          }
+          break;
       }
     }
     return result;
   }, [events]);
+
+  const reasoningState = useMemo(
+    () => collectTeamReasoningSteps(events, agentNameById),
+    [events, agentNameById],
+  );
+  const { steps: reasoningSteps, isThinking: isAgentThinking, activeLabel: reasoningActiveLabel } =
+    reasoningState;
 
   // ── All browser frames flat list for live view panel ──────────────────────
   const allBrowserFrames = useMemo(
@@ -891,12 +1062,125 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     [browserFrames],
   );
 
-  const isRunning = runStatus === "running" || submitting;
+  /** Resolve campaign id from run DTO, checkpoint trace, or streamed events. */
+  const leadReviewState = useMemo(() => {
+    let campaignId = leadReviewCampaignId ?? run?.leadCampaignId ?? null;
+    let awaitingReview = runStatus === "paused" || run?.status === "paused";
 
-  // ── Auto-scroll timeline ───────────────────────────────────────────────────
+    if (!campaignId && run?.supervisorTrace && Array.isArray(run.supervisorTrace)) {
+      for (let i = run.supervisorTrace.length - 1; i >= 0; i--) {
+        const step = run.supervisorTrace[i] as { step?: string; campaignId?: string } | undefined;
+        if (step?.step === "lead_review_checkpoint" && step.campaignId) {
+          campaignId = step.campaignId;
+          break;
+        }
+      }
+    }
+
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.eventType === "lead_review_required") {
+        const p = e.payload as Record<string, unknown>;
+        if (typeof p.campaignId === "string") {
+          campaignId = campaignId ?? p.campaignId;
+          awaitingReview = true;
+        }
+        break;
+      }
+    }
+
+    if (!awaitingReview) {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i]!;
+        if (e.eventType !== "task_status_update") continue;
+        const p = e.payload as Record<string, unknown>;
+        const msg = p.message as string | undefined;
+        if (msg?.includes("review leads and approve outreach")) {
+          awaitingReview = true;
+          break;
+        }
+      }
+    }
+
+    const approved = leadReviewApproved || Boolean(run?.leadOutreachApprovedAt);
+    const activelyRunning = runStatus === "running" || submitting;
+    return {
+      campaignId,
+      awaitingReview: awaitingReview && !approved && !activelyRunning,
+      approved,
+    };
+  }, [events, run, runStatus, leadReviewCampaignId, leadReviewApproved, submitting]);
+
+  const isPaused = leadReviewState.awaitingReview;
+  const isRunning = (runStatus === "running" || submitting) && !isPaused;
+
+  const liveBrowserAction = useMemo(() => {
+    const inferenceHintsByAgent = new Map<string, Map<string, string>>();
+    const pendingRoundByAgent = new Map<string, { label: string; tool: string }>();
+    const activeByAgent = new Map<string, { label: string; tool: string }>();
+
+    for (const e of events) {
+      const p = e.payload as Record<string, unknown>;
+      const aid = e.agentId ?? "";
+
+      if (e.eventType === "task_status_update" && p.message === "inference_tool_round" && aid) {
+        const hints = new Map<string, string>();
+        for (const detail of parseInferenceToolDetails(p)) {
+          if (detail.label) {
+            hints.set(detail.name, detail.label);
+            continue;
+          }
+          if (detail.tool_args) {
+            const label = describeBrowserToolAction(detail.name, { tool_args: detail.tool_args });
+            if (label) hints.set(detail.name, label);
+          }
+        }
+        if (hints.size > 0) {
+          inferenceHintsByAgent.set(aid, hints);
+          const browser = [...hints.entries()].filter(([name]) => isBrowserToolId(name)).at(-1);
+          if (browser) {
+            pendingRoundByAgent.set(aid, { tool: browser[0], label: browser[1] });
+          }
+        }
+      }
+
+      if (e.eventType !== "tool_called") continue;
+      const tool = p.tool as string | undefined;
+      const msg = p.message as string | undefined;
+      if (!tool || !isBrowserToolId(tool)) continue;
+      const hints = inferenceHintsByAgent.get(aid);
+      if (msg === "tool_started") {
+        pendingRoundByAgent.delete(aid);
+        activeByAgent.set(aid, {
+          label: resolveBrowserToolIntent(tool, p, hints),
+          tool,
+        });
+      } else if (msg === "tool_finished") {
+        activeByAgent.delete(aid);
+        pendingRoundByAgent.delete(aid);
+      }
+    }
+
+    for (const [aid, pending] of pendingRoundByAgent) {
+      if (!activeByAgent.has(aid)) activeByAgent.set(aid, pending);
+    }
+
+    const entries = [...activeByAgent.entries()];
+    if (entries.length === 0) return null;
+    const [agentId, action] = entries[entries.length - 1]!;
+    return {
+      agentName: agentNameById(agentId || null),
+      label: action.label,
+      tool: action.tool,
+    };
+  }, [events, agentNameById]);
+
+  // ── Auto-scroll timeline (contained — does not scroll the page) ─────────────
   useEffect(() => {
-    timelineBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [processedEvents.length]);
+    const el = timelineScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [processedEvents.length, reasoningSteps.length, isAgentThinking, isRunning]);
 
   useEffect(() => {
     return () => { streamCleanup.current?.(); };
@@ -950,6 +1234,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setArtifacts([]);
     setFinalResult(null);
     setRunStatus(null);
+    setLeadReviewCampaignId(null);
+    setLeadReviewApproved(false);
     setBrowserFrames({});
     setToolFrames({});
     pendingToolEventByAgent.current = {};
@@ -975,6 +1261,14 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               prev.some((a) => a.id === artifact.id) ? prev : [...prev, artifact],
             );
           }
+          if (event.eventType === "lead_review_required" && typeof p.campaignId === "string") {
+            setLeadReviewCampaignId(p.campaignId);
+            setRunStatus("paused");
+          }
+        },
+        onPaused: (data) => {
+          setRunStatus("paused");
+          if (data.campaignId) setLeadReviewCampaignId(data.campaignId);
         },
         onComplete: (data) => {
           setRunStatus(data.status);
@@ -983,9 +1277,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
           }
         },
-        onError: (msg) => {
-          setError(msg);
-          setRunStatus("failed");
+        onError: () => {
+          /* EventSource may error on reconnect; keep paused runs alive */
         },
       });
       streamCleanup.current = cleanup;
@@ -1034,45 +1327,112 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setArtifacts([]);
     setFinalResult(null);
     setRunStatus(null);
+    setLeadReviewCampaignId(null);
+    setLeadReviewApproved(false);
     setError(null);
     setBrowserFrames({});
     setToolFrames({});
     pendingToolEventByAgent.current = {};
   }
 
+  // Reconnect stream + hydrate when opening a team with an in-progress paused run.
+  useEffect(() => {
+    if (run) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const runs = await listTeamRuns(team.id);
+        const paused = runs.find(
+          (r) => r.status === "paused" && !r.leadOutreachApprovedAt,
+        );
+        if (!paused || cancelled) return;
+
+        const detail = await getTeamRun(team.id, paused.id);
+        if (cancelled) return;
+
+        setRun(detail.run);
+        setGoal(detail.run.goal);
+        setEvents(detail.events);
+        setRunStatus("paused");
+        if (detail.run.leadCampaignId) {
+          setLeadReviewCampaignId(detail.run.leadCampaignId);
+        }
+
+        const lastSeq =
+          detail.events.length > 0 ? detail.events[detail.events.length - 1]!.seq : -1;
+        streamCleanup.current?.();
+        streamCleanup.current = streamTeamRun(team.id, paused.id, {
+          onEvent: (event) => {
+            setEvents((prev) =>
+              prev.some((e) => e.id === event.id) ? prev : [...prev, event],
+            );
+            processEventForFrames(event);
+            const p = event.payload as Record<string, unknown>;
+            if (event.eventType === "lead_review_required" && typeof p.campaignId === "string") {
+              setLeadReviewCampaignId(p.campaignId);
+              setRunStatus("paused");
+            }
+          },
+          onPaused: (data) => {
+            setRunStatus("paused");
+            if (data.campaignId) setLeadReviewCampaignId(data.campaignId);
+          },
+          onComplete: (data) => {
+            setRunStatus(data.status);
+            if (typeof data.result === "object" && data.result !== null) {
+              const r = data.result as Record<string, unknown>;
+              if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
+            }
+          },
+          onError: () => {
+            /* EventSource errors on reconnect; paused runs stay open */
+          },
+        }, lastSeq);
+      } catch {
+        // ignore — user can start a fresh run
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [team.id, run]);
+
   // ── Empty / pre-run state ──────────────────────────────────────────────────
   if (!run && !submitting) {
     return (
-      <div className="flex h-full flex-col">
-        <div className="border-b border-white/8 px-6 py-5">
-          <label className="block text-xs font-medium text-white/40 mb-2">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
+        <div className="border-b border-black px-6 py-5">
+          <label className={`${sketchLabel} mb-2 block normal-case`}>
             What should this team accomplish?
           </label>
-          <div className="flex gap-2 items-end">
+          <div className="flex items-end gap-2">
             <textarea
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
               placeholder="Research the top 5 competitors in the AI agent market and summarize their pricing…"
-              className="flex-1 resize-none rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2 text-sm text-white/75 placeholder-white/15 focus:outline-none focus:border-indigo-500/50 min-h-[72px]"
+              className={`${sketchInput} min-h-[72px] flex-1 resize-none`}
               rows={3}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void handleStart();
               }}
             />
             <button
+              type="button"
               onClick={() => void handleStart()}
               disabled={!goal.trim()}
-              className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className={`${sketchButton} gap-1.5 disabled:cursor-not-allowed disabled:opacity-30`}
             >
               <Play size={13} />
               Run
             </button>
           </div>
-          <p className="mt-1.5 text-[10px] text-white/20">⌘+Enter to run</p>
+          <p className="mt-1.5 text-[10px] text-black/40">⌘+Enter to run</p>
         </div>
 
-        <div className="flex-1 px-6 py-4 overflow-y-auto">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-white/25 mb-3">
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          <p className={`${sketchLabel} mb-3`}>
             Team — {allAgents.length} agent{allAgents.length !== 1 ? "s" : ""}
           </p>
           <div className="grid grid-cols-2 gap-2">
@@ -1089,7 +1449,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             })}
           </div>
           {allAgents.length === 0 && (
-            <p className="text-sm text-white/25 text-center mt-8">
+            <p className="mt-8 text-center text-sm text-black/50">
               Add a supervisor and at least one worker to this team before running.
             </p>
           )}
@@ -1098,20 +1458,50 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     );
   }
 
-  // ── Active / completed run: 3-column layout ────────────────────────────────
   return (
-    <div className="flex h-full min-h-0 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white md:flex-row">
+      <div
+        className="flex shrink-0 border-b border-black md:hidden"
+        role="tablist"
+        aria-label="Run panels"
+      >
+        {(
+          [
+            ["agents", "Agents"],
+            ["timeline", "Timeline"],
+            ["tools", "Tools"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={mobilePane === id}
+            onClick={() => setMobilePane(id)}
+            className={cn(
+              "flex-1 px-2 py-2.5 font-serif text-[10px] uppercase tracking-widest transition-colors",
+              mobilePane === id
+                ? "bg-black text-white"
+                : "bg-white text-black hover:bg-black/5",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-      {/* ── LEFT: Agent roster ─────────────────────────────────────────────── */}
-      <div className="w-[232px] shrink-0 flex flex-col border-r border-white/8 min-h-0">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/8 shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-white/30">
-            Agents
-          </span>
-          {isRunning && <Loader2 size={11} className="animate-spin text-indigo-400" />}
+      <div
+        className={cn(
+          "min-h-0 w-full shrink-0 flex-col overflow-hidden border-r border-black md:flex md:w-[232px]",
+          mobilePane === "agents" ? "flex flex-1 md:flex-none" : "hidden",
+        )}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-black px-3 py-2.5">
+          <span className={sketchLabel}>Agents</span>
+          {isRunning && <Loader2 size={11} className="animate-spin text-black" />}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div className="flex-1 space-y-2 overflow-y-auto p-3">
           {allAgents.map((ag) => {
             const palette = ag.role === "supervisor" ? SUPERVISOR_PALETTE : WORKER_PALETTES[ag.paletteIdx % WORKER_PALETTES.length];
             const status = agentStates.get(ag.agentId) ?? {
@@ -1129,74 +1519,106 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           })}
         </div>
 
-        {/* Goal (read-only, collapsed at bottom) */}
-        <div className="border-t border-white/8 px-3 py-2.5 shrink-0">
-          <p className="text-[9px] font-semibold uppercase tracking-wider text-white/20 mb-1">Goal</p>
-          <p className="text-[10px] text-white/35 leading-relaxed line-clamp-4">
+        <div className="shrink-0 border-t border-black px-3 py-2.5">
+          <p className={`${sketchLabel} mb-1 text-[9px]`}>Goal</p>
+          <p className="line-clamp-4 text-[10px] leading-relaxed text-black/60">
             {run?.goal ?? goal}
           </p>
         </div>
       </div>
 
-      {/* ── CENTER: Activity timeline ───────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-h-0 min-w-0">
-
-        {/* Run status bar */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/8 shrink-0">
+      <div
+        className={cn(
+          "min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+          mobilePane === "timeline" ? "flex" : "hidden md:flex",
+        )}
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b border-black px-3 py-2.5 sm:px-4">
           {isRunning ? (
             <>
-              <Loader2 size={12} className="animate-spin text-indigo-400" />
-              <span className="text-xs text-indigo-300">Running…</span>
+              <Loader2 size={12} className="animate-spin text-black" />
+              <span className="text-xs text-black">Running…</span>
+            </>
+          ) : isPaused ? (
+            <>
+              <Mail size={12} className="text-black" />
+              <span className="text-xs text-black">Awaiting lead review</span>
             </>
           ) : runStatus === "completed" ? (
             <>
-              <CheckCircle size={12} className="text-emerald-400" />
-              <span className="text-xs text-emerald-400">Completed</span>
+              <CheckCircle size={12} className="text-black" />
+              <span className="text-xs text-black">Completed</span>
             </>
           ) : runStatus === "failed" ? (
             <>
-              <XCircle size={12} className="text-red-400" />
-              <span className="text-xs text-red-400">Failed</span>
+              <XCircle size={12} className="text-black" />
+              <span className="text-xs text-black">Failed</span>
             </>
           ) : runStatus === "canceled" ? (
             <>
-              <Square size={12} className="text-yellow-400" />
-              <span className="text-xs text-yellow-400">Stopped</span>
+              <Square size={12} className="text-black" />
+              <span className="text-xs text-black">Stopped</span>
             </>
           ) : null}
 
           <div className="flex-1" />
 
           {error && (
-            <span className="text-[10px] text-red-400 truncate max-w-[180px]" title={error}>
+            <span className="max-w-[180px] truncate text-[10px] text-black" title={error}>
               {error}
             </span>
           )}
 
           {isRunning && run && (
             <button
+              type="button"
               onClick={() => void handleStop()}
               disabled={canceling}
-              className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+              className={`${sketchButton} gap-1 py-1 text-[10px] disabled:opacity-40`}
             >
               <Square size={10} />
               {canceling ? "Stopping…" : "Stop"}
             </button>
           )}
 
-          {!isRunning && (
+          {isPaused && run && (
             <button
-              onClick={handleNewRun}
-              className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium border border-white/10 text-white/30 hover:text-white/60 hover:bg-white/5 transition-colors"
+              type="button"
+              onClick={() => void handleStop()}
+              disabled={canceling}
+              className={`${sketchButton} gap-1 py-1 text-[10px] disabled:opacity-40`}
             >
+              <Square size={10} />
+              {canceling ? "Stopping…" : "Cancel"}
+            </button>
+          )}
+
+          {!isRunning && !isPaused && (
+            <button type="button" onClick={handleNewRun} className={`${sketchButton} gap-1 py-1 text-[10px]`}>
               New run
             </button>
           )}
         </div>
 
-        {/* Timeline scroll area */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 min-h-0">
+        {(reasoningSteps.length > 0 || (isRunning && isAgentThinking)) && (
+          <div className="shrink-0 border-b border-black px-4 py-2">
+            <ThinkingGroupCard
+              steps={reasoningSteps}
+              running={isRunning}
+              isThinking={isAgentThinking}
+              activeLabel={reasoningActiveLabel}
+            />
+          </div>
+        )}
+
+        <div
+          ref={timelineScrollRef}
+          className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3"
+        >
           {processedEvents.map((ev) => {
+            if (ev.kind === "lead_review") {
+              return null;
+            }
             if (ev.kind === "run_started") {
               return <RunStartedCard key={ev.eventId} timestampMs={ev.timestampMs} />;
             }
@@ -1251,6 +1673,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 agentName: agentNameById(ev.agentId),
                 palette: paletteById(ev.agentId),
                 frame: toolFrames[ev.eventId],
+                actionLabel: ev.actionLabel ?? toolFrames[ev.eventId]?.label,
                 timestampMs: ev.timestampMs,
               };
               return <ToolCallCard key={ev.eventId} entry={entry} />;
@@ -1276,121 +1699,121 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
             if (ev.kind === "run_failed_event") {
               return (
-                <div
-                  key={ev.eventId}
-                  className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5"
-                >
-                  <XCircle size={12} className="text-red-400 shrink-0" />
-                  <p className="text-[11px] text-red-300">{ev.error}</p>
-                </div>
+                <SketchBox key={ev.eventId} className="flex items-center gap-2 px-3 py-2.5">
+                  <XCircle size={12} className="shrink-0 text-black" />
+                  <p className="text-[11px] text-black">{ev.error}</p>
+                </SketchBox>
               );
             }
 
             if (ev.kind === "user_injection") {
               return (
-                <div
-                  key={ev.eventId}
-                  className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5"
-                >
-                  <MessageSquare size={11} className="text-amber-400 shrink-0 mt-0.5" />
-                  <p className="text-[11px] text-amber-200/80">{ev.message}</p>
-                </div>
+                <SketchBox key={ev.eventId} className="flex items-start gap-2 px-3 py-2.5">
+                  <MessageSquare size={11} className="mt-0.5 shrink-0 text-black" />
+                  <p className="text-[11px] text-black/70">{ev.message}</p>
+                </SketchBox>
               );
             }
 
             if (ev.kind === "result_delivered") {
               return (
-                <div
-                  key={ev.eventId}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg border px-3 py-2.5",
-                    ev.sent
-                      ? "border-emerald-500/20 bg-emerald-500/5"
-                      : "border-amber-500/20 bg-amber-500/5",
-                  )}
-                >
-                  <Phone size={11} className={cn("shrink-0", ev.sent ? "text-emerald-400" : "text-amber-400")} />
-                  <p className={cn("text-[11px]", ev.sent ? "text-emerald-200/80" : "text-amber-200/80")}>
+                <SketchBox key={ev.eventId} className="flex items-center gap-2 px-3 py-2.5">
+                  <Phone size={11} className="shrink-0 text-black" />
+                  <p className="text-[11px] text-black/70">
                     {ev.sent
                       ? "Result sent to WhatsApp (check your linked device — may appear in “Message yourself”)"
                       : `WhatsApp delivery failed${ev.reason ? `: ${ev.reason}` : ""}`}
                   </p>
-                </div>
+                </SketchBox>
               );
             }
 
             return null;
           })}
-
-          {/* Live "thinking" indicator */}
-          {isRunning && (
-            <div className="flex items-center gap-2 py-1 pl-0.5">
-              <span className="size-1 rounded-full bg-indigo-400 animate-bounce [animation-delay:0ms]" />
-              <span className="size-1 rounded-full bg-indigo-400 animate-bounce [animation-delay:150ms]" />
-              <span className="size-1 rounded-full bg-indigo-400 animate-bounce [animation-delay:300ms]" />
-              <span className="text-[10px] text-white/20 ml-0.5">Working…</span>
-            </div>
-          )}
-
-          <div ref={timelineBottomRef} />
         </div>
 
-        {/* Guidance input — visible while run is active */}
-        {isRunning && run && (
-          <div className="shrink-0 border-t border-white/8 px-3 py-2 flex items-center gap-2">
+        {isRunning && run && !isPaused && (
+          <div className="flex shrink-0 items-center gap-2 border-t border-black px-3 py-2">
             <input
               value={injectionText}
               onChange={(e) => setInjectionText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleInject(); } }}
               placeholder="Guide the agent… (e.g. skip login, use this URL instead)"
-              className="flex-1 rounded-md border border-white/8 bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-white/70 placeholder-white/20 focus:outline-none focus:border-amber-500/40 min-w-0"
+              className={`${sketchInput} min-w-0 flex-1 py-1.5 text-[12px]`}
               disabled={injecting}
             />
             <button
+              type="button"
               onClick={() => void handleInject()}
               disabled={!injectionText.trim() || injecting}
-              className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium bg-amber-600/80 hover:bg-amber-500/80 text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+              className={`${sketchButton} shrink-0 gap-1 py-1.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-30`}
             >
               {injecting ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
             </button>
           </div>
         )}
+
+        {run && leadReviewState.campaignId && isPaused && !leadReviewState.approved && (
+          <LeadReviewCard
+            teamId={team.id}
+            runId={run.id}
+            campaignId={leadReviewState.campaignId}
+            approved={leadReviewState.approved}
+            runPaused={isPaused}
+            onApproved={() => {
+              setLeadReviewApproved(true);
+              setRunStatus("running");
+            }}
+            onRetryStarted={() => setRunStatus("running")}
+            onRetryPaused={() => setRunStatus("paused")}
+            onRetryFailed={() => setRunStatus("paused")}
+          />
+        )}
       </div>
 
-      {/* ── RIGHT: Output panel ─────────────────────────────────────────────── */}
-      <div className="w-[272px] shrink-0 flex flex-col border-l border-white/8 min-h-0">
-
-        {/* Live browser view */}
-        {allBrowserFrames.length > 0 && (
-          <div className="shrink-0 border-b border-white/8">
+      <div
+        className={cn(
+          "min-h-0 w-full shrink-0 flex-col overflow-hidden border-l border-black md:flex md:w-[272px]",
+          mobilePane === "tools" ? "flex flex-1 md:flex-none" : "hidden",
+        )}
+      >
+        {(allBrowserFrames.length > 0 || liveBrowserAction) && (
+          <div className="max-h-[min(240px,38vh)] shrink-0 overflow-hidden border-b border-black">
             <AgentBrowserLiveView
               frames={allBrowserFrames}
               active={isRunning}
-              className="border-0"
+              compact
+              actionHint={liveBrowserAction?.label ?? allBrowserFrames.at(-1)?.label}
+              className="h-full max-h-[min(240px,38vh)] border-0"
             />
           </div>
         )}
 
-        {/* No browser yet, show placeholder when running */}
         {allBrowserFrames.length === 0 && isRunning && (
-          <div className="shrink-0 border-b border-white/8 px-3 py-4 flex flex-col items-center gap-2">
-            <Globe size={18} className="text-white/10" />
-            <p className="text-[10px] text-white/20 text-center">
-              Browser frames appear here when an agent navigates the web
-            </p>
+          <div className="flex shrink-0 flex-col gap-1 border-b border-black px-3 py-3">
+            <Globe size={18} className="text-black/20" />
+            {liveBrowserAction ? (
+              <>
+                <p className="text-[10px] font-medium text-black/70">{liveBrowserAction.agentName}</p>
+                <p className="text-[10px] leading-snug text-black/55">{liveBrowserAction.label}</p>
+              </>
+            ) : (
+              <p className="text-center text-[10px] text-black/40">
+                Browser frames appear here when an agent navigates the web
+              </p>
+            )}
           </div>
         )}
 
-        {/* Artifacts */}
         {artifacts.length > 0 && (
-          <div className="shrink-0 border-b border-white/8">
-            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/8">
-              <FileText size={11} className="text-white/30" />
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-white/30">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex shrink-0 items-center gap-1.5 border-b border-black px-3 py-2">
+              <FileText size={11} className="text-black/50" />
+              <span className={sketchLabel}>
                 Artifacts ({artifacts.length})
               </span>
             </div>
-            <div className="p-2 space-y-1.5 max-h-44 overflow-y-auto">
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-2">
               {artifacts.map((a, i) => (
                 <ArtifactItem key={`${a.id}-${i}`} artifact={a} agentNameById={agentNameById} />
               ))}
@@ -1398,17 +1821,13 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           </div>
         )}
 
-        {/* Right panel empty state (before anything arrives) */}
         {allBrowserFrames.length === 0 && artifacts.length === 0 && !isRunning && (
-          <div className="flex-1 flex items-center justify-center px-4">
-            <p className="text-[10px] text-white/15 text-center leading-relaxed">
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+            <p className="text-center text-[10px] leading-relaxed text-black/30">
               Browser activity and artifacts produced by agents appear here
             </p>
           </div>
         )}
-
-        {/* Spacer when there IS content but right panel still has room */}
-        {(allBrowserFrames.length > 0 || artifacts.length > 0) && <div className="flex-1" />}
       </div>
     </div>
   );

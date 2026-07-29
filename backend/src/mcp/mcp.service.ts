@@ -13,7 +13,10 @@ import { discoverHttpServer, McpHttpError } from './mcpHttpClient.js';
 import { mcpOAuth } from './mcp.oauth.js';
 import { McpRepository } from './mcp.repository.js';
 import { scopeFor, wildcardScopeFor } from './mcp.governance.js';
+import { extractMcpBindingRequests } from './mcpScopeCatalog.js';
 import type { McpGovernance, McpServerDTO } from './mcp.types.js';
+
+export { extractMcpBindingRequests } from './mcpScopeCatalog.js';
 
 export class McpValidationError extends Error {
   readonly code = 'mcp_invalid';
@@ -130,6 +133,86 @@ export class McpService {
         jitScopes: Array.from(new Set(nextJit)),
       },
     });
+  }
+
+  /**
+   * Create AgentMcpBinding rows from planned `mcp.<slug>.<tool>` scopes (AI builder / NL create).
+   * Re-syncs agent scopes so JIT governance matches each tool's default.
+   */
+  async applyMcpBindingsFromScopes(
+    agentId: string,
+    orgId: string | null,
+    scopes: readonly string[],
+  ): Promise<void> {
+    if (!orgId) return;
+    const requests = extractMcpBindingRequests(scopes);
+    if (requests.size === 0) return;
+
+    for (const [slug, tools] of requests) {
+      const server = await prisma.mcpServer.findUnique({
+        where: { orgId_slug: { orgId, slug } },
+        select: { id: true },
+      });
+      if (!server) {
+        console.warn(`[mcp] applyBindings: no server "${slug}" for org ${orgId}`);
+        continue;
+      }
+      await repo.upsertBinding({
+        agentId,
+        mcpServerId: server.id,
+        allowedTools: tools === '*' ? ['*'] : tools,
+      });
+    }
+    await this.syncAgentScopes(agentId);
+  }
+
+  /**
+   * Align MCP bindings with the agent's selected `mcp.*` scopes. Removes bindings
+   * for servers no longer referenced; upserts tool allow-lists for the rest.
+   */
+  async syncMcpBindingsFromScopes(
+    agentId: string,
+    orgId: string,
+    scopes: readonly string[],
+  ): Promise<void> {
+    const requests = extractMcpBindingRequests(scopes);
+    const bindings = await prisma.agentMcpBinding.findMany({
+      where: { agentId },
+      include: { server: { select: { id: true, slug: true } } },
+    });
+
+    for (const binding of bindings) {
+      const slug = binding.server.slug;
+      const requested = requests.get(slug);
+      if (!requested) {
+        await repo.deleteBinding(agentId, binding.server.id);
+        continue;
+      }
+      await repo.upsertBinding({
+        agentId,
+        mcpServerId: binding.server.id,
+        allowedTools: requested === '*' ? ['*'] : requested,
+      });
+      requests.delete(slug);
+    }
+
+    for (const [slug, tools] of requests) {
+      const server = await prisma.mcpServer.findUnique({
+        where: { orgId_slug: { orgId, slug } },
+        select: { id: true },
+      });
+      if (!server) {
+        console.warn(`[mcp] syncBindings: no server "${slug}" for org ${orgId}`);
+        continue;
+      }
+      await repo.upsertBinding({
+        agentId,
+        mcpServerId: server.id,
+        allowedTools: tools === '*' ? ['*'] : tools,
+      });
+    }
+
+    await this.syncAgentScopes(agentId);
   }
 }
 

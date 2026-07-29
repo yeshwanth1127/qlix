@@ -1,4 +1,17 @@
-export type ConnectorProvider = 'google' | 'whatsapp_baileys';
+export type ConnectorProvider = 'google' | 'whatsapp_baileys' | 'orbit';
+
+/** Orbit (Postiz) Public API credentials stored encrypted in tokenEnc. */
+export interface StoredOrbitCredentials {
+  apiKey: string;
+  baseUrl: string;
+  /** Orbit integration IDs owned by this Qlix workspace (isolation). */
+  channelIds: string[];
+  /** When set, next channel list refresh may claim unowned Orbit integrations. */
+  pendingClaimAtMs?: number | null;
+  /** Optional Orbit Customer/group id when available. */
+  groupId?: string | null;
+  groupName?: string | null;
+}
 
 export type ConnectorStatus = 'connected' | 'revoked' | 'error' | 'pending_qr';
 
@@ -52,6 +65,10 @@ export interface EmailSendInput {
   bodyText: string;
   replyToMessageId?: string | null;
   jitToken?: string | null;
+  metadata?: {
+    campaignId?: string;
+    leadId?: string;
+  };
 }
 
 export interface EmailReadResult {

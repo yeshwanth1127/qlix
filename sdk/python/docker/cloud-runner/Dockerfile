@@ -37,7 +37,20 @@ RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
        agent-browser --json open about:blank \
     && agent-browser --json close
 
+# Agent Reach — curated research backends.
+# Core channels are strict; social channels (twitter-cli / rdt-cli / xiaohongshu /
+# opencli) are best-effort so a flaky upstream installer can't break the image —
+# unavailable sources degrade gracefully at runtime.
+RUN pip install --no-cache-dir pipx \
+    && pipx install https://github.com/Panniantong/agent-reach/archive/main.zip \
+    && /root/.local/bin/agent-reach install --env=server --channels exa,github,youtube,bilibili \
+    && pipx install yt-dlp \
+    && (/root/.local/bin/agent-reach install --env=server --channels twitter,reddit,xiaohongshu,opencli || true) \
+    && /root/.local/bin/agent-reach doctor --json > /opt/agent-reach-boot-check.json || true
+
+ENV PATH="/root/.local/bin:${PATH}"
+
 COPY sdk/python /app/sdk/python
-RUN pip install --no-cache-dir -e "/app/sdk/python"
+RUN pip install --no-cache-dir reportlab -e "/app/sdk/python"
 
 CMD ["python", "-m", "qlix.cloud_runner"]

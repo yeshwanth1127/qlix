@@ -3,12 +3,15 @@ import { z } from 'zod';
 import {
   AgentNotFoundError,
   InvalidSignatureError,
+  JitForbiddenError,
+  JitPollUnauthorizedError,
   JitRequestNotFoundError,
   JitService,
   NotJitScopeError,
   StaleTimestampError,
 } from '../jit/jit.service.js';
 import { assertInternalServiceSecret } from '../middleware/assertInternalServiceSecret.js';
+import { authenticateUser } from '../middleware/authenticateUser.js';
 
 const resolveBodySchema = z.object({
   action_id: z.string().uuid(),
@@ -45,6 +48,14 @@ function handleError(error: unknown, response: Response): void {
   }
   if (error instanceof JitRequestNotFoundError) {
     response.status(404).json({ error: { code: error.code, message: 'JIT request not found' } });
+    return;
+  }
+  if (error instanceof JitForbiddenError) {
+    response.status(403).json({ error: { code: error.code, message: 'Cannot decide this request' } });
+    return;
+  }
+  if (error instanceof JitPollUnauthorizedError) {
+    response.status(401).json({ error: { code: error.code, message: 'Not authorized to poll this request' } });
     return;
   }
   console.error('[jit]', error);
@@ -91,14 +102,71 @@ export function createJitRouter(): Router {
     }
   });
 
+  const decideBodySchema = z.object({
+    jitRequestId: z.string().uuid(),
+    approved: z.boolean(),
+  });
+
+  // User-facing dashboard approval (Approve/Deny buttons in the chat UI).
+  router.post('/decide', authenticateUser(true), async (request: Request, response: Response) => {
+    const parsed = decideBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({
+        error: { code: 'invalid_body', message: 'Invalid decide body', issues: parsed.error.issues },
+      });
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      const result = await service.decideAsUser({
+        jitRequestId: parsed.data.jitRequestId,
+        userId: auth.userId,
+        orgId: auth.orgId ?? null,
+        approved: parsed.data.approved,
+      });
+      response.status(200).json({ ok: true, status: result.status });
+    } catch (error) {
+      handleError(error, response);
+    }
+  });
+
+  // List active session grants (e.g. "email.send approved for this conversation") for the user's agents.
+  router.get('/grants', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      const auth = request.auth!;
+      const grants = await service.listGrantsForUser({ userId: auth.userId, orgId: auth.orgId ?? null });
+      response.status(200).json({ grants });
+    } catch (error) {
+      handleError(error, response);
+    }
+  });
+
+  // Revoke a session grant (the "until revoked" escape hatch).
+  router.delete('/grants/:grantId', authenticateUser(true), async (request: Request, response: Response) => {
+    const grantId = request.params.grantId;
+    if (!grantId || !/^[0-9a-fA-F-]{36}$/i.test(grantId)) {
+      response.status(400).json({ error: { code: 'invalid_id', message: 'grantId must be a UUID' } });
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      await service.revokeGrant({ grantId, userId: auth.userId, orgId: auth.orgId ?? null });
+      response.status(200).json({ ok: true });
+    } catch (error) {
+      handleError(error, response);
+    }
+  });
+
   router.get('/poll/:jitRequestId', async (request: Request, response: Response) => {
     const id = request.params.jitRequestId;
     if (!id || !/^[0-9a-fA-F-]{36}$/i.test(id)) {
       response.status(400).json({ error: { code: 'invalid_id', message: 'jitRequestId must be a UUID' } });
       return;
     }
+    const header = request.header('x-qlix-jit-poll-token');
+    const pollToken = (typeof header === 'string' && header.trim()) || String(request.query.pollToken ?? '').trim();
     try {
-      const result = await service.poll(id);
+      const result = await service.poll(id, pollToken);
       response.status(200).json(result);
     } catch (error) {
       handleError(error, response);

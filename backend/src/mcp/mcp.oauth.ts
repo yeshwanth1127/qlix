@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { McpRepository } from './mcp.repository.js';
 import { discoverHttpServer, McpAuthRequiredError } from './mcpHttpClient.js';
-import { assertSafeFetchUrl } from './ssrfGuard.js';
+import { safeFetch } from './ssrfGuard.js';
 import type { McpServerSecret } from './mcp.types.js';
 
 const repo = new McpRepository();
@@ -47,10 +47,9 @@ function safeHost(u: string): string {
 // ---- guarded HTTP helpers (all go through the SSRF guard) ----
 
 async function fetchJsonGuarded(url: string, init?: RequestInit): Promise<any> {
-  await assertSafeFetchUrl(url);
   let resp: Response;
   try {
-    resp = await fetch(url, init);
+    resp = await safeFetch(url, init ?? {});
   } catch (e) {
     throw new McpOAuthError(`Cannot reach ${safeHost(url)}: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -69,10 +68,9 @@ async function fetchJsonGuarded(url: string, init?: RequestInit): Promise<any> {
 
 /** Token/refresh request (form-encoded). Reads the error body for a useful message. */
 async function postForm(url: string, form: Record<string, string>): Promise<any> {
-  await assertSafeFetchUrl(url);
   let resp: Response;
   try {
-    resp = await fetch(url, {
+    resp = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: new URLSearchParams(form).toString(),

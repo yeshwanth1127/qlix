@@ -12,7 +12,30 @@ export type ActivityStep = {
   kind?: "tool_round" | "tool_done" | "jit_pending" | "jit_resolved" | "other";
   toolIds?: string[];
   toolId?: string;
+  /** Source URLs a research/browse tool drew its data from (rendered inline). */
+  sources?: Array<{ url: string; title?: string }>;
+  /** Pending JIT only: id used to approve/deny from the dashboard, and the routing channel. */
+  jitRequestId?: string;
+  jitChannel?: "dashboard" | "whatsapp";
+  jitScope?: string;
+  /** Pending JIT only: WhatsApp was the configured approval channel but it isn't connected. */
+  jitWhatsappExpected?: boolean;
+  jitWhatsappStatus?: "disconnected" | "not_linked";
 };
+
+/** Normalize the `sources` payload on a tool_finished event into safe link rows. */
+function parseSources(raw: unknown): Array<{ url: string; title?: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<{ url: string; title?: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const url = (item as Record<string, unknown>).url;
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url)) continue;
+    const title = (item as Record<string, unknown>).title;
+    out.push({ url, title: typeof title === "string" && title.trim() ? title.trim() : undefined });
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: string }> = {
   browser_navigate: { label: "Browser", category: "browser", verb: "Navigate to page" },
@@ -30,6 +53,11 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   browser_ab_find: { label: "Browser", category: "browser", verb: "Find & act" },
   browser_ab_get: { label: "Browser", category: "browser", verb: "Get page info" },
   browser_exec: { label: "Browser", category: "browser", verb: "CLI command" },
+  research_web_search: { label: "Research", category: "browser", verb: "Web search (Exa)" },
+  research_read_url: { label: "Research", category: "browser", verb: "Read URL" },
+  research_social_search: { label: "Research", category: "browser", verb: "Social search" },
+  research_video: { label: "Research", category: "browser", verb: "Video transcript" },
+  research_github: { label: "Research", category: "browser", verb: "GitHub search" },
   whatsapp_send: { label: "WhatsApp", category: "other", verb: "Send file" },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
@@ -44,6 +72,185 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   s3_code_task: { label: "Agent-S3", category: "agents3", verb: "CodeAgent task" },
   gui_control: { label: "Agent-S3", category: "agents3", verb: "Desktop (GUI)" },
 };
+
+export function isBrowserToolId(toolId: string): boolean {
+  return (
+    toolId.startsWith("browser_ab_") ||
+    toolId.startsWith("browser_") ||
+    toolId === "browser_exec"
+  );
+}
+
+export type InferenceToolDetail = {
+  name: string;
+  label?: string;
+  tool_args?: Record<string, string>;
+};
+
+/** Parsed `tool_details` from an inference_tool_round log (includes search targets for browser tools). */
+export function parseInferenceToolDetails(payload: Record<string, unknown>): InferenceToolDetail[] {
+  const raw = payload.tool_details;
+  if (!Array.isArray(raw)) return [];
+  const out: InferenceToolDetail[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const name = typeof o.name === "string" ? o.name : "";
+    if (!name) continue;
+    const label = typeof o.label === "string" && o.label.trim() ? o.label.trim() : undefined;
+    let tool_args: Record<string, string> | undefined;
+    if (o.tool_args && typeof o.tool_args === "object" && !Array.isArray(o.tool_args)) {
+      tool_args = o.tool_args as Record<string, string>;
+    }
+    out.push({ name, label, tool_args });
+  }
+  return out;
+}
+
+function parseToolCallParams(payload: Record<string, unknown>): Record<string, unknown> {
+  if (payload.tool_args && typeof payload.tool_args === "object" && !Array.isArray(payload.tool_args)) {
+    return payload.tool_args as Record<string, unknown>;
+  }
+  if (payload.params && typeof payload.params === "object" && !Array.isArray(payload.params)) {
+    return payload.params as Record<string, unknown>;
+  }
+  const raw = payload.arguments ?? payload.args;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return {};
+}
+
+function formatBrowserToolIntent(toolId: string, params: Record<string, unknown>): string {
+  if (toolId === "browser_navigate" || toolId === "browser_ab_open") {
+    const url = String(params.url ?? "").trim();
+    return url ? `Open ${url.slice(0, 120)}` : "Open page";
+  }
+  if (toolId === "browser_click" || toolId === "browser_ab_click" || toolId === "browser_ab_dblclick") {
+    const sel = String(params.selector ?? params.value ?? params.text ?? "").trim();
+    return sel ? `Click “${sel.slice(0, 80)}”` : "Click element";
+  }
+  if (toolId === "browser_type" || toolId === "browser_ab_type" || toolId === "browser_ab_fill" || toolId === "browser_type") {
+    const sel = String(params.selector ?? "").trim();
+    const text = String(params.text ?? params.value ?? "").trim();
+    const preview = text.length > 40 ? `${text.slice(0, 40)}…` : text;
+    if (sel && preview) return `Type “${preview}” into ${sel.slice(0, 60)}`;
+    if (preview) return `Type “${preview}”`;
+    return sel ? `Fill ${sel.slice(0, 60)}` : "Type into field";
+  }
+  if (toolId === "browser_ab_snapshot" || toolId === "browser_axtree") {
+    return "Scan page structure for contact info";
+  }
+  if (toolId === "browser_ab_screenshot" || toolId === "browser_screenshot") {
+    return "Capture page screenshot";
+  }
+  if (toolId === "browser_ab_find") {
+    const loc = String(params.locator ?? "").trim();
+    const val = String(params.value ?? "").trim();
+    const name = String(params.name ?? "").trim();
+    const act = String(params.action ?? "").trim();
+    const target = val || name;
+    if (target) {
+      const via = loc ? ` (${loc})` : "";
+      const tail = act ? ` · ${act}` : "";
+      return `Looking for “${target.slice(0, 80)}”${via}${tail}`;
+    }
+    if (loc) return `Find by ${loc}${act ? ` · ${act}` : ""}`;
+    return "Search the page";
+  }
+  if (toolId === "browser_ab_get" || toolId === "browser_extract") {
+    const what = String(params.what ?? "text").trim() || "text";
+    const sel = String(params.selector ?? params.query ?? "").trim();
+    if (sel) return `Read ${what} from “${sel.slice(0, 60)}”`;
+    return `Read page ${what}`;
+  }
+  if (toolId === "browser_ab_wait") {
+    const sel = String(params.selector ?? params.text ?? "").trim();
+    return sel ? `Wait for “${sel.slice(0, 60)}”` : "Wait on page";
+  }
+  if (toolId === "browser_ab_scroll" || toolId === "browser_ab_scrollintoview") {
+    const sel = String(params.selector ?? "").trim();
+    return sel ? `Scroll to ${sel.slice(0, 60)}` : "Scroll page";
+  }
+  if (toolId === "browser_exec") {
+    const argv = params.argv;
+    if (Array.isArray(argv) && argv.length > 0) {
+      return `CLI: ${argv.map(String).join(" ").slice(0, 100)}`;
+    }
+  }
+  const human = toolId.replace(/^browser_ab_/, "").replace(/^browser_/, "").replace(/_/g, " ");
+  return human ? human.charAt(0).toUpperCase() + human.slice(1) : toolId;
+}
+
+function isGenericBrowserIntent(label: string, toolId: string): boolean {
+  const trimmed = label.trim();
+  if (!trimmed) return true;
+  const generic = new Set([
+    "Search the page",
+    "Click element",
+    "Open page",
+    "Type into field",
+    "Find & act",
+    "Find",
+    "Page snapshot",
+    "Screenshot",
+  ]);
+  if (generic.has(trimmed)) return true;
+  return trimmed === formatToolId(toolId).short;
+}
+
+/** Human-readable description of what a browser tool is doing on the page (mirrors runner labels). */
+export function describeBrowserToolAction(
+  toolId: string,
+  payload: Record<string, unknown>,
+): string | null {
+  if (!isBrowserToolId(toolId)) {
+    return typeof payload.label === "string" && payload.label.trim() ? payload.label.trim() : null;
+  }
+  const params = parseToolCallParams(payload);
+  const fromParams = formatBrowserToolIntent(toolId, params);
+  if (Object.keys(params).length > 0 && !isGenericBrowserIntent(fromParams, toolId)) {
+    return fromParams;
+  }
+  const label = typeof payload.label === "string" ? payload.label.trim() : "";
+  if (label && !isGenericBrowserIntent(label, toolId)) return label;
+  return fromParams;
+}
+
+/** Best-effort browser intent: direct args, runner label, or inference_tool_round tool_details. */
+export function resolveBrowserToolIntent(
+  toolId: string,
+  payload: Record<string, unknown>,
+  inferenceHints?: Map<string, string>,
+): string {
+  const direct = describeBrowserToolAction(toolId, payload);
+  if (direct && !isGenericBrowserIntent(direct, toolId)) return direct;
+
+  const hinted = inferenceHints?.get(toolId);
+  if (hinted && !isGenericBrowserIntent(hinted, toolId)) return hinted;
+
+  for (const detail of parseInferenceToolDetails(payload)) {
+    if (detail.name !== toolId) continue;
+    if (detail.label && !isGenericBrowserIntent(detail.label, toolId)) return detail.label;
+    if (detail.tool_args) {
+      const fromArgs = describeBrowserToolAction(toolId, { tool_args: detail.tool_args });
+      if (fromArgs && !isGenericBrowserIntent(fromArgs, toolId)) return fromArgs;
+    }
+  }
+
+  if (direct) return direct;
+  return formatToolId(toolId).short;
+}
 
 export function toolCategoryIcon(category: ToolCategory): LucideIcon {
   switch (category) {
@@ -131,6 +338,123 @@ export function summarizeRunnerLog(seq: number, raw: unknown): ActivityStep | nu
   return TOOL_ACTIVITY_KINDS.has(step.kind) ? step : null;
 }
 
+const TEAM_THINKING_SKIP = new Set([
+  "run_started",
+  "browser_engine_info",
+  "route_decision",
+  "luna_start",
+  "run_result",
+  "inference_request",
+  "inference_success",
+  "browser_frame",
+  "tool_finished",
+  "tool_started",
+]);
+
+/** Runner log `message` values (snake_case), not orchestrator prose. */
+function isRunnerLogMessage(message: string): boolean {
+  if (TEAM_THINKING_SKIP.has(message)) return true;
+  return /^[a-z][a-z0-9_]*$/.test(message);
+}
+
+/** Runner log payload → team-run thinking line (excludes milestones and tool results). */
+export function teamThinkingStepFromLog(eventId: string, raw: unknown): ActivityStep | null {
+  if (!raw || typeof raw !== "object") return null;
+  const msg = String((raw as Record<string, unknown>).message ?? "");
+  if (!msg || TEAM_THINKING_SKIP.has(msg)) return null;
+  const step = buildActivityStep(0, raw);
+  if (!step) return null;
+  return { ...step, id: eventId };
+}
+
+/** Orchestrator / bridge status payload → team-run thinking line. */
+export function teamThinkingStepFromStatus(
+  eventId: string,
+  payload: Record<string, unknown>,
+): ActivityStep | null {
+  const message = typeof payload.message === "string" ? payload.message.trim() : "";
+  if (message && isRunnerLogMessage(message)) {
+    return teamThinkingStepFromLog(eventId, payload);
+  }
+  if (message) {
+    return { id: eventId, label: message, tone: "neutral", kind: "other" };
+  }
+  if (payload.status === "failed") {
+    const error = typeof payload.error === "string" ? payload.error.trim() : "";
+    if (error) {
+      return { id: eventId, label: error, tone: "error", kind: "other" };
+    }
+  }
+  return null;
+}
+
+export type TeamReasoningStep = ActivityStep & { agentName?: string };
+
+export type TeamReasoningState = {
+  steps: TeamReasoningStep[];
+  /** True while the model is between inference_request and its response/tool round. */
+  isThinking: boolean;
+  /** Latest meaningful line shown in the collapsed header while thinking. */
+  activeLabel?: string;
+};
+
+type TeamReasoningEvent = {
+  id: string;
+  eventType: string;
+  agentId: string | null;
+  payload: unknown;
+};
+
+/** Collapse runner noise into a single live “Thinking” state plus expandable reasoning steps. */
+export function collectTeamReasoningSteps(
+  events: TeamReasoningEvent[],
+  agentNameById: (id: string | null) => string,
+): TeamReasoningState {
+  const steps: TeamReasoningStep[] = [];
+  let isThinking = false;
+  let activeLabel: string | undefined;
+
+  for (const e of events) {
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    const rawMsg = typeof p.message === "string" ? p.message : "";
+    const tool = typeof p.tool === "string" ? p.tool : undefined;
+
+    if (rawMsg === "inference_request") {
+      isThinking = true;
+      continue;
+    }
+    if (rawMsg === "inference_success" || rawMsg === "inference_tool_round" || rawMsg === "tool_started") {
+      isThinking = false;
+    }
+
+    let step: ActivityStep | null = null;
+    if (e.eventType === "task_status_update") {
+      step = teamThinkingStepFromStatus(e.id, p);
+    } else if (e.eventType === "tool_called") {
+      if (rawMsg === "browser_frame" || (tool && rawMsg === "tool_finished")) continue;
+      step = teamThinkingStepFromLog(e.id, p);
+    }
+    if (!step) continue;
+
+    const agentName = agentNameById(e.agentId);
+    activeLabel = step.detail ? `${step.label} · ${step.detail}` : step.label;
+
+    const prev = steps[steps.length - 1];
+    if (
+      prev &&
+      prev.label === step.label &&
+      prev.detail === step.detail &&
+      prev.agentName === agentName
+    ) {
+      continue;
+    }
+
+    steps.push({ ...step, agentName });
+  }
+
+  return { steps, isThinking, activeLabel };
+}
+
 function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
   if (!raw || typeof raw !== "object") return null;
   const d = raw as Record<string, unknown>;
@@ -195,18 +519,31 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
     }
     case "inference_tool_round": {
       const tools = Array.isArray(d.tools) ? d.tools.map(String).filter(Boolean) : [];
+      const details = parseInferenceToolDetails(d);
       const primary = tools[0] ? formatToolId(tools[0]) : null;
       const allAgents3 = tools.length > 0 && tools.every(isAgents3ToolId);
+      if (tools.length === 1 && primary) {
+        const toolId = tools[0]!;
+        const detail = details.find((x) => x.name === toolId);
+        const browserIntent =
+          detail?.label ??
+          (detail?.tool_args
+            ? describeBrowserToolAction(toolId, { tool_args: detail.tool_args })
+            : null);
+        const meta = TOOL_META[toolId];
+        return {
+          id,
+          label: browserIntent ?? meta?.verb ?? primary.short,
+          detail: browserIntent ? primary.group : primary.group,
+          tone: "accent",
+          kind: "tool_round",
+          category: primary.category,
+          toolIds: tools,
+        };
+      }
       return {
         id,
-        label:
-          tools.length === 1
-            ? primary?.group === "Agent-S3"
-              ? `Agent-S3 — ${primary.short}`
-              : `Using ${primary?.group ?? "tool"}`
-            : allAgents3
-              ? "Agent-S3 tools"
-              : "Using tools",
+        label: allAgents3 ? "Running Agent-S3 steps" : `Calling ${tools.length} tools`,
         detail: tools.length > 0 ? formatToolList(tools) : undefined,
         tone: "accent",
         kind: "tool_round",
@@ -217,10 +554,11 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
     case "tool_started": {
       const toolId = String(d.tool ?? "");
       const f = formatToolId(toolId);
+      const browserAction = describeBrowserToolAction(toolId, d);
       return {
         id,
-        label: f.group === "Agent-S3" ? `Agent-S3 — ${f.short}` : `Running — ${f.group}`,
-        detail: f.group === "Agent-S3" ? toolId : f.short,
+        label: browserAction ?? (f.group === "Agent-S3" ? `Agent-S3 — ${f.short}` : `Running — ${f.group}`),
+        detail: browserAction ? f.short : f.group === "Agent-S3" ? toolId : f.short,
         tone: "accent",
         kind: "tool_round",
         category: f.category,
@@ -241,11 +579,11 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
             : `Step ${stepNum}`
           : undefined;
       const phaseDetail = String(d.detail ?? "").trim();
-      const detail = [stepLabel, phaseDetail || phase.replace(/_/g, " ")].filter(Boolean).join(" · ");
+      const action = phaseDetail || phase.replace(/_/g, " ");
       return {
         id,
-        label: `Agent-S3 — ${f.short}`,
-        detail: detail || undefined,
+        label: action ? `Agent-S3: ${action}` : `Agent-S3 — ${f.short}`,
+        detail: stepLabel || f.short,
         tone: "accent",
         kind: "other",
         category: "agents3",
@@ -255,6 +593,7 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
     case "tool_finished": {
       const toolId = String(d.tool ?? "");
       const f = formatToolId(toolId);
+      const browserAction = describeBrowserToolAction(toolId, d);
       // `ok` is absent on older runners — treat missing as success for back-compat.
       const failed = d.ok === false;
       if (failed) {
@@ -262,7 +601,7 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         return {
           id,
           label: f.group === "Agent-S3" ? `Failed — Agent-S3` : `Failed — ${f.group}`,
-          detail: error || `${f.short} failed`,
+          detail: error || browserAction || `${f.short} failed`,
           tone: "error",
           kind: "tool_done",
           category: f.category,
@@ -271,12 +610,13 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       }
       return {
         id,
-        label: f.group === "Agent-S3" ? `Done — Agent-S3` : `Done — ${f.group}`,
-        detail: `${f.short}${toolId ? ` (${toolId})` : ""}`,
+        label: browserAction ?? (f.group === "Agent-S3" ? `Done — Agent-S3` : `Done — ${f.group}`),
+        detail: browserAction ? f.short : `${f.short}${toolId ? ` (${toolId})` : ""}`,
         tone: "success",
         kind: "tool_done",
         category: f.category,
         toolId,
+        sources: parseSources(d.sources),
       };
     }
     case "orchestrator_fallback":
@@ -299,11 +639,21 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const scopeLabel = String(d.scopeLabel ?? d.scope ?? "action");
       const channel = String(d.channel ?? "");
       const context = String(d.context ?? "").trim();
+      const jitRequestId =
+        typeof d.jitRequestId === "string" && d.jitRequestId ? d.jitRequestId : undefined;
+      const whatsappExpected = d.whatsappExpected === true;
+      const whatsappStatus =
+        d.whatsappStatus === "disconnected" || d.whatsappStatus === "not_linked"
+          ? d.whatsappStatus
+          : undefined;
+      // Session-scoped scopes (e.g. email.send): one "yes" covers the whole conversation.
+      const sessionScoped = String(d.scope ?? "") === "email.send" || String(d.scope ?? "") === "social.publish";
       const detailParts = [
         channel === "whatsapp"
           ? "Reply on WhatsApp to approve or deny"
           : "Waiting for your approval in Qlix",
         scopeLabel ? `Scope: ${scopeLabel}` : "",
+        sessionScoped ? "Approving covers this whole conversation" : "",
         context,
       ].filter(Boolean);
       return {
@@ -313,14 +663,25 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         tone: "warn",
         kind: "jit_pending",
         category: "approval",
+        jitRequestId,
+        jitChannel: channel === "whatsapp" ? "whatsapp" : "dashboard",
+        jitScope: String(d.scope ?? ""),
+        jitWhatsappExpected: whatsappExpected,
+        jitWhatsappStatus: whatsappStatus,
       };
     }
     case "jit_approval_granted": {
       const scopeLabel = String(d.scopeLabel ?? d.scope ?? "");
       const auto = d.auto === true;
+      const conversationGrant = String(d.reason ?? "") === "conversation";
+      const label = !auto
+        ? "You approved the action"
+        : conversationGrant
+          ? "Approved for this conversation"
+          : "Pre-approved for this run";
       return {
         id,
-        label: auto ? "Pre-approved for this run" : "You approved the action",
+        label,
         detail: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
         tone: "success",
         kind: "jit_resolved",

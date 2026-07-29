@@ -161,7 +161,7 @@ export function parseAgentTarget(text: string): { agentName: string | null; prom
 
 function agentScopeWhere(connector: ConnectorAccountDTO) {
   const userId = connector.userId;
-  return { OR: [{ orgId: connector.orgId }, { userId, orgId: null }] as const };
+  return { OR: [{ orgId: connector.orgId }, { userId, orgId: null }] };
 }
 
 async function findAgentByName(

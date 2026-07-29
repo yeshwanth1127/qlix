@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/agent.dart';
+import '../../theme.dart';
+import '../../ui/sketch.dart';
 import '../chat/chat_screen.dart';
 import 'agents_providers.dart';
 
@@ -14,30 +16,37 @@ class AgentDetailScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final detailAsync = ref.watch(agentDetailProvider(agentId));
-    return Scaffold(
-      appBar: AppBar(title: Text(agentName ?? 'Agent')),
-      body: detailAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text('$err', textAlign: TextAlign.center),
-          ),
-        ),
-        data: (detail) => _DetailBody(detail: detail),
-      ),
-      floatingActionButton: detailAsync.maybeWhen(
-        data: (detail) => FloatingActionButton.extended(
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) =>
-                  ChatScreen(agentId: detail.agent.id, agentName: detail.agent.name),
+    return SketchBackdrop(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(title: Text(agentName ?? 'Agent')),
+        body: detailAsync.when(
+          loading: () => const Center(child: OrbitLoader()),
+          error: (err, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('$err', textAlign: TextAlign.center),
             ),
           ),
-          icon: const Icon(Icons.chat_bubble_outline),
-          label: const Text('Open chat'),
+          data: (detail) => _DetailBody(detail: detail),
         ),
-        orElse: () => null,
+        floatingActionButton: detailAsync.maybeWhen(
+          data: (detail) => FloatingActionButton.extended(
+            backgroundColor: QlixColors.ink,
+            foregroundColor: QlixColors.white,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ChatScreen(
+                  agentId: detail.agent.id,
+                  agentName: detail.agent.name,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.chat_bubble_outline),
+            label: const Text('OPEN CHAT'),
+          ),
+          orElse: () => null,
+        ),
       ),
     );
   }

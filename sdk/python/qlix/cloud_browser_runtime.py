@@ -195,32 +195,71 @@ def is_browser_tool(tool_name: str) -> bool:
 
 
 def browser_action_label(tool_name: str, params: dict[str, Any]) -> str:
-    if tool_name == "browser_ab_open":
-        url = str(params.get("url", ""))
-        return ("Navigate " + url[:120]) if url else "Navigate"
-    if tool_name == "browser_ab_click":
-        sel = str(params.get("selector", params.get("value", "")))
-        return ("Click " + sel[:80]) if sel else "Click"
-    if tool_name in ("browser_ab_fill", "browser_ab_type"):
-        sel = str(params.get("selector", ""))
-        text = str(params.get("text", ""))
-        preview = text[:40] + ("..." if len(text) > 40 else "")
-        return ("Type " + preview + " into " + sel[:60]) if sel else ("Type " + preview)
-    if tool_name == "browser_ab_snapshot":
-        return "Read page structure"
-    if tool_name == "browser_ab_screenshot":
-        return "Screenshot"
+    if tool_name in ("browser_navigate", "browser_ab_open"):
+        url = str(params.get("url", "")).strip()
+        return f"Open {url[:120]}" if url else "Open page"
+    if tool_name in ("browser_click", "browser_ab_click", "browser_ab_dblclick"):
+        sel = str(params.get("selector", params.get("value", ""))).strip()
+        return f'Click "{sel[:80]}"' if sel else "Click element"
+    if tool_name in ("browser_ab_fill", "browser_ab_type", "browser_type"):
+        sel = str(params.get("selector", "")).strip()
+        text = str(params.get("text", params.get("value", ""))).strip()
+        preview = text[:40] + ("…" if len(text) > 40 else "")
+        if sel and preview:
+            return f'Type "{preview}" into {sel[:60]}'
+        if preview:
+            return f'Type "{preview}"'
+        return f"Fill {sel[:60]}" if sel else "Type into field"
+    if tool_name in ("browser_ab_snapshot", "browser_axtree"):
+        return "Scan page structure for contact info"
+    if tool_name in ("browser_ab_screenshot", "browser_screenshot"):
+        return "Capture page screenshot"
     if tool_name == "browser_ab_find":
-        loc = str(params.get("locator", ""))
-        act = str(params.get("action", ""))
-        return "Find " + loc + " " + act
+        loc = str(params.get("locator", "")).strip()
+        val = str(params.get("value", "")).strip()
+        name = str(params.get("name", "")).strip()
+        act = str(params.get("action", "")).strip()
+        target = val or name
+        if target:
+            via = f" ({loc})" if loc else ""
+            tail = f" · {act}" if act else ""
+            return f'Looking for "{target[:80]}"{via}{tail}'
+        if loc:
+            return f"Find by {loc}{(' · ' + act) if act else ''}"
+        return "Search the page"
+    if tool_name in ("browser_ab_get", "browser_extract"):
+        what = str(params.get("what", "text")).strip() or "text"
+        sel = str(params.get("selector", params.get("query", ""))).strip()
+        if sel:
+            return f'Read {what} from "{sel[:60]}"'
+        return f"Read page {what}"
+    if tool_name == "browser_ab_wait":
+        sel = str(params.get("selector", params.get("text", ""))).strip()
+        return f'Wait for "{sel[:60]}"' if sel else "Wait on page"
+    if tool_name in ("browser_ab_scroll", "browser_ab_scrollintoview"):
+        sel = str(params.get("selector", "")).strip()
+        return f"Scroll to {sel[:60]}" if sel else "Scroll page"
     if tool_name == "browser_exec":
         argv = params.get("argv")
         if isinstance(argv, list) and argv:
             joined = " ".join(str(x) for x in argv)[:100]
             return "CLI: " + joined
-    clean = tool_name.replace("browser_ab_", "").replace("_", " ")
+    clean = tool_name.replace("browser_ab_", "").replace("browser_", "").replace("_", " ")
     return clean.title() if clean else tool_name
+
+
+def sanitize_tool_args_for_ui(params: dict[str, Any]) -> dict[str, str]:
+    """Trim tool arguments for SSE/UI payloads."""
+    out: dict[str, str] = {}
+    for key, val in params.items():
+        if val is None:
+            continue
+        if isinstance(val, (str, int, float, bool)):
+            text = str(val)
+            if len(text) > 240:
+                text = text[:240] + "…"
+            out[str(key)] = text
+    return out
 
 
 def capture_browser_frame_for_ui(enabled: bool = False) -> dict[str, str] | None:

@@ -5,13 +5,12 @@ import { Check, Loader2 } from "lucide-react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils/cn";
 
-export type CreateAgentFlowStep = 1 | 2 | 3 | 4 | 5 | "result";
+export type CreateAgentFlowStep = 1 | 2 | 3 | 4 | "result";
 
 const FLOW_STEPS = [
   { label: "Identity", hint: "Name & scopes" },
   { label: "Access", hint: "JIT policy" },
   { label: "Runtime", hint: "Where it runs" },
-  { label: "Verify", hint: "Passkey" },
   { label: "Create", hint: "Issue agent" },
 ] as const;
 
@@ -44,7 +43,7 @@ export function CreateAgentStepProgress({
           {complete ? "Agent ready" : creating ? "Creating agent…" : "Setup progress"}
         </p>
         <span className="font-mono text-[10px] tabular-nums text-[--text-tertiary]">
-          {complete ? "5 / 5" : `${currentStep} / ${FLOW_STEPS.length}`}
+          {complete ? "4 / 4" : `${currentStep} / ${FLOW_STEPS.length}`}
         </span>
       </div>
 
@@ -100,13 +99,13 @@ function StepIndicator({
           },
           active: {
             scale: 1.1,
-            backgroundColor: "#6d28d9",
-            boxShadow: "0 8px 18px -6px rgba(109,40,217,0.6), inset 0 0 0 2px #8b5cf6",
+            backgroundColor: "#ea580c",
+            boxShadow: "0 8px 18px -6px rgba(234,88,12,0.6), inset 0 0 0 2px #fb923c",
           },
           complete: {
             scale: 1,
-            backgroundColor: "#6d28d9",
-            boxShadow: "inset 0 0 0 2px #6d28d9",
+            backgroundColor: "#ea580c",
+            boxShadow: "inset 0 0 0 2px #ea580c",
           },
         }}
         transition={{ duration: 0.3 }}
@@ -159,17 +158,15 @@ function StepConnector({ isComplete }: { readonly isComplete: boolean }) {
 }
 
 const SUBMIT_PHASES = [
-  "Confirming passkey with your device",
   "Generating DID and keypair",
   "Issuing verifiable credentials",
-  "Provisioning cloud runner",
+  "Setting up your agent",
 ] as const;
 
 const HYBRID_SUBMIT_PHASES = [
-  "Confirming passkey with your device",
   "Generating DID and keypair",
   "Issuing verifiable credentials",
-  "Preparing hybrid daemon credentials",
+  "Preparing your local agent credentials",
 ] as const;
 
 export function CreateAgentSubmitProgress({
@@ -182,7 +179,7 @@ export function CreateAgentSubmitProgress({
       ? SUBMIT_PHASES
       : runtime === "hybrid"
         ? HYBRID_SUBMIT_PHASES
-        : SUBMIT_PHASES.slice(0, 3);
+        : SUBMIT_PHASES.slice(0, 2);
   const [activePhase, setActivePhase] = useState(0);
 
   useEffect(() => {

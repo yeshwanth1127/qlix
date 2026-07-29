@@ -1,7 +1,8 @@
 import { prisma } from '../lib/prisma.js';
 import { ConnectorsRepository } from '../connectors/connectors.repository.js';
 import type { ConnectorProvider } from '../connectors/connectors.types.js';
-import type { AgentRuntime, PermissionScope } from './agents.types.js';
+import { getMcpScopeDefsForOrg } from '../mcp/mcpScopeCatalog.js';
+import type { AgentRuntime, BuiltinPermissionScope, PermissionScope } from './agents.types.js';
 
 /**
  * Canonical definition of one supported permission scope.
@@ -43,42 +44,50 @@ export const SCOPE_CATALOG: ScopeDef[] = [
   {
     id: 'web.read',
     label: 'Read web pages',
-    description: 'Read and navigate web pages, fetch URLs',
+    description: 'Browse and read web pages, fetch URLs — needed for any web interaction',
     forceJit: false,
-    runtimes: ['cloud'],
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'web.research',
+    label: 'Web research (platform APIs)',
+    description:
+      'Search and read Twitter, Reddit, GitHub, YouTube, Bilibili, and the open web via structured APIs — no browser automation',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'web.click',
     label: 'Click on web pages',
-    description: 'Click links and interact with web UIs',
+    description: 'Click links and buttons on web pages — required alongside web.read whenever the agent navigates or interacts with sites',
     forceJit: false,
-    runtimes: ['cloud'],
+    runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'web.transaction',
     label: 'Submit web forms / transactions',
-    description: 'Submit web forms, make online purchases',
+    description: 'Submit web forms, fill in fields, complete checkouts, or make online purchases — required when the agent types into or submits any web form',
     forceJit: true,
-    runtimes: ['cloud'],
+    runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'system.file_read',
     label: 'Read local files',
-    description: 'Read files from the local filesystem',
+    description: 'Read files from the local filesystem (hybrid/local only)',
     forceJit: false,
     runtimes: ['hybrid'],
   },
   {
     id: 'system.file_write',
     label: 'Write local files',
-    description: 'Write or modify files on the local filesystem',
+    description: 'Write or modify files on the local filesystem (hybrid/local only)',
     forceJit: true,
     runtimes: ['hybrid'],
   },
   {
     id: 'system.gui_control',
     label: 'Control desktop apps (screen automation)',
-    description: 'Control desktop applications via screen automation',
+    description: 'Open and control desktop apps, type text, click buttons, take screenshots via screen automation on the user\'s local machine (hybrid/local only) — combine with web.read + web.click + web.transaction when the agent also interacts with websites',
     forceJit: true,
     runtimes: ['hybrid'],
   },
@@ -134,11 +143,31 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     requiresConnector: 'whatsapp_baileys',
     runtimes: ['cloud', 'hybrid'],
   },
+  {
+    id: 'social.read',
+    label: 'Read Orbit social channels & posts',
+    description: 'List connected social channels, scheduled posts, and analytics via Orbit',
+    forceJit: false,
+    requiresConnector: 'orbit',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'social.publish',
+    label: 'Publish / schedule posts via Orbit',
+    description: 'Create or schedule social posts on connected Orbit channels (Instagram, Facebook, X, …)',
+    forceJit: true,
+    requiresConnector: 'orbit',
+    runtimes: ['cloud', 'hybrid'],
+  },
 ];
 
-export const SCOPE_CATALOG_BY_ID: Record<PermissionScope, ScopeDef> = Object.fromEntries(
+export const SCOPE_CATALOG_BY_ID: Record<BuiltinPermissionScope, ScopeDef> = Object.fromEntries(
   SCOPE_CATALOG.map((s) => [s.id, s]),
-) as Record<PermissionScope, ScopeDef>;
+) as Record<BuiltinPermissionScope, ScopeDef>;
+
+export function getBuiltinScopeDef(id: string): ScopeDef | undefined {
+  return SCOPE_CATALOG_BY_ID[id as BuiltinPermissionScope];
+}
 
 /** All supported scope ids (replaces the old hardcoded ALL_PERMISSION_SCOPES). */
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = SCOPE_CATALOG.map((s) => s.id);
@@ -147,6 +176,26 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = SCOPE_CATALOG.map((s) =>
 export const FORCE_JIT_SCOPES: PermissionScope[] = SCOPE_CATALOG.filter((s) => s.forceJit).map(
   (s) => s.id,
 );
+
+/** True when any scope's SDK tools are unavailable on cloud runners (e.g. local filesystem, GUI). */
+export function scopesRequireHybrid(scopes: readonly string[]): boolean {
+  return scopes.some((id) => {
+    const def = getBuiltinScopeDef(id);
+    return def != null && !def.runtimes.includes('cloud');
+  });
+}
+
+/**
+ * Ensures runtime matches scope capabilities. Hybrid-only scopes cannot run on cloud;
+ * keep `local` when explicitly chosen, otherwise upgrade to `hybrid`.
+ */
+export function reconcileRuntimeWithScopes(
+  runtime: AgentRuntime,
+  scopes: readonly PermissionScope[],
+): AgentRuntime {
+  if (!scopesRequireHybrid(scopes)) return runtime;
+  return runtime === 'local' ? 'local' : 'hybrid';
+}
 
 const connectorsRepo = new ConnectorsRepository();
 
@@ -202,5 +251,7 @@ export async function getAvailableScopes(orgId: string | null): Promise<ScopeDef
  */
 export async function getBuildableScopes(orgId: string | null): Promise<ScopeDef[]> {
   const annotated = await getEffectiveScopes(orgId);
-  return annotated.filter((s) => s.enabled);
+  const builtin = annotated.filter((s) => s.enabled);
+  const mcp = await getMcpScopeDefsForOrg(orgId);
+  return [...builtin, ...mcp];
 }

@@ -1,11 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Bot, Hammer } from "lucide-react";
 import { listAgents, type AgentDTO } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import {
+  SketchBox,
+  SketchPageHeader,
+  SketchRow,
+  sketchLabel,
+} from "@/components/qlix/sketch";
 
 export function SkillsAgentsPlaceholderView({
   routePrefix,
@@ -17,10 +22,7 @@ export function SkillsAgentsPlaceholderView({
   const [agents, setAgents] = useState<AgentDTO[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const orgId = useMemo(() => {
-    if (routePrefix !== "/organization") return null;
-    return session?.organization.id ?? null;
-  }, [routePrefix, session]);
+  const orgId = routePrefix === "/organization" ? (session?.organization.id ?? null) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -30,16 +32,11 @@ export function SkillsAgentsPlaceholderView({
       .then((rows) => {
         if (cancelled) return;
         if (!rows) {
-          setError("Failed to load agents.");
+          setError("Could not load agents.");
           setAgents([]);
           return;
         }
         setAgents(rows);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setError("Failed to load agents.");
-        setAgents([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -50,46 +47,34 @@ export function SkillsAgentsPlaceholderView({
   }, [orgId]);
 
   return (
-    <div className="animate-qlix-fade-in space-y-4">
-      <header className="flex items-start gap-3">
-        <div className="qlix-glass-muted flex size-9 items-center justify-center rounded-lg text-[--accent]">
-          <Hammer className="size-[18px]" strokeWidth={1.75} aria-hidden />
-        </div>
-        <div>
-          <h1 className="text-base font-medium tracking-[-0.01em] text-[--text-primary]">Skills</h1>
-          <p className="text-[13px] text-[--text-tertiary]">
-            Placeholder: choose an agent to view and manage its skills.
-          </p>
-        </div>
-      </header>
-
-      <ReflectiveCard className="rounded-xl" contentClassName="p-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <SketchPageHeader title="Skills" />
+      <p className="mb-4 font-serif text-[11px] uppercase tracking-widest text-black/50">
+        Per-agent skill packs and tool bindings
+      </p>
+      <SketchBox className="flex flex-col gap-2 p-3">
         {loading ? (
-          <p className="text-[13px] text-[--text-tertiary]">Loading agents…</p>
+          <p className={sketchLabel}>Loading…</p>
         ) : error ? (
-          <p className="text-[13px] text-[--danger]">{error}</p>
+          <p className="text-[13px] text-black">{error}</p>
         ) : agents.length === 0 ? (
-          <p className="text-[13px] text-[--text-tertiary]">No agents found yet.</p>
+          <p className="py-8 text-center font-serif text-[11px] uppercase tracking-widest text-black/50">
+            No agents yet
+          </p>
         ) : (
-          <ul className="space-y-2">
-            {agents.map((agent) => (
-              <li key={agent.id}>
-                <Link
-                  href={`${routePrefix}/skills/${agent.id}`}
-                  className="qlix-glass-box-interactive flex items-center justify-between rounded-lg border border-[--border-subtle] px-3 py-2 text-[13px]"
-                >
-                  <span className="inline-flex items-center gap-2 text-[--text-primary]">
-                    <Bot className="size-4 text-[--accent]" aria-hidden />
-                    {agent.name}
-                  </span>
-                  <span className="text-[11px] text-[--text-tertiary] capitalize">{agent.runtime}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+          agents.map((agent) => (
+            <Link key={agent.id} href={`${routePrefix}/skills/${agent.id}`}>
+              <SketchRow className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-[13px] text-black">
+                  <Bot className="size-4" aria-hidden />
+                  {agent.name}
+                </span>
+                <Hammer className="size-4 text-black/40" aria-hidden />
+              </SketchRow>
+            </Link>
+          ))
         )}
-      </ReflectiveCard>
+      </SketchBox>
     </div>
   );
 }
-

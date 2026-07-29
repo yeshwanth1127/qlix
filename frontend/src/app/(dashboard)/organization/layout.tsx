@@ -1,4 +1,5 @@
 import { AppChrome } from "@/components/qlix/app-chrome";
+import { SubscriptionRouteGate } from "@/components/qlix/subscription-route-gate";
 import { WorkspaceRouteGate } from "@/components/qlix/workspace-route-gate";
 
 export default function OrganizationWorkspaceLayout({
@@ -8,7 +9,9 @@ export default function OrganizationWorkspaceLayout({
 }>) {
   return (
     <WorkspaceRouteGate expected="organization">
-      <AppChrome>{children}</AppChrome>
+      <SubscriptionRouteGate>
+        <AppChrome>{children}</AppChrome>
+      </SubscriptionRouteGate>
     </WorkspaceRouteGate>
   );
 }

@@ -12,6 +12,7 @@ export interface LaunchTeamRunInput {
   orgId: string;
   userId: string;
   goal: string;
+  backendUrl?: string;
   source?: {
     channel: TeamRunSourceChannel;
     connectorId?: string;
@@ -34,6 +35,7 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
       sourceConnectorId: input.source?.connectorId ?? null,
       replyChannel: input.replyChannel,
     },
+    input.backendUrl,
   );
 
   const team = await teamsService.getTeam(input.teamId, input.orgId);

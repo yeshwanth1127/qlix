@@ -33,6 +33,10 @@ model Organization {
   teams                     Team[]
   connectorAccounts         ConnectorAccount[]
   mcpServers                McpServer[]
+  leadCampaigns             LeadCampaign[]
+  jobCandidateProfiles      JobCandidateProfile[]
+  jobApplyCampaigns         JobApplyCampaign[]
+  subscription              OrgSubscription?
 
   /// Self-hosted n8n integration (encrypted webhook secret at rest).
   n8nBaseUrl          String? @map("n8n_base_url")
@@ -85,6 +89,10 @@ model User {
   teamRunsStarted    TeamRun[]                @relation("TeamRunsStarted")
   connectorAccounts  ConnectorAccount[]
   nlBuilderHistory   NlBuilderHistory[]
+  leadCampaigns      LeadCampaign[]           @relation("LeadCampaignCreator")
+  jobCandidateProfiles JobCandidateProfile[]  @relation("JobCandidateProfileOwner")
+  jobApplyCampaigns  JobApplyCampaign[]       @relation("JobApplyCampaignCreator")
+  apiKeys            ApiKey[]
   mcpServersCreated  McpServer[]
 
   @@index([orgId])
@@ -226,54 +234,54 @@ model Agent {
 /// A registered MCP (Model Context Protocol) server, org-scoped. Its tools are consumed by
 /// agents under full Qlix governance (scopes + JIT + signed audit ledger + pay-per-success).
 model McpServer {
-  id               String    @id @default(uuid()) @db.Uuid
-  orgId            String    @map("org_id") @db.Uuid
-  createdByUserId  String    @map("created_by_user_id") @db.Uuid
+  id                         String    @id @default(uuid()) @db.Uuid
+  orgId                      String    @map("org_id") @db.Uuid
+  createdByUserId            String    @map("created_by_user_id") @db.Uuid
   /// URL-safe id used in scope + actionType strings: `mcp.<slug>.<tool>`. Unique per org.
-  slug             String
-  name             String
-  description      String    @default("")
+  slug                       String
+  name                       String
+  description                String    @default("")
   /// `http` (Streamable HTTP — cloud + hybrid) | `stdio` (local subprocess — hybrid only).
-  transport        String    @default("http")
+  transport                  String    @default("http")
   /// http transport: endpoint URL.
-  endpointUrl      String?   @map("endpoint_url")
+  endpointUrl                String?   @map("endpoint_url")
   /// stdio transport: executable path/name.
-  command          String?
+  command                    String?
   /// stdio transport: command arguments.
-  args             String[]  @default([])
+  args                       String[]  @default([])
   /// `none` | `header` | `oauth`
-  authType         String    @default("none") @map("auth_type")
+  authType                   String    @default("none") @map("auth_type")
   /// Encrypted JSON `{ headers?, env?, token? }` (AES-256-GCM via AGENT_SECRETS_KEY). Never sent to the browser.
-  secretEnc        String?   @map("secret_enc")
+  secretEnc                  String?   @map("secret_enc")
   /// `connected` | `error` | `revoked` | `pending`
-  status           String    @default("pending")
-  protocolVersion  String?   @map("protocol_version")
-  serverInfo       Json?     @map("server_info")
-  lastError        String?   @map("last_error")
-  lastDiscoveredAt DateTime? @map("last_discovered_at")
-  enabled          Boolean   @default(true)
+  status                     String    @default("pending")
+  protocolVersion            String?   @map("protocol_version")
+  serverInfo                 Json?     @map("server_info")
+  lastError                  String?   @map("last_error")
+  lastDiscoveredAt           DateTime? @map("last_discovered_at")
+  enabled                    Boolean   @default(true)
   // ---- OAuth (authType = 'oauth') — discovered/registered metadata. Tokens + clientSecret
   // live in the encrypted secretEnc JSON under `oauth`, never in plain columns. ----
-  oauthIssuer                 String?  @map("oauth_issuer")
-  oauthAuthorizationEndpoint  String?  @map("oauth_authorization_endpoint")
-  oauthTokenEndpoint          String?  @map("oauth_token_endpoint")
-  oauthRegistrationEndpoint   String?  @map("oauth_registration_endpoint")
+  oauthIssuer                String?   @map("oauth_issuer")
+  oauthAuthorizationEndpoint String?   @map("oauth_authorization_endpoint")
+  oauthTokenEndpoint         String?   @map("oauth_token_endpoint")
+  oauthRegistrationEndpoint  String?   @map("oauth_registration_endpoint")
   /// RFC 8707 resource indicator (the protected MCP resource URL).
-  oauthResource               String?  @map("oauth_resource")
-  oauthClientId               String?  @map("oauth_client_id")
-  oauthScope                  String?  @map("oauth_scope")
+  oauthResource              String?   @map("oauth_resource")
+  oauthClientId              String?   @map("oauth_client_id")
+  oauthScope                 String?   @map("oauth_scope")
   /// Extra authorization-request query params as `k=v&k2=v2` (e.g. Google's
   /// `access_type=offline&prompt=consent`, required to obtain a refresh token).
-  oauthAuthParams             String?  @map("oauth_auth_params")
+  oauthAuthParams            String?   @map("oauth_auth_params")
   /// True once a token has been obtained and not revoked.
-  oauthConnected              Boolean  @default(false) @map("oauth_connected")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  oauthConnected             Boolean   @default(false) @map("oauth_connected")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
 
-  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy    User              @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
-  tools        McpServerTool[]
-  bindings     AgentMcpBinding[]
+  organization  Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy     User              @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  tools         McpServerTool[]
+  bindings      AgentMcpBinding[]
   oauthSessions McpOAuthSession[]
 
   @@unique([orgId, slug])
@@ -301,25 +309,25 @@ model McpOAuthSession {
 
 /// Cached tool catalog from an MCP server's `tools/list`, with governance derived from annotations.
 model McpServerTool {
-  id                String   @id @default(uuid()) @db.Uuid
-  mcpServerId       String   @map("mcp_server_id") @db.Uuid
-  name              String
-  description       String   @default("")
-  inputSchema       Json?    @map("input_schema")
-  annotations       Json?
+  id                 String   @id @default(uuid()) @db.Uuid
+  mcpServerId        String   @map("mcp_server_id") @db.Uuid
+  name               String
+  description        String   @default("")
+  inputSchema        Json?    @map("input_schema")
+  annotations        Json?
   /// `low` | `medium` | `high` — derived from annotations (readOnlyHint / destructiveHint).
-  riskLevel         String   @default("low") @map("risk_level")
+  riskLevel          String   @default("low") @map("risk_level")
   /// `auto` | `jit` | `blocked` — default governance applied when binding the tool to an agent.
-  defaultGovernance String   @default("auto") @map("default_governance")
+  defaultGovernance  String   @default("auto") @map("default_governance")
   /// sha256(name + description + inputSchema) of the currently-advertised definition.
-  definitionHash    String   @map("definition_hash")
+  definitionHash     String   @map("definition_hash")
   /// Last admin-approved definitionHash. Mismatch ⇒ re-approval required (tool-poisoning guard).
-  approvedHash      String?  @map("approved_hash")
+  approvedHash       String?  @map("approved_hash")
   /// Snapshot `{ description, inputSchema }` of the approved definition, kept so the UI can
   /// show a before/after diff when a server later changes (poisons) the tool.
-  approvedDefinition Json?   @map("approved_definition")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  approvedDefinition Json?    @map("approved_definition")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   server McpServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
 
@@ -360,10 +368,11 @@ model AgentConversation {
   summarizedCount Int      @default(0) @map("summarized_count")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  agent    Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages AgentMessage[]
-  runs     AgentRun[]
+  agent          Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages       AgentMessage[]
+  runs           AgentRun[]
+  jitScopeGrants JitScopeGrant[]
 
   @@unique([agentId, userId])
   @@index([agentId])
@@ -569,9 +578,11 @@ model RunUsage {
 /// Verifiable Credential issued by the Qlix platform to an agent.
 /// Two are issued at agent creation: `identity` (humanVerified+deviceVerified) and `scope` (permission/jit/always).
 /// `claims` is the canonical JSON the signature was computed over; `signature` is the platform Ed25519 signature.
+/// `agentId` is nullable with `SetNull` on delete — `agentDid` is kept alongside so the
+/// credential remains identifiable even after the issuing Agent row is gone.
 model VerifiableCredential {
   id         String    @id @default(cuid())
-  agentId    String    @map("agent_id")
+  agentId    String?   @map("agent_id")
   agentDid   String    @map("agent_did")
   /// `identity` | `scope` | `jit`
   type       String
@@ -583,7 +594,7 @@ model VerifiableCredential {
   expiresAt  DateTime? @map("expires_at")
   revokedAt  DateTime? @map("revoked_at")
 
-  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   @@index([agentId])
   @@index([agentDid])
@@ -592,20 +603,22 @@ model VerifiableCredential {
 }
 
 /// Append-only audit trail. Never update or delete rows in application code.
+/// `agentId` is nullable with `SetNull` on delete — deleting an agent must never
+/// erase its signed action history, only detach it from the (now-gone) Agent row.
 model ActionLog {
-  id             String @id @default(uuid()) @db.Uuid
-  agentId        String @map("agent_id")
-  userId         String @map("user_id") @db.Uuid
-  actionType     String @map("action_type")
+  id             String  @id @default(uuid()) @db.Uuid
+  agentId        String? @map("agent_id")
+  userId         String  @map("user_id") @db.Uuid
+  actionType     String  @map("action_type")
   payload        Json
-  riskLevel      String @map("risk_level")
+  riskLevel      String  @map("risk_level")
   status         String
-  approvalStatus String @map("approval_status")
+  approvalStatus String  @map("approval_status")
   signature      String
-  prevHash       String @map("prev_hash")
-  timestampMs    BigInt @map("timestamp_ms")
+  prevHash       String  @map("prev_hash")
+  timestampMs    BigInt  @map("timestamp_ms")
 
-  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   approval     Approval?
   transactions Transaction[]
@@ -634,14 +647,48 @@ model Approval {
   @@map("approvals")
 }
 
+/// Durable per-conversation approval grant ("approve once per session"). One human
+/// "yes" to a JIT scope (e.g. `email.send`) auto-approves every later use of that
+/// scope in the same conversation, until revoked or the safety TTL lapses. Each
+/// individual action is still minted + written to the action log; only the repeat
+/// prompting is suppressed. Generalizes the in-memory run-scoped grant in jit.service.
+model JitScopeGrant {
+  id              String    @id @default(uuid()) @db.Uuid
+  conversationId  String    @map("conversation_id")
+  agentId         String    @map("agent_id")
+  /// The actionType this grant covers, e.g. "email.send".
+  scope           String
+  grantedByUserId String    @map("granted_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+  /// Safety expiry; refreshed each time the grant auto-approves a request. Null = no expiry.
+  expiresAt       DateTime? @map("expires_at")
+  /// Set when a user revokes the grant from the dashboard.
+  revokedAt       DateTime? @map("revoked_at")
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, scope])
+  @@index([conversationId])
+  @@index([agentId])
+  @@map("jit_scope_grants")
+}
+
 /// One wallet per user (individual credits) or per org (enterprise prepaid). Exactly one of user_id / org_id is set.
+/// balance is kept as a denormalized aggregate (freeBalance + paidBalance) for backward-compat reads.
 model Wallet {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String?  @unique @map("user_id") @db.Uuid
-  orgId     String?  @unique @map("org_id") @db.Uuid
-  balance   Decimal  @default(0) @db.Decimal(18, 8)
-  currency  String   @default("USD")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String?   @unique @map("user_id") @db.Uuid
+  orgId         String?   @unique @map("org_id") @db.Uuid
+  /// Denormalized aggregate: freeBalance + paidBalance. Updated whenever either bucket changes.
+  balance       Decimal   @default(0) @db.Decimal(18, 8)
+  /// Expiring monthly free credit from subscription (zeroed on renewal).
+  freeBalance   Decimal   @default(0) @map("free_balance") @db.Decimal(18, 8)
+  /// User-topped-up paid credit — never expires.
+  paidBalance   Decimal   @default(0) @map("paid_balance") @db.Decimal(18, 8)
+  /// When the current freeBalance expires (end of current billing period).
+  freeExpiresAt DateTime? @map("free_expires_at")
+  currency      String    @default("INR")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -659,6 +706,8 @@ model Transaction {
   type              String
   amount            Decimal  @db.Decimal(18, 8)
   status            String
+  /// Which credit bucket was affected: "free" | "paid" | null (for debits that spanned both, null = aggregate).
+  creditKind        String?  @map("credit_kind")
   createdAt         DateTime @default(now()) @map("created_at")
 
   wallet          Wallet           @relation(fields: [walletId], references: [id], onDelete: Cascade)
@@ -682,16 +731,25 @@ model BillingService {
   @@map("billing_services")
 }
 
-/// Plan pricing definition (e.g. free/starter/pro/enterprise).
+/// Plan pricing definition. name must match Organization.plan values.
 model PricingTier {
   id                String   @id @default(uuid()) @db.Uuid
-  /// Must match Organization.plan values.
+  /// Must match Organization.plan values: "free" | "starter" | "growth" | "business" | "custom".
   name              String   @unique
+  /// Monthly subscription price in INR.
   monthlyPrice      Decimal  @map("monthly_price") @db.Decimal(18, 8)
   includedSuccesses Int      @default(0) @map("included_successes")
   /// Fallback per-success price when an event type lacks an explicit rate.
   overageRate       Decimal  @map("overage_rate") @db.Decimal(18, 8)
   description       String?
+  /// Maximum number of agents this plan allows (0 = unlimited for custom).
+  maxAgents         Int      @default(0) @map("max_agents")
+  /// Free credit (INR) auto-deposited to freeBalance on each monthly renewal.
+  freeMonthlyCredit Decimal  @default(0) @map("free_monthly_credit") @db.Decimal(18, 8)
+  /// Model tier keys this plan grants access to (e.g. ["economy","standard"]).
+  allowedModelTiers String[] @default([]) @map("allowed_model_tiers")
+  /// Maximum inbound WhatsApp messages per billing cycle (0 = plan has no WhatsApp).
+  whatsappMsgLimit  Int      @default(0) @map("whatsapp_msg_limit")
   createdAt         DateTime @default(now()) @map("created_at")
 
   eventRates EventRate[]
@@ -840,6 +898,44 @@ model BillingStatementLineItem {
   @@map("billing_statement_line_items")
 }
 
+/// Active subscription linking an org to a pricing plan and tracking renewal periods.
+model OrgSubscription {
+  id                 String   @id @default(uuid()) @db.Uuid
+  orgId              String   @unique @map("org_id") @db.Uuid
+  /// Must match PricingTier.name.
+  planName           String   @map("plan_name")
+  /// "trialing" | "active" | "expired" | "canceled" | "past_due"
+  status             String   @default("active")
+  currentPeriodStart DateTime @map("current_period_start")
+  currentPeriodEnd   DateTime @map("current_period_end")
+  /// When true, cancel at end of current period rather than auto-renew.
+  cancelAtPeriodEnd  Boolean  @default(false) @map("cancel_at_period_end")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([status, currentPeriodEnd])
+  @@map("org_subscriptions")
+}
+
+/// Maps a canonical model tier (economy/standard/advanced/premium) to a per-step INR price and
+/// the OpenRouter model-id prefixes that resolve to it.
+model ModelTier {
+  id            String   @id @default(uuid()) @db.Uuid
+  /// "economy" | "standard" | "advanced" | "premium"
+  tierKey       String   @unique @map("tier_key")
+  displayName   String   @map("display_name")
+  /// Price per agent task-step in INR.
+  pricePerStep  Decimal  @map("price_per_step") @db.Decimal(18, 8)
+  /// OpenRouter model-id prefixes that resolve to this tier (e.g. "openrouter/anthropic/claude-haiku").
+  modelPrefixes String[] @map("model_prefixes")
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("model_tiers")
+}
+
 /// Append-only log for billing engine/admin actions.
 model BillingLog {
   id           String   @id @default(uuid()) @db.Uuid
@@ -914,31 +1010,34 @@ model TeamMember {
 
 /// A single execution of a team against a user-supplied goal.
 model TeamRun {
-  id                String    @id @default(cuid())
-  teamId            String    @map("team_id")
-  orgId             String    @map("org_id") @db.Uuid
-  startedByUserId   String    @map("started_by_user_id") @db.Uuid
-  goal              String    @db.Text
+  id                     String    @id @default(cuid())
+  teamId                 String    @map("team_id")
+  orgId                  String    @map("org_id") @db.Uuid
+  startedByUserId        String    @map("started_by_user_id") @db.Uuid
+  goal                   String    @db.Text
   /// `web` | `whatsapp` — where the run was started.
-  sourceChannel     String    @default("web") @map("source_channel")
+  sourceChannel          String    @default("web") @map("source_channel")
   /// Connector UUID when started from WhatsApp.
-  sourceConnectorId String?   @map("source_connector_id") @db.Uuid
+  sourceConnectorId      String?   @map("source_connector_id") @db.Uuid
   /// `whatsapp` | `none` — where to send the final result.
-  replyChannel      String    @default("none") @map("reply_channel")
+  replyChannel           String    @default("none") @map("reply_channel")
   /// `queued` | `running` | `paused` | `completed` | `failed` | `canceled`
-  status            String    @default("queued")
+  status                 String    @default("queued")
   /// Supervisor reasoning/planning steps (JSON array, append-only).
-  supervisorTrace   Json      @default("[]") @map("supervisor_trace")
+  supervisorTrace        Json      @default("[]") @map("supervisor_trace")
   /// Artifacts produced during the run (JSON array of {type, name, content, agentId, createdAt}).
-  artifacts         Json      @default("[]")
+  artifacts              Json      @default("[]")
   /// JIT scope escalation requests made during this run.
-  scopeEscalations  Json      @default("[]") @map("scope_escalations")
+  scopeEscalations       Json      @default("[]") @map("scope_escalations")
   /// Final synthesized result from the supervisor.
-  result            Json?
-  errorMessage      String?   @map("error_message")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  startedAt         DateTime? @map("started_at")
-  completedAt       DateTime? @map("completed_at")
+  result                 Json?
+  errorMessage           String?   @map("error_message")
+  /// Lead campaign awaiting user review before outreach (lead-gen pipeline).
+  leadCampaignId         String?   @map("lead_campaign_id")
+  leadOutreachApprovedAt DateTime? @map("lead_outreach_approved_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  startedAt              DateTime? @map("started_at")
+  completedAt            DateTime? @map("completed_at")
 
   team           Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
   startedBy      User                   @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
@@ -1051,6 +1150,188 @@ model NlBuilderHistory {
   @@map("nl_builder_history")
 }
 
+// ─── Lead generation ─────────────────────────────────────────────────────────
+
+model LeadCampaign {
+  id             String   @id @default(cuid())
+  orgId          String   @map("org_id") @db.Uuid
+  createdById    String   @map("created_by_id") @db.Uuid
+  name           String
+  /// draft | scraping | ready | outreach | completed | failed
+  status         String   @default("draft")
+  searchQuery    String   @map("search_query")
+  location       String?
+  maxResults     Int      @default(25) @map("max_results")
+  outreachConfig Json     @default("{}") @map("outreach_config")
+  agentRunId     String?  @map("agent_run_id")
+  scrapeJobId    String?  @map("scrape_job_id")
+  stats          Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User           @relation("LeadCampaignCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  leads        Lead[]
+  outreach     LeadOutreach[]
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("lead_campaigns")
+}
+
+model Lead {
+  id           String   @id @default(cuid())
+  campaignId   String   @map("campaign_id")
+  orgId        String   @map("org_id") @db.Uuid
+  businessName String   @map("business_name")
+  address      String?
+  phone        String?
+  website      String?
+  email        String?
+  categories   String[] @default([])
+  rating       Float?
+  reviewCount  Int?     @map("review_count")
+  placeId      String?  @map("place_id")
+  lat          Float?
+  lng          Float?
+  socialLinks  Json     @default("{}") @map("social_links")
+  raw          Json     @default("{}")
+  /// scraped | no_email | contacted | skipped
+  status       String   @default("scraped")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  campaign LeadCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  outreach LeadOutreach[]
+
+  @@index([campaignId, createdAt(sort: Desc)])
+  @@index([orgId])
+  @@map("leads")
+}
+
+model LeadOutreach {
+  id          String    @id @default(cuid())
+  campaignId  String    @map("campaign_id")
+  leadId      String    @map("lead_id")
+  channel     String
+  provider    String
+  /// queued | sent | failed | blocked
+  status      String    @default("queued")
+  subject     String?
+  bodyPreview String?   @map("body_preview")
+  actionLogId String?   @map("action_log_id")
+  sentAt      DateTime? @map("sent_at")
+  error       String?
+
+  campaign LeadCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead     Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([leadId])
+  @@map("lead_outreach")
+}
+
+// ─── End lead generation ──────────────────────────────────────────────────────
+
+// ─── Job apply copilot ────────────────────────────────────────────────────────
+
+/// Per-org candidate profile used by the Job Apply Copilot (resume + structured answers).
+model JobCandidateProfile {
+  id              String   @id @default(cuid())
+  orgId           String   @map("org_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  fullName        String?  @map("full_name")
+  email           String?
+  phone           String?
+  location        String?
+  linkedinUrl     String?  @map("linkedin_url")
+  githubUrl       String?  @map("github_url")
+  portfolioUrl    String?  @map("portfolio_url")
+  /// Work auth / visa / relocation notes
+  workAuth        String?  @map("work_auth")
+  salaryBand      String?  @map("salary_band")
+  summary         String?
+  /// Structured experience / education / skills
+  experience      Json     @default("[]")
+  education       Json     @default("[]")
+  skills          String[] @default([])
+  /// Screening Q&A bank: [{ question, answer }]
+  answerBank      Json     @default("[]") @map("answer_bank")
+  /// Sandbox file id for the resume binary
+  resumeSandboxId String?  @map("resume_sandbox_id")
+  resumeFileName  String?  @map("resume_file_name")
+  resumeMimeType  String?  @map("resume_mime_type")
+  resumeUrl       String?  @map("resume_url")
+  /// Extracted plain text for agent brief
+  resumeText      String?  @map("resume_text") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation("JobCandidateProfileOwner", fields: [userId], references: [id], onDelete: Cascade)
+  campaigns    JobApplyCampaign[]
+
+  @@unique([orgId, userId])
+  @@index([orgId])
+  @@map("job_candidate_profiles")
+}
+
+/// A batch of applications (search query or pasted URLs).
+model JobApplyCampaign {
+  id          String   @id @default(cuid())
+  orgId       String   @map("org_id") @db.Uuid
+  createdById String   @map("created_by_id") @db.Uuid
+  profileId   String?  @map("profile_id")
+  name        String
+  /// draft | queued | applying | completed | failed
+  status      String   @default("draft")
+  searchQuery String?  @map("search_query")
+  /// Company board tokens / slugs searched: [{ ats, board }]
+  boards      Json     @default("[]")
+  agentId     String?  @map("agent_id")
+  stats       Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  organization Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User                 @relation("JobApplyCampaignCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  profile      JobCandidateProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  applications JobApplication[]
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("job_apply_campaigns")
+}
+
+model JobApplication {
+  id              String    @id @default(cuid())
+  campaignId      String    @map("campaign_id")
+  orgId           String    @map("org_id") @db.Uuid
+  company         String
+  title           String
+  location        String?
+  applyUrl        String    @map("apply_url")
+  /// greenhouse | lever | ashby | unknown
+  ats             String    @default("unknown")
+  externalJobId   String?   @map("external_job_id")
+  /// queued | filling | awaiting_jit | submitted | blocked | failed | skipped
+  status          String    @default("queued")
+  resultNote      String?   @map("result_note")
+  confirmationUrl String?   @map("confirmation_url")
+  agentRunId      String?   @map("agent_run_id")
+  submittedAt     DateTime? @map("submitted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  campaign JobApplyCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, applyUrl])
+  @@index([campaignId, status])
+  @@index([orgId])
+  @@map("job_applications")
+}
+
+// ─── End job apply copilot ────────────────────────────────────────────────────
+
 /// Periodic Merkle roots over the action log hash chain for tamper evidence.
 model MerkleCheckpoint {
   id              String   @id @default(uuid()) @db.Uuid
@@ -1061,4 +1342,61 @@ model MerkleCheckpoint {
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@map("merkle_checkpoints")
+}
+
+/// Public beta waitlist signup. Exactly one contact method is stored.
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  phone     String?  @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("waitlist_entries")
+}
+
+/// Privacy-preserving count of browsers that have visited the public homepage.
+model HomepageVisit {
+  id               String   @id @default(uuid()) @db.Uuid
+  visitorTokenHash String   @unique @map("visitor_token_hash") @db.Char(64)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("homepage_visits")
+}
+
+/// Generic short-lived key/value store, replacing several in-process Maps (WebAuthn
+/// challenges, JIT run-scoped grants, lead-outreach gate signals) so they survive a
+/// backend restart and stay correct the moment more than one instance runs (see
+/// `backend/src/lib/ephemeralGrants.ts`).
+model EphemeralGrant {
+  id        String   @id @default(cuid())
+  namespace String
+  key       String
+  value     Json?
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([namespace, key])
+  @@index([expiresAt])
+  @@map("ephemeral_grants")
+}
+
+/// User-issued API key for programmatic access. Only a sha256 `keyHash` is stored —
+/// the raw key is shown once at creation time and is never persisted or logged.
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id") @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  label      String
+  keyPrefix  String    @map("key_prefix")
+  keyHash    String    @unique @map("key_hash")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([orgId])
+  @@map("api_keys")
 }

@@ -7,7 +7,6 @@ import {
   Brain,
   Database,
   Loader2,
-  Network,
   Plus,
   RefreshCw,
   ScrollText,
@@ -16,11 +15,18 @@ import {
 } from "lucide-react";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
+import {
+  SketchBox,
+  SketchPageHeader,
+  sketchButton,
+  sketchInput,
+  sketchLabel,
+} from "@/components/qlix/sketch";
 import Dock, { type DockItemData } from "./Dock";
-import { NeuralBrainVisualizer } from "./NeuralBrainVisualizer";
+import Orb from "./Orb";
+import { BrainOrbChat } from "./BrainOrbChat";
 import {
   createAiBrainCollection,
-  getAiBrainKnowledgeDocuments,
   getAiBrainPolicySignals,
   getAiBrainStatus,
   getOpenRouterModelCatalog,
@@ -30,14 +36,13 @@ import {
   postAiBrainSimulatePolicy,
   queryAiBrain,
   updateAiBrainModel,
-  type AiBrainKnowledgeDocumentRow,
   type AiBrainPolicySignalsResponse,
   type AiBrainQueryResponse,
   type AiBrainStatusResponse,
   type OpenRouterCatalogModelOption,
 } from "@/lib/ai-brain-api";
 import { canManageBrain } from "@/lib/org-permissions";
-import { AgentStatusBadge, deriveOrgBrainDisplayStatus } from "@/components/qlix/agents/agentStatus";
+import { deriveOrgBrainDisplayStatus } from "@/components/qlix/agents/agentStatus";
 
 function formatTime(ms: number): string {
   try {
@@ -66,49 +71,27 @@ interface TraceEntry {
   readonly detail: string;
 }
 
-const btnPrimary =
-  "inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-md shadow-violet-500/25 transition-[filter,transform,box-shadow] duration-200 hover:brightness-110 hover:shadow-lg hover:shadow-cyan-500/20 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 dark:from-violet-500 dark:via-indigo-500 dark:to-cyan-500";
-
-const btnSecondary =
-  "inline-flex items-center justify-center gap-2 rounded-lg border border-violet-400/40 bg-violet-50/80 px-3 py-1.5 text-xs font-medium text-violet-900 transition-[background,border-color] duration-200 hover:border-cyan-400/50 hover:bg-cyan-50/60 dark:border-violet-400/35 dark:bg-[--bg-subtle] dark:text-violet-100/85 dark:hover:bg-indigo-950/40 disabled:pointer-events-none disabled:opacity-40";
-
-const btnDangerOutline =
-  "inline-flex items-center justify-center rounded-lg border border-[--danger]/35 bg-transparent px-3 py-1.5 text-xs font-medium text-[--danger] transition-colors duration-200 hover:bg-[--danger-subtle] disabled:pointer-events-none disabled:opacity-40";
-
-const fieldBase =
-  "w-full rounded-lg border border-[--border-default] bg-[--bg-base] px-3 py-2 text-[13px] text-[--text-primary] shadow-sm outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[--text-tertiary] focus:border-[--accent] focus:ring-2 focus:ring-[--accent-subtle]";
-
-const bentoCard =
-  "ai-brain-panel group flex flex-col overflow-hidden rounded-xl border border-violet-500/15 bg-[--bg-elevated] shadow-[0_1px_2px_rgba(0,0,0,0.04)] ring-1 ring-inset ring-violet-500/10 motion-safe:transition-[border-color,box-shadow] motion-safe:duration-300 dark:border-violet-400/20 dark:shadow-[0_4px_24px_rgba(99,102,241,0.12),0_1px_3px_rgba(0,0,0,0.35)] dark:ring-violet-400/15 dark:hover:border-cyan-400/25";
+const btnPrimary = sketchButton;
+const btnSecondary = sketchButton;
+const btnDangerOutline = sketchButton;
+const fieldBase = sketchInput;
+const bentoCard = "border border-black bg-white overflow-hidden flex flex-col";
 
 function BentoHeader({
   title,
   icon,
   trailing,
-  tint = "violet",
 }: {
   title: string;
   icon?: ReactNode;
   trailing?: ReactNode;
   tint?: "violet" | "cyan" | "amber" | "emerald";
 }) {
-  const tintBar = {
-    violet: "from-violet-500/90 via-indigo-400 to-transparent",
-    cyan: "from-cyan-500/90 via-sky-400 to-transparent",
-    amber: "from-amber-500/90 via-orange-400 to-transparent",
-    emerald: "from-emerald-500/90 via-teal-400 to-transparent",
-  } as const;
   return (
-    <div className="relative border-b border-violet-500/15 bg-gradient-to-r from-violet-500/[0.07] via-transparent to-cyan-500/[0.06] px-4 py-3 dark:from-violet-500/10 dark:to-cyan-500/10">
-      <div
-        className={cn("absolute left-0 top-0 h-full w-1 bg-gradient-to-b opacity-95", tintBar[tint])}
-        aria-hidden
-      />
-      <div className="flex items-center justify-between pl-2">
-        <h2 className="bg-gradient-to-r from-violet-600 to-cyan-600 bg-clip-text text-sm font-semibold tracking-tight text-transparent dark:from-violet-300 dark:to-cyan-300">
-          {title}
-        </h2>
-        <div className="flex items-center gap-2 text-violet-600/90 dark:text-cyan-200/90 [&_svg]:size-[18px]">
+    <div className="border-b border-black px-4 py-3">
+      <div className="flex items-center justify-between">
+        <h2 className={sketchLabel}>{title}</h2>
+        <div className="flex items-center gap-2 text-black [&_svg]:size-[18px]">
           {trailing}
           {icon}
         </div>
@@ -117,19 +100,8 @@ function BentoHeader({
   );
 }
 
-function traceToneClass(tone: TraceTone): string {
-  switch (tone) {
-    case "success":
-      return "text-emerald-500 dark:text-emerald-400";
-    case "warning":
-      return "text-amber-500 dark:text-amber-400";
-    case "danger":
-      return "text-rose-500 dark:text-rose-400";
-    case "muted":
-      return "text-[--text-tertiary]";
-    default:
-      return "text-cyan-600 dark:text-cyan-400";
-  }
+function traceToneClass(_tone: TraceTone): string {
+  return "text-black/70";
 }
 
 type SectionId = "brain" | "ask" | "knowledge" | "policy" | "trace";
@@ -144,8 +116,8 @@ export function AiBrainConsoleView() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<AiBrainStatusResponse | null>(null);
   const [policy, setPolicy] = useState<AiBrainPolicySignalsResponse | null>(null);
-  const [brainDocuments, setBrainDocuments] = useState<readonly AiBrainKnowledgeDocumentRow[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [brainChatOpen, setBrainChatOpen] = useState(false);
 
   const [collectionName, setCollectionName] = useState("");
   const [docTitle, setDocTitle] = useState("");
@@ -210,12 +182,7 @@ export function AiBrainConsoleView() {
   const refreshAll = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const [s, p, d] = await Promise.all([getAiBrainStatus(), getAiBrainPolicySignals(), getAiBrainKnowledgeDocuments()]);
-    if (d.ok) {
-      setBrainDocuments(d.documents);
-    } else {
-      setBrainDocuments([]);
-    }
+    const [s, p] = await Promise.all([getAiBrainStatus(), getAiBrainPolicySignals()]);
     if (!s.ok) {
       setError(s.message);
       setStatus(null);
@@ -382,8 +349,8 @@ export function AiBrainConsoleView() {
   const dockItems: DockItemData[] = useMemo(
     () => [
       {
-        icon: <Network size={20} strokeWidth={1.5} />,
-        label: "Brain map",
+        icon: <Brain size={20} strokeWidth={1.5} />,
+        label: "Brain",
         active: activeSection === "brain",
         onClick: () => setActiveSection("brain"),
       },
@@ -416,65 +383,54 @@ export function AiBrainConsoleView() {
   );
 
   return (
-    <div className="animate-qlix-fade-in mx-auto max-w-[1024px] px-4 pb-20 pt-6 md:px-6 md:pt-8">
-      {/* Page header */}
-      <div className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-        <div className="space-y-1">
-          <h1 className="bg-gradient-to-r from-violet-600 via-fuchsia-500 to-cyan-500 bg-clip-text text-2xl font-semibold tracking-tight text-transparent md:text-[1.65rem] md:leading-snug dark:from-violet-300 dark:via-fuchsia-300 dark:to-cyan-300">
-            AI Brain
-          </h1>
-          <div className="flex flex-wrap items-center gap-3 text-[13px]">
-            {brain ? (
-              <>
-                <span className="font-mono text-[--text-tertiary]">
-                  DID: {brain.didShort}
-                </span>
-                {brainDisplayStatus ? <AgentStatusBadge status={brainDisplayStatus} /> : null}
-              </>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-[--border-default] bg-[--bg-subtle] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[--text-tertiary]">
-                Not provisioned
-              </span>
-            )}
-          </div>
-          <p className="max-w-xl pt-1 text-[13px] leading-relaxed text-[--text-secondary]">
-            Centralized org knowledge for RAG. Queries and policy outcomes are attributed in your Exora Layer 5 audit trail.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={loading || sessionLoading || busyKey !== null}
-            onClick={() => void onRefresh()}
-            className={btnSecondary}
-          >
-            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} aria-hidden />
-            Sync
-          </button>
-          {manageBrain && brain ? (
+    <div className="mx-auto max-w-[1024px] px-4 pb-20 pt-6 md:px-6 md:pt-8">
+      <SketchPageHeader
+        title="exa"
+        actions={
+          <>
             <button
               type="button"
-              className={btnPrimary}
-              onClick={() => {
-                setActiveSection("knowledge");
-                setTimeout(() => document.getElementById("brain-collection-form")?.scrollIntoView({ behavior: "smooth" }), 60);
-              }}
+              disabled={loading || sessionLoading || busyKey !== null}
+              onClick={() => void onRefresh()}
+              className={sketchButton}
             >
-              <Plus className="size-3.5" aria-hidden />
-              Add collection
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} aria-hidden />
+              Sync
             </button>
-          ) : null}
-        </div>
+            {manageBrain && brain ? (
+              <button
+                type="button"
+                className={sketchButton}
+                onClick={() => {
+                  setActiveSection("knowledge");
+                  setTimeout(() => document.getElementById("brain-collection-form")?.scrollIntoView({ behavior: "smooth" }), 60);
+                }}
+              >
+                <Plus className="size-3.5" aria-hidden />
+                Add collection
+              </button>
+            ) : null}
+          </>
+        }
+      />
+      <div className="mb-4 flex flex-wrap items-center gap-3 text-[13px]">
+        {brain ? (
+          <>
+            <span className="font-mono text-black/50">DID: {brain.didShort}</span>
+            {brainDisplayStatus ? (
+              <span className="font-serif text-[10px] uppercase tracking-widest text-black/50">{brainDisplayStatus}</span>
+            ) : null}
+          </>
+        ) : (
+          <span className="font-serif text-[10px] uppercase tracking-widest text-black/50">Not provisioned</span>
+        )}
       </div>
+      <p className="mb-8 max-w-xl text-[13px] leading-relaxed text-black/70">
+        Centralized org knowledge for RAG. Queries and policy outcomes are attributed in your Exora Layer 5 audit trail.
+      </p>
 
       {error ? (
-        <div
-          className="ai-brain-panel mb-6 rounded-xl border border-[--warning]/30 bg-[--warning-subtle] px-4 py-3 text-[13px] text-[--text-primary]"
-          style={{ animationDelay: "0ms" }}
-          role="alert"
-        >
-          {error}
-        </div>
+        <SketchBox className="mb-6 px-4 py-3 text-[13px] text-black">{error}</SketchBox>
       ) : null}
 
       {/* Sub-navbar dock */}
@@ -490,22 +446,40 @@ export function AiBrainConsoleView() {
       </div>
 
       <div className="space-y-6">
-        {/* Brain map — neural network visualizer */}
+        {/* Brain — Orb is the identity / presence */}
         {activeSection === "brain" ? (
-          <section
-            className="overflow-hidden rounded-xl border border-violet-500/20 shadow-[0_4px_24px_rgba(99,102,241,0.12)]"
-            style={{ animationDelay: "20ms" }}
-          >
+          <section className="flex min-h-[min(520px,70dvh)] flex-col items-center justify-center px-4 py-12">
             {!brain ? (
-              <div className="flex h-[560px] items-center justify-center bg-[#00000f] text-[13px] text-[--text-tertiary]">
-                Brain agent unavailable.
-              </div>
+              <p className="text-[13px] text-black/50">Brain agent unavailable.</p>
             ) : (
-              <NeuralBrainVisualizer
-                documents={brainDocuments}
-                loading={loading || sessionLoading}
-                heightClass="h-[560px]"
-              />
+              <>
+                <button
+                  type="button"
+                  onClick={() => setBrainChatOpen(true)}
+                  aria-label="Chat with exa"
+                  aria-expanded={brainChatOpen}
+                  className="group relative size-[min(340px,72vw)] overflow-hidden rounded-full border border-black bg-white transition-transform duration-300 hover:scale-[1.02] active:scale-[0.99]"
+                >
+                  <Orb
+                    hue={0}
+                    hoverIntensity={0.45}
+                    rotateOnHover
+                    forceHoverState={brainChatOpen}
+                    backgroundColor="#ffffff"
+                  />
+                </button>
+                <p className="mt-8 font-serif text-[12px] uppercase tracking-[0.22em] text-black">
+                  {brain.name || "exa"}
+                </p>
+                <p className="mt-2 max-w-sm text-center text-[13px] leading-relaxed text-black/55">
+                  {loading || sessionLoading
+                    ? "Loading…"
+                    : `${totalDocs} document${totalDocs === 1 ? "" : "s"} indexed${
+                        brainDisplayStatus ? ` · ${brainDisplayStatus}` : ""
+                      }`}
+                </p>
+                <p className="mt-1 text-[11px] text-black/40">Click the orb to ask</p>
+              </>
             )}
           </section>
         ) : null}
@@ -516,7 +490,7 @@ export function AiBrainConsoleView() {
           <BentoHeader title="Ask your knowledge" tint="cyan" icon={<Brain className="size-[18px]" strokeWidth={1.25} />} />
         <div className="p-4">
           {!brain ? (
-            <p className="text-[13px] text-[--text-tertiary]">Brain agent unavailable.</p>
+            <p className="text-[13px] text-black/50">Brain agent unavailable.</p>
           ) : (
             <>
               <div className="flex flex-col gap-2 sm:flex-row">
@@ -548,29 +522,29 @@ export function AiBrainConsoleView() {
                   )}
                 </button>
               </div>
-              {queryError ? <p className="mt-3 text-[13px] text-[--danger]">{queryError}</p> : null}
+              {queryError ? <p className="mt-3 text-[13px] text-black">{queryError}</p> : null}
               {queryResult ? (
-                <div className="mt-5 space-y-4 border-t border-[--border-subtle] pt-5">
-                  <div className="rounded-lg border border-[--border-subtle] bg-[--bg-base] px-4 py-3 text-[13px] leading-relaxed text-[--text-primary]">
+                <div className="mt-5 space-y-4 border-t border-black pt-5">
+                  <div className="rounded-lg border border-black bg-white px-4 py-3 text-[13px] leading-relaxed text-black">
                     <p className="whitespace-pre-wrap">{queryResult.answer}</p>
                   </div>
                   {queryResult.citations.length > 0 ? (
                     <div>
-                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[--text-tertiary]">
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-black/50">
                         Sources
                       </p>
                       <ul className="space-y-2">
                         {queryResult.citations.map((c, i) => (
                           <li
                             key={`${c.documentId}-${c.chunkOrdinal}`}
-                            className="rounded-lg border border-[--border-subtle] bg-[--bg-base] px-3 py-2 transition-colors hover:border-[--border-default]"
+                            className="rounded-lg border border-black bg-white px-3 py-2 transition-colors hover:border-black"
                           >
                             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
-                              <span className="font-mono text-[--text-tertiary]">[{i + 1}]</span>
-                              <span className="font-medium text-[--text-secondary]">{c.documentTitle}</span>
-                              <span className="text-[--text-tertiary]">· {c.collectionName}</span>
+                              <span className="font-mono text-black/50">[{i + 1}]</span>
+                              <span className="font-medium text-black/70">{c.documentTitle}</span>
+                              <span className="text-black/50">· {c.collectionName}</span>
                             </div>
-                            <p className="mt-1 line-clamp-2 font-mono text-[11px] leading-snug text-[--text-tertiary]">
+                            <p className="mt-1 line-clamp-2 font-mono text-[11px] leading-snug text-black/50">
                               {c.excerpt}
                             </p>
                           </li>
@@ -605,7 +579,7 @@ export function AiBrainConsoleView() {
           />
           <div className="thin-scrollbar max-h-[340px] flex-1 space-y-4 overflow-y-auto p-4 font-mono text-[11px] leading-snug">
             {trace.length === 0 ? (
-              <p className="text-[--text-tertiary]">
+              <p className="text-black/50">
                 Run a query, ingest a document, or refresh status—steps will appear here with timestamps.
               </p>
             ) : (
@@ -614,7 +588,7 @@ export function AiBrainConsoleView() {
                   <p className={cn("opacity-90", traceToneClass(entry.tone))}>
                     {formatTraceClock(entry.at)} › {entry.label}
                   </p>
-                  <p className="pl-2 text-[--text-secondary]">{entry.detail}</p>
+                  <p className="pl-2 text-black/70">{entry.detail}</p>
                 </div>
               ))
             )}
@@ -626,68 +600,59 @@ export function AiBrainConsoleView() {
         {activeSection === "knowledge" ? (
         <section style={{ animationDelay: "80ms" }}>
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <h2 className="text-lg font-medium tracking-tight text-[--text-primary]">Knowledge collections</h2>
+            <h2 className="text-lg font-medium tracking-tight text-black">Knowledge collections</h2>
             <div className="flex flex-wrap items-center gap-3 text-[13px]">
-              <span className="text-[--text-tertiary]">
-                Documents indexed: <span className="tabular-nums text-[--text-secondary]">{totalDocs}</span>
+              <span className="text-black/50">
+                Documents indexed: <span className="tabular-nums text-black/70">{totalDocs}</span>
               </span>
               <Link
                 href={knowledgeHref}
-                className="text-[--accent] transition-colors hover:text-[--accent-hover] hover:underline"
+                className="text-black transition-colors hover:underline hover:underline"
               >
                 Open library →
               </Link>
             </div>
           </div>
           {!brain ? (
-            <p className="text-[13px] text-[--text-tertiary]">Provision the brain agent to manage collections.</p>
+            <p className="text-[13px] text-black/50">Provision the brain agent to manage collections.</p>
           ) : loading ? (
-            <p className="flex items-center gap-2 text-[13px] text-[--text-tertiary]">
+            <p className="flex items-center gap-2 text-[13px] text-black/50">
               <Loader2 className="size-4 animate-spin" aria-hidden />
               Loading…
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
               {status?.knowledge.collections.map((c) => (
-                <div
-                  key={c.id}
-                  className={cn(
-                    "rounded-xl border border-cyan-500/25 bg-gradient-to-br from-violet-500/[0.06] via-[--bg-elevated] to-cyan-500/[0.05] p-4",
-                    "ring-1 ring-inset ring-violet-400/10 motion-safe:transition-all motion-safe:duration-200 hover:border-fuchsia-400/35 hover:shadow-md hover:shadow-violet-500/10 dark:from-violet-500/15 dark:to-cyan-500/10",
-                  )}
-                >
+                <SketchBox key={c.id} className="p-4">
                   <div className="mb-3 flex items-start justify-between gap-2">
-                    <div className="rounded-lg bg-gradient-to-br from-violet-500/25 to-cyan-500/20 p-2 text-violet-700 dark:text-violet-200">
-                      <Database className="size-5" strokeWidth={1.25} />
+                    <div className="border border-black p-2">
+                      <Database className="size-5 stroke-[1.25] text-black" />
                     </div>
-                    <span className="rounded bg-[--bg-subtle] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[--text-tertiary]">
+                    <span className="border border-black px-2 py-0.5 font-serif text-[10px] uppercase tracking-widest text-black/50">
                       Collection
                     </span>
                   </div>
-                  <h3 className="mb-1 text-sm font-medium text-[--text-primary]">{c.name}</h3>
-                  <p className="mb-4 line-clamp-2 text-[13px] text-[--text-tertiary]">
+                  <h3 className="mb-1 text-sm font-medium text-black">{c.name}</h3>
+                  <p className="mb-4 line-clamp-2 text-[13px] text-black/50">
                     {c.description || "Org-scoped knowledge for RAG."}
                   </p>
                   <div className="flex items-center justify-between text-[11px]">
-                    <div className="flex items-center gap-1.5 text-[--text-tertiary]">
-                      <span className="size-1.5 rounded-full bg-[--success]" />
+                    <div className="flex items-center gap-1.5 text-black/50">
+                      <span className="size-1.5 rounded-full bg-black" />
                       Ready
                     </div>
-                    <span className="tabular-nums text-[--text-secondary]">
+                    <span className="tabular-nums text-black/70">
                       {c.documentCount} doc{c.documentCount === 1 ? "" : "s"}
                     </span>
                   </div>
-                </div>
+                </SketchBox>
               ))}
               {manageBrain ? (
                 <button
                   type="button"
                   id="brain-new-collection"
                   onClick={() => document.getElementById("brain-collection-form")?.scrollIntoView({ behavior: "smooth" })}
-                  className={cn(
-                    "flex min-h-[160px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-fuchsia-400/40",
-                    "bg-gradient-to-br from-violet-500/10 via-transparent to-cyan-500/10 text-violet-700 transition-all hover:border-cyan-400/55 hover:from-violet-500/20 hover:shadow-lg hover:shadow-violet-500/15 dark:text-fuchsia-200/80",
-                  )}
+                  className="flex min-h-[160px] flex-col items-center justify-center gap-2 border border-dashed border-black bg-white text-black transition-colors hover:bg-black/5"
                 >
                   <Plus className="size-6" strokeWidth={1.25} />
                   <span className="text-xs font-medium">New collection</span>
@@ -697,9 +662,9 @@ export function AiBrainConsoleView() {
           )}
 
           {manageBrain && brain && !loading ? (
-            <div id="brain-collection-form" className="mt-8 space-y-8 rounded-xl border border-[--border-subtle] bg-[--bg-elevated] p-5 md:p-6">
+            <div id="brain-collection-form" className="mt-8 space-y-8 rounded-xl border border-black bg-white p-5 md:p-6">
               <div>
-                <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[--text-tertiary]">
+                <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-black/50">
                   Create collection
                 </h3>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -720,7 +685,7 @@ export function AiBrainConsoleView() {
                 </div>
               </div>
               <div>
-                <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[--text-tertiary]">
+                <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-black/50">
                   Ingest document
                 </h3>
                 <div className="space-y-3">
@@ -740,7 +705,7 @@ export function AiBrainConsoleView() {
                     )}
                   </select>
                   <label className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-lg border-2 border-dashed border-[--border-subtle] px-4 py-3 text-[12px] text-[--text-tertiary] transition-colors hover:border-[--accent]/50 hover:text-[--text-secondary]",
+                    "flex cursor-pointer items-center gap-2 rounded-lg border-2 border-dashed border-black px-4 py-3 text-[12px] text-black/50 transition-colors hover:border-black hover:text-black/70",
                   )}>
                     <input
                       key={fileInputKey}
@@ -755,22 +720,22 @@ export function AiBrainConsoleView() {
                         });
                       }}
                     />
-                    <span className="text-[--accent] font-medium">Choose files</span>
+                    <span className="text-black font-medium">Choose files</span>
                     <span>or drag &amp; drop — PDF, Word, Excel, TXT</span>
                     {ingestFiles.length > 0 && (
-                      <span className="ml-auto text-[--text-secondary] font-medium">{ingestFiles.length} file{ingestFiles.length !== 1 ? "s" : ""} selected</span>
+                      <span className="ml-auto text-black/70 font-medium">{ingestFiles.length} file{ingestFiles.length !== 1 ? "s" : ""} selected</span>
                     )}
                   </label>
 
                   {ingestFiles.length > 0 && (
                     <ul className="space-y-1">
                       {ingestFiles.map((f, i) => (
-                        <li key={`${f.name}-${i}`} className="flex items-center justify-between rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[12px]">
-                          <span className="truncate text-[--text-secondary]">{f.name}</span>
+                        <li key={`${f.name}-${i}`} className="flex items-center justify-between rounded-md border border-black bg-white px-3 py-1.5 text-[12px]">
+                          <span className="truncate text-black/70">{f.name}</span>
                           <button
                             type="button"
                             onClick={() => setIngestFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                            className="ml-3 shrink-0 text-[--text-tertiary] hover:text-[--danger] transition-colors"
+                            className="ml-3 shrink-0 text-black/50 hover:text-black transition-colors"
                           >
                             ✕
                           </button>
@@ -798,18 +763,18 @@ export function AiBrainConsoleView() {
                   )}
 
                   {ingestProgress && (
-                    <div className="rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-2 text-[12px] text-[--text-secondary]">
+                    <div className="rounded-md border border-black bg-white px-3 py-2 text-[12px] text-black/70">
                       <div className="flex items-center justify-between mb-1">
                         <span>Ingesting {ingestProgress.done + 1} of {ingestProgress.total}…</span>
-                        <span className="text-[--text-tertiary]">{Math.round((ingestProgress.done / ingestProgress.total) * 100)}%</span>
+                        <span className="text-black/50">{Math.round((ingestProgress.done / ingestProgress.total) * 100)}%</span>
                       </div>
-                      <div className="h-1 w-full rounded-full bg-[--bg-hover] overflow-hidden">
+                      <div className="h-1 w-full rounded-full bg-black/5 overflow-hidden">
                         <div
                           className="h-full rounded-full bg-[--accent] transition-all duration-300"
                           style={{ width: `${(ingestProgress.done / ingestProgress.total) * 100}%` }}
                         />
                       </div>
-                      <p className="mt-1 truncate text-[11px] text-[--text-tertiary]">{ingestProgress.currentName}</p>
+                      <p className="mt-1 truncate text-[11px] text-black/50">{ingestProgress.currentName}</p>
                     </div>
                   )}
 
@@ -832,7 +797,7 @@ export function AiBrainConsoleView() {
               </div>
             </div>
           ) : !manageBrain && brain ? (
-            <p className="mt-6 text-[13px] text-[--text-tertiary]">Only owners and admins can manage collections and ingest.</p>
+            <p className="mt-6 text-[13px] text-black/50">Only owners and admins can manage collections and ingest.</p>
           ) : null}
         </section>
         ) : null}
@@ -847,20 +812,20 @@ export function AiBrainConsoleView() {
           />
           <div className="space-y-6 p-4 md:p-5">
             <div className="space-y-2">
-              <p className="text-xs font-medium text-[--text-primary]">Workspace scope</p>
-              <p className="text-[13px] text-[--text-secondary]">
-                Default posture: <span className="font-medium text-[--text-primary]">Exora Layer 3 + 5</span>
+              <p className="text-xs font-medium text-black">Workspace scope</p>
+              <p className="text-[13px] text-black/70">
+                Default posture: <span className="font-medium text-black">Exora Layer 3 + 5</span>
                 {status?.scope.connectorsDeferred ? (
-                  <span className="text-[--text-tertiary]"> · External connectors stay off until Layer 4 is in scope.</span>
+                  <span className="text-black/50"> · External connectors stay off until Layer 4 is in scope.</span>
                 ) : null}
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex items-start justify-between gap-3 rounded-lg border border-[--border-subtle] bg-[--bg-subtle] px-3 py-3">
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-black bg-white px-3 py-3">
                 <div>
-                  <div className="text-xs font-medium text-[--text-primary]">Audit attribution</div>
-                  <div className="mt-0.5 text-[10px] text-[--text-tertiary]">
+                  <div className="text-xs font-medium text-black">Audit attribution</div>
+                  <div className="mt-0.5 text-[10px] text-black/50">
                     brain.query and ingest events write to your org audit ledger.
                   </div>
                 </div>
@@ -868,47 +833,47 @@ export function AiBrainConsoleView() {
                   On
                 </span>
               </div>
-              <div className="flex items-start justify-between gap-3 rounded-lg border border-[--border-subtle] bg-[--bg-subtle] px-3 py-3">
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-black bg-white px-3 py-3">
                 <div>
-                  <div className="text-xs font-medium text-[--text-primary]">Citation excerpts</div>
-                  <div className="mt-0.5 text-[10px] text-[--text-tertiary]">
+                  <div className="text-xs font-medium text-black">Citation excerpts</div>
+                  <div className="mt-0.5 text-[10px] text-black/50">
                     Answers include source snippets when retrieval matches chunks.
                   </div>
                 </div>
-                <span className="shrink-0 rounded-full bg-[--accent-subtle] px-2 py-0.5 text-[10px] font-medium text-[--accent]">
+                <span className="shrink-0 rounded-full bg-[--accent-subtle] px-2 py-0.5 text-[10px] font-medium text-black">
                   RAG
                 </span>
               </div>
             </div>
 
             {!policy ? (
-              <p className="text-[13px] text-[--text-tertiary]">Could not load policy signals.</p>
+              <p className="text-[13px] text-black/50">Could not load policy signals.</p>
             ) : (
               <div className="space-y-3">
-                <p className="text-[13px] text-[--text-secondary]">{policy.auditNote}</p>
+                <p className="text-[13px] text-black/70">{policy.auditNote}</p>
                 {policy.violations.length === 0 ? (
-                  <p className="text-[13px] text-[--text-tertiary]">No blocked or flagged events in this window.</p>
+                  <p className="text-[13px] text-black/50">No blocked or flagged events in this window.</p>
                 ) : (
                   <ul className="space-y-2">
                     {policy.violations.map((v) => (
                       <li
                         key={v.id}
-                        className="flex gap-3 rounded-lg border border-[--border-subtle] bg-[--bg-base] px-3 py-2.5 text-[13px] text-[--text-secondary]"
+                        className="flex gap-3 rounded-lg border border-black bg-white px-3 py-2.5 text-[13px] text-black/70"
                       >
-                        <span className="text-[--accent]">●</span>
+                        <span className="text-black">●</span>
                         <span>
                           <span
                             className={cn(
                               "mr-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
                               v.status === "blocked" && "bg-[--warning-subtle] text-[--warning]",
-                              v.status === "flagged" && "bg-[--danger-subtle] text-[--danger]",
-                              v.status !== "blocked" && v.status !== "flagged" && "bg-[--neutral-subtle] text-[--text-secondary]",
+                              v.status === "flagged" && "bg-[--danger-subtle] text-black",
+                              v.status !== "blocked" && v.status !== "flagged" && "bg-[--neutral-subtle] text-black/70",
                             )}
                           >
                             {v.status}
                           </span>
                           {v.preview}
-                          <span className="mt-1 block font-mono text-[10px] text-[--text-tertiary]">
+                          <span className="mt-1 block font-mono text-[10px] text-black/50">
                             {formatTime(v.timestampMs)} · {v.actionType}
                           </span>
                         </span>
@@ -920,9 +885,9 @@ export function AiBrainConsoleView() {
             )}
 
             {manageBrain && brain ? (
-              <div className="space-y-2 border-t border-[--border-subtle] pt-6">
+              <div className="space-y-2 border-t border-black pt-6">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-xs font-medium text-[--text-secondary]">Query model (OpenRouter)</label>
+                  <label className="text-xs font-medium text-black/70">Query model (OpenRouter)</label>
                   <button
                     type="button"
                     onClick={() => void loadOpenRouterModels()}
@@ -933,7 +898,7 @@ export function AiBrainConsoleView() {
                     Refresh catalog
                   </button>
                 </div>
-                <p className="text-[10px] leading-relaxed text-[--text-tertiary]">
+                <p className="text-[10px] leading-relaxed text-black/50">
                   Dropdown is loaded live from OpenRouter&apos;s <span className="font-mono">GET /models</span> (
                   <span className="font-mono">id</span> = exact string their API accepts). Qlix stores the canonical{" "}
                   <span className="font-mono">openrouter/…</span> form when you save.
@@ -968,32 +933,32 @@ export function AiBrainConsoleView() {
                     </option>
                   ))}
                 </select>
-                <label className="text-[10px] font-medium uppercase tracking-wide text-[--text-tertiary]">
+                <label className="text-[10px] font-medium uppercase tracking-wide text-black/50">
                   Canonical id (editable / custom)
                 </label>
-                <div className="rounded-lg border border-[--border-subtle] bg-[--bg-base] p-3 font-mono text-[12px] text-[--text-secondary]">
+                <div className="rounded-lg border border-black bg-white p-3 font-mono text-[12px] text-black/70">
                   <textarea
                     value={modelInput}
                     onChange={(e) => setModelInput(e.target.value)}
                     rows={2}
                     placeholder="openrouter/provider/model"
-                    className="min-h-[56px] w-full resize-y border-0 bg-transparent outline-none placeholder:text-[--text-tertiary]"
+                    className="min-h-[56px] w-full resize-y border-0 bg-transparent outline-none placeholder:text-black/50"
                   />
                 </div>
                 {modelInput.trim() && !selectedOpenRouterCatalogId ? (
-                  <p className="text-[10px] text-[--text-tertiary]">
+                  <p className="text-[10px] text-black/50">
                     Value is not in the catalog — it will still save if allowed by model policy.
                   </p>
                 ) : null}
-                {modelSaveError ? <p className="text-[12px] text-[--danger]">{modelSaveError}</p> : null}
+                {modelSaveError ? <p className="text-[12px] text-black">{modelSaveError}</p> : null}
               </div>
             ) : null}
           </div>
           {manageBrain && brain ? (
-            <div className="flex flex-wrap justify-end gap-2 border-t border-[--border-subtle] bg-[--bg-subtle] px-3 py-3 md:px-4">
+            <div className="flex flex-wrap justify-end gap-2 border-t border-black bg-white px-3 py-3 md:px-4">
               <button
                 type="button"
-                className="px-3 py-1.5 text-[11px] text-[--text-tertiary] transition-colors hover:text-[--text-primary]"
+                className="px-3 py-1.5 text-[11px] text-black/50 transition-colors hover:text-black"
                 onClick={() => {
                   setModelInput(status?.brain?.queryModel ?? "");
                   setModelSaveError(null);
@@ -1020,6 +985,23 @@ export function AiBrainConsoleView() {
         </section>
         ) : null}
       </div>
+
+      <BrainOrbChat
+        disabled={!brain}
+        open={brainChatOpen}
+        onOpenChange={setBrainChatOpen}
+        hideLauncher={activeSection === "brain"}
+        defaultModel={brain?.queryModel}
+        canPersistModel={manageBrain}
+        onModelPersisted={(model) => {
+          setModelInput(model);
+          setStatus((prev) =>
+            prev?.brain
+              ? { ...prev, brain: { ...prev.brain, queryModel: model } }
+              : prev,
+          );
+        }}
+      />
     </div>
   );
 }

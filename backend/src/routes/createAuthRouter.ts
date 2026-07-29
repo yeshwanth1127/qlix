@@ -1,15 +1,18 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { AUTH_COOKIE_NAME, signAuthToken } from '../lib/authTokens.js';
-import { sendAuthCookie, SESSION_MAX_AGE_SEC } from '../lib/authCookie.js';
+import { buildAuthCookieOptions, sendAuthCookie, SESSION_MAX_AGE_SEC } from '../lib/authCookie.js';
 import { hashInviteToken } from '../lib/inviteToken.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { prisma } from '../lib/prisma.js';
 import { allocateOrganizationSlug } from '../lib/slug.js';
 import { sessionUserPayload } from '../deviceVerification/deviceVerification.js';
 import { authenticateUser, loadJwtSecret } from '../middleware/authenticateUser.js';
+import { sessionOrganizationPayload } from '../billings/lib/subscriptionAccess.js';
+import { trialSubscriptionCreateData, TRIAL_PLAN_NAME } from '../billings/lib/trialSubscription.js';
 
 const signupSchema = z.object({
   email: z.string().email().max(320),
@@ -28,6 +31,11 @@ const claimSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(8).max(72),
   displayName: z.string().min(1).max(120).optional(),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(72),
+  newPassword: z.string().min(8).max(72),
 });
 
 const GUEST_EMAIL_DOMAIN = 'guest.qlix.local';
@@ -55,13 +63,37 @@ function verifyBootstrapPassword(input: string, configured: string): boolean {
 }
 
 function clearAuthCookie(response: Response): void {
-  response.clearCookie(AUTH_COOKIE_NAME, { path: '/', httpOnly: true, sameSite: 'lax' });
+  // Must mirror the flags used when the cookie was set (esp. `secure`), or browsers won't clear it.
+  const { maxAge: _maxAge, ...options } = buildAuthCookieOptions();
+  response.clearCookie(AUTH_COOKIE_NAME, options);
+}
+
+/** Rate limiter factory for auth endpoints (per-IP). Protects against credential brute force and
+ *  mass account creation. Tunable via AUTH_RATE_LIMIT_DISABLED=1 for controlled load tests only. */
+function authRateLimiter(limit: number, windowMs = 15 * 60 * 1000) {
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: () => process.env.AUTH_RATE_LIMIT_DISABLED === '1',
+    message: {
+      error: { code: 'rate_limited', message: 'Too many attempts. Please try again in a few minutes.' },
+    },
+  });
 }
 
 export function createAuthRouter(): Router {
   const router = Router();
 
-  router.post('/signup', async (request: Request, response: Response) => {
+  // Tight limits on brute-forceable / resource-creating endpoints.
+  const loginLimiter = authRateLimiter(10);
+  const signupLimiter = authRateLimiter(10);
+  const guestLimiter = authRateLimiter(5);
+  const bootstrapLimiter = authRateLimiter(5, 60 * 60 * 1000);
+  const changePasswordLimiter = authRateLimiter(10);
+
+  router.post('/signup', signupLimiter, async (request: Request, response: Response) => {
     try {
       const body = signupSchema.parse(request.body);
       const email = normalizeEmail(body.email);
@@ -162,13 +194,10 @@ export function createAuthRouter(): Router {
         response.status(201).json({
           token: result.token,
           user: sessionUserPayload(result.user),
-          organization: {
-            id: result.organization.id,
-            name: result.organization.name,
-            slug: result.organization.slug,
-            workspaceKind: result.organization.workspaceKind,
-            plan: result.organization.plan,
-          },
+          organization: await sessionOrganizationPayload(result.organization, {
+            email: result.user.email,
+            isSuperAdmin: Boolean((result.user as { isSuperAdmin?: boolean }).isSuperAdmin),
+          }),
         });
         return;
       }
@@ -192,7 +221,7 @@ export function createAuthRouter(): Router {
           data: {
             name: orgDisplayName,
             slug,
-            plan: 'free',
+            plan: TRIAL_PLAN_NAME,
             workspaceKind: body.workspaceType,
           },
         });
@@ -214,6 +243,9 @@ export function createAuthRouter(): Router {
         await tx.wallet.create({
           data: { orgId: organization.id, currency: 'USD', balance: 0 },
         });
+        await tx.orgSubscription.create({
+          data: trialSubscriptionCreateData(organization.id),
+        });
 
         const token = signAuthToken(
           {
@@ -234,13 +266,10 @@ export function createAuthRouter(): Router {
       response.status(201).json({
         token: result.token,
         user: sessionUserPayload(result.user),
-        organization: {
-          id: result.organization.id,
-          name: result.organization.name,
-          slug: result.organization.slug,
-          workspaceKind: result.organization.workspaceKind,
-          plan: result.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(result.organization, {
+          email: result.user.email,
+          isSuperAdmin: Boolean((result.user as { isSuperAdmin?: boolean }).isSuperAdmin),
+        }),
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -254,7 +283,7 @@ export function createAuthRouter(): Router {
     }
   });
 
-  router.post('/super-admin/signup', async (request: Request, response: Response) => {
+  router.post('/super-admin/signup', bootstrapLimiter, async (request: Request, response: Response) => {
     try {
       const configured = process.env.SUPER_ADMIN_BOOTSTRAP_PASSWORD?.trim() ?? '';
       if (configured.length < 12) {
@@ -317,7 +346,7 @@ export function createAuthRouter(): Router {
           data: {
             name: orgDisplayName,
             slug,
-            plan: 'free',
+            plan: TRIAL_PLAN_NAME,
             workspaceKind: 'organization',
           },
         });
@@ -340,6 +369,9 @@ export function createAuthRouter(): Router {
         await tx.wallet.create({
           data: { orgId: organization.id, currency: 'USD', balance: 0 },
         });
+        await tx.orgSubscription.create({
+          data: trialSubscriptionCreateData(organization.id),
+        });
 
         const token = signAuthToken(
           {
@@ -360,13 +392,10 @@ export function createAuthRouter(): Router {
       response.status(201).json({
         token: result.token,
         user: sessionUserPayload(result.user),
-        organization: {
-          id: result.organization.id,
-          name: result.organization.name,
-          slug: result.organization.slug,
-          workspaceKind: result.organization.workspaceKind,
-          plan: result.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(result.organization, {
+          email: result.user.email,
+          isSuperAdmin: Boolean((result.user as { isSuperAdmin?: boolean }).isSuperAdmin),
+        }),
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -385,7 +414,7 @@ export function createAuthRouter(): Router {
   // (agents, scopes, JIT, dashboard, wallet) works before sign-up. The account
   // is flagged `isGuest` and can be claimed later via /claim — same row, so no
   // data migration is needed.
-  router.post('/guest', async (_request: Request, response: Response) => {
+  router.post('/guest', guestLimiter, async (_request: Request, response: Response) => {
     try {
       const secret = loadJwtSecret();
       const guestId = crypto.randomBytes(6).toString('hex');
@@ -405,7 +434,7 @@ export function createAuthRouter(): Router {
           data: {
             name: orgDisplayName,
             slug,
-            plan: 'free',
+            plan: TRIAL_PLAN_NAME,
             workspaceKind: 'individual',
           },
         });
@@ -428,6 +457,9 @@ export function createAuthRouter(): Router {
         await tx.wallet.create({
           data: { orgId: organization.id, currency: 'USD', balance: 0 },
         });
+        await tx.orgSubscription.create({
+          data: trialSubscriptionCreateData(organization.id),
+        });
 
         const token = signAuthToken(
           {
@@ -448,13 +480,10 @@ export function createAuthRouter(): Router {
       response.status(201).json({
         token: result.token,
         user: sessionUserPayload(result.user),
-        organization: {
-          id: result.organization.id,
-          name: result.organization.name,
-          slug: result.organization.slug,
-          workspaceKind: result.organization.workspaceKind,
-          plan: result.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(result.organization, {
+          email: result.user.email,
+          isSuperAdmin: Boolean((result.user as { isSuperAdmin?: boolean }).isSuperAdmin),
+        }),
       });
     } catch (error) {
       console.error('[auth/guest]', error);
@@ -544,13 +573,10 @@ export function createAuthRouter(): Router {
       response.json({
         token: result.token,
         user: sessionUserPayload(result.user),
-        organization: {
-          id: result.organization.id,
-          name: result.organization.name,
-          slug: result.organization.slug,
-          workspaceKind: result.organization.workspaceKind,
-          plan: result.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(result.organization, {
+          email: result.user.email,
+          isSuperAdmin: Boolean((result.user as { isSuperAdmin?: boolean }).isSuperAdmin),
+        }),
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -564,7 +590,7 @@ export function createAuthRouter(): Router {
     }
   });
 
-  router.post('/login', async (request: Request, response: Response) => {
+  router.post('/login', loginLimiter, async (request: Request, response: Response) => {
     try {
       const body = loginSchema.parse(request.body);
       const email = normalizeEmail(body.email);
@@ -606,13 +632,10 @@ export function createAuthRouter(): Router {
       response.json({
         token,
         user: sessionUserPayload(user),
-        organization: {
-          id: user.organization.id,
-          name: user.organization.name,
-          slug: user.organization.slug,
-          workspaceKind: user.organization.workspaceKind,
-          plan: user.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(user.organization, {
+          email: user.email,
+          isSuperAdmin: user.isSuperAdmin,
+        }),
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -659,13 +682,10 @@ export function createAuthRouter(): Router {
       response.json({
         token,
         user: sessionUserPayload(user),
-        organization: {
-          id: user.organization.id,
-          name: user.organization.name,
-          slug: user.organization.slug,
-          workspaceKind: user.organization.workspaceKind,
-          plan: user.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(user.organization, {
+          email: user.email,
+          isSuperAdmin: user.isSuperAdmin,
+        }),
       });
     } catch (error) {
       console.error('[auth/refresh]', error);
@@ -688,19 +708,57 @@ export function createAuthRouter(): Router {
 
       response.json({
         user: sessionUserPayload(user),
-        organization: {
-          id: user.organization.id,
-          name: user.organization.name,
-          slug: user.organization.slug,
-          workspaceKind: user.organization.workspaceKind,
-          plan: user.organization.plan,
-        },
+        organization: await sessionOrganizationPayload(user.organization, {
+          email: user.email,
+          isSuperAdmin: user.isSuperAdmin,
+        }),
       });
     } catch (error) {
       console.error('[auth/me]', error);
       response.status(500).json({ error: { code: 'internal_error', message: 'Failed to load session' } });
     }
   });
+
+  router.post(
+    '/change-password',
+    changePasswordLimiter,
+    authenticateUser(true),
+    async (request: Request, response: Response) => {
+      try {
+        const auth = request.auth!;
+        const parsed = changePasswordSchema.safeParse(request.body);
+        if (!parsed.success) {
+          response.status(400).json({
+            error: { code: 'invalid_body', message: 'currentPassword and newPassword (min 8 chars) are required' },
+          });
+          return;
+        }
+        const { currentPassword, newPassword } = parsed.data;
+
+        const user = await prisma.user.findUnique({ where: { id: auth.userId } });
+        if (!user || !user.isActive) {
+          response.status(401).json({ error: { code: 'unauthorized', message: 'Account not found' } });
+          return;
+        }
+
+        const ok = await verifyPassword(currentPassword, user.passwordHash);
+        if (!ok) {
+          response.status(400).json({
+            error: { code: 'invalid_current_password', message: 'Current password is incorrect' },
+          });
+          return;
+        }
+
+        const passwordHash = await hashPassword(newPassword);
+        await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+
+        response.json({ ok: true });
+      } catch (error) {
+        console.error('[auth/change-password]', error);
+        response.status(500).json({ error: { code: 'internal_error', message: 'Failed to change password' } });
+      }
+    },
+  );
 
   return router;
 }

@@ -60,6 +60,10 @@ export async function notifyLinked(connectorId, ownerJid) {
   });
 }
 
+export async function notifyLoggedOut(connectorId) {
+  await request('POST', `/api/v1/internal/whatsapp/${encodeURIComponent(connectorId)}/logged-out`);
+}
+
 export async function resolveApproval(actionId, approved, reason) {
   const result = await request('POST', '/api/v1/jit/resolve', {
     action_id: actionId,

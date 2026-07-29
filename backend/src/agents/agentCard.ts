@@ -25,6 +25,10 @@ export interface A2AAgentCard {
 
 const SCOPE_SKILL_MAP: Record<string, { name: string; description: string }> = {
   'web.read': { name: 'Web Reading', description: 'Navigate and read web pages' },
+  'web.research': {
+    name: 'Web Research',
+    description: 'Search and read platforms via structured APIs (no browser)',
+  },
   'web.click': { name: 'Web Interaction', description: 'Click buttons and interact with web UIs' },
   'web.transaction': { name: 'Web Transactions', description: 'Complete transactions on the web (JIT)' },
   'system.file_read': { name: 'File Reading', description: 'Read files from the local filesystem' },
@@ -36,6 +40,9 @@ const SCOPE_SKILL_MAP: Record<string, { name: string; description: string }> = {
   'brain.knowledge_read': { name: 'Knowledge Read', description: 'Read from knowledge collections' },
   'email.read': { name: 'Email Reading', description: 'Read and search connected Gmail inbox' },
   'email.send': { name: 'Email Sending', description: 'Send email via connected Gmail account (JIT)' },
+  'whatsapp.send': { name: 'WhatsApp', description: 'Send messages/files on connected WhatsApp' },
+  'social.read': { name: 'Orbit Social Read', description: 'List Orbit channels, posts, and analytics' },
+  'social.publish': { name: 'Orbit Social Publish', description: 'Publish or schedule posts via Orbit (JIT)' },
 };
 
 export function buildAgentCard(agent: AgentDTO, backendBaseUrl: string): A2AAgentCard {

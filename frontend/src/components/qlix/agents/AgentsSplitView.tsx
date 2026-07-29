@@ -2,18 +2,23 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { type AgentDTO, deleteAllAgents, listAgents } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
-import { CreateAgentModal } from "./CreateAgentModal";
 import {
-  AgentStatusBadge,
-  RuntimeBadge,
-  deriveAgentDisplayStatus,
-  formatDidCompact,
-} from "./agentStatus";
+  SketchBox,
+  SketchListSkeleton,
+  SketchPageHeader,
+  SketchRow,
+  sketchButtonDanger,
+  sketchButtonGhost,
+  sketchButtonPrimary,
+  sketchButtonSecondary,
+  sketchInput,
+  sketchLabel,
+} from "@/components/qlix/sketch";
+import { CreateAgentModal } from "./CreateAgentModal";
+import { deriveAgentDisplayStatus, formatDidCompact } from "./agentStatus";
 
 interface AgentsSplitViewProps {
   readonly routePrefix: "/individual" | "/organization";
@@ -21,7 +26,6 @@ interface AgentsSplitViewProps {
 
 export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   const { session } = useSession();
-  const router = useRouter();
 
   const [agents, setAgents] = useState<AgentDTO[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,10 +39,9 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
 
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? (session?.organization.id ?? null) : null;
-  const deviceVerified = session?.user.deviceVerified === true;
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     setError(null);
     try {
       const data = await listAgents(orgId);
@@ -51,13 +54,25 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
     } catch {
       setError("Network error");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [orgId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const hasProvisioningAgents =
+    agents?.some((agent) => {
+      const status = deriveAgentDisplayStatus(agent);
+      return status === "provisioning" || status === "restarting";
+    }) ?? false;
+
+  useEffect(() => {
+    if (!hasProvisioningAgents) return;
+    const timer = window.setInterval(() => void refresh(false), 2500);
+    return () => window.clearInterval(timer);
+  }, [hasProvisioningAgents, refresh]);
 
   const openConfirm = () => {
     setConfirmInput("");
@@ -80,121 +95,105 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
     }
   };
 
-  // Opening an agent navigates to its own full-page chat.
-  const openAgentChat = (id: string) => {
-    router.push(`${routePrefix}/agents/${id}/chat`);
-  };
-
   const handleCreated = (agent: AgentDTO) => {
     setAgents((prev) => [agent, ...(prev ?? [])]);
-    openAgentChat(agent.id);
   };
 
   return (
-    <div className="animate-qlix-fade-in space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="bg-gradient-to-r from-violet-600 via-indigo-500 to-cyan-500 bg-clip-text text-xl font-semibold tracking-tight text-transparent dark:from-violet-300 dark:to-cyan-300">
-            Agents
-          </h1>
-          <p className="max-w-lg text-[13px] leading-relaxed text-[--text-secondary]">
-            Register and manage AI agents with DIDs, verifiable credentials, and live cloud runners.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {agents && agents.length > 0 && (
-            <button
-              type="button"
-              onClick={openConfirm}
-              className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 px-4 py-2 text-[12px] font-semibold text-red-500 motion-safe:transition-colors motion-safe:duration-200 hover:bg-red-500/10 dark:border-red-400/40 dark:text-red-400"
-            >
-              <Trash2 className="size-4" aria-hidden />
-              Delete all
+    <div className="flex h-full min-h-0 flex-col">
+      <SketchPageHeader
+        title="Agents"
+        actions={
+          <>
+            {agents && agents.length > 0 ? (
+              <button type="button" onClick={openConfirm} className={sketchButtonDanger}>
+                Delete All
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setOpen(true)} className={sketchButtonPrimary}>
+              + New
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600 px-4 py-2 text-[12px] font-semibold text-white shadow-md shadow-violet-500/25 motion-safe:transition-[filter,transform] motion-safe:duration-200 hover:brightness-110 active:scale-[0.98] dark:from-violet-500 dark:via-indigo-500 dark:to-cyan-500"
-          >
-            <Plus className="size-4" aria-hidden />
-            Create agent
-          </button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <section className="overflow-hidden rounded-xl border border-violet-500/15 bg-[--bg-elevated] shadow-sm ring-1 ring-inset ring-violet-500/10 dark:border-violet-400/20 dark:shadow-[0_4px_24px_rgba(99,102,241,0.08)]">
-        <div className="border-b border-[--border-subtle] bg-gradient-to-r from-violet-500/[0.06] to-cyan-500/[0.04] px-4 py-3 dark:from-violet-500/10 dark:to-cyan-500/10">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-violet-700/90 dark:text-violet-300/90">
-            Agent registry
-          </p>
-          <p className="mt-0.5 text-[12px] text-[--text-tertiary]">
-            {loading ? "Loading…" : `${agents?.length ?? 0} registered`}
-          </p>
-        </div>
-
+      <SketchBox className="flex min-h-0 flex-1 flex-col gap-2 p-3">
         {loading ? (
-          <AgentsRegistrySkeleton />
+          <SketchListSkeleton rows={6} />
         ) : error ? (
-          <p className="px-4 py-10 text-center text-[13px] text-[--danger]">{error}</p>
+          <p className="text-[13px] text-black">{error}</p>
         ) : !agents || agents.length === 0 ? (
-          <div className="px-6 py-12 text-center">
-            <p className="text-[13px] text-[--text-secondary]">No agents yet.</p>
+          <div className="flex flex-col items-center py-14 text-center">
+            <div className="qlix-empty-glow mb-5 size-11 rounded-2xl border border-black/12 bg-[var(--sketch-tint-purple)]" />
+            <p className={cn(sketchLabel, "normal-case tracking-normal text-black/50")}>
+              You haven&apos;t registered any agents yet.
+            </p>
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="mt-4 text-[12px] font-medium text-violet-600 hover:underline dark:text-violet-300"
+              className={cn(sketchButtonPrimary, "mt-5")}
             >
-              Create your first agent →
+              Register your first agent →
             </button>
           </div>
         ) : (
-          <ul className="divide-y divide-[--border-subtle]">
-            {agents.map((a, i) => {
-              const status = deriveAgentDisplayStatus(a);
-              return (
-                <li
-                  key={a.id}
-                  className="agents-list-row"
-                  style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => openAgentChat(a.id)}
-                    className="group relative flex w-full flex-col gap-2 px-4 py-3.5 text-left motion-safe:transition-colors motion-safe:duration-200 hover:bg-[var(--glass-row-hover)]"
+          agents.map((a, index) => {
+            const status = deriveAgentDisplayStatus(a);
+            const isProvisioning = status === "provisioning" || status === "restarting";
+            return (
+              <SketchRow
+                key={a.id}
+                className={cn(
+                  "agents-list-row relative flex flex-wrap items-center justify-between gap-2 overflow-hidden",
+                  isProvisioning && "border-[color:var(--warning)]/40 bg-[var(--sketch-tint-amber)]",
+                )}
+                style={{ animationDelay: `${index * 40}ms` } as React.CSSProperties}
+              >
+                <div className="min-w-[min(100%,18rem)] flex-[1_1_18rem]">
+                  <Link
+                    href={`${routePrefix}/agents/${a.id}`}
+                    className="truncate text-[13px] font-medium text-black transition-colors hover:text-[color:var(--sketch-purple)]"
                   >
-                    <div className="flex items-start justify-between gap-2 pl-1">
-                      <span className="min-w-0">
-                        <span className="block truncate text-[13px] font-semibold text-[--text-primary] group-hover:text-violet-700 dark:group-hover:text-violet-200">
-                          {a.name}
-                        </span>
-                        <span
-                          className="mt-1 block font-mono text-[10px] text-[--text-tertiary]"
-                          title={a.did}
-                        >
-                          {formatDidCompact(a.did)}
-                        </span>
-                      </span>
-                      <AgentStatusBadge status={status} />
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 pl-1">
-                      <RuntimeBadge runtime={a.runtime} agentKind={a.agentKind} />
-                      <Link
-                        href={`${routePrefix}/agents/${a.id}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-0.5 text-[10px] font-medium text-[--text-tertiary] hover:text-violet-600 dark:hover:text-violet-300"
+                    {a.name}
+                  </Link>
+                  <div className="font-mono text-[10px] text-black/40" title={a.did}>
+                    {formatDidCompact(a.did)}
+                  </div>
+                  {isProvisioning ? (
+                    <div className="mt-2 w-full max-w-sm">
+                      <p className="whitespace-normal break-normal text-[11px] font-medium leading-snug text-[color:var(--warning)]">
+                        Building your agent. This might take a few minutes.
+                      </p>
+                      <div
+                        className="mt-1.5 h-1 overflow-hidden rounded-full bg-black/8"
+                        role="progressbar"
+                        aria-label={`Building ${a.name}`}
                       >
-                        Details
-                        <ExternalLink className="size-2.5" aria-hidden />
-                      </Link>
+                        <div className="create-agent-progress-shimmer h-full w-1/3 rounded-full bg-[color:var(--sketch-purple)]" />
+                      </div>
                     </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-2.5">
+                  <span className={cn(sketchLabel, "text-[10px]")}>{status}</span>
+                  <Link
+                    href={`${routePrefix}/agents/${a.id}/chat`}
+                    className={sketchButtonSecondary}
+                  >
+                    Chat
+                  </Link>
+                  <Link
+                    href={`${routePrefix}/agents/${a.id}`}
+                    className={sketchButtonGhost}
+                  >
+                    Details
+                  </Link>
+                </div>
+              </SketchRow>
+            );
+          })
         )}
-      </section>
+      </SketchBox>
 
       <CreateAgentModal
         open={open}
@@ -204,63 +203,43 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
         }}
         onCreated={handleCreated}
         orgId={orgId}
-        deviceVerified={deviceVerified}
       />
 
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-xl border border-red-500/20 bg-[--surface] p-6 shadow-2xl">
-            <h2 className="text-[14px] font-semibold text-[--text-primary]">Delete all agents?</h2>
-            <p className="mt-2 text-[12px] text-[--text-secondary]">
-              This permanently deletes all {agents?.length ?? ""} agents and cannot be undone.
-              Type <span className="font-mono font-bold text-red-500">DELETE</span> to confirm.
+      {confirmOpen ? (
+        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-white/70 p-4 backdrop-blur-sm">
+          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-white/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
+            <h2 className={sketchLabel}>Delete all agents?</h2>
+            <p className="mt-2 text-[12px] text-black/60">
+              Type DELETE to confirm. This cannot be undone.
             </p>
             <input
               ref={confirmRef}
               type="text"
               value={confirmInput}
               onChange={(e) => setConfirmInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void handleDeleteAll(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleDeleteAll();
+              }}
               placeholder="DELETE"
-              className="mt-4 w-full rounded-md border border-[--border-subtle] bg-[--bg-elevated] px-3 py-2 text-[13px] text-[--text-primary] outline-none focus:border-red-500"
+              className={cn(sketchInput, "mt-4")}
             />
-            {deleteError && (
-              <p className="mt-2 text-[12px] text-red-500">{deleteError}</p>
-            )}
+            {deleteError ? <p className="mt-2 text-[12px] text-black">{deleteError}</p> : null}
             <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmOpen(false)}
-                className="rounded-md px-3 py-1.5 text-[12px] text-[--text-secondary] hover:text-[--text-primary]"
-              >
+              <button type="button" onClick={() => setConfirmOpen(false)} className={sketchButtonGhost}>
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void handleDeleteAll()}
                 disabled={confirmInput !== "DELETE" || deleting}
-                className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity disabled:opacity-40 hover:bg-red-500"
+                className={sketchButtonDanger}
               >
                 {deleting ? "Deleting…" : "Delete all"}
               </button>
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
-  );
-}
-
-function AgentsRegistrySkeleton() {
-  return (
-    <ul className="divide-y divide-[--border-subtle]">
-      {[0, 1, 2].map((i) => (
-        <li key={i} className="px-4 py-4">
-          <div className="h-4 w-2/3 animate-pulse rounded bg-violet-500/10" />
-          <div className="mt-2 h-3 w-1/2 animate-pulse rounded bg-[--bg-subtle]" />
-          <div className="mt-3 h-5 w-16 animate-pulse rounded-full bg-[--bg-subtle]" />
-        </li>
-      ))}
-    </ul>
   );
 }

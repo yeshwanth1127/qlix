@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Cloud, Cpu, Download, Fingerprint, Laptop, Loader2, ShieldCheck, X } from "lucide-react";
+import { Check, Cloud, Cpu, Download, Fingerprint, Laptop, Loader2, X } from "lucide-react";
 import {
   ALL_PERMISSION_SCOPES,
   CLOUD_MODELS,
@@ -15,30 +15,31 @@ import {
   type LocalInferenceMode,
   type LlmMode,
   type PermissionScope,
+  type ScopeCatalogEntry,
   confirmDownload,
   createAgent,
+  fetchScopeCatalog,
   getRuntimeStatus,
   restartCloudRunner,
 } from "@/lib/agents-api";
-import { downloadBase64File, downloadJsonFile } from "@/lib/download";
+import { downloadBase64File, downloadJsonFile, stashStarterPack } from "@/lib/download";
 import { detectHybridClientPlatform } from "@/lib/hybrid-platform";
-import { obtainAgentCreateStepUpToken } from "@/lib/webauthn";
-import { useSession } from "@/components/qlix/session-context";
 import {
   CreateAgentStepProgress,
   CreateAgentSubmitProgress,
   type CreateAgentFlowStep,
 } from "@/components/qlix/agents/CreateAgentStepProgress";
+import { HybridRunnerSetupPopup } from "@/components/qlix/agents/HybridRunnerSetupPopup";
 import { cn } from "@/lib/utils/cn";
+import { SketchBox, sketchButton, sketchInput, sketchLabel } from "@/components/qlix/sketch";
 
-type Step = 1 | 2 | 3 | 4 | 5 | "result";
+type Step = 1 | 2 | 3 | 4 | "result";
 
 interface CreateAgentModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly onCreated: (agent: AgentDTO) => void;
   readonly orgId: string | null;
-  readonly deviceVerified: boolean;
   /** When true, hide SDK-only local runtime (team agents: cloud or hybrid). */
   readonly cloudOnly?: boolean;
 }
@@ -90,11 +91,8 @@ export function CreateAgentModal({
   onClose,
   onCreated,
   orgId,
-  deviceVerified,
   cloudOnly = false,
 }: CreateAgentModalProps) {
-  const { refresh: refreshSession } = useSession();
-  /** Prevents overlapping WebAuthn ceremonies (e.g. double-click) — second call often rejects while the first still saves a passkey. */
   const submitLockRef = useRef(false);
   const [step, setStep] = useState<Step>(1);
   const [direction, setDirection] = useState(1);
@@ -148,23 +146,11 @@ export function CreateAgentModal({
           : {}),
       };
 
-      const stepUp = await obtainAgentCreateStepUpToken(deviceVerified);
-      if (!stepUp.ok) {
-        setError(stepUp.errorMessage);
-        setDirection(-1);
-        setStep(4);
-        return;
-      }
-      if (!deviceVerified) {
-        await refreshSession();
-      }
-      const stepUpToken = stepUp.stepUpToken;
-
-      const res = await createAgent(body, stepUpToken);
+      const res = await createAgent(body);
       if (!res.ok) {
         setError(res.errorMessage);
         setDirection(-1);
-        setStep(4);
+        setStep(3);
         return;
       }
       setResult(res.data);
@@ -177,38 +163,36 @@ export function CreateAgentModal({
     }
   };
 
-  const goNextFromStep4 = () => {
+  const goCreate = () => {
     setDirection(1);
-    setStep(5);
+    setStep(4);
     void submit();
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="create-agent-title"
     >
-      <div className="qlix-glass-muted relative flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-violet-500/20 bg-[--bg-base] shadow-2xl shadow-violet-500/10 ring-1 ring-violet-400/10 dark:border-violet-400/25 dark:shadow-violet-900/30"
+      <div
+        className="relative flex w-full max-w-xl flex-col overflow-hidden border-2 border-black bg-white"
         style={{ maxHeight: "min(90vh, 700px)" }}
       >
-        <header className="flex shrink-0 items-center justify-between px-5 py-3">
+        <header className="flex shrink-0 items-center justify-between border-b border-black px-5 py-3">
           <div>
-            <h2
-              id="create-agent-title"
-              className="bg-gradient-to-r from-violet-600 to-cyan-600 bg-clip-text text-[15px] font-semibold text-transparent dark:from-violet-300 dark:to-cyan-300"
-            >
+            <h2 id="create-agent-title" className={sketchLabel}>
               Create agent
             </h2>
-            <p className="mt-0.5 text-[11px] text-[--text-tertiary]">
+            <p className="mt-0.5 text-[11px] text-black/50">
               Register a new autonomous agent with cryptographic identity
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1 text-[--text-tertiary] transition-colors hover:bg-[--bg-hover] hover:text-[--text-primary]"
+            className="border border-black p-1 text-black/50 transition-colors hover:bg-black hover:text-white"
             aria-label="Close"
           >
             <X className="size-4" aria-hidden />
@@ -216,7 +200,7 @@ export function CreateAgentModal({
         </header>
 
         <div className="shrink-0">
-          <CreateAgentStepProgress step={step as CreateAgentFlowStep} creating={step === 5} />
+          <CreateAgentStepProgress step={step as CreateAgentFlowStep} creating={step === 4} />
         </div>
 
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-5">
@@ -235,6 +219,7 @@ export function CreateAgentModal({
               name={form.name}
               description={form.description}
               scopes={form.permissionScopes}
+              orgId={orgId}
               onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
             />
           ) : null}
@@ -258,9 +243,7 @@ export function CreateAgentModal({
             />
           ) : null}
 
-          {step === 4 ? <Step4 deviceVerified={deviceVerified} /> : null}
-
-          {step === 5 ? <CreateAgentSubmitProgress runtime={form.runtime} /> : null}
+          {step === 4 ? <CreateAgentSubmitProgress runtime={form.runtime} /> : null}
 
           {step === "result" && result ? (
             <ResultPanel
@@ -270,16 +253,14 @@ export function CreateAgentModal({
           ) : null}
 
           {error ? (
-            <p className="mt-3 rounded-md border border-[--danger]/40 bg-[--danger]/10 px-3 py-2 text-[12px] text-[--danger]">
-              {error}
-            </p>
+            <SketchBox className="mt-3 px-3 py-2 text-[12px] text-black">{error}</SketchBox>
           ) : null}
           </motion.div>
           </AnimatePresence>
         </div>
 
-        {step !== "result" && step !== 5 ? (
-          <footer className="flex shrink-0 items-center justify-between border-t border-[--border-subtle] bg-[--bg-subtle]/40 px-5 py-3">
+        {step !== "result" && step !== 4 ? (
+          <footer className="flex shrink-0 items-center justify-between border-t border-black px-5 py-3">
             <div className="flex items-center gap-3">
               <button
                 type="button"
@@ -290,12 +271,12 @@ export function CreateAgentModal({
                     setStep(((step as number) - 1) as Step);
                   }
                 }}
-                className="text-[12px] font-medium text-[--text-tertiary] transition-colors hover:text-[--text-primary]"
+                className={sketchButton}
                 disabled={submitting}
               >
                 {step === 1 ? "Cancel" : "Back"}
               </button>
-              <span className="text-[11px] text-[--text-tertiary]">
+              <span className="text-[11px] text-black/50">
                 always-on: {alwaysScopes.length} · JIT: {jitScopes.length}
               </span>
             </div>
@@ -310,28 +291,19 @@ export function CreateAgentModal({
                 setDirection(1);
                 if (step === 1) setStep(2);
                 else if (step === 2) setStep(3);
-                else if (step === 3) setStep(4);
-                else if (step === 4) void goNextFromStep4();
+                else if (step === 3) void goCreate();
               }}
-              className={cn(
-                "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[12px] font-semibold shadow-md motion-safe:transition-[filter,transform] motion-safe:duration-200",
-                "bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-600 text-white shadow-violet-500/25 hover:brightness-110 active:scale-[0.98]",
-                "disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none dark:from-violet-500 dark:via-indigo-500 dark:to-cyan-500",
-              )}
+              className={`${sketchButton} gap-2 disabled:cursor-not-allowed disabled:opacity-50`}
             >
               {submitting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
-              {step === 4 ? "Verify & create" : "Next →"}
+              {step === 3 ? "Create agent" : "Next →"}
             </button>
           </footer>
         ) : null}
 
         {step === "result" ? (
-          <footer className="flex shrink-0 items-center justify-end border-t border-[--border-subtle] px-5 py-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md bg-[--accent] px-3 py-1.5 text-[12px] font-medium text-[--accent-contrast] transition-colors hover:bg-[--accent-hover]"
-            >
+          <footer className="flex shrink-0 items-center justify-end border-t border-black px-5 py-3">
+            <button type="button" onClick={onClose} className={sketchButton}>
               Done
             </button>
           </footer>
@@ -345,70 +317,109 @@ function Step1({
   name,
   description,
   scopes,
+  orgId,
   onChange,
 }: {
   readonly name: string;
   readonly description: string;
   readonly scopes: PermissionScope[];
+  readonly orgId: string | null;
   readonly onChange: (patch: Partial<FormState>) => void;
 }) {
-  const toggle = (scope: PermissionScope) => {
+  const [catalog, setCatalog] = useState<ScopeCatalogEntry[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchScopeCatalog(orgId).then((rows) => {
+      if (!cancelled) setCatalog(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
+
+  const scopeOptions = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; forceJit: boolean }>();
+    for (const id of ALL_PERMISSION_SCOPES) {
+      map.set(id, {
+        id,
+        label: PERMISSION_SCOPE_LABELS[id],
+        forceJit: FORCE_JIT_SCOPES.includes(id),
+      });
+    }
+    for (const row of catalog ?? []) {
+      map.set(row.id, {
+        id: row.id,
+        label: row.label || row.id,
+        forceJit: row.forceJit,
+      });
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const aMcp = a.id.startsWith("mcp.") ? 1 : 0;
+      const bMcp = b.id.startsWith("mcp.") ? 1 : 0;
+      if (aMcp !== bMcp) return aMcp - bMcp;
+      return a.id.localeCompare(b.id);
+    });
+  }, [catalog]);
+
+  const toggle = (scope: string) => {
     const set = new Set(scopes);
-    if (set.has(scope)) set.delete(scope);
-    else set.add(scope);
+    if (set.has(scope as PermissionScope)) set.delete(scope as PermissionScope);
+    else set.add(scope as PermissionScope);
     onChange({ permissionScopes: Array.from(set) });
   };
 
   return (
     <div className="space-y-4">
       <label className="block">
-        <span className="text-[12px] font-medium text-[--text-secondary]">Agent name</span>
+        <span className={`${sketchLabel} normal-case tracking-normal`}>Agent name</span>
         <input
           type="text"
           value={name}
           maxLength={120}
           autoFocus
           onChange={(e) => onChange({ name: e.target.value })}
-          placeholder="e.g. Leads Generator"
-          className="mt-1.5 w-full rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--accent]"
+          placeholder="e.g. Job Apply Agent"
+          className={`${sketchInput} mt-1.5`}
         />
       </label>
 
       <label className="block">
-        <span className="text-[12px] font-medium text-[--text-secondary]">
-          Role description <span className="text-[--text-tertiary] font-normal">(optional — becomes system prompt)</span>
+        <span className={`${sketchLabel} normal-case tracking-normal`}>
+          Role description <span className="font-normal text-black/50">(optional)</span>
         </span>
         <textarea
           value={description}
           rows={5}
           onChange={(e) => onChange({ description: e.target.value })}
-          placeholder="e.g. Generate a list of potential sales leads based on the target market. Focus on company size, industry, and decision maker contact info."
-          className="mt-1.5 w-full resize-none rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--accent]"
+          placeholder="e.g. Apply to Greenhouse and Lever roles using my resume."
+          className={`${sketchInput} mt-1.5 resize-none`}
         />
       </label>
 
       <div>
-        <p className="text-[12px] font-medium text-[--text-secondary]">Permission scopes</p>
-        <p className="mt-0.5 text-[11px] text-[--text-tertiary]">
-          What this agent is allowed to do. Pick the smallest set that does the job.
+        <p className={sketchLabel}>Permission scopes</p>
+        <p className="mt-0.5 text-[11px] text-black/50">
+          What this agent is allowed to do — including MCP tools like Qlix Jobs (resume apply) and Qlix Leads.
         </p>
-        <ul className="mt-2 space-y-1">
-          {ALL_PERMISSION_SCOPES.map((scope) => {
-            const checked = scopes.includes(scope);
+        <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto">
+          {scopeOptions.map((opt) => {
+            const checked = scopes.includes(opt.id as PermissionScope);
             return (
-              <li key={scope}>
-                <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--glass-row-hover)]">
+              <li key={opt.id}>
+                <label className="flex cursor-pointer items-start gap-2 border border-black px-2 py-1.5 transition-colors hover:bg-black/5">
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={() => toggle(scope)}
-                    className="mt-0.5"
+                    onChange={() => toggle(opt.id)}
+                    className="mt-0.5 accent-black"
                   />
                   <div>
-                    <span className="font-mono text-[12px] text-[--text-primary]">{scope}</span>
-                    <span className="ml-2 text-[12px] text-[--text-tertiary]">
-                      {PERMISSION_SCOPE_LABELS[scope]}
-                    </span>
+                    <span className="font-mono text-[12px] text-black">{opt.id}</span>
+                    <span className="ml-2 text-[12px] text-black/50">{opt.label}</span>
+                    {opt.forceJit ? (
+                      <span className="ml-2 text-[10px] uppercase tracking-wide text-black/40">JIT</span>
+                    ) : null}
                   </div>
                 </label>
               </li>
@@ -560,8 +571,8 @@ function Step3({
         </div>
         {cloudOnly ? (
           <p className="mt-2 text-[11px] text-[--text-tertiary]">
-            Team agents use Cloud or Hybrid. Hybrid workers need the Qlix daemon running on someone&apos;s
-            machine.
+            Team agents use Cloud or Hybrid. Hybrid workers need the Qlix agent app running on someone&apos;s
+            computer.
           </p>
         ) : null}
       </div>
@@ -639,10 +650,8 @@ function Step3({
   );
 }
 
-const runtimeCardSelected =
-  "border-2 border-violet-500 bg-gradient-to-br from-violet-500/20 via-indigo-500/10 to-cyan-500/5 ring-2 ring-violet-400/40 shadow-md shadow-violet-500/15 dark:border-violet-400 dark:from-violet-500/25 dark:ring-violet-400/35";
-const runtimeCardIdle =
-  "border border-[--border-default] bg-[--bg-base] hover:border-violet-400/45 hover:bg-violet-500/5";
+const runtimeCardSelected = "border-2 border-black bg-white";
+const runtimeCardIdle = "border border-black bg-white hover:bg-black/5";
 
 function InferenceModeCard({
   active,
@@ -660,28 +669,17 @@ function InferenceModeCard({
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={cn(
-        "relative rounded-lg p-3 text-left transition-all duration-200",
-        active ? runtimeCardSelected : runtimeCardIdle,
-      )}
+      className={cn("relative p-3 text-left transition-all duration-200 border", active ? runtimeCardSelected : runtimeCardIdle)}
     >
       {active ? (
-        <span
-          className="absolute right-2 top-2 flex size-5 items-center justify-center rounded-full bg-violet-600 text-white dark:bg-violet-500"
-          aria-hidden
-        >
+        <span className="absolute right-2 top-2 flex size-5 items-center justify-center border border-black bg-black text-white" aria-hidden>
           <Check className="size-3" />
         </span>
       ) : null}
-      <div
-        className={cn(
-          "text-[12px] font-medium",
-          active ? "text-violet-800 dark:text-violet-100" : "text-[--text-primary]",
-        )}
-      >
+      <div className={cn("text-[12px] font-medium", active ? "text-black" : "text-black/70")}>
         {title}
       </div>
-      <p className="mt-1 text-[11px] text-[--text-tertiary]">{description}</p>
+      <p className="mt-1 text-[11px] text-black/50">{description}</p>
     </button>
   );
 }
@@ -704,52 +702,19 @@ function RuntimeCard({
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={cn(
-        "relative rounded-lg p-3 text-left transition-all duration-200",
-        active ? runtimeCardSelected : runtimeCardIdle,
-      )}
+      className={cn("relative p-3 text-left transition-all duration-200 border", active ? runtimeCardSelected : runtimeCardIdle)}
     >
       {active ? (
-        <span
-          className="absolute right-2 top-2 flex size-5 items-center justify-center rounded-full bg-violet-600 text-white dark:bg-violet-500"
-          aria-hidden
-        >
+        <span className="absolute right-2 top-2 flex size-5 items-center justify-center border border-black bg-black text-white" aria-hidden>
           <Check className="size-3" />
         </span>
       ) : null}
-      <div
-        className={cn(
-          "flex items-center gap-2 text-[12px] font-medium",
-          active ? "text-violet-800 dark:text-violet-100" : "text-[--text-primary]",
-        )}
-      >
-        <span className={cn(active && "text-violet-600 dark:text-violet-300")}>{icon}</span>
+      <div className={cn("flex items-center gap-2 text-[12px] font-medium", active ? "text-black" : "text-black/70")}>
+        {icon}
         {title}
       </div>
-      <p className="mt-1 text-[11px] text-[--text-tertiary]">{description}</p>
+      <p className="mt-1 text-[11px] text-black/50">{description}</p>
     </button>
-  );
-}
-
-function Step4({ deviceVerified }: { readonly deviceVerified: boolean }) {
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 text-[--text-primary]">
-        <ShieldCheck className="size-4" aria-hidden />
-        <span className="text-[13px] font-medium">Device verification</span>
-      </div>
-      {deviceVerified ? (
-        <p className="text-[12px] text-[--text-secondary]">
-          On the next step, your browser will ask you to confirm with your passkey (biometrics or PIN) before
-          the agent is created. This proves you are at the device right now.
-        </p>
-      ) : (
-        <p className="text-[12px] text-[--text-secondary]">
-          Click <span className="font-medium">Verify &amp; create</span> to register a passkey, then confirm
-          with your device. The agent cannot be issued without this proof.
-        </p>
-      )}
-    </div>
   );
 }
 
@@ -765,8 +730,14 @@ function ResultPanel({
   const isHybrid = agent.runtime === "hybrid";
   const needsCredentialFile = isHybrid || agent.runtime === "local";
   const [downloaded, setDownloaded] = useState(false);
+  const [setupPopupOpen, setSetupPopupOpen] = useState(isHybrid);
   const autoDownloadFiredRef = useRef(false);
   const starterPackMissing = isHybrid && !hybridStarterPack?.base64;
+  // Stash the just-created starter pack so the agent's own page can re-offer the
+  // download without re-issuing (which rotates the signing key).
+  useEffect(() => {
+    if (isHybrid) stashStarterPack(agent.id, hybridStarterPack);
+  }, [isHybrid, agent.id, hybridStarterPack]);
   const [runnerStatus, setRunnerStatus] = useState<
     | { state: "idle" }
     | { state: "loading" }
@@ -793,7 +764,7 @@ function ResultPanel({
         } else {
           setRunnerStatus({
             state: "offline",
-            message: "Daemon not connected yet. Download credentials and run qlix daemon start.",
+            message: "Your local agent isn't connected yet. Download its credentials, then run: qlix start",
           });
         }
         return;
@@ -854,6 +825,14 @@ function ResultPanel({
 
   return (
     <div className="space-y-3">
+      {isHybrid ? (
+        <HybridRunnerSetupPopup
+          open={setupPopupOpen}
+          onClose={() => setSetupPopupOpen(false)}
+          zipFilename={hybridStarterPack?.filename}
+        />
+      ) : null}
+
       <div className="flex items-center gap-2 text-[--text-primary]">
         <Fingerprint className="size-4" aria-hidden />
         <span className="text-[13px] font-medium">Agent created</span>
@@ -883,12 +862,10 @@ function ResultPanel({
             runtime.
           </span>
           <div className="mt-2 text-[11px] text-[--text-secondary]">
-            {runnerStatus.state === "loading" ? "Provisioning runner…" : null}
-            {runnerStatus.state === "provisioning"
-              ? `Provisioning runner… (${runnerStatus.provisioningStatus ?? "provisioning"})`
-              : null}
+            {runnerStatus.state === "loading" ? "Setting up your agent…" : null}
+            {runnerStatus.state === "provisioning" ? "Setting up your agent…" : null}
             {runnerStatus.state === "running"
-              ? `Runner is online${runnerStatus.lastHeartbeatAt ? ` (last heartbeat ${runnerStatus.lastHeartbeatAt})` : ""}`
+              ? `Online and ready${runnerStatus.lastHeartbeatAt ? ` (last seen ${runnerStatus.lastHeartbeatAt})` : ""}`
               : null}
             {runnerStatus.state === "failed" ? runnerStatus.message : null}
             {inferenceError ? ` ${inferenceError}` : null}
@@ -908,7 +885,7 @@ function ResultPanel({
               }}
               className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-[--accent] px-2.5 py-1 text-[12px] font-medium text-[--accent-contrast] transition-colors hover:bg-[--accent-hover]"
             >
-              Restart runner
+              Restart agent
             </button>
           ) : null}
         </div>
@@ -916,9 +893,9 @@ function ResultPanel({
         <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-[12px] text-[--text-primary]">
           <span className="font-medium">Next: connect this agent on your computer</span>
           <div className="mt-2 text-[11px] text-[--text-secondary]">
-            {runnerStatus.state === "loading" ? "Checking daemon…" : null}
+            {runnerStatus.state === "loading" ? "Checking your computer…" : null}
             {runnerStatus.state === "running"
-              ? `Daemon online${runnerStatus.lastHeartbeatAt ? ` (heartbeat ${runnerStatus.lastHeartbeatAt})` : ""}. You can chat with this agent in the dashboard.`
+              ? `Online on your computer${runnerStatus.lastHeartbeatAt ? ` (last seen ${runnerStatus.lastHeartbeatAt})` : ""}. You can chat with this agent in the dashboard.`
               : null}
             {runnerStatus.state === "offline" ? runnerStatus.message : null}
             {inferenceError ? ` ${inferenceError}` : null}
@@ -937,6 +914,15 @@ function ResultPanel({
               computer) and leave that window open.
             </li>
           </ol>
+          {!setupPopupOpen ? (
+            <button
+              type="button"
+              onClick={() => setSetupPopupOpen(true)}
+              className="mt-2 text-[11px] font-medium text-cyan-700 underline-offset-2 hover:underline"
+            >
+              Show setup steps again
+            </button>
+          ) : null}
         </div>
       ) : (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200/90">

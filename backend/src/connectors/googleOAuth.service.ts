@@ -139,6 +139,22 @@ export async function refreshGoogleAccessToken(refreshToken: string): Promise<{
   return { accessToken, expiresAtMs: Date.now() + expiresIn * 1000 };
 }
 
+const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
+
+/** Best-effort revocation of a Google access/refresh token at Google's endpoint. */
+export async function revokeGoogleToken(token: string): Promise<void> {
+  if (!token) return;
+  try {
+    await fetch(GOOGLE_REVOKE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token }).toString(),
+    });
+  } catch {
+    // Best-effort: local disconnect proceeds even if Google revoke fails.
+  }
+}
+
 /** Encrypt helper exposed for n8n secret storage from router. */
 export function encryptIntegrationSecret(plaintext: string): string {
   return encryptForAgentSecrets(plaintext);

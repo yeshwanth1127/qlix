@@ -161,6 +161,25 @@ export class TeamAgentRunBridge {
           { tool, ...(data ?? {}) },
         );
         params.emit('tool_called', { agentId: params.agentId, tool, data });
+        return;
+      }
+      const logMessage = typeof data?.message === 'string' ? data.message : null;
+      const thinkingLogMessages = new Set([
+        'inference_tool_round',
+        'inference_request',
+        'agents3_step',
+        'tool_loop_stuck_break',
+        'orchestrator_fallback',
+      ]);
+      if (logMessage && thinkingLogMessages.has(logMessage)) {
+        await this.teamsRepo.appendEvent(
+          params.teamRun.id,
+          params.team.id,
+          params.agentId,
+          'task_status_update',
+          data ?? {},
+        );
+        params.emit('status', { agentId: params.agentId, ...(data ?? {}) });
       }
     } else if (ev.type === 'status') {
       await this.teamsRepo.appendEvent(

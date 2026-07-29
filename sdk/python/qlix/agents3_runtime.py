@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import platform
@@ -14,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from .agents3_proxy import Agents3RunContext, resolve_s3_engine_params
 from .identity import AgentIdentity
+from .local_environment import get_cached_environment, resolve_local_path
 
 Agents3Executor = Callable[[str], Awaitable[str]]
 
@@ -361,6 +363,26 @@ def _slugify(text: str, *, fallback: str = "document") -> str:
     return slug[:80] or fallback
 
 
+def _safe_mkdir_parent(path: Path) -> str | None:
+    """Create parent dirs; return an error message instead of raising."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return None
+    except OSError as exc:
+        env = get_cached_environment()
+        hint = ""
+        if env:
+            hint = (
+                f" Use real paths from this machine (home={env.get('home')}, "
+                f"documents={env.get('documents')})."
+            )
+        return f"Cannot create directory {path.parent}: {exc}.{hint}"
+
+
+def _local_path(raw: str) -> Path:
+    return resolve_local_path(raw, env=get_cached_environment())
+
+
 def _create_pdf_file(
     *, title: str, content: str, output_path: str | None
 ) -> tuple[bool, str]:
@@ -375,94 +397,23 @@ def _create_pdf_file(
         return False, "content is required to create a PDF"
 
     if output_path:
-        out = Path(output_path).expanduser()
+        out = _local_path(output_path)
         if out.suffix.lower() != ".pdf":
             out = out.with_suffix(".pdf")
     else:
-        base = Path.home() / "Documents"
+        env = get_cached_environment()
+        base = Path(env["documents"]) if env and env.get("documents") else Path.home() / "Documents"
         if not base.is_dir():
             base = Path(tempfile.gettempdir())
         out = base / f"{_slugify(title)}.pdf"
 
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return False, f"Cannot create output directory: {exc}"
+    mkdir_err = _safe_mkdir_parent(out)
+    if mkdir_err:
+        return False, mkdir_err
 
-    try:
-        import html
+    from .pdf_render import render_markdown_pdf
 
-        from reportlab.lib.pagesizes import LETTER
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.lib.units import inch
-        from reportlab.platypus import (
-            ListFlowable,
-            ListItem,
-            Paragraph,
-            SimpleDocTemplate,
-            Spacer,
-        )
-    except ImportError:
-        return (
-            False,
-            "reportlab is not installed. Install the hybrid extras: "
-            "pip install 'qlix[hybrid]' (or pip install reportlab).",
-        )
-
-    styles = getSampleStyleSheet()
-
-    def _md_inline(text: str) -> str:
-        esc = html.escape(text)
-        esc = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
-        esc = re.sub(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*", r"<i>\1</i>", esc)
-        return esc
-
-    story: list[Any] = []
-    if title.strip():
-        story.append(Paragraph(_md_inline(title.strip()), styles["Title"]))
-        story.append(Spacer(1, 0.2 * inch))
-
-    blocks = re.split(r"\n\s*\n", content.replace("\r\n", "\n"))
-    for block in blocks:
-        block = block.strip("\n")
-        if not block.strip():
-            continue
-        lines = block.split("\n")
-        bullet_lines = [ln for ln in lines if ln.lstrip().startswith(("- ", "* "))]
-        if bullet_lines and len(bullet_lines) == len(lines):
-            items = [
-                ListItem(Paragraph(_md_inline(ln.lstrip()[2:]), styles["BodyText"]))
-                for ln in lines
-            ]
-            story.append(ListFlowable(items, bulletType="bullet"))
-            story.append(Spacer(1, 6))
-            continue
-        if block.startswith("### "):
-            story.append(Paragraph(_md_inline(block[4:]), styles["Heading3"]))
-        elif block.startswith("## "):
-            story.append(Paragraph(_md_inline(block[3:]), styles["Heading2"]))
-        elif block.startswith("# "):
-            story.append(Paragraph(_md_inline(block[2:]), styles["Heading1"]))
-        else:
-            text = "<br/>".join(_md_inline(ln) for ln in lines)
-            story.append(Paragraph(text, styles["BodyText"]))
-        story.append(Spacer(1, 6))
-
-    try:
-        doc = SimpleDocTemplate(
-            str(out),
-            pagesize=LETTER,
-            leftMargin=0.9 * inch,
-            rightMargin=0.9 * inch,
-            topMargin=0.9 * inch,
-            bottomMargin=0.9 * inch,
-            title=title.strip() or out.stem,
-        )
-        doc.build(story)
-    except Exception as exc:
-        return False, f"PDF generation error: {exc}"
-
-    return True, f"Created PDF: {out.resolve()}"
+    return render_markdown_pdf(title=title, content=content, out=out)
 
 
 def _coerce_rows(data: Any) -> list[list[Any]] | None:
@@ -520,19 +471,19 @@ def _create_xlsx_file(
         return False, "rows is required to create a spreadsheet (list of lists, list of dicts, JSON, or CSV)"
 
     if output_path:
-        out = Path(output_path).expanduser()
+        out = _local_path(output_path)
         if out.suffix.lower() != ".xlsx":
             out = out.with_suffix(".xlsx")
     else:
-        base = Path.home() / "Documents"
+        env = get_cached_environment()
+        base = Path(env["documents"]) if env and env.get("documents") else Path.home() / "Documents"
         if not base.is_dir():
             base = Path(tempfile.gettempdir())
         out = base / f"{_slugify(title or sheet_name or 'spreadsheet')}.xlsx"
 
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return False, f"Cannot create output directory: {exc}"
+    mkdir_err = _safe_mkdir_parent(out)
+    if mkdir_err:
+        return False, mkdir_err
 
     try:
         from openpyxl import Workbook
@@ -579,8 +530,9 @@ async def _send_whatsapp_document(
 ) -> str:
     """Deliver a local file to the user's linked WhatsApp via the Qlix backend.
 
-    The backend (which holds the WhatsApp service secret) forwards the request to
-    the qlix-whatsapp-service ``/send-document`` endpoint.
+    Reads file bytes on the runner and uploads them as base64 to the backend's
+    send-file endpoint — this works for hybrid runners where the runner filesystem
+    is not accessible by the backend server.
     """
     if not file_path:
         return "[failed] file_path is required"
@@ -595,21 +547,29 @@ async def _send_whatsapp_document(
             "(missing backend_url/agent_id/runner_token)."
         )
 
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return f"[failed] Could not read file: {exc}"
+    if not data:
+        return "[failed] File is empty"
+
+    effective_name = file_name or path.name
     body: dict[str, Any] = {
-        "file_path": str(path.resolve()),
-        "file_name": file_name or path.name,
+        "file_name": effective_name,
+        "content_base64": base64.b64encode(data).decode("ascii"),
     }
     run_id = agents3_context.run_id if agents3_context else None
     if run_id:
         body["runId"] = run_id
 
-    url = f"{backend_url.rstrip('/')}/api/v1/agents/{agent_id}/tools/whatsapp/send-document"
+    url = f"{backend_url.rstrip('/')}/api/v1/agents/{agent_id}/tools/whatsapp/send-file"
     headers = {"X-QLIX-Runner-Token": runner_token, "Content-Type": "application/json"}
     try:
         import httpx
 
         def _post() -> tuple[int, str]:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=120.0) as client:
                 resp = client.post(url, headers=headers, json=body)
                 return resp.status_code, resp.text
 
@@ -619,15 +579,15 @@ async def _send_whatsapp_document(
 
     if status >= 400:
         try:
-            data = json.loads(text) if text else {}
-            err = data.get("error") if isinstance(data, dict) else None
+            payload = json.loads(text) if text else {}
+            err = payload.get("error") if isinstance(payload, dict) else None
             if isinstance(err, dict):
                 return f"[failed] {err.get('code', 'error')}: {err.get('message', text[:300])}"
         except json.JSONDecodeError:
             pass
         return f"[failed] HTTP {status}: {text[:300]}"
 
-    return f"Sent {body['file_name']} to WhatsApp."
+    return f"Sent {effective_name} to WhatsApp."
 
 
 def openai_agents3_tool_definitions(
@@ -963,7 +923,7 @@ async def _dispatch_agents3_tool(
         )
 
     if tool_id == "s3_read_file":
-        path = Path(str(params.get("path", "")))
+        path = _local_path(str(params.get("path", "")))
         if not path.is_file():
             return f"[failed] File not found: {path}"
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -973,7 +933,7 @@ async def _dispatch_agents3_tool(
         return text
 
     if tool_id == "s3_write_file":
-        path = Path(str(params.get("path", "")))
+        path = _local_path(str(params.get("path", "")))
         suffix = path.suffix.lower()
         if suffix in _BINARY_DOC_SUFFIXES:
             tool_hint = (
@@ -988,8 +948,13 @@ async def _dispatch_agents3_tool(
                 f"plain text, which produces a corrupt {suffix} the application cannot open. "
                 f"Use {tool_hint} instead."
             )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(params.get("content", "")), encoding="utf-8")
+        mkdir_err = _safe_mkdir_parent(path)
+        if mkdir_err:
+            return f"[failed] {mkdir_err}"
+        try:
+            path.write_text(str(params.get("content", "")), encoding="utf-8")
+        except OSError as exc:
+            return f"[failed] Cannot write {path}: {exc}"
         return (
             f"Wrote file: {path.resolve()}"
             " — If the user asked to send/deliver this file (e.g. on WhatsApp), "
@@ -997,7 +962,7 @@ async def _dispatch_agents3_tool(
         )
 
     if tool_id == "s3_list_dir":
-        path = Path(str(params.get("path", "")))
+        path = _local_path(str(params.get("path", "")))
         if not path.is_dir():
             return f"[failed] Not a directory: {path}"
         entries = []
@@ -1007,7 +972,7 @@ async def _dispatch_agents3_tool(
         return "\n".join(entries) if entries else "(empty directory)"
 
     if tool_id == "s3_open_file":
-        path = Path(str(params.get("path", "")))
+        path = _local_path(str(params.get("path", "")))
         mode = str(params.get("mode") or "default")
         application = str(params.get("application") or "").strip() or None
         await _emit_agents3_log(

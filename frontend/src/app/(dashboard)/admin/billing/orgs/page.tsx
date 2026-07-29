@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
 import { SectionHeading } from "@/components/qlix/section-heading";
+import { SketchBox, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getAdminBillingOrgs, type AdminBillingOrgsResponse } from "@/lib/admin-billing-api";
 import { cn } from "@/lib/utils/cn";
 
@@ -37,28 +37,38 @@ export default function AdminBillingOrgsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-[13px] text-neutral-500">Loading organizations…</p>;
-  if (error || !data) return <p className="text-[13px] text-red-500">{error ?? "Could not load organizations."}</p>;
+  if (loading) return <p className={sketchLabel}>Loading organizations…</p>;
+
+  if (error || !data) {
+    return (
+      <div className="space-y-2">
+        <p className="text-[13px] text-black">{error ?? "Could not load organizations."}</p>
+        <button type="button" onClick={() => window.location.reload()} className={sketchButton}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full space-y-6">
       <SectionHeading title="Organizations" description="Plans, balances, and month-to-date spend." />
 
-      <ReflectiveCard className="overflow-hidden rounded-xl">
+      <SketchBox className="overflow-hidden">
         <table className="w-full border-collapse text-left text-[13px]">
-          <thead className="border-b border-[--border-subtle]">
-            <tr className="qlix-glass-inset text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">
-              <th className="px-4 py-3">Organization</th>
-              <th className="px-4 py-3">Plan</th>
-              <th className="px-4 py-3">Credits</th>
-              <th className="px-4 py-3">MTD spend</th>
-              <th className="px-4 py-3">MTD successes</th>
+          <thead className="border-b border-black">
+            <tr>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Organization</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Plan</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Credits</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>MTD spend</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>MTD successes</th>
             </tr>
           </thead>
           <tbody>
             {data.organizations.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-[--text-tertiary]">
+                <td colSpan={5} className="px-4 py-8 text-black/50">
                   No organizations found.
                 </td>
               </tr>
@@ -67,36 +77,31 @@ export default function AdminBillingOrgsPage() {
                 <tr
                   key={org.id}
                   className={cn(
-                    "transition-colors hover:bg-[var(--glass-row-hover)]",
-                    idx < arr.length - 1 ? "border-b border-[--border-subtle]" : "",
+                    "transition-colors hover:bg-black/5",
+                    idx < arr.length - 1 ? "border-b border-black/20" : "",
                   )}
                 >
                   <td className="px-4 py-3">
-                    <div className="font-medium text-[--text-primary]">{org.name}</div>
-                    <div className="mt-0.5 font-mono text-[11px] text-[--text-tertiary]">{org.id}</div>
+                    <div className="font-medium text-black">{org.name}</div>
+                    <div className="mt-0.5 font-mono text-[11px] text-black/50">{org.id}</div>
                   </td>
-                  <td className="px-4 py-3 text-[--text-secondary]">{org.plan}</td>
-                  <td className="px-4 py-3 font-mono text-[--text-secondary]">
-                    {formatUsd(org.wallet.balance)}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-[--text-secondary]">
-                    {formatUsd(org.monthToDate.spend)}
-                  </td>
-                  <td className="px-4 py-3 text-[--text-secondary]">{org.monthToDate.successes.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-black">{org.plan}</td>
+                  <td className="px-4 py-3 font-mono text-black">{formatUsd(org.wallet.balance)}</td>
+                  <td className="px-4 py-3 font-mono text-black">{formatUsd(org.monthToDate.spend)}</td>
+                  <td className="px-4 py-3 text-black">{org.monthToDate.successes.toLocaleString()}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
-      </ReflectiveCard>
+      </SketchBox>
 
-      <p className="text-[12px] text-[--text-tertiary]">
+      <p className="text-[12px] text-black/50">
         Need to adjust plans/credits/rates? Next step is wiring inline actions here (admin-only).
       </p>
-      <Link href="/admin/billing/events" className="text-[13px] font-medium text-blue-400 hover:underline">
+      <Link href="/admin/billing/events" className={cn(sketchLabel, "underline underline-offset-2")}>
         Open event log →
       </Link>
     </div>
   );
 }
-

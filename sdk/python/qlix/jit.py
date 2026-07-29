@@ -8,9 +8,10 @@ Expected backend contract:
 
     POST /api/v1/jit/request
       body: { signature, signedPayload: { did, actionType, payload, timestampMs } }
-      201: { jitRequestId: str, expiresAtMs: int }
+      201: { jitRequestId: str, expiresAtMs: int, pollToken: str }
 
     GET /api/v1/jit/poll/{jitRequestId}
+      header: X-Qlix-Jit-Poll-Token: <pollToken>   # capability token from /request
       200: { status: 'pending' | 'approved' | 'denied' | 'expired',
              jitToken?: str  # one-time, only when approved
            }
@@ -72,13 +73,22 @@ class JITClient:
         request_id = response.get("jitRequestId") or response.get("jit_request_id")
         if not isinstance(request_id, str) or not request_id:
             raise PermissionDeniedError("JIT request did not return a request id")
+        poll_token = response.get("pollToken") or response.get("poll_token") or ""
+        if not poll_token:
+            raise PermissionDeniedError(
+                "JIT request did not return a pollToken — update the Qlix hybrid "
+                "runner (re-download the starter pack / reinstall the qlix wheel)."
+            )
 
-        return await self._poll(request_id)
+        return await self._poll(request_id, poll_token)
 
-    async def _poll(self, request_id: str) -> JITApproval:
+    async def _poll(self, request_id: str, poll_token: str = "") -> JITApproval:
+        headers = {"X-Qlix-Jit-Poll-Token": poll_token} if poll_token else None
         deadline = asyncio.get_event_loop().time() + self._timeout_s
         while True:
-            result = await self._http.get_json(f"/api/v1/jit/poll/{request_id}")
+            result = await self._http.get_json(
+                f"/api/v1/jit/poll/{request_id}", headers=headers
+            )
             status = result.get("status")
             if status == "approved":
                 token = result.get("jitToken") or result.get("jit_token")

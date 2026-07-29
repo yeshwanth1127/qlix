@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
+import { assertCanViewBilling } from '../lib/billingAccess.js';
 import { billingCycleFromDateUtc } from '../billings/lib/billingCycle.js';
 import { Prisma } from '@prisma/client';
 
@@ -19,6 +20,8 @@ export function createUsageRouter(): Router {
   const router = Router();
 
   router.use(authenticateUser(true));
+  // Usage/cost data is billing-sensitive: org members/admins must not see it (owner-only in orgs).
+  router.use(assertCanViewBilling);
 
   // GET /api/v1/usage/summary — agents grouped by agentId for the workspace
   router.get('/summary', async (request: Request, response: Response) => {

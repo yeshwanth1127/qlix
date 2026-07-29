@@ -1,23 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { RefreshCw, Clock, CheckCircle, XCircle, Loader2, ChevronRight } from "lucide-react";
+import { RefreshCw, Loader2, ChevronRight } from "lucide-react";
 import { cancelTeamRun, getTeamRun, type TeamRunDTO, type TeamRunEventDTO } from "@/lib/teams-api";
 import { cn } from "@/lib/utils/cn";
+import { SketchBox, SketchPageHeader, SketchRow, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 
 interface TeamRunHistoryViewProps {
   readonly teamId: string;
   readonly runs: TeamRunDTO[];
   readonly onRefresh: () => Promise<void>;
 }
-
-const STATUS_ICON: Record<string, React.ReactNode> = {
-  completed: <CheckCircle size={13} className="text-emerald-400" />,
-  failed: <XCircle size={13} className="text-red-400" />,
-  running: <Loader2 size={13} className="animate-spin text-indigo-400" />,
-  queued: <Clock size={13} className="text-white/40" />,
-  canceled: <XCircle size={13} className="text-white/30" />,
-};
 
 function durationLabel(run: TeamRunDTO): string {
   if (!run.startedAt) return "—";
@@ -73,24 +66,28 @@ export function TeamRunHistoryView({ teamId, runs, onRefresh }: TeamRunHistoryVi
 
   return (
     <div className="px-6 py-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-white/70">Run History</h3>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors disabled:opacity-40"
-        >
-          <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
-          Refresh
-        </button>
-      </div>
+      <SketchPageHeader
+        title="Run History"
+        className="mb-4"
+        actions={
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className={sketchButton}
+          >
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        }
+      />
 
       {runs.length === 0 && (
-        <p className="py-8 text-center text-xs text-white/30">No runs yet. Start a run from the Run tab.</p>
+        <p className="py-8 text-center text-xs text-black/50">No runs yet. Start a run from the Run tab.</p>
       )}
 
       {stopError && (
-        <p className="mb-3 text-xs text-red-400">{stopError}</p>
+        <p className="mb-3 text-xs text-black">{stopError}</p>
       )}
 
       <div className="space-y-2">
@@ -102,66 +99,62 @@ export function TeamRunHistoryView({ teamId, runs, onRefresh }: TeamRunHistoryVi
           const isStopping = stopping === run.id;
 
           return (
-            <div key={run.id} className="rounded-lg border border-white/10 bg-white/5 overflow-hidden">
-              <button
+            <SketchBox key={run.id} className="overflow-hidden">
+              <SketchRow
                 onClick={() => toggleExpand(run)}
-                className="w-full px-4 py-3 text-left hover:bg-white/5 transition-colors"
+                className="flex items-start gap-3 border-0"
               >
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5">{STATUS_ICON[run.status] ?? <Clock size={13} />}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="truncate text-sm text-white/80">{run.goal}</p>
-                    <div className="mt-0.5 flex items-center gap-3 text-xs text-white/30">
-                      <span>{new Date(run.createdAt).toLocaleDateString()} {new Date(run.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                      <span>·</span>
-                      <span>{durationLabel(run)}</span>
-                      {run.artifacts && Array.isArray(run.artifacts) && (
-                        <>
-                          <span>·</span>
-                          <span>{(run.artifacts as unknown[]).length} artifact{(run.artifacts as unknown[]).length !== 1 ? "s" : ""}</span>
-                        </>
-                      )}
-                    </div>
+                <span className="mt-0.5 font-serif text-[10px] uppercase text-black/50">{run.status}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-black">{run.goal}</p>
+                  <div className="mt-0.5 flex items-center gap-3 text-xs text-black/50">
+                    <span>{new Date(run.createdAt).toLocaleDateString()} {new Date(run.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    <span>·</span>
+                    <span>{durationLabel(run)}</span>
+                    {run.artifacts && Array.isArray(run.artifacts) && (
+                      <>
+                        <span>·</span>
+                        <span>{(run.artifacts as unknown[]).length} artifact{(run.artifacts as unknown[]).length !== 1 ? "s" : ""}</span>
+                      </>
+                    )}
                   </div>
-                  {canStop && (
-                    <button
-                      type="button"
-                      onClick={(e) => void handleStopRun(e, run)}
-                      disabled={isStopping}
-                      className="shrink-0 rounded border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-300 hover:bg-red-500/20 disabled:opacity-50"
-                    >
-                      {isStopping ? "Stopping…" : "Stop"}
-                    </button>
-                  )}
-                  {isExpanding
-                    ? <Loader2 size={13} className="animate-spin text-white/30" />
-                    : <ChevronRight size={13} className={cn("text-white/30 transition-transform", isExpanded && "rotate-90")} />
-                  }
                 </div>
-              </button>
+                {canStop && (
+                  <button
+                    type="button"
+                    onClick={(e) => void handleStopRun(e, run)}
+                    disabled={isStopping}
+                    className={`${sketchButton} shrink-0`}
+                  >
+                    {isStopping ? "Stopping…" : "Stop"}
+                  </button>
+                )}
+                {isExpanding
+                  ? <Loader2 size={13} className="animate-spin text-black/30" />
+                  : <ChevronRight size={13} className={cn("text-black/30 transition-transform", isExpanded && "rotate-90")} />
+                }
+              </SketchRow>
 
               {isExpanded && detail && (
-                <div className="border-t border-white/10 bg-black/20 px-4 py-3">
-                  {/* Result */}
+                <div className="border-t border-black px-4 py-3">
                   {Boolean(detail.result?.synthesis) && (
                     <div className="mb-3">
-                      <p className="mb-1 text-xs font-semibold text-emerald-400">Result</p>
-                      <p className="text-xs text-white/70 whitespace-pre-wrap leading-relaxed">
+                      <p className={`${sketchLabel} mb-1`}>Result</p>
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-black/70">
                         {String(detail.result?.synthesis ?? "")}
                       </p>
                     </div>
                   )}
 
-                  {/* Event log */}
                   {detail.events.length > 0 && (
                     <div>
-                      <p className="mb-1 text-xs font-semibold text-white/40">Event log ({detail.events.length})</p>
-                      <div className="font-mono text-xs space-y-0.5 max-h-40 overflow-y-auto">
+                      <p className={`${sketchLabel} mb-1`}>Event log ({detail.events.length})</p>
+                      <div className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-xs">
                         {detail.events.map((e) => (
-                          <div key={e.id} className="flex items-center gap-2 text-white/40">
-                            <span className="text-white/20">{e.seq.toString().padStart(3, "0")}</span>
-                            <span className="text-white/50">{e.eventType}</span>
-                            {e.agentId && <span className="text-white/25">({e.agentId.slice(0, 10)}…)</span>}
+                          <div key={e.id} className="flex items-center gap-2 text-black/50">
+                            <span className="text-black/30">{e.seq.toString().padStart(3, "0")}</span>
+                            <span className="text-black/70">{e.eventType}</span>
+                            {e.agentId && <span className="text-black/40">({e.agentId.slice(0, 10)}…)</span>}
                           </div>
                         ))}
                       </div>
@@ -169,7 +162,7 @@ export function TeamRunHistoryView({ teamId, runs, onRefresh }: TeamRunHistoryVi
                   )}
                 </div>
               )}
-            </div>
+            </SketchBox>
           );
         })}
       </div>

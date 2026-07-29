@@ -115,8 +115,8 @@ describe('buildSystemPrompt', () => {
     const narrowed = SCOPE_CATALOG.filter((s) => !s.requiresConnector);
     const prompt = buildSystemPrompt(narrowed);
     assert.ok(prompt.includes('web.read'));
-    assert.ok(!prompt.includes('email.send'));
-    assert.ok(!prompt.includes('whatsapp.send'));
+    assert.ok(!prompt.includes('  email.send —'));
+    assert.ok(!prompt.includes('  whatsapp.send —'));
   });
 
   it('marks JIT scopes with [JIT-forced]', () => {
@@ -124,8 +124,15 @@ describe('buildSystemPrompt', () => {
     assert.ok(prompt.includes('[JIT-forced]'));
   });
 
-  it('keeps the scope-selection guard against delivery-only scopes', () => {
+  it('documents MCP lead generation scopes', () => {
     const prompt = buildSystemPrompt(SCOPE_CATALOG);
-    assert.ok(prompt.includes('built-in delivery channels'));
+    assert.ok(prompt.includes('mcp.qlix-leads.gmb_search_leads'));
+    assert.ok(prompt.includes('MCP scopes'));
+  });
+
+  it('documents job apply capability', () => {
+    const prompt = buildSystemPrompt(SCOPE_CATALOG);
+    assert.ok(prompt.includes('mcp.qlix-jobs'));
+    assert.ok(prompt.includes('Greenhouse'));
   });
 });

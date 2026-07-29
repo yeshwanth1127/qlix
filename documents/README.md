@@ -3,6 +3,7 @@
 Monorepo: **`frontend/`** (Next.js) and **`backend/`** (Node.js + Express + Prisma).
 
 - Product spec: [AGENTS.md](AGENTS.md)
+- Agent tools & capabilities: [agent-capabilities.md](agent-capabilities.md)
 - Cursor rules: [.cursor/rules/](.cursor/rules/)
 
 ## Environment variables

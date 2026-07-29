@@ -3,9 +3,11 @@ import { AgentsService } from '../agents/agents.service.js';
 import { AgentsRepository } from '../agents/agents.repository.js';
 import type { AgentDTO, PermissionScope } from '../agents/agents.types.js';
 import type { DockerTeamContext } from '../cloudRunners/dockerNaming.js';
+import { writePendingTeamContext } from '../cloudRunners/pendingTeamContext.js';
 import { generateDID } from '../agents/did.js';
 import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { hasEmailConnector } from '../connectors/emailTool.service.js';
+import { GMAIL_CONNECT_SHORT } from '../connectors/connectorUserMessages.js';
 import { prisma } from '../lib/prisma.js';
 import {
   assertRunnersReady,
@@ -22,6 +24,9 @@ import type {
   TeamRunnersStatusDTO,
 } from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
+import { TeamOrchestrator } from './teamOrchestrator.js';
+import { approveLeadOutreachForTeamRun } from '../leads/leadOutreachGate.js';
+import { findLeadReviewCheckpoint, memberLeadGenStage } from '../leads/leadGenPipelineGoals.js';
 
 export class TeamNotFoundError extends Error {
   readonly code = 'not_found';
@@ -73,7 +78,35 @@ export class TeamRunnersNotReadyError extends Error {
 export class TeamEmailConnectorRequiredError extends Error {
   readonly code = 'email_connector_required';
   constructor() {
-    super('Connect Google in Connectors before running a team with email scopes');
+    super(`Gmail is not connected for this workspace. ${GMAIL_CONNECT_SHORT}`);
+  }
+}
+
+export class TeamRunNotPausedError extends Error {
+  readonly code = 'run_not_paused';
+  constructor() {
+    super('Team run is not paused awaiting lead review');
+  }
+}
+
+export class TeamRunNoLeadCheckpointError extends Error {
+  readonly code = 'no_lead_checkpoint';
+  constructor() {
+    super('No lead review checkpoint found for this run');
+  }
+}
+
+export class TeamRunAlreadyApprovedError extends Error {
+  readonly code = 'already_approved';
+  constructor() {
+    super('Lead outreach was already approved for this run');
+  }
+}
+
+export class TeamNoEnrichWorkerError extends Error {
+  readonly code = 'no_enrich_worker';
+  constructor() {
+    super('Team has no email enricher worker configured');
   }
 }
 
@@ -100,6 +133,8 @@ export class TeamsService {
   private readonly agentsRepo = new AgentsRepository();
   private readonly agentsService = new AgentsService();
   private readonly cloudProvisioner = new CloudProvisionerService();
+  private readonly defaultBackendUrl = process.env.PUBLIC_API_URL?.trim() || '';
+  private readonly autoReprovision = process.env.QLIX_TEAM_AUTO_REPROVISION === '1';
 
   async createTeam(userId: string, input: CreateTeamInput, backendBaseUrl: string): Promise<TeamDTO> {
     // Supervisor is optional at creation — assigned later via PATCH /:id/supervisor
@@ -143,13 +178,20 @@ export class TeamsService {
     if (!team) throw new TeamNotFoundError();
     const agent = await this.assertCloudAgentInOrg(agentId, orgId);
     const updated = await this.repo.setSupervisor(teamId, agentId);
-    this.cloudProvisioner.scheduleApplyTeamContext({
-      agentId,
-      teamId,
-      teamName: team.name,
+    const teamContext: DockerTeamContext = {
+      id: teamId,
+      name: team.name,
       role: 'supervisor',
-      backendUrl,
-    });
+    };
+    if (!(await this.deferTeamContextIfNeeded(agent, teamContext))) {
+      this.cloudProvisioner.scheduleApplyTeamContext({
+        agentId,
+        teamId,
+        teamName: team.name,
+        role: 'supervisor',
+        backendUrl,
+      });
+    }
     // Activate the team once it has a supervisor
     if (updated.status === 'draft') {
       await this.repo.updateStatus(teamId, 'active');
@@ -276,13 +318,20 @@ export class TeamsService {
 
     const agentCardSnapshot = buildAgentCard(agent, backendBaseUrl);
     const member = await this.repo.addMember(teamId, { ...input, agentCardSnapshot });
-    this.cloudProvisioner.scheduleApplyTeamContext({
-      agentId: input.agentId,
-      teamId,
-      teamName: team.name,
+    const teamContext: DockerTeamContext = {
+      id: teamId,
+      name: team.name,
       role: 'worker',
-      backendUrl: backendBaseUrl,
-    });
+    };
+    if (!(await this.deferTeamContextIfNeeded(agent, teamContext))) {
+      this.cloudProvisioner.scheduleApplyTeamContext({
+        agentId: input.agentId,
+        teamId,
+        teamName: team.name,
+        role: 'worker',
+        backendUrl: backendBaseUrl,
+      });
+    }
     return member;
   }
 
@@ -291,6 +340,7 @@ export class TeamsService {
     orgId: string,
     agentId: string,
     delegatedScopes: PermissionScope[],
+    backendUrl?: string,
   ): Promise<TeamMemberDTO> {
     const team = await this.repo.findByIdAndOrg(teamId, orgId);
     if (!team) throw new TeamNotFoundError();
@@ -298,7 +348,19 @@ export class TeamsService {
 
     const agent = await this.assertCloudAgentInOrg(agentId, orgId);
     this.assertDelegatedScopesValid(delegatedScopes, agent.permissionScopes);
-    return this.repo.updateMemberScopes(teamId, agentId, delegatedScopes);
+    const updated = await this.repo.updateMemberScopes(teamId, agentId, delegatedScopes);
+    // Ensure the worker container picks up new delegated scopes + latest runner runtime.
+    const url = (backendUrl || this.defaultBackendUrl).trim();
+    if (url && this.autoReprovision) {
+      this.cloudProvisioner.scheduleApplyTeamContext({
+        agentId,
+        teamId,
+        teamName: team.name,
+        role: 'worker',
+        backendUrl: url,
+      });
+    }
+    return updated;
   }
 
   async removeMember(teamId: string, orgId: string, agentId: string): Promise<void> {
@@ -344,10 +406,34 @@ export class TeamsService {
       sourceConnectorId?: string | null;
       replyChannel?: TeamRunReplyChannel;
     },
+    backendUrl?: string,
   ): Promise<TeamRunDTO> {
     const team = await this.repo.findByIdAndOrg(teamId, orgId);
     if (!team) throw new TeamNotFoundError();
     if (!team.supervisorAgentId) throw new TeamNoSupervisorError();
+
+    // Best-effort: refresh team runner containers (new runtime hash / scopes) before this run.
+    // This prevents "think-only" loops caused by stale runner images.
+    const url = (backendUrl || this.defaultBackendUrl).trim();
+    if (url && this.autoReprovision) {
+      this.cloudProvisioner.scheduleApplyTeamContext({
+        agentId: team.supervisorAgentId,
+        teamId,
+        teamName: team.name,
+        role: 'supervisor',
+        backendUrl: url,
+      });
+      for (const m of team.members ?? []) {
+        this.cloudProvisioner.scheduleApplyTeamContext({
+          agentId: m.agentId,
+          teamId,
+          teamName: team.name,
+          role: 'worker',
+          backendUrl: url,
+        });
+      }
+    }
+
     const status = await this.getRunnersStatus(teamId, orgId);
     try {
       assertRunnersReady(status);
@@ -399,7 +485,69 @@ export class TeamsService {
     return run;
   }
 
+  async approveLeadOutreach(teamId: string, runId: string, orgId: string): Promise<TeamRunDTO> {
+    const team = await this.repo.findByIdAndOrg(teamId, orgId);
+    if (!team) throw new TeamNotFoundError();
+    const run = await this.repo.findRun(runId);
+    if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
+    if (run.status !== 'paused') throw new TeamRunNotPausedError();
+    if (run.leadOutreachApprovedAt) throw new TeamRunAlreadyApprovedError();
+    if (!findLeadReviewCheckpoint(run.supervisorTrace)) throw new TeamRunNoLeadCheckpointError();
+
+    const outreachMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'outreach');
+
+    await this.repo.updateRunLeadReview(runId, {
+      leadOutreachApprovedAt: new Date(),
+      status: 'running',
+    });
+    approveLeadOutreachForTeamRun(runId, outreachMember?.agentId, run.leadCampaignId);
+
+    const refreshed = await this.repo.findRun(runId);
+    if (!refreshed) throw new TeamNotFoundError();
+
+    const orchestrator = new TeamOrchestrator();
+    void orchestrator.resumeFromCheckpoint(refreshed, team, () => {}).catch((err) => {
+      console.error(`[TeamsService] resumeFromCheckpoint failed for ${runId}:`, err);
+    });
+
+    return refreshed;
+  }
+
+  async retryLeadEnrichment(teamId: string, runId: string, orgId: string): Promise<TeamRunDTO> {
+    const team = await this.repo.findByIdAndOrg(teamId, orgId);
+    if (!team) throw new TeamNotFoundError();
+    const run = await this.repo.findRun(runId);
+    if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
+    if (run.status !== 'paused') throw new TeamRunNotPausedError();
+    if (run.leadOutreachApprovedAt) throw new TeamRunAlreadyApprovedError();
+    if (!findLeadReviewCheckpoint(run.supervisorTrace)) throw new TeamRunNoLeadCheckpointError();
+
+    const enrichMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'enrich');
+    if (!enrichMember) throw new TeamNoEnrichWorkerError();
+
+    await this.repo.updateRunStatus(runId, 'running');
+
+    const refreshed = (await this.repo.findRun(runId))!;
+    const orchestrator = new TeamOrchestrator();
+    void orchestrator.retryLeadEnrichment(refreshed, team, () => {}).catch((err) => {
+      console.error(`[TeamsService] retryLeadEnrichment failed for ${runId}:`, err);
+    });
+
+    return refreshed;
+  }
+
   // ─── Internal helpers ───────────────────────────────────────────────────────
+
+  private async deferTeamContextIfNeeded(
+    agent: AgentDTO,
+    teamContext: DockerTeamContext,
+  ): Promise<boolean> {
+    if (agent.runtime !== 'cloud') return false;
+    // Initial provision still running — attach team network on first container start instead of rebuilding.
+    if (agent.cloudRunnerId) return false;
+    await writePendingTeamContext(this.cloudProvisioner.runnerStateRoot(), agent.id, teamContext);
+    return true;
+  }
 
   private async assertAgentInOrg(agentId: string, orgId: string): Promise<AgentDTO> {
     const agent = await this.agentsRepo.findById(agentId);

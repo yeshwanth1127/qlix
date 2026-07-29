@@ -1,0 +1,176 @@
+/* ExoraPassportCard — light "luxury credential" passport cover.
+   Ivory paper, engraved guilloché rays echoing the Exora sunburst, an embossed
+   seal medallion, and a restrained pointer tilt + specular sheen. */
+
+.xp-scope {
+  --xp-px: 50%;
+  --xp-py: 42%;
+  --xp-rx: 0deg;
+  --xp-ry: 0deg;
+  --xp-hover: 0;
+  --xp-ink: #221c33;
+  --xp-purple: #8b2fc9;
+  perspective: 900px;
+}
+
+.xp-card {
+  position: relative;
+  aspect-ratio: 0.72;
+  border-radius: 20px;
+  overflow: hidden;
+  transform: rotateX(var(--xp-ry)) rotateY(var(--xp-rx));
+  transform-style: preserve-3d;
+  transition: transform 0.7s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.4s ease;
+  border: 1px solid rgba(34, 28, 51, 0.16);
+  background-color: #f7f3ea;
+  /* Paper: warm porcelain falloff + faint engraved rays from the seal center. */
+  background-image:
+    repeating-conic-gradient(
+      from 0deg at 50% 46%,
+      rgba(70, 40, 110, 0.05) 0deg 0.7deg,
+      transparent 0.7deg 5.2deg
+    ),
+    radial-gradient(115% 88% at 50% 0%, #fffdf8 0%, #f7f3ea 52%, #efe9db 100%);
+  box-shadow:
+    0 1px 1.5px rgba(28, 24, 48, 0.06),
+    0 24px 60px -24px rgba(28, 24, 48, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.xp-scope.xp-tilting .xp-card {
+  transition: box-shadow 0.4s ease;
+}
+
+.xp-scope:hover .xp-card {
+  box-shadow:
+    0 2px 3px rgba(28, 24, 48, 0.07),
+    0 34px 80px -28px rgba(28, 24, 48, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+/* Inner engraved rule — the classic double-frame of a passport cover. */
+.xp-frame {
+  position: absolute;
+  inset: 10px;
+  border-radius: 13px;
+  border: 1px solid rgba(34, 28, 51, 0.18);
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 255, 255, 0.55),
+    0 0 0 3px rgba(255, 255, 255, 0.4);
+  pointer-events: none;
+}
+
+/* Specular sheen tracking the pointer — the "expensive" glint. */
+.xp-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: calc(var(--xp-hover) * 0.9);
+  transition: opacity 0.45s ease;
+  background:
+    radial-gradient(
+      120% 90% at var(--xp-px) var(--xp-py),
+      rgba(255, 255, 255, 0.85) 0%,
+      rgba(255, 255, 255, 0) 42%
+    ),
+    linear-gradient(
+      115deg,
+      transparent 30%,
+      rgba(139, 47, 201, 0.05) 46%,
+      rgba(255, 255, 255, 0.35) 50%,
+      rgba(139, 47, 201, 0.05) 54%,
+      transparent 70%
+    );
+  background-blend-mode: soft-light, normal;
+  mix-blend-mode: soft-light;
+}
+
+/* Embossed seal medallion holding the Exora sunburst. */
+.xp-medallion {
+  position: relative;
+  width: min(180px, 52%);
+  aspect-ratio: 1;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 34%, #ffffff 0%, #fbf8f1 68%, #f1ecdf 100%);
+  border: 1px solid rgba(34, 28, 51, 0.1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -3px 8px rgba(34, 28, 51, 0.07),
+    0 14px 34px -16px rgba(76, 29, 149, 0.35);
+}
+
+/* Fine engraved ring just inside the medallion edge. */
+.xp-medallion::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 9999px;
+  border: 1px solid rgba(139, 47, 201, 0.22);
+  box-shadow: inset 0 0 0 2.5px rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+}
+
+/* Soft purple glint that drifts with the pointer. */
+.xp-medallion::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: calc(var(--xp-hover) * 0.55);
+  transition: opacity 0.45s ease;
+  background: radial-gradient(
+    55% 55% at var(--xp-px) var(--xp-py),
+    rgba(160, 70, 220, 0.16) 0%,
+    transparent 75%
+  );
+}
+
+/* The logo is a JPEG on near-white — multiply melts its background into the seal. */
+.xp-medallion img {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  mix-blend-mode: multiply;
+  filter: saturate(0.92) contrast(1.02);
+  transform: translateZ(0);
+}
+
+/* Ornamental rule: hairline — diamond — hairline. */
+.xp-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.xp-rule::before,
+.xp-rule::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(to right, transparent, rgba(34, 28, 51, 0.28), transparent);
+}
+
+.xp-rule span {
+  width: 5px;
+  height: 5px;
+  transform: rotate(45deg);
+  background: var(--xp-purple);
+  opacity: 0.75;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xp-card {
+    transform: none !important;
+    transition: none;
+  }
+  .xp-sheen,
+  .xp-medallion::after {
+    opacity: 0;
+    transition: none;
+  }
+}

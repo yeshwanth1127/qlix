@@ -30,6 +30,10 @@ export interface AdminBillingMetricsResponse {
   readonly revenueThisMonth: string;
   readonly avgPerSuccess: string;
   readonly failedAttemptsThisMonth: number;
+  readonly homepageUniqueVisitors: number;
+  readonly activeUsers: number;
+  readonly registeredAgents: number;
+  readonly activeAgents: number;
 }
 
 export interface AdminBillingOrgsResponse {

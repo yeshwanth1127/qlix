@@ -2,10 +2,10 @@ import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { authenticateUser, loadJwtSecret } from '../middleware/authenticateUser.js';
+import { authenticateUser } from '../middleware/authenticateUser.js';
+import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { prisma } from '../lib/prisma.js';
 import { roleCan } from '../lib/orgPermissions.js';
-import { verifyAgentCreateStepUpToken } from '../lib/authTokens.js';
 import {
   BrainAgentForbiddenError,
   BrainAgentLocalHostingNotSupportedError,
@@ -32,6 +32,13 @@ const upload = multer({
 export function createAiBrainRouter(): Router {
   const router = Router();
   router.use(authenticateUser(true));
+  router.use((request, response, next) => {
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      next();
+      return;
+    }
+    void requireSubscriptionAccess(request, response, next);
+  });
 
   const brainAgents = new BrainAgentService();
   const knowledge = new BrainKnowledgeService();
@@ -81,29 +88,6 @@ export function createAiBrainRouter(): Router {
       const orgId = request.auth!.orgId;
       const userId = request.auth!.userId;
       const role = request.auth!.role;
-
-      const stepUpHeader = request.headers['x-qlix-device-step-up'];
-      const stepUpToken = typeof stepUpHeader === 'string' ? stepUpHeader.trim() : '';
-      if (!stepUpToken) {
-        response.status(403).json({
-          error: {
-            code: 'step_up_required',
-            message: 'Complete device verification (WebAuthn) immediately before provisioning the brain agent',
-          },
-        });
-        return;
-      }
-      try {
-        verifyAgentCreateStepUpToken(stepUpToken, loadJwtSecret(), userId);
-      } catch {
-        response.status(403).json({
-          error: {
-            code: 'step_up_invalid_or_expired',
-            message: 'Device step-up token is missing, invalid, or expired; verify again',
-          },
-        });
-        return;
-      }
 
       const bodySchema = z.object({
         hosting: z.enum(['cloud', 'local']).default('cloud'),
@@ -483,13 +467,16 @@ export function createAiBrainRouter(): Router {
 
   const querySchema = z.object({
     question: z.string().trim().min(1).max(4000),
+    /** Optional per-query override (OpenRouter / qlix canonical id). */
+    model: z.string().trim().min(1).max(200).optional(),
   });
 
   router.post('/query', async (request: Request, response: Response) => {
     try {
       const orgId = request.auth!.orgId;
       const userId = request.auth!.userId;
-      const brain = await brainAgents.getOrgBrainAgent(orgId);
+      // Normalize first so legacy bad model ids (e.g. bare claude-sonnet-4-6) are rewritten.
+      const brain = await brainAgents.normalizeOrgBrain(orgId);
       if (!brain) {
         response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
         return;
@@ -501,18 +488,39 @@ export function createAiBrainRouter(): Router {
         return;
       }
 
+      let brainModel = brain.model;
+      if (parsed.data.model) {
+        try {
+          const normalized = normalizeQlixInferenceModelId(parsed.data.model);
+          assertModelAllowed(normalized);
+          brainModel = normalized;
+        } catch (err) {
+          response.status(400).json({
+            error: {
+              code: 'model_not_allowed',
+              message: err instanceof Error ? err.message : 'Model not allowed',
+            },
+          });
+          return;
+        }
+      }
+
       const result = await queryService.queryBrain({
         userId,
         orgId,
         brainAgentId: brain.id,
-        brainModel: brain.model,
+        brainModel,
         question: parsed.data.question,
       });
 
       response.json(result);
     } catch (err: unknown) {
       console.error('ai-brain/query', err);
-      response.status(500).json({ error: { code: 'query_failed', message: 'Failed to query brain' } });
+      const message =
+        err instanceof Error && err.message.trim().length > 0 && err.message.length < 240
+          ? err.message
+          : 'Failed to query brain';
+      response.status(500).json({ error: { code: 'query_failed', message } });
     }
   });
 
