@@ -92,7 +92,7 @@ export function MobileDrawer({
                 href={item.href}
                 onClick={onClose}
                 className={cn(
-                  "flex items-center gap-2.5 text-[13px] transition-colors duration-150",
+                  "flex items-center gap-2.5 text-[13px] font-bold transition-colors duration-150",
                   org ? "px-3 py-2" : "rounded-md px-2.5 py-2",
                   org && active
                     ? "border-l-2 border-blue-500 bg-[--bg-active] font-medium text-white"

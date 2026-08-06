@@ -4,49 +4,52 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/components/qlix/session-context";
 import { SectionHeading } from "@/components/qlix/section-heading";
 import { MetricCard } from "@/components/qlix/metric-card";
+import { UsageCurrencyToggle } from "@/components/qlix/usage/UsageCurrencyToggle";
 import { SketchBox, SketchSection, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getUsageSummary, type UsageSummaryItem } from "@/lib/usage-api";
-import { CurrencyToggle, useDisplayCurrency } from "@/components/qlix/currency-context";
+import { formatUsageCost, type UsageDisplayCurrency } from "@/lib/billing-display-money";
 import { cn } from "@/lib/utils/cn";
 
 export default function OrganizationUsagePage() {
   const { session, loading: sessionLoading } = useSession();
-  const { formatUsdCogs } = useDisplayCurrency();
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [currency, setCurrency] = useState<UsageDisplayCurrency>("USD");
 
   useEffect(() => {
-    if (sessionLoading) return;
-    if (!session) {
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    getUsageSummary()
-      .then((res) => {
-        if (!res) {
-          setError("Could not load usage (try signing in again).");
+    if (sessionLoading || !session) return;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      getUsageSummary()
+        .then((res) => {
+          if (!res) {
+            setError("Could not load usage (try signing in again).");
+            setSummary([]);
+            return;
+          }
+          setSummary(res.summary);
+        })
+        .catch(() => {
+          setError("Network error");
           setSummary([]);
-          return;
-        }
-        setSummary(res.summary);
-      })
-      .catch(() => {
-        setError("Network error");
-        setSummary([]);
-      })
-      .finally(() => setLoading(false));
+        })
+        .finally(() => setLoading(false));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [session, sessionLoading]);
 
-  if (sessionLoading || loading) {
+  if (sessionLoading) {
     return <p className={sketchLabel}>Loading usage…</p>;
   }
 
   if (!session) {
     return <p className={sketchLabel}>Please sign in again</p>;
+  }
+
+  if (loading) {
+    return <p className={sketchLabel}>Loading usage…</p>;
   }
 
   if (error) {
@@ -66,20 +69,18 @@ export default function OrganizationUsagePage() {
 
   return (
     <div className="w-full space-y-8">
-      <header className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <SectionHeading
-            title="Usage"
-            description={`Token consumption and inference costs for ${session.organization.name}.`}
-          />
-          <CurrencyToggle />
-        </div>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <SectionHeading
+          title="Usage"
+          description={`Token consumption and inference costs for ${session.organization.name}.`}
+        />
+        <UsageCurrencyToggle value={currency} onChange={setCurrency} />
       </header>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <MetricCard label="Total runs" value={totalRuns.toLocaleString()} subtext="This month" />
         <MetricCard label="Total tokens" value={totalTokens.toLocaleString()} subtext="Input + output" />
-        <MetricCard label="Inference cost" value={formatUsdCogs(totalCost.toString())} subtext="This month" />
+        <MetricCard label="Inference cost" value={formatUsageCost(totalCost, currency)} subtext="This month" />
       </div>
 
       <SketchSection title="Agents">
@@ -120,7 +121,7 @@ export default function OrganizationUsagePage() {
                     <td className="px-4 py-3 tabular-nums text-black">{row.totalRuns.toLocaleString()}</td>
                     <td className="px-4 py-3 tabular-nums text-black">{row.promptTokens.toLocaleString()}</td>
                     <td className="px-4 py-3 tabular-nums text-black">{row.completionTokens.toLocaleString()}</td>
-                    <td className="px-4 py-3 font-mono text-black">{formatUsdCogs(row.totalCostUsd)}</td>
+                    <td className="px-4 py-3 font-mono text-black">{formatUsageCost(row.totalCostUsd, currency)}</td>
                   </tr>
                 ))}
               </tbody>

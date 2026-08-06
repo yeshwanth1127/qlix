@@ -87,6 +87,32 @@ function chunkWhere(
 }
 
 export class BrainQueryService {
+  private async recordUsage(input: {
+    brainAgentId: string;
+    userId: string;
+    orgId: string;
+    model: string;
+    provider?: string | null;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    totalCostUsd: number;
+  }): Promise<void> {
+    await prisma.brainUsage.create({
+      data: {
+        brainAgentId: input.brainAgentId,
+        userId: input.userId,
+        orgId: input.orgId,
+        model: input.model,
+        provider: input.provider ?? null,
+        promptTokens: input.promptTokens,
+        completionTokens: input.completionTokens,
+        totalTokens: input.totalTokens,
+        totalCostUsd: input.totalCostUsd,
+      },
+    });
+  }
+
   /** Called after ingest — fire-and-forget from ingest handler. */
   async embedAndStoreChunks(orgId: string, documentId: string): Promise<void> {
     const chunks = await prisma.brainKnowledgeChunk.findMany({
@@ -203,6 +229,9 @@ export class BrainQueryService {
     writeAudit?: boolean;
   }): Promise<{ answer: string; citations: BrainQueryCitation[]; contextBlock?: string }> {
     const queryResult = await openrouterEmbeddings(input.question, EMBEDDING_MODEL);
+    const embeddingPromptTokens = Number(queryResult.usage?.prompt_tokens) || 0;
+    const embeddingTotalTokens = Number(queryResult.usage?.total_tokens) || embeddingPromptTokens;
+    const embeddingCost = Number(queryResult.usage?.total_cost ?? queryResult.usage?.cost) || 0;
     const scored = await this.retrieveTopChunks({
       orgId: input.orgId,
       questionEmbedding: queryResult.embedding,
@@ -214,6 +243,16 @@ export class BrainQueryService {
         where: chunkWhere(input.orgId, input.collectionIds),
       });
       if (any === 0) {
+        await this.recordUsage({
+          brainAgentId: input.brainAgentId,
+          userId: input.userId,
+          orgId: input.orgId,
+          model: queryResult.model,
+          promptTokens: embeddingPromptTokens,
+          completionTokens: 0,
+          totalTokens: embeddingTotalTokens,
+          totalCostUsd: embeddingCost,
+        });
         return {
           answer:
             'No embedded knowledge found. Ingest documents first — embeddings process in the background after ingest.',
@@ -221,6 +260,16 @@ export class BrainQueryService {
           contextBlock: '',
         };
       }
+      await this.recordUsage({
+        brainAgentId: input.brainAgentId,
+        userId: input.userId,
+        orgId: input.orgId,
+        model: queryResult.model,
+        promptTokens: embeddingPromptTokens,
+        completionTokens: 0,
+        totalTokens: embeddingTotalTokens,
+        totalCostUsd: embeddingCost,
+      });
       return {
         answer: 'No relevant knowledge found for your question.',
         citations: [],
@@ -248,6 +297,16 @@ export class BrainQueryService {
         },
       }));
       const agentContextBlock = this.buildContextBlocks(trimmed).join('\n\n---\n\n');
+      await this.recordUsage({
+        brainAgentId: input.brainAgentId,
+        userId: input.userId,
+        orgId: input.orgId,
+        model: queryResult.model,
+        promptTokens: embeddingPromptTokens,
+        completionTokens: 0,
+        totalTokens: embeddingTotalTokens,
+        totalCostUsd: embeddingCost,
+      });
       if (input.writeAudit !== false) {
         await appendBrainActionLog({
           brainAgentId: input.brainAgentId,
@@ -283,6 +342,23 @@ export class BrainQueryService {
       temperature: 0.2,
       max_tokens: 1024,
       stream: false,
+    });
+
+    const completionPromptTokens = Number(llmResult.usage?.prompt_tokens) || 0;
+    const completionTokens = Number(llmResult.usage?.completion_tokens) || 0;
+    const completionTotalTokens =
+      Number(llmResult.usage?.total_tokens) || completionPromptTokens + completionTokens;
+    const completionCost = Number(llmResult.usage?.total_cost ?? llmResult.usage?.cost) || 0;
+    await this.recordUsage({
+      brainAgentId: input.brainAgentId,
+      userId: input.userId,
+      orgId: input.orgId,
+      model,
+      provider: llmResult.provider,
+      promptTokens: embeddingPromptTokens + completionPromptTokens,
+      completionTokens,
+      totalTokens: embeddingTotalTokens + completionTotalTokens,
+      totalCostUsd: embeddingCost + completionCost,
     });
 
     if (input.writeAudit !== false) {

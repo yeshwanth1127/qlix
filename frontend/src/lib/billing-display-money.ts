@@ -89,3 +89,23 @@ export function formatUsdAsCurrency(
   if (currency === 'USD') return formatMoney(usd, 'USD');
   return formatMoney(usdToInr(usd, inrPerUsd), 'INR');
 }
+
+export type UsageDisplayCurrency = DisplayCurrency;
+
+const configuredUsdInrRate = Number(process.env.NEXT_PUBLIC_BILLING_USD_INR_RATE ?? "83");
+export const USD_INR_DISPLAY_RATE =
+  Number.isFinite(configuredUsdInrRate) && configuredUsdInrRate > 0 ? configuredUsdInrRate : 83;
+
+/** Convert OpenRouter's USD inference cost for display without changing stored billing data. */
+export function formatUsageCost(usdAmount: string | number, currency: UsageDisplayCurrency): string {
+  const amount = Number(usdAmount);
+  if (!Number.isFinite(amount)) return currency === "USD" ? `$${usdAmount}` : `₹${usdAmount}`;
+  if (currency === "INR") {
+    return (amount * USD_INR_DISPLAY_RATE).toLocaleString("en-IN", {
+      style: "currency",
+      currency: "INR",
+      maximumFractionDigits: 4,
+    });
+  }
+  return formatUsd(String(amount));
+}

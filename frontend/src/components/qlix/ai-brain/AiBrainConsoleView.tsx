@@ -10,8 +10,6 @@ import {
   Plus,
   RefreshCw,
   ScrollText,
-  Search,
-  Shield,
 } from "lucide-react";
 import { useSession } from "@/components/qlix/session-context";
 import { cn } from "@/lib/utils/cn";
@@ -27,31 +25,14 @@ import Orb from "./Orb";
 import { BrainOrbChat } from "./BrainOrbChat";
 import {
   createAiBrainCollection,
-  getAiBrainPolicySignals,
   getAiBrainStatus,
-  getOpenRouterModelCatalog,
   ingestAiBrainDocument,
   ingestAiBrainDocumentFromFile,
   postAiBrainConsoleOpen,
-  postAiBrainSimulatePolicy,
-  queryAiBrain,
-  updateAiBrainModel,
-  type AiBrainPolicySignalsResponse,
-  type AiBrainQueryResponse,
   type AiBrainStatusResponse,
-  type OpenRouterCatalogModelOption,
 } from "@/lib/ai-brain-api";
 import { canManageBrain } from "@/lib/org-permissions";
 import { deriveOrgBrainDisplayStatus } from "@/components/qlix/agents/agentStatus";
-
-function formatTime(ms: number): string {
-  try {
-    const d = new Date(ms);
-    return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
-  } catch {
-    return String(ms);
-  }
-}
 
 function formatTraceClock(ms: number): string {
   try {
@@ -73,7 +54,6 @@ interface TraceEntry {
 
 const btnPrimary = sketchButton;
 const btnSecondary = sketchButton;
-const btnDangerOutline = sketchButton;
 const fieldBase = sketchInput;
 const bentoCard = "border border-black bg-white overflow-hidden flex flex-col";
 
@@ -100,11 +80,12 @@ function BentoHeader({
   );
 }
 
-function traceToneClass(_tone: TraceTone): string {
+function traceToneClass(tone: TraceTone): string {
+  void tone;
   return "text-black/70";
 }
 
-type SectionId = "brain" | "ask" | "knowledge" | "policy" | "trace";
+type SectionId = "brain" | "knowledge" | "trace";
 
 export function AiBrainConsoleView() {
   const pathname = usePathname();
@@ -115,7 +96,6 @@ export function AiBrainConsoleView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<AiBrainStatusResponse | null>(null);
-  const [policy, setPolicy] = useState<AiBrainPolicySignalsResponse | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [brainChatOpen, setBrainChatOpen] = useState(false);
 
@@ -127,44 +107,12 @@ export function AiBrainConsoleView() {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [ingestProgress, setIngestProgress] = useState<{ done: number; total: number; currentName: string } | null>(null);
 
-  const [queryInput, setQueryInput] = useState("");
-  const [queryResult, setQueryResult] = useState<AiBrainQueryResponse | null>(null);
-  const [queryError, setQueryError] = useState<string | null>(null);
-
-  const [modelInput, setModelInput] = useState("");
-  const [modelSaveError, setModelSaveError] = useState<string | null>(null);
-  const [openRouterModels, setOpenRouterModels] = useState<readonly OpenRouterCatalogModelOption[]>([]);
-  const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
-  const [openRouterModelsError, setOpenRouterModelsError] = useState<string | null>(null);
-
   const [trace, setTrace] = useState<readonly TraceEntry[]>([]);
 
   const [activeSection, setActiveSection] = useState<SectionId>("brain");
 
   const role = session?.user.role ?? "member";
   const manageBrain = canManageBrain(role);
-
-  const loadOpenRouterModels = useCallback(async () => {
-    setOpenRouterModelsLoading(true);
-    setOpenRouterModelsError(null);
-    const res = await getOpenRouterModelCatalog();
-    setOpenRouterModelsLoading(false);
-    if (!res.ok) {
-      setOpenRouterModelsError(res.message);
-      setOpenRouterModels([]);
-      return;
-    }
-    setOpenRouterModels(res.models);
-  }, []);
-
-  const selectedOpenRouterCatalogId = useMemo(() => {
-    const t = modelInput.trim();
-    if (!t) return "";
-    const byQlix = openRouterModels.find((m) => m.qlixModelId === t);
-    if (byQlix) return byQlix.id;
-    const stripped = t.replace(/^openrouter\//i, "");
-    return openRouterModels.some((m) => m.id === stripped) ? stripped : "";
-  }, [modelInput, openRouterModels]);
 
   const pushTrace = useCallback((tone: TraceTone, label: string, detail: string) => {
     setTrace((prev) => {
@@ -182,7 +130,7 @@ export function AiBrainConsoleView() {
   const refreshAll = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const [s, p] = await Promise.all([getAiBrainStatus(), getAiBrainPolicySignals()]);
+    const s = await getAiBrainStatus();
     if (!s.ok) {
       setError(s.message);
       setStatus(null);
@@ -194,16 +142,6 @@ export function AiBrainConsoleView() {
         return cols[0]?.id ?? "";
       });
     }
-    if (!p.ok) {
-      setPolicy(null);
-      if (s.ok) {
-        setError(p.message);
-      } else {
-        setError(`${s.message} ${p.message}`.trim());
-      }
-    } else {
-      setPolicy(p.data);
-    }
     setLoading(false);
   }, []);
 
@@ -214,21 +152,6 @@ export function AiBrainConsoleView() {
       void refreshAll();
     });
   }, [session, sessionLoading, refreshAll]);
-
-  useEffect(() => {
-    const nextModel = status?.brain?.queryModel;
-    if (!nextModel) return;
-    queueMicrotask(() => {
-      setModelInput(nextModel);
-    });
-  }, [status?.brain?.queryModel]);
-
-  useEffect(() => {
-    if (sessionLoading || !manageBrain || !status?.brain) return;
-    queueMicrotask(() => {
-      void loadOpenRouterModels();
-    });
-  }, [sessionLoading, manageBrain, status?.brain?.id, loadOpenRouterModels]);
 
   const onCreateCollection = async () => {
     if (!collectionName.trim()) return;
@@ -266,7 +189,7 @@ export function AiBrainConsoleView() {
           pushTrace("success", "INGEST", `${file.name} · ${res.chunkCount} chunk(s)`);
         } else {
           errors.push(`${file.name}: ${res.message}`);
-          pushTrace("error" as any, "INGEST", `Failed: ${file.name} — ${res.message}`);
+          pushTrace("danger", "INGEST", `Failed: ${file.name} — ${res.message}`);
         }
       }
       setIngestProgress(null);
@@ -291,54 +214,8 @@ export function AiBrainConsoleView() {
     }
   };
 
-  const onQuery = async () => {
-    if (!queryInput.trim()) return;
-    setBusyKey("query");
-    setQueryError(null);
-    setQueryResult(null);
-    pushTrace("accent", "SEARCH", `Retrieving for: "${queryInput.trim().slice(0, 64)}${queryInput.trim().length > 64 ? "…" : ""}"`);
-    const res = await queryAiBrain(queryInput.trim());
-    setBusyKey(null);
-    if (!res.ok) {
-      setQueryError(res.message);
-      pushTrace("danger", "FAILED", res.message);
-      return;
-    }
-    setQueryResult(res.data);
-    pushTrace(
-      "success",
-      "RETRIEVED",
-      res.data.citations.length === 0 ? "No citations returned" : `${res.data.citations.length} source excerpt(s) attached`,
-    );
-    pushTrace("accent", "SYNTHESIS", "Answer generated from knowledge + model");
-  };
-
-  const onSaveModel = async () => {
-    if (!modelInput.trim()) return;
-    setBusyKey("model");
-    setModelSaveError(null);
-    const res = await updateAiBrainModel(modelInput.trim());
-    setBusyKey(null);
-    if (!res.ok) {
-      setModelSaveError(res.message);
-      return;
-    }
-    pushTrace("success", "MODEL", "Query model updated.");
-    await refreshAll();
-  };
-
-  const onSimulate = async (violation: boolean) => {
-    setBusyKey(violation ? "sim-block" : "sim-ok");
-    setError(null);
-    const res = await postAiBrainSimulatePolicy(violation);
-    setBusyKey(null);
-    if (!res.ok && res.message) setError(res.message);
-    pushTrace(violation ? "warning" : "muted", "POLICY_SIM", violation ? "Simulated blocked event" : "Simulated allowed event");
-    await refreshAll();
-  };
-
   const onRefresh = async () => {
-    pushTrace("muted", "REFRESH", "Reloaded brain status and policy signals.");
+    pushTrace("muted", "REFRESH", "Reloaded brain status.");
     await refreshAll();
   };
 
@@ -355,22 +232,10 @@ export function AiBrainConsoleView() {
         onClick: () => setActiveSection("brain"),
       },
       {
-        icon: <Search size={20} strokeWidth={1.5} />,
-        label: "Ask",
-        active: activeSection === "ask",
-        onClick: () => setActiveSection("ask"),
-      },
-      {
         icon: <Database size={20} strokeWidth={1.5} />,
         label: "Knowledge",
         active: activeSection === "knowledge",
         onClick: () => setActiveSection("knowledge"),
-      },
-      {
-        icon: <Shield size={20} strokeWidth={1.5} />,
-        label: "Policy & model",
-        active: activeSection === "policy",
-        onClick: () => setActiveSection("policy"),
       },
       {
         icon: <ScrollText size={20} strokeWidth={1.5} />,
@@ -447,118 +312,55 @@ export function AiBrainConsoleView() {
 
       <div className="space-y-6">
         {/* Brain — Orb is the identity / presence */}
-        {activeSection === "brain" ? (
-          <section className="flex min-h-[min(520px,70dvh)] flex-col items-center justify-center px-4 py-12">
+        <section
+          className={cn(
+            "min-h-[min(520px,70dvh)] flex-col items-center justify-center px-4 py-12",
+            activeSection === "brain" ? "flex" : "hidden",
+          )}
+        >
             {!brain ? (
               <p className="text-[13px] text-black/50">Brain agent unavailable.</p>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={() => setBrainChatOpen(true)}
-                  aria-label="Chat with exa"
-                  aria-expanded={brainChatOpen}
-                  className="group relative size-[min(340px,72vw)] overflow-hidden rounded-full border border-black bg-white transition-transform duration-300 hover:scale-[1.02] active:scale-[0.99]"
-                >
-                  <Orb
-                    hue={0}
-                    hoverIntensity={0.45}
-                    rotateOnHover
-                    forceHoverState={brainChatOpen}
-                    backgroundColor="#ffffff"
-                  />
-                </button>
-                <p className="mt-8 font-serif text-[12px] uppercase tracking-[0.22em] text-black">
-                  {brain.name || "exa"}
-                </p>
-                <p className="mt-2 max-w-sm text-center text-[13px] leading-relaxed text-black/55">
-                  {loading || sessionLoading
-                    ? "Loading…"
-                    : `${totalDocs} document${totalDocs === 1 ? "" : "s"} indexed${
-                        brainDisplayStatus ? ` · ${brainDisplayStatus}` : ""
-                      }`}
-                </p>
-                <p className="mt-1 text-[11px] text-black/40">Click the orb to ask</p>
+                <BrainOrbChat
+                  open={brainChatOpen}
+                  onOpenChange={setBrainChatOpen}
+                  hideLauncher
+                  embedded
+                />
+                {!brainChatOpen ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setBrainChatOpen(true)}
+                      aria-label="Chat with exa"
+                      aria-expanded={brainChatOpen}
+                      className="group relative size-[min(340px,72vw)] overflow-hidden rounded-full border border-black bg-white transition-transform duration-300 hover:scale-[1.02] active:scale-[0.99]"
+                    >
+                      <Orb
+                        hue={0}
+                        hoverIntensity={0.45}
+                        rotateOnHover
+                        forceHoverState={brainChatOpen}
+                        backgroundColor="#ffffff"
+                      />
+                    </button>
+                    <p className="mt-8 font-serif text-[12px] uppercase tracking-[0.22em] text-black">
+                      {brain.name || "exa"}
+                    </p>
+                    <p className="mt-2 max-w-sm text-center text-[13px] leading-relaxed text-black/55">
+                      {loading || sessionLoading
+                        ? "Loading…"
+                        : `${totalDocs} document${totalDocs === 1 ? "" : "s"} indexed${
+                            brainDisplayStatus ? ` · ${brainDisplayStatus}` : ""
+                          }`}
+                    </p>
+                    <p className="mt-1 text-[11px] text-black/40">Click the orb to ask</p>
+                  </>
+                ) : null}
               </>
             )}
-          </section>
-        ) : null}
-
-        {/* Ask your knowledge */}
-        {activeSection === "ask" ? (
-        <section className={cn(bentoCard)} style={{ animationDelay: "40ms" }}>
-          <BentoHeader title="Ask your knowledge" tint="cyan" icon={<Brain className="size-[18px]" strokeWidth={1.25} />} />
-        <div className="p-4">
-          {!brain ? (
-            <p className="text-[13px] text-black/50">Brain agent unavailable.</p>
-          ) : (
-            <>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input
-                  value={queryInput}
-                  onChange={(e) => setQueryInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void onQuery();
-                    }
-                  }}
-                  placeholder="Ask a question against ingested documents…"
-                  className={cn(fieldBase, "sm:flex-1")}
-                />
-                <button
-                  type="button"
-                  disabled={busyKey !== null || !queryInput.trim()}
-                  onClick={() => void onQuery()}
-                  className={cn(btnPrimary, "sm:shrink-0")}
-                >
-                  {busyKey === "query" ? (
-                    <>
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                      Working…
-                    </>
-                  ) : (
-                    "Ask"
-                  )}
-                </button>
-              </div>
-              {queryError ? <p className="mt-3 text-[13px] text-black">{queryError}</p> : null}
-              {queryResult ? (
-                <div className="mt-5 space-y-4 border-t border-black pt-5">
-                  <div className="rounded-lg border border-black bg-white px-4 py-3 text-[13px] leading-relaxed text-black">
-                    <p className="whitespace-pre-wrap">{queryResult.answer}</p>
-                  </div>
-                  {queryResult.citations.length > 0 ? (
-                    <div>
-                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-black/50">
-                        Sources
-                      </p>
-                      <ul className="space-y-2">
-                        {queryResult.citations.map((c, i) => (
-                          <li
-                            key={`${c.documentId}-${c.chunkOrdinal}`}
-                            className="rounded-lg border border-black bg-white px-3 py-2 transition-colors hover:border-black"
-                          >
-                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
-                              <span className="font-mono text-black/50">[{i + 1}]</span>
-                              <span className="font-medium text-black/70">{c.documentTitle}</span>
-                              <span className="text-black/50">· {c.collectionName}</span>
-                            </div>
-                            <p className="mt-1 line-clamp-2 font-mono text-[11px] leading-snug text-black/50">
-                              {c.excerpt}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
         </section>
-        ) : null}
 
         {/* Retrieval trace */}
         {activeSection === "trace" ? (
@@ -711,6 +513,7 @@ export function AiBrainConsoleView() {
                       key={fileInputKey}
                       type="file"
                       multiple
+                      accept=".pdf,.docx,.xls,.xlsx,.ods,.txt,.md,.csv,.tsv,.json,.jsonl,.ndjson,.ipynb,.html,.htm,.xml,.svg,.yaml,.yml,.rtf,.log,.sql,.js,.jsx,.ts,.tsx,.py,.java,.c,.cc,.cpp,.h,.hpp,.go,.rs,.rb,.php,.swift,.kt,.kts,.scala,.lua,.pl,.css,.scss,.less,.sh,.bash,.env,.toml,.ini,.conf,.config,.properties,.rst,.tex,.srt,.vtt,.eml,.ics,text/*,application/json,application/pdf"
                       className="sr-only"
                       onChange={(e) => {
                         const picked = Array.from(e.target.files ?? []);
@@ -721,7 +524,7 @@ export function AiBrainConsoleView() {
                       }}
                     />
                     <span className="text-black font-medium">Choose files</span>
-                    <span>or drag &amp; drop — PDF, Word, Excel, TXT</span>
+                    <span>or drag &amp; drop — documents, spreadsheets, JSON, CSV, Markdown, HTML, XML, YAML, code, and text</span>
                     {ingestFiles.length > 0 && (
                       <span className="ml-auto text-black/70 font-medium">{ingestFiles.length} file{ingestFiles.length !== 1 ? "s" : ""} selected</span>
                     )}
@@ -802,206 +605,8 @@ export function AiBrainConsoleView() {
         </section>
         ) : null}
 
-        {/* Policy & model */}
-        {activeSection === "policy" ? (
-        <section className={cn(bentoCard)} style={{ animationDelay: "100ms" }}>
-          <BentoHeader
-            title="Policy signals & query model"
-            tint="emerald"
-            icon={<Shield className="size-[18px]" strokeWidth={1.25} />}
-          />
-          <div className="space-y-6 p-4 md:p-5">
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-black">Workspace scope</p>
-              <p className="text-[13px] text-black/70">
-                Default posture: <span className="font-medium text-black">Exora Layer 3 + 5</span>
-                {status?.scope.connectorsDeferred ? (
-                  <span className="text-black/50"> · External connectors stay off until Layer 4 is in scope.</span>
-                ) : null}
-              </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex items-start justify-between gap-3 rounded-lg border border-black bg-white px-3 py-3">
-                <div>
-                  <div className="text-xs font-medium text-black">Audit attribution</div>
-                  <div className="mt-0.5 text-[10px] text-black/50">
-                    brain.query and ingest events write to your org audit ledger.
-                  </div>
-                </div>
-                <span className="shrink-0 rounded-full bg-[--success-subtle] px-2 py-0.5 text-[10px] font-medium text-[--success]">
-                  On
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3 rounded-lg border border-black bg-white px-3 py-3">
-                <div>
-                  <div className="text-xs font-medium text-black">Citation excerpts</div>
-                  <div className="mt-0.5 text-[10px] text-black/50">
-                    Answers include source snippets when retrieval matches chunks.
-                  </div>
-                </div>
-                <span className="shrink-0 rounded-full bg-[--accent-subtle] px-2 py-0.5 text-[10px] font-medium text-black">
-                  RAG
-                </span>
-              </div>
-            </div>
-
-            {!policy ? (
-              <p className="text-[13px] text-black/50">Could not load policy signals.</p>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-[13px] text-black/70">{policy.auditNote}</p>
-                {policy.violations.length === 0 ? (
-                  <p className="text-[13px] text-black/50">No blocked or flagged events in this window.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {policy.violations.map((v) => (
-                      <li
-                        key={v.id}
-                        className="flex gap-3 rounded-lg border border-black bg-white px-3 py-2.5 text-[13px] text-black/70"
-                      >
-                        <span className="text-black">●</span>
-                        <span>
-                          <span
-                            className={cn(
-                              "mr-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
-                              v.status === "blocked" && "bg-[--warning-subtle] text-[--warning]",
-                              v.status === "flagged" && "bg-[--danger-subtle] text-black",
-                              v.status !== "blocked" && v.status !== "flagged" && "bg-[--neutral-subtle] text-black/70",
-                            )}
-                          >
-                            {v.status}
-                          </span>
-                          {v.preview}
-                          <span className="mt-1 block font-mono text-[10px] text-black/50">
-                            {formatTime(v.timestampMs)} · {v.actionType}
-                          </span>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            {manageBrain && brain ? (
-              <div className="space-y-2 border-t border-black pt-6">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-xs font-medium text-black/70">Query model (OpenRouter)</label>
-                  <button
-                    type="button"
-                    onClick={() => void loadOpenRouterModels()}
-                    disabled={openRouterModelsLoading}
-                    className={cn(btnSecondary, "py-1.5 text-[10px]")}
-                  >
-                    <RefreshCw className={cn("size-3.5", openRouterModelsLoading && "animate-spin")} aria-hidden />
-                    Refresh catalog
-                  </button>
-                </div>
-                <p className="text-[10px] leading-relaxed text-black/50">
-                  Dropdown is loaded live from OpenRouter&apos;s <span className="font-mono">GET /models</span> (
-                  <span className="font-mono">id</span> = exact string their API accepts). Qlix stores the canonical{" "}
-                  <span className="font-mono">openrouter/…</span> form when you save.
-                </p>
-                {openRouterModelsError ? (
-                  <p className="text-[12px] text-amber-600 dark:text-amber-400">{openRouterModelsError}</p>
-                ) : null}
-                <select
-                  className={cn(
-                    fieldBase,
-                    "!text-black bg-white [color-scheme:light] dark:!text-black dark:bg-white",
-                  )}
-                  disabled={openRouterModelsLoading || openRouterModels.length === 0}
-                  value={selectedOpenRouterCatalogId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (!id) return;
-                    const row = openRouterModels.find((m) => m.id === id);
-                    if (row) setModelInput(row.qlixModelId);
-                  }}
-                >
-                  <option className="bg-white text-black" value="">
-                    {openRouterModelsLoading
-                      ? "Loading models from OpenRouter…"
-                      : openRouterModels.length === 0
-                        ? "No models — configure OPENROUTER_API_KEY on the server"
-                        : "Choose model from catalog…"}
-                  </option>
-                  {openRouterModels.map((m) => (
-                    <option key={m.id} className="bg-white text-black" value={m.id} title={m.id}>
-                      {m.name} — {m.id}
-                    </option>
-                  ))}
-                </select>
-                <label className="text-[10px] font-medium uppercase tracking-wide text-black/50">
-                  Canonical id (editable / custom)
-                </label>
-                <div className="rounded-lg border border-black bg-white p-3 font-mono text-[12px] text-black/70">
-                  <textarea
-                    value={modelInput}
-                    onChange={(e) => setModelInput(e.target.value)}
-                    rows={2}
-                    placeholder="openrouter/provider/model"
-                    className="min-h-[56px] w-full resize-y border-0 bg-transparent outline-none placeholder:text-black/50"
-                  />
-                </div>
-                {modelInput.trim() && !selectedOpenRouterCatalogId ? (
-                  <p className="text-[10px] text-black/50">
-                    Value is not in the catalog — it will still save if allowed by model policy.
-                  </p>
-                ) : null}
-                {modelSaveError ? <p className="text-[12px] text-black">{modelSaveError}</p> : null}
-              </div>
-            ) : null}
-          </div>
-          {manageBrain && brain ? (
-            <div className="flex flex-wrap justify-end gap-2 border-t border-black bg-white px-3 py-3 md:px-4">
-              <button
-                type="button"
-                className="px-3 py-1.5 text-[11px] text-black/50 transition-colors hover:text-black"
-                onClick={() => {
-                  setModelInput(status?.brain?.queryModel ?? "");
-                  setModelSaveError(null);
-                }}
-              >
-                Discard model edits
-              </button>
-              <button
-                type="button"
-                disabled={busyKey !== null || !modelInput.trim() || modelInput.trim() === status?.brain?.queryModel}
-                onClick={() => void onSaveModel()}
-                className={btnPrimary}
-              >
-                {busyKey === "model" ? "Saving…" : "Save query model"}
-              </button>
-              <button type="button" disabled={busyKey !== null} onClick={() => void onSimulate(false)} className={btnSecondary}>
-                Simulate allow
-              </button>
-              <button type="button" disabled={busyKey !== null} onClick={() => void onSimulate(true)} className={btnDangerOutline}>
-                Simulate block
-              </button>
-            </div>
-          ) : null}
-        </section>
-        ) : null}
       </div>
 
-      <BrainOrbChat
-        disabled={!brain}
-        open={brainChatOpen}
-        onOpenChange={setBrainChatOpen}
-        hideLauncher={activeSection === "brain"}
-        defaultModel={brain?.queryModel}
-        canPersistModel={manageBrain}
-        onModelPersisted={(model) => {
-          setModelInput(model);
-          setStatus((prev) =>
-            prev?.brain
-              ? { ...prev, brain: { ...prev.brain, queryModel: model } }
-              : prev,
-          );
-        }}
-      />
     </div>
   );
 }

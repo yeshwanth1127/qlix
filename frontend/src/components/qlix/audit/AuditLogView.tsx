@@ -26,6 +26,21 @@ import {
 type ResultFilter = "all" | AuditResultUi;
 type ActionFilter = "all" | AuditActionType;
 
+function formatSystemTime(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 function eventMatches(
   event: AuditLogEvent,
   query: string,
@@ -312,7 +327,7 @@ export function AuditLogView() {
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="font-mono text-[11px] text-black/45">
-                              <span className="text-black/35">{event.dateUtc}</span> {event.timeUtc}
+                              {formatSystemTime(event.timestampMs)}
                             </span>
                             <ResultLabel result={event.result} />
                           </div>
@@ -328,7 +343,7 @@ export function AuditLogView() {
                       <table className="w-full border-collapse text-left">
                         <thead>
                           <tr className="border-b border-black/10">
-                            <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Time (UTC)</th>
+                            <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>System time</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Action</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Details</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Risk</th>
@@ -345,8 +360,7 @@ export function AuditLogView() {
                               )}
                             >
                               <td className="whitespace-nowrap px-4 py-3 font-mono text-[12px] text-black/50">
-                                <span className="text-black/35">{event.dateUtc}</span>{" "}
-                                {event.timeUtc}
+                                {formatSystemTime(event.timestampMs)}
                               </td>
                               <td className="whitespace-nowrap px-4 py-3">
                                 <ActionTag event={event} />

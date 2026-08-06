@@ -193,6 +193,81 @@ export class BrainKnowledgeService {
     return { id: doc.id, chunkCount: chunks.length };
   }
 
+  async getKnowledgeDocument(
+    userId: string,
+    orgId: string,
+    documentId: string,
+  ): Promise<{ id: string; title: string; bodyText: string; updatedAt: string }> {
+    await this.agentsRepo.assertOrgMembership(userId, orgId);
+    const doc = await prisma.brainKnowledgeDocument.findFirst({
+      where: { id: documentId, orgId },
+      select: { id: true, title: true, bodyText: true, updatedAt: true },
+    });
+    if (!doc) throw new Error('Document not found');
+    return { ...doc, updatedAt: doc.updatedAt.toISOString() };
+  }
+
+  async updateKnowledgeDocument(input: {
+    userId: string;
+    orgId: string;
+    role: string;
+    brainAgentId: string;
+    documentId: string;
+    title: string;
+    bodyText: string;
+  }): Promise<{ chunkCount: number; updatedAt: string }> {
+    await this.agentsRepo.assertOrgMembership(input.userId, input.orgId);
+    if (!roleCan(input.role, 'manage_brain')) {
+      throw new BrainKnowledgeForbiddenError('Only owners and admins can edit knowledge documents.');
+    }
+
+    const existing = await prisma.brainKnowledgeDocument.findFirst({
+      where: { id: input.documentId, orgId: input.orgId },
+      select: { id: true, collectionId: true },
+    });
+    if (!existing) throw new Error('Document not found');
+
+    const chunks = chunkText(input.bodyText);
+    if (chunks.length === 0) throw new Error('bodyText is empty');
+
+    const doc = await prisma.brainKnowledgeDocument.update({
+      where: { id: existing.id },
+      data: {
+        title: input.title.trim(),
+        bodyText: input.bodyText,
+        ingestStatus: 'ready',
+        chunks: {
+          deleteMany: {},
+          create: chunks.map((textContent, ordinal) => ({
+            orgId: input.orgId,
+            ordinal,
+            textContent,
+          })),
+        },
+      },
+      select: { updatedAt: true },
+    });
+
+    await appendBrainActionLog({
+      brainAgentId: input.brainAgentId,
+      userId: input.userId,
+      actionType: 'brain.knowledge_update',
+      payload: {
+        description: `Updated knowledge document "${input.title.trim()}" (${chunks.length} chunks)`,
+        collectionId: existing.collectionId,
+        documentId: existing.id,
+      },
+      status: 'success',
+      riskLevel: 'low',
+    });
+
+    void queryService.embedAndStoreChunks(input.orgId, existing.id).catch((err) => {
+      console.error('[brainKnowledge] Async re-embedding failed for doc', existing.id, err instanceof Error ? err.message : err);
+    });
+
+    return { chunkCount: chunks.length, updatedAt: doc.updatedAt.toISOString() };
+  }
+
   async deleteKnowledgeDocument(input: {
     userId: string;
     orgId: string;

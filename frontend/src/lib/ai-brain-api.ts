@@ -64,6 +64,13 @@ export interface AiBrainKnowledgeDocumentRow {
   readonly chunkCount: number;
 }
 
+export interface AiBrainKnowledgeDocumentDetail {
+  readonly id: string;
+  readonly title: string;
+  readonly bodyText: string;
+  readonly updatedAt: string;
+}
+
 export async function getAiBrainKnowledgeDocuments(): Promise<
   { ok: true; documents: readonly AiBrainKnowledgeDocumentRow[] } | { ok: false; message: string }
 > {
@@ -77,6 +84,43 @@ export async function getAiBrainKnowledgeDocuments(): Promise<
   }
   const json = (await res.json().catch(() => null)) as { documents?: AiBrainKnowledgeDocumentRow[] } | null;
   return { ok: true, documents: json?.documents ?? [] };
+}
+
+export async function getAiBrainKnowledgeDocument(
+  documentId: string,
+): Promise<{ ok: true; document: AiBrainKnowledgeDocumentDetail } | { ok: false; message: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/documents/${encodeURIComponent(documentId)}`, {
+    credentials: "include",
+  });
+  const json = (await res.json().catch(() => null)) as {
+    document?: AiBrainKnowledgeDocumentDetail;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.document) {
+    return { ok: false, message: json?.error?.message ?? "Failed to load document" };
+  }
+  return { ok: true, document: json.document };
+}
+
+export async function updateAiBrainKnowledgeDocument(
+  documentId: string,
+  body: { title: string; bodyText: string },
+): Promise<{ ok: true; chunkCount: number; updatedAt: string } | { ok: false; message: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/documents/${encodeURIComponent(documentId)}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => null)) as {
+    chunkCount?: number;
+    updatedAt?: string;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || json?.chunkCount === undefined || !json.updatedAt) {
+    return { ok: false, message: json?.error?.message ?? "Failed to update document" };
+  }
+  return { ok: true, chunkCount: json.chunkCount, updatedAt: json.updatedAt };
 }
 
 /** OpenRouter `GET /models` entries — `id` is exactly what OpenRouter accepts in API calls. */
@@ -226,9 +270,81 @@ export interface AiBrainQueryResponse {
   readonly citations: readonly AiBrainQueryCitation[];
 }
 
+export interface AiBrainConversationRow {
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly messageCount: number;
+}
+
+export interface AiBrainConversationMessage {
+  readonly id: string;
+  readonly role: "user" | "brain";
+  readonly content: string;
+  readonly citations: readonly AiBrainQueryCitation[];
+  readonly createdAt: string;
+}
+
+export async function getAiBrainConversations(): Promise<
+  { ok: true; conversations: readonly AiBrainConversationRow[] } | { ok: false; message: string }
+> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/conversations`, { credentials: "include" });
+  const json = (await res.json().catch(() => null)) as {
+    conversations?: AiBrainConversationRow[];
+    error?: { message?: string };
+  } | null;
+  if (!res.ok) return { ok: false, message: json?.error?.message ?? "Failed to load recent chats" };
+  return { ok: true, conversations: json?.conversations ?? [] };
+}
+
+export async function createAiBrainConversation(): Promise<
+  { ok: true; conversation: AiBrainConversationRow } | { ok: false; message: string }
+> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/conversations`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const json = (await res.json().catch(() => null)) as {
+    conversation?: AiBrainConversationRow;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.conversation) {
+    return { ok: false, message: json?.error?.message ?? "Failed to create chat" };
+  }
+  return { ok: true, conversation: json.conversation };
+}
+
+export async function getAiBrainConversationMessages(conversationId: string): Promise<
+  { ok: true; messages: readonly AiBrainConversationMessage[] } | { ok: false; message: string }
+> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/ai-brain/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { credentials: "include" },
+  );
+  const json = (await res.json().catch(() => null)) as {
+    messages?: AiBrainConversationMessage[];
+    error?: { message?: string };
+  } | null;
+  if (!res.ok) return { ok: false, message: json?.error?.message ?? "Failed to load chat" };
+  return { ok: true, messages: json?.messages ?? [] };
+}
+
+export async function deleteAiBrainConversation(conversationId: string): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (res.ok) return { ok: true };
+  const json = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+  return { ok: false, message: json?.error?.message ?? "Failed to delete chat" };
+}
+
 export async function queryAiBrain(
   question: string,
-  model?: string,
+  conversationId?: string,
 ): Promise<{ ok: true; data: AiBrainQueryResponse } | { ok: false; message: string }> {
   const res = await fetch(`${apiBase()}/api/v1/ai-brain/query`, {
     method: "POST",
@@ -236,7 +352,7 @@ export async function queryAiBrain(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question,
-      ...(model?.trim() ? { model: model.trim() } : {}),
+      ...(conversationId ? { conversationId } : {}),
     }),
   });
   const json = (await res.json().catch(() => null)) as { answer?: string; citations?: AiBrainQueryCitation[]; error?: { message?: string } } | null;
@@ -286,7 +402,7 @@ export async function ingestAiBrainDocument(
   return { ok: true, id: json.id, chunkCount: json.chunkCount };
 }
 
-/** Upload any file; server extracts text (PDF, Word, Excel, plain text, and common text formats). */
+/** Upload a supported document/data file; the server extracts normalized searchable text. */
 export async function ingestAiBrainDocumentFromFile(
   collectionId: string,
   file: File,

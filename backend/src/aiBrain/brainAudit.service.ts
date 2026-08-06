@@ -8,6 +8,7 @@ export type BrainActionType =
   | 'brain.ensure_agent'
   | 'brain.collection_create'
   | 'brain.knowledge_ingest'
+  | 'brain.knowledge_update'
   | 'brain.knowledge_delete'
   | 'brain.policy_check'
   | 'brain.query'

@@ -659,6 +659,11 @@ body {
   background-attachment: fixed;
 }
 
+/* Restore the stronger hierarchy used by the original console design. */
+[data-sketch-console] :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 700;
+}
+
 /* ── Console-wide overrides ─────────────────────────────────────────────────
    Appended to the utilities layer so they beat the base `border-black`
    utility (same specificity, later order) while still losing to explicit

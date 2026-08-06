@@ -105,6 +105,20 @@ function rewriteDockerInternalUrl(url: string): string {
   }
 }
 
+function rewriteLoopbackForDocker(url: string): string {
+  const trimmed = trimUrl(url);
+  if (!isLoopbackUrl(trimmed)) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hostname = 'host.docker.internal';
+    return trimUrl(parsed.toString());
+  } catch {
+    return trimmed
+      .replace(/\blocalhost\b|127\.0\.0\.1|\[::1\]/gi, 'host.docker.internal')
+      .replace(/\/$/, '');
+  }
+}
+
 /** Resolve the API base URL clients should put in agent.json (for SDK HTTP calls). */
 export function resolvePublicBackendUrl(request: { protocol?: string; get(name: string): string | undefined }): string {
   const fromEnv = process.env.PUBLIC_API_URL?.trim();
@@ -204,9 +218,9 @@ export function ensureHybridAgentJsonBackendUrl(
 export function resolveDockerBackendUrl(request: { protocol?: string; get(name: string): string | undefined }): string {
   const fromEnv = process.env.DOCKER_BACKEND_URL?.trim();
   if (fromEnv) {
-    return fromEnv.replace(/\/$/, '');
+    return rewriteLoopbackForDocker(fromEnv);
   }
-  return resolvePublicBackendUrl(request);
+  return rewriteLoopbackForDocker(resolvePublicBackendUrl(request));
 }
 
 /** Instructions for storing credentials locally (env-based path; no fixed ~/.qlix). */

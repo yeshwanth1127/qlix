@@ -34,6 +34,8 @@ model Organization {
   connectorAccounts         ConnectorAccount[]
   mcpServers                McpServer[]
   leadCampaigns             LeadCampaign[]
+  brainConversations        BrainConversation[]
+  brainUsages               BrainUsage[]
   jobCandidateProfiles      JobCandidateProfile[]
   jobApplyCampaigns         JobApplyCampaign[]
   subscription              OrgSubscription?
@@ -82,6 +84,8 @@ model User {
   organization       Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agents             Agent[]
   agentConversations AgentConversation[]
+  brainConversations BrainConversation[]
+  brainUsages        BrainUsage[]
   agentMemories      AgentMemory[]
   actionLogs         ActionLog[]
   approvals          Approval[]
@@ -266,6 +270,8 @@ model Agent {
   employeeEngagement EmployeeEngagement?
   schedules        EmployeeSchedule[]
   orgSkills        OrgSkill[]
+  brainConversations BrainConversation[] @relation("BrainAgentConversations")
+  brainUsages        BrainUsage[]
 
   @@index([orgId])
   @@index([userId])
@@ -475,6 +481,63 @@ model AgentMessage {
 
   @@index([conversationId, createdAt])
   @@map("agent_messages")
+}
+
+model BrainConversation {
+  id           String   @id @default(cuid())
+  brainAgentId String   @map("brain_agent_id")
+  userId       String   @map("user_id") @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  title        String   @default("New chat") @db.VarChar(160)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  brainAgent Agent                      @relation("BrainAgentConversations", fields: [brainAgentId], references: [id], onDelete: Cascade)
+  user       User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org        Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  messages   BrainConversationMessage[]
+
+  @@index([userId, orgId, updatedAt])
+  @@index([brainAgentId])
+  @@map("brain_conversations")
+}
+
+model BrainConversationMessage {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String   @db.Text
+  citations      Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation BrainConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("brain_conversation_messages")
+}
+
+/// Token usage recorded for Exa brain queries, which do not run through AgentRun.
+model BrainUsage {
+  id               String   @id @default(cuid())
+  brainAgentId     String   @map("brain_agent_id")
+  userId           String   @map("user_id") @db.Uuid
+  orgId            String   @map("org_id") @db.Uuid
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  totalTokens      Int      @default(0) @map("total_tokens")
+  totalCostUsd     Decimal  @default(0) @map("total_cost_usd") @db.Decimal(18, 8)
+  model            String?
+  provider         String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  brainAgent Agent        @relation(fields: [brainAgentId], references: [id], onDelete: Cascade)
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([brainAgentId, createdAt])
+  @@index([orgId, createdAt])
+  @@index([userId, createdAt])
+  @@map("brain_usages")
 }
 
 /// Stage 1 agent memory: durable items remembered per agent + per user.

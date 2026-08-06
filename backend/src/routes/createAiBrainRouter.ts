@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import type { Prisma } from '@prisma/client';
 import multer from 'multer';
 import { z } from 'zod';
 import { authenticateUser } from '../middleware/authenticateUser.js';
@@ -135,6 +136,66 @@ export function createAiBrainRouter(): Router {
     } catch (err) {
       console.error('ai-brain/documents:get', err);
       response.status(500).json({ error: { code: 'documents_list_failed', message: 'Failed to list knowledge documents' } });
+    }
+  });
+
+  router.get('/documents/:documentId', async (request: Request, response: Response) => {
+    try {
+      const document = await knowledge.getKnowledgeDocument(
+        request.auth!.userId,
+        request.auth!.orgId,
+        String(request.params.documentId ?? ''),
+      );
+      response.json({ document });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to load document';
+      if (message === 'Document not found') {
+        response.status(404).json({ error: { code: 'not_found', message } });
+        return;
+      }
+      console.error('ai-brain/documents:get-one', err);
+      response.status(500).json({ error: { code: 'document_load_failed', message: 'Failed to load document' } });
+    }
+  });
+
+  router.patch('/documents/:documentId', async (request: Request, response: Response) => {
+    const documentSchema = z.object({
+      title: z.string().trim().min(1).max(500),
+      bodyText: z.string().min(1).max(1_500_000),
+    });
+    try {
+      const parsed = documentSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Title and document text are required.' } });
+        return;
+      }
+      const brain = await brainAgents.getOrgBrainAgent(request.auth!.orgId);
+      if (!brain) {
+        response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
+        return;
+      }
+      const result = await knowledge.updateKnowledgeDocument({
+        userId: request.auth!.userId,
+        orgId: request.auth!.orgId,
+        role: request.auth!.role,
+        brainAgentId: brain.id,
+        documentId: String(request.params.documentId ?? ''),
+        title: parsed.data.title,
+        bodyText: parsed.data.bodyText,
+      });
+      response.json(result);
+    } catch (err: unknown) {
+      if (err instanceof BrainKnowledgeForbiddenError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Update failed';
+      if (message === 'Document not found') {
+        response.status(404).json({ error: { code: 'not_found', message } });
+        return;
+      }
+      console.error('ai-brain/documents:patch', err);
+      response.status(500).json({ error: { code: 'document_update_failed', message: 'Failed to update document' } });
     }
   });
 
@@ -467,8 +528,120 @@ export function createAiBrainRouter(): Router {
 
   const querySchema = z.object({
     question: z.string().trim().min(1).max(4000),
+    conversationId: z.string().cuid().optional(),
     /** Optional per-query override (OpenRouter / qlix canonical id). */
     model: z.string().trim().min(1).max(200).optional(),
+  });
+
+  router.get('/conversations', async (request: Request, response: Response) => {
+    try {
+      const conversations = await prisma.brainConversation.findMany({
+        where: { userId: request.auth!.userId, orgId: request.auth!.orgId },
+        orderBy: { updatedAt: 'desc' },
+        take: 50,
+        select: {
+          id: true,
+          title: true,
+          createdAt: true,
+          updatedAt: true,
+          _count: { select: { messages: true } },
+        },
+      });
+      response.json({
+        conversations: conversations.map((conversation) => ({
+          id: conversation.id,
+          title: conversation.title,
+          createdAt: conversation.createdAt.toISOString(),
+          updatedAt: conversation.updatedAt.toISOString(),
+          messageCount: conversation._count.messages,
+        })),
+      });
+    } catch (err) {
+      console.error('ai-brain/conversations:get', err);
+      response.status(500).json({ error: { code: 'conversations_failed', message: 'Failed to load recent chats' } });
+    }
+  });
+
+  router.post('/conversations', async (request: Request, response: Response) => {
+    try {
+      const brain = await brainAgents.getOrgBrainAgent(request.auth!.orgId);
+      if (!brain) {
+        response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
+        return;
+      }
+      const conversation = await prisma.brainConversation.create({
+        data: {
+          brainAgentId: brain.id,
+          userId: request.auth!.userId,
+          orgId: request.auth!.orgId,
+        },
+        select: { id: true, title: true, createdAt: true, updatedAt: true },
+      });
+      response.status(201).json({
+        conversation: {
+          ...conversation,
+          createdAt: conversation.createdAt.toISOString(),
+          updatedAt: conversation.updatedAt.toISOString(),
+          messageCount: 0,
+        },
+      });
+    } catch (err) {
+      console.error('ai-brain/conversations:post', err);
+      response.status(500).json({ error: { code: 'conversation_create_failed', message: 'Failed to create chat' } });
+    }
+  });
+
+  router.get('/conversations/:conversationId/messages', async (request: Request, response: Response) => {
+    try {
+      const conversation = await prisma.brainConversation.findFirst({
+        where: {
+          id: String(request.params.conversationId),
+          userId: request.auth!.userId,
+          orgId: request.auth!.orgId,
+        },
+        select: { id: true },
+      });
+      if (!conversation) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Conversation not found' } });
+        return;
+      }
+      const messages = await prisma.brainConversationMessage.findMany({
+        where: { conversationId: conversation.id },
+        orderBy: { createdAt: 'asc' },
+        take: 200,
+        select: { id: true, role: true, content: true, citations: true, createdAt: true },
+      });
+      response.json({
+        messages: messages.map((message) => ({
+          ...message,
+          citations: Array.isArray(message.citations) ? message.citations : [],
+          createdAt: message.createdAt.toISOString(),
+        })),
+      });
+    } catch (err) {
+      console.error('ai-brain/conversations/messages:get', err);
+      response.status(500).json({ error: { code: 'messages_failed', message: 'Failed to load chat messages' } });
+    }
+  });
+
+  router.delete('/conversations/:conversationId', async (request: Request, response: Response) => {
+    try {
+      const deleted = await prisma.brainConversation.deleteMany({
+        where: {
+          id: String(request.params.conversationId),
+          userId: request.auth!.userId,
+          orgId: request.auth!.orgId,
+        },
+      });
+      if (deleted.count === 0) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Conversation not found' } });
+        return;
+      }
+      response.status(204).send();
+    } catch (err) {
+      console.error('ai-brain/conversations:delete', err);
+      response.status(500).json({ error: { code: 'conversation_delete_failed', message: 'Failed to delete chat' } });
+    }
   });
 
   router.post('/query', async (request: Request, response: Response) => {
@@ -505,13 +678,67 @@ export function createAiBrainRouter(): Router {
         }
       }
 
+      let conversation: { id: string; title: string } | null = null;
+      let questionForModel = parsed.data.question;
+      if (parsed.data.conversationId) {
+        conversation = await prisma.brainConversation.findFirst({
+          where: {
+            id: parsed.data.conversationId,
+            brainAgentId: brain.id,
+            userId,
+            orgId,
+          },
+          select: { id: true, title: true },
+        });
+        if (!conversation) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Conversation not found' } });
+          return;
+        }
+        const recent = await prisma.brainConversationMessage.findMany({
+          where: { conversationId: conversation.id },
+          orderBy: { createdAt: 'desc' },
+          take: 8,
+          select: { role: true, content: true },
+        });
+        if (recent.length > 0) {
+          const transcript = recent
+            .reverse()
+            .map((message) => `${message.role === 'user' ? 'User' : 'exa'}: ${message.content}`)
+            .join('\n');
+          questionForModel = `Conversation so far:\n${transcript}\nUser: ${parsed.data.question}\n\nAnswer the latest question. Use the conversation only to resolve follow-up references.`;
+        }
+        await prisma.brainConversationMessage.create({
+          data: { conversationId: conversation.id, role: 'user', content: parsed.data.question },
+        });
+      }
+
       const result = await queryService.queryBrain({
         userId,
         orgId,
         brainAgentId: brain.id,
         brainModel,
-        question: parsed.data.question,
+        question: questionForModel,
       });
+
+      if (conversation) {
+        const nextTitle = conversation.title === 'New chat'
+          ? parsed.data.question.replace(/\s+/g, ' ').slice(0, 72)
+          : conversation.title;
+        await prisma.$transaction([
+          prisma.brainConversationMessage.create({
+            data: {
+              conversationId: conversation.id,
+              role: 'brain',
+              content: result.answer,
+              citations: result.citations as unknown as Prisma.InputJsonValue,
+            },
+          }),
+          prisma.brainConversation.update({
+            where: { id: conversation.id },
+            data: { title: nextTitle, updatedAt: new Date() },
+          }),
+        ]);
+      }
 
       response.json(result);
     } catch (err: unknown) {

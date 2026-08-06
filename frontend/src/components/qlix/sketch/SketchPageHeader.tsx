@@ -19,7 +19,7 @@ export function SketchPageHeader({ title, actions, className }: SketchPageHeader
         <h1
           className={cn(
             sketchLabel,
-            "text-[13px] font-semibold tracking-[0.18em] text-black",
+            "text-[13px] font-bold tracking-[0.18em] text-black",
           )}
         >
           {title}

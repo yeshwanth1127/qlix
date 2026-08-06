@@ -157,9 +157,10 @@ export class AgentsRepository {
     workspaceOrgId: string | null = null,
   ): Promise<AgentDTO[]> {
     const where: Prisma.AgentWhereInput = orgId
-      ? { orgId }
+      ? { orgId, agentKind: 'standard' }
       : {
           userId,
+          agentKind: 'standard',
           OR: [{ orgId: null }, ...(workspaceOrgId ? [{ orgId: workspaceOrgId }] : [])],
         };
     const agents = await prisma.agent.findMany({

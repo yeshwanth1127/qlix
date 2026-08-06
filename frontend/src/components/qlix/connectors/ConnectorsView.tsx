@@ -155,15 +155,21 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   }, []);
 
   useEffect(() => {
-    void refresh();
-    void refreshGrants();
+    const timer = window.setTimeout(() => {
+      void refresh();
+      void refreshGrants();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh, refreshGrants]);
 
   useEffect(() => {
     if (!data) return;
     const linked = orbitConnector(data.connectors);
-    if (linked) void refreshOrbitChannels();
-    else setOrbitChannels([]);
+    const timer = window.setTimeout(() => {
+      if (linked) void refreshOrbitChannels();
+      else setOrbitChannels([]);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [data, refreshOrbitChannels]);
 
   async function handleRevokeGrant(grantId: string) {
@@ -227,8 +233,11 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
 
   useEffect(() => {
     if (!wa) return;
-    setDefaultTeamId(wa.whatsappDefaultTeamId ?? "");
-    setDefaultAgentId(wa.whatsappDefaultAgentId ?? "");
+    const timer = window.setTimeout(() => {
+      setDefaultTeamId(wa.whatsappDefaultTeamId ?? "");
+      setDefaultAgentId(wa.whatsappDefaultAgentId ?? "");
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [wa]);
   const oauthSuccess = searchParams.get("connected");
   const neededProviders = new Set(
@@ -257,7 +266,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       if (parsed.protocol !== "https:" || !allowedHosts.has(parsed.hostname)) {
         throw new Error("Unexpected OAuth redirect target");
       }
-      window.location.href = parsed.toString();
+      window.location.assign(parsed.toString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start OAuth");
       setBusy(false);
@@ -282,7 +291,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       if (parsed.protocol !== "https:" || !allowedHosts.has(parsed.hostname)) {
         throw new Error("Unexpected OAuth redirect target");
       }
-      window.location.href = parsed.toString();
+      window.location.assign(parsed.toString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Zoho OAuth");
       setBusy(false);
@@ -311,7 +320,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       if (parsed.protocol !== "https:" || parsed.hostname !== "slack.com") {
         throw new Error("Unexpected OAuth redirect target");
       }
-      window.location.href = parsed.toString();
+      window.location.assign(parsed.toString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Slack OAuth");
       setSlackBusy(false);
@@ -410,7 +419,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
         throw new Error("Unexpected OAuth redirect target");
       }
-      window.location.href = parsed.toString();
+      window.location.assign(parsed.toString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start channel connect");
       setOrbitSocialBusy(null);

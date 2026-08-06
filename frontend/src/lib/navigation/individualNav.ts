@@ -30,6 +30,7 @@ export interface ConsoleNavItem {
 
 const PRIMARY_NAV_SUFFIXES = [
   "/agent-builder",
+  "/ai-employees",
   "/overview",
   "/agents",
   "/ai-employees",
@@ -66,6 +67,7 @@ export function splitConsoleNavItems(items: ConsoleNavItem[]): {
 export function getConsoleNavItems(routePrefix: string, billingExempt = false): ConsoleNavItem[] {
   const core: ConsoleNavItem[] = [
     { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
+    { href: `${routePrefix}/ai-employees`, label: "AI Employees", icon: Bot },
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
     { href: `${routePrefix}/ai-employees`, label: "AI Employees", icon: Briefcase },

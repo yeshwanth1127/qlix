@@ -1,5 +1,5 @@
-import { AiEmployeesHubView } from "@/components/qlix/ai-employees/AiEmployeesHubView";
+import { AIEmployeesComingSoonView } from "@/components/qlix/ai-employees/AIEmployeesComingSoonView";
 
-export default function IndividualAiEmployeesPage() {
-  return <AiEmployeesHubView routePrefix="/individual" />;
+export default function IndividualAIEmployeesPage() {
+  return <AIEmployeesComingSoonView />;
 }

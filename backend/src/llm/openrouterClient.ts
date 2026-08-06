@@ -56,7 +56,7 @@ function openRouterBaseUrl(): string {
 export interface OpenRouterEmbeddingResult {
   embedding: number[];
   model: string;
-  usage?: { prompt_tokens?: number; total_tokens?: number };
+  usage?: { prompt_tokens?: number; total_tokens?: number; cost?: number; total_cost?: number };
 }
 
 export async function openrouterEmbeddings(
@@ -170,4 +170,3 @@ export async function openRouterChatCompletion(
   }
   throw lastError ?? new Error('OpenRouter request failed');
 }
-
