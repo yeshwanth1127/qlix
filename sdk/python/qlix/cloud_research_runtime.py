@@ -482,6 +482,20 @@ def _run_configure_block(block: dict[str, Any]) -> None:
         _run_cmd(argv, timeout=30)
 
 
+def ensure_research_stack() -> None:
+    """Ensure core research CLIs (mcporter/Exa) exist; install when agent-reach is present."""
+    if shutil.which("mcporter"):
+        return
+    if shutil.which("agent-reach") is None:
+        logger.warning("research stack incomplete: agent-reach and mcporter missing")
+        return
+    ok, out = _run_cmd(["agent-reach", "install", "--env=server"], timeout=180)
+    if not ok:
+        logger.warning("agent-reach core install failed: %s", out[:500])
+    elif not shutil.which("mcporter"):
+        logger.warning("agent-reach install finished but mcporter still missing")
+
+
 def configure_research_sources() -> None:
     """Apply platform research credentials to runner CLIs (registry-driven).
 
@@ -490,6 +504,7 @@ def configure_research_sources() -> None:
     file, then run any configure commands; finally run global configure blocks
     (e.g. proxy) and refresh the Agent Reach doctor cache.
     """
+    ensure_research_stack()
     for src in research_sources.SOURCES:
         secret = src.get("secret_file")
         if isinstance(secret, dict):

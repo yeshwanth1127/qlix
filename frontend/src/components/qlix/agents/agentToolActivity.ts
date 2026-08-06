@@ -57,20 +57,31 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   research_read_url: { label: "Research", category: "browser", verb: "Read URL" },
   research_social_search: { label: "Research", category: "browser", verb: "Social search" },
   research_video: { label: "Research", category: "browser", verb: "Video transcript" },
-  research_github: { label: "Research", category: "browser", verb: "GitHub search" },
+  create_report_pdf: { label: "Document", category: "brain", verb: "Create PDF report" },
+  create_xlsx: { label: "Document", category: "brain", verb: "Create spreadsheet" },
   whatsapp_send: { label: "WhatsApp", category: "other", verb: "Send file" },
+  whatsapp_list_contacts: { label: "WhatsApp", category: "other", verb: "List contacts" },
+  whatsapp_read_chat: { label: "WhatsApp", category: "other", verb: "Read chat" },
+  whatsapp_send_message: { label: "WhatsApp", category: "other", verb: "Send message" },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
   shell_exec: { label: "Shell", category: "system", verb: "Run command" },
   code_interpreter: { label: "Code", category: "system", verb: "Run code" },
-  s3_read_file: { label: "Agent-S3", category: "agents3", verb: "Read file" },
-  s3_write_file: { label: "Agent-S3", category: "agents3", verb: "Write file" },
-  s3_list_dir: { label: "Agent-S3", category: "agents3", verb: "List directory" },
-  s3_open_file: { label: "Agent-S3", category: "agents3", verb: "Open on desktop" },
-  s3_bash: { label: "Agent-S3", category: "agents3", verb: "Shell (LocalEnv)" },
-  s3_python: { label: "Agent-S3", category: "agents3", verb: "Python (LocalEnv)" },
-  s3_code_task: { label: "Agent-S3", category: "agents3", verb: "CodeAgent task" },
-  gui_control: { label: "Agent-S3", category: "agents3", verb: "Desktop (GUI)" },
+  luna_local_read_file: { label: "luna_local", category: "agents3", verb: "Read file" },
+  luna_local_write_file: { label: "luna_local", category: "agents3", verb: "Write file" },
+  luna_local_list_dir: { label: "luna_local", category: "agents3", verb: "List directory" },
+  luna_local_open_file: { label: "luna_local", category: "agents3", verb: "Open on desktop" },
+  luna_local_search_files: { label: "luna_local", category: "agents3", verb: "Search files" },
+  luna_local_patch: { label: "luna_local", category: "agents3", verb: "Apply patch" },
+  luna_local_pwd: { label: "luna_local", category: "agents3", verb: "Print cwd" },
+  luna_local_cd: { label: "luna_local", category: "agents3", verb: "Change cwd" },
+  luna_local_bash: { label: "luna_local", category: "agents3", verb: "Shell (LocalEnv)" },
+  luna_local_python: { label: "luna_local", category: "agents3", verb: "Python (LocalEnv)" },
+  luna_local_code_task: { label: "luna_local", category: "agents3", verb: "CodeAgent task" },
+  luna_local_create_pdf: { label: "luna_local", category: "agents3", verb: "Create PDF" },
+  luna_local_create_xlsx: { label: "luna_local", category: "agents3", verb: "Create spreadsheet" },
+  luna_local_send_whatsapp_document: { label: "luna_local", category: "agents3", verb: "Send WhatsApp file" },
+  gui_control: { label: "luna_local", category: "agents3", verb: "Desktop (GUI)" },
 };
 
 export function isBrowserToolId(toolId: string): boolean {
@@ -270,7 +281,7 @@ export function toolCategoryIcon(category: ToolCategory): LucideIcon {
 }
 
 function isAgents3ToolId(toolId: string): boolean {
-  return toolId === "gui_control" || toolId.startsWith("s3_");
+  return toolId === "gui_control" || toolId.startsWith("luna_local_");
 }
 
 export function formatToolId(toolId: string): { short: string; category: ToolCategory; group: string } {
@@ -283,11 +294,11 @@ export function formatToolId(toolId: string): { short: string; category: ToolCat
     };
   }
   if (isAgents3ToolId(toolId)) {
-    const human = toolId.replace(/^s3_/, "").replace(/_/g, " ");
+    const human = toolId.replace(/^luna_local_/, "").replace(/_/g, " ");
     return {
       short: human.charAt(0).toUpperCase() + human.slice(1),
       category: "agents3",
-      group: "Agent-S3",
+      group: "luna_local",
     };
   }
   const human = toolId.replace(/^browser_ab_/, "").replace(/^browser_/, "").replace(/_/g, " ");
@@ -309,7 +320,7 @@ function formatToolList(toolIds: string[]): string {
   return toolIds
     .map((id) => {
       const f = formatToolId(id);
-      if (f.group === "Browser" || f.group === "Agent-S3") return `${f.group}: ${f.short}`;
+      if (f.group === "Browser" || f.group === "luna_local") return `${f.group}: ${f.short}`;
       return `${f.group}: ${f.short}`;
     })
     .join(" · ");
@@ -543,7 +554,7 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       }
       return {
         id,
-        label: allAgents3 ? "Running Agent-S3 steps" : `Calling ${tools.length} tools`,
+        label: allAgents3 ? "Running luna_local steps" : `Calling ${tools.length} tools`,
         detail: tools.length > 0 ? formatToolList(tools) : undefined,
         tone: "accent",
         kind: "tool_round",
@@ -557,8 +568,8 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const browserAction = describeBrowserToolAction(toolId, d);
       return {
         id,
-        label: browserAction ?? (f.group === "Agent-S3" ? `Agent-S3 — ${f.short}` : `Running — ${f.group}`),
-        detail: browserAction ? f.short : f.group === "Agent-S3" ? toolId : f.short,
+        label: browserAction ?? (f.group === "luna_local" ? `luna_local — ${f.short}` : `Running — ${f.group}`),
+        detail: browserAction ? f.short : f.group === "luna_local" ? toolId : f.short,
         tone: "accent",
         kind: "tool_round",
         category: f.category,
@@ -582,7 +593,7 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const action = phaseDetail || phase.replace(/_/g, " ");
       return {
         id,
-        label: action ? `Agent-S3: ${action}` : `Agent-S3 — ${f.short}`,
+        label: action ? `luna_local: ${action}` : `luna_local — ${f.short}`,
         detail: stepLabel || f.short,
         tone: "accent",
         kind: "other",
@@ -594,13 +605,17 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const toolId = String(d.tool ?? "");
       const f = formatToolId(toolId);
       const browserAction = describeBrowserToolAction(toolId, d);
+      const patchSummary =
+        typeof d.patchSummary === "string" && d.patchSummary.trim()
+          ? d.patchSummary.trim()
+          : undefined;
       // `ok` is absent on older runners — treat missing as success for back-compat.
       const failed = d.ok === false;
       if (failed) {
         const error = String(d.error ?? "").trim();
         return {
           id,
-          label: f.group === "Agent-S3" ? `Failed — Agent-S3` : `Failed — ${f.group}`,
+          label: f.group === "luna_local" ? `Failed — luna_local` : `Failed — ${f.group}`,
           detail: error || browserAction || `${f.short} failed`,
           tone: "error",
           kind: "tool_done",
@@ -608,10 +623,13 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
           toolId,
         };
       }
+      const baseDetail = browserAction
+        ? f.short
+        : `${f.short}${toolId ? ` (${toolId})` : ""}`;
       return {
         id,
-        label: browserAction ?? (f.group === "Agent-S3" ? `Done — Agent-S3` : `Done — ${f.group}`),
-        detail: browserAction ? f.short : `${f.short}${toolId ? ` (${toolId})` : ""}`,
+        label: browserAction ?? (f.group === "luna_local" ? `Done — luna_local` : `Done — ${f.group}`),
+        detail: patchSummary ? `${baseDetail} · ${patchSummary}` : baseDetail,
         tone: "success",
         kind: "tool_done",
         category: f.category,
@@ -647,7 +665,13 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
           ? d.whatsappStatus
           : undefined;
       // Session-scoped scopes (e.g. email.send): one "yes" covers the whole conversation.
-      const sessionScoped = String(d.scope ?? "") === "email.send" || String(d.scope ?? "") === "social.publish";
+      const sessionScoped =
+        String(d.scope ?? "") === "email.send" ||
+        String(d.scope ?? "") === "social.publish" ||
+        String(d.scope ?? "") === "crm.write" ||
+        String(d.scope ?? "") === "crm.delete" ||
+        String(d.scope ?? "") === "slack.send" ||
+        String(d.scope ?? "") === "whatsapp.contact_send";
       const detailParts = [
         channel === "whatsapp"
           ? "Reply on WhatsApp to approve or deny"

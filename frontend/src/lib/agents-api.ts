@@ -21,8 +21,15 @@ export type PermissionScope =
   | "email.read"
   | "email.send"
   | "whatsapp.send"
+  | "whatsapp.read"
+  | "whatsapp.contact_send"
   | "social.read"
-  | "social.publish";
+  | "social.publish"
+  | "crm.read"
+  | "crm.write"
+  | "crm.delete"
+  | "slack.read"
+  | "slack.send";
 
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "web.read",
@@ -39,8 +46,15 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "email.read",
   "email.send",
   "whatsapp.send",
+  "whatsapp.read",
+  "whatsapp.contact_send",
   "social.read",
   "social.publish",
+  "crm.read",
+  "crm.write",
+  "crm.delete",
+  "slack.read",
+  "slack.send",
 ];
 
 export const FORCE_JIT_SCOPES: PermissionScope[] = [
@@ -51,6 +65,10 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   "finance.spend_100",
   "email.send",
   "social.publish",
+  "crm.write",
+  "crm.delete",
+  "slack.send",
+  "whatsapp.contact_send",
 ];
 
 export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
@@ -67,9 +85,16 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "brain.knowledge_read": "Read org knowledge indexed for the brain",
   "email.read": "Read connected Gmail inbox",
   "email.send": "Send email via connected Gmail",
-  "whatsapp.send": "Send messages/files on connected WhatsApp",
+  "whatsapp.send": "Send files to your linked WhatsApp",
+  "whatsapp.read": "Read WhatsApp contact chats",
+  "whatsapp.contact_send": "Message WhatsApp contacts",
   "social.read": "Read Orbit social channels & posts",
   "social.publish": "Publish / schedule posts via Orbit",
+  "crm.read": "Read CRM records",
+  "crm.write": "Create / update CRM records",
+  "crm.delete": "Delete CRM records",
+  "slack.read": "Read Slack channels & messages",
+  "slack.send": "Write to Slack (post, channels, DMs)",
 };
 
 export type AgentRuntime = "cloud" | "local" | "hybrid";
@@ -109,6 +134,7 @@ export interface AgentDTO {
   cloudProvisioningError?: string | null;
   hybridLastHeartbeatAt?: string | null;
   agentKind?: AgentKind;
+  toolProfile?: "minimal" | "coding" | "full";
 }
 
 export interface VerifiableCredentialDTO {
@@ -185,8 +211,13 @@ export interface RuntimeStatusResponse {
 /**
  * Must satisfy backend `assertModelAllowed`: default env allows models starting with `openrouter/`.
  * The inference proxy strips one `openrouter/` prefix before calling OpenRouter’s API (see `openrouterClient.ts`).
+ * Auto is first — Qlix routes ≤ billable tier (standard by default; economy on Spark/Ignition).
  */
+export const QLIX_AUTO_MODEL = "openrouter/qlix/auto" as const;
+
 export const CLOUD_MODELS = [
+  QLIX_AUTO_MODEL,
+  "openrouter/google/gemini-2.5-flash-lite",
   "openrouter/openai/gpt-4o-mini",
   "openrouter/openai/gpt-4o",
   "openrouter/anthropic/claude-sonnet-4.6",
@@ -422,16 +453,33 @@ export async function clearConversationMessages(agentId: string, conversationId:
   return res.ok;
 }
 
+export type ChatAttachmentDTO = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  url: string;
+  sizeBytes: number;
+  textPreview?: string;
+};
+
+export type ConversationMessageDTO = {
+  id: string;
+  role: string;
+  content: string;
+  attachments?: ChatAttachmentDTO[] | null;
+  createdAt?: string;
+};
+
 export async function fetchConversationMessages(
   agentId: string,
   conversationId: string,
-): Promise<Array<{ id: string; role: string; content: string }> | null> {
+): Promise<ConversationMessageDTO[] | null> {
   const res = await fetch(
     `${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
     { credentials: "include" },
   );
   if (!res.ok) return null;
-  const body = (await res.json()) as { messages?: Array<{ id: string; role: string; content: string }> };
+  const body = (await res.json()) as { messages?: ConversationMessageDTO[] };
   return body.messages ?? null;
 }
 
@@ -585,4 +633,22 @@ export async function stopAgentRun(agentId: string, runId: string): Promise<bool
     { method: "POST", credentials: "include" },
   );
   return res.ok;
+}
+
+export async function updateAgentToolProfile(
+  agentId: string,
+  toolProfile: "minimal" | "coding" | "full",
+): Promise<AgentDTO | null> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/tool-profile`,
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolProfile }),
+    },
+  );
+  if (!res.ok) return null;
+  const body = (await res.json()) as { agent: AgentDTO };
+  return body.agent;
 }

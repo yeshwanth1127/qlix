@@ -74,6 +74,29 @@ export async function getWhatsAppSessionStatus(connectorId: string): Promise<{
   };
 }
 
+export async function getWhatsAppServiceHealth(): Promise<{
+  ok: boolean;
+  qrLinkingReady: boolean;
+  baileysVersion: string | null;
+  error?: string;
+}> {
+  const res = await waFetch('GET', '/health');
+  const version = typeof res.data.baileys_version === 'string' ? res.data.baileys_version : null;
+  const qrLinkingReady = res.data.qr_linking_ready === true || res.data.baileys_version_ok === true;
+  if (!res.ok || !qrLinkingReady) {
+    return {
+      ok: false,
+      qrLinkingReady: false,
+      baileysVersion: version,
+      error:
+        typeof res.data.baileys_version_error === 'string'
+          ? res.data.baileys_version_error
+          : 'WhatsApp service health check failed — Baileys version not ready (QR linking will fail)',
+    };
+  }
+  return { ok: true, qrLinkingReady: true, baileysVersion: version };
+}
+
 export async function sendWhatsAppToConnector(
   connectorId: string,
   message: string,
@@ -131,4 +154,117 @@ export async function sendWhatsAppNotification(
     return { ok: false, error: String(res.data.error ?? 'Notification send failed') };
   }
   return { ok: true };
+}
+
+export async function sendWhatsAppToRecipient(input: {
+  connectorId: string;
+  recipient: string;
+  message: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}> {
+  const res = await waFetch('POST', '/send-to', {
+    connector_id: input.connectorId,
+    recipient: input.recipient,
+    message: input.message,
+  });
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(res.data.error ?? 'Send failed'),
+      matches: Array.isArray(res.data.matches)
+        ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
+        : undefined,
+    };
+  }
+  return {
+    ok: true,
+    jid: typeof res.data.jid === 'string' ? res.data.jid : undefined,
+    phone: typeof res.data.phone === 'string' ? res.data.phone : null,
+    name: typeof res.data.name === 'string' ? res.data.name : null,
+  };
+}
+
+export async function listWhatsAppContacts(input: {
+  connectorId: string;
+  query?: string;
+  limit?: number;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  contacts?: Array<{ jid: string; phone: string | null; name: string | null }>;
+  totalMatched?: number;
+}> {
+  const res = await waFetch('POST', '/contacts/list', {
+    connector_id: input.connectorId,
+    query: input.query ?? '',
+    limit: input.limit ?? 50,
+  });
+  if (!res.ok) {
+    return { ok: false, error: String(res.data.error ?? 'List contacts failed') };
+  }
+  return {
+    ok: true,
+    contacts: Array.isArray(res.data.contacts)
+      ? (res.data.contacts as Array<{ jid: string; phone: string | null; name: string | null }>)
+      : [],
+    totalMatched: typeof res.data.total_matched === 'number' ? res.data.total_matched : undefined,
+  };
+}
+
+export async function getWhatsAppChatMessages(input: {
+  connectorId: string;
+  recipient: string;
+  limit?: number;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  jid?: string;
+  name?: string | null;
+  phone?: string | null;
+  messages?: Array<{
+    id: string | null;
+    from_me: boolean;
+    text: string;
+    timestamp: string;
+    push_name: string | null;
+  }>;
+  note?: string;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}> {
+  const res = await waFetch('POST', '/chats/messages', {
+    connector_id: input.connectorId,
+    recipient: input.recipient,
+    limit: input.limit ?? 30,
+  });
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(res.data.error ?? 'Read chat failed'),
+      matches: Array.isArray(res.data.matches)
+        ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
+        : undefined,
+    };
+  }
+  return {
+    ok: true,
+    jid: typeof res.data.jid === 'string' ? res.data.jid : undefined,
+    name: typeof res.data.name === 'string' ? res.data.name : null,
+    phone: typeof res.data.phone === 'string' ? res.data.phone : null,
+    messages: Array.isArray(res.data.messages)
+      ? (res.data.messages as Array<{
+          id: string | null;
+          from_me: boolean;
+          text: string;
+          timestamp: string;
+          push_name: string | null;
+        }>)
+      : [],
+    note: typeof res.data.note === 'string' ? res.data.note : undefined,
+  };
 }

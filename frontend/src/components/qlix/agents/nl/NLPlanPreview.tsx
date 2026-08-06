@@ -1,11 +1,10 @@
 "use client";
 
-import { Cloud, Cpu, Laptop, ShieldAlert, ShieldCheck, Users, X, Plus } from "lucide-react";
+import { Cloud, Cpu, Laptop, ShieldAlert, ShieldCheck, Users, X } from "lucide-react";
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from "@/lib/nl-builder-api";
 import {
   ALL_PERMISSION_SCOPES,
   FORCE_JIT_SCOPES,
-  PERMISSION_SCOPE_LABELS,
   CLOUD_MODELS,
   LOCAL_MODELS,
   type PermissionScope,
@@ -13,6 +12,7 @@ import {
 } from "@/lib/agents-api";
 import { scopesRequireHybrid } from "@/lib/agent-runtime";
 import { SketchBox, sketchInput, sketchLabel } from "@/components/qlix/sketch";
+import { ScopeAddDropdown } from "./ScopeAddDropdown";
 
 interface NLPlanPreviewProps {
   readonly plan: AgentCreationPlan;
@@ -189,36 +189,17 @@ function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
               );
             })}
 
-            {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).length > 0 && (
-              <div className="group relative">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 border border-dashed border-black/40 bg-white px-2 py-0.5 text-[10.5px] text-black/50 transition-colors hover:border-black hover:text-black"
-                >
-                  <Plus className="size-2.5" aria-hidden />
-                  Add
-                </button>
-                <div className="absolute left-0 top-full z-10 mt-1.5 hidden min-w-[200px] border border-black bg-white py-1.5 group-focus-within:block">
-                  {ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s)).map((s) => {
-                    const isJit = FORCE_JIT_SCOPES.includes(s as never);
-                    return (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => patch(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
-                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-black/5"
-                      >
-                        <span className="font-mono text-[10.5px] text-black">{s}</span>
-                        {isJit && <ShieldAlert className="mt-0.5 size-2.5 shrink-0 text-black/50" aria-hidden />}
-                        <span className="text-[10px] leading-relaxed text-black/50">
-                          {PERMISSION_SCOPE_LABELS[s]}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {(() => {
+              const available = ALL_PERMISSION_SCOPES.filter((s) => !spec.permissionScopes.includes(s));
+              if (available.length === 0) return null;
+              return (
+                <ScopeAddDropdown
+                  availableScopes={available}
+                  assignedScopes={spec.permissionScopes}
+                  onSelect={(scope) => patch(toggleScope(scope, spec.permissionScopes, spec.jitScopes))}
+                />
+              );
+            })()}
           </div>
           {spec.jitScopes.length > 0 && (
             <p className="mt-1.5 text-[10px] text-black/55">

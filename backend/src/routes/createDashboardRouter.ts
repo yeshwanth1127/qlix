@@ -217,7 +217,7 @@ export function createDashboardRouter(): Router {
         return {
           id: log.id,
           timeUtc: `${hh}:${mm}:${ss}`,
-          agentName: log.agent.name,
+          agentName: log.agent?.name ?? 'Deleted agent',
           action: normalizeAuditAction(log.actionType),
           result: normalizeAuditResult(log.status),
           description: describeAuditPayload(log.payload, log.actionType),
@@ -322,6 +322,10 @@ export function createDashboardRouter(): Router {
       const groups = new Map<string, AuditGroup>();
 
       for (const log of logs) {
+        // The `where: { agent: { orgId } }` filter above already excludes logs whose
+        // Agent row is gone (SetNull on delete) — this is belt-and-suspenders.
+        if (!log.agentId || !log.agent) continue;
+
         const ms = Number(log.timestampMs);
         const d = new Date(ms);
         const hh = `${d.getUTCHours()}`.padStart(2, '0');

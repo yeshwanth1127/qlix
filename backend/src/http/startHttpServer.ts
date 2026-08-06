@@ -17,6 +17,16 @@ const SHUTDOWN_FORCE_EXIT_MS = 10_000;
  */
 export function startHttpServer(application: Express, input: StartHttpServerInput): Server {
   const server = createServer(application);
+
+  // Phase B: OpenClaw-style WebSocket gateway (agent / chat.send RPC) on /gateway
+  void import('../gateway/ws/gatewayWsServer.js')
+    .then(({ attachGatewayWebSocket }) => {
+      attachGatewayWebSocket(server);
+    })
+    .catch((err) => {
+      console.warn('[gateway-ws] not attached', err instanceof Error ? err.message : err);
+    });
+
   server.listen(input.port, () => {
     console.info(`[qlix-backend] listening on http://localhost:${input.port}`);
   });
@@ -26,6 +36,14 @@ export function startHttpServer(application: Express, input: StartHttpServerInpu
     if (shuttingDown) return;
     shuttingDown = true;
     console.info(`[qlix-backend] ${signal} received — draining in-flight requests`);
+
+    // Reject new gateway ingress immediately (OpenClaw-style drain).
+    void import('../gateway/drain.js')
+      .then(({ beginGatewayDrain }) => beginGatewayDrain())
+      .catch(() => undefined);
+    void import('../gateway/runEventBus.js')
+      .then(({ runEventBus }) => runEventBus.close())
+      .catch(() => undefined);
 
     const forceExit = setTimeout(() => {
       console.warn(`[qlix-backend] shutdown drain exceeded ${SHUTDOWN_FORCE_EXIT_MS}ms — forcing exit`);

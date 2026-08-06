@@ -356,3 +356,50 @@ export function enrichCompetitorResearchPlan(
     rationale: `${plan.rationale} Competitor-research enrichment: research tools wired across the team; supervisor writes the cited SWOT report.`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// CRM enrichment — Zoho / CRM task agents often under-scope (read + write only)
+// ---------------------------------------------------------------------------
+
+const CRM_INTENT =
+  /\b(zoho\s*crm|(?:my\s+)?zoho(?:\s+crm)?|crm\s+(?:tasks?|records?|data|operations?|platform|agent|automation)|manage\s+(?:my\s+)?(?:zoho\s*crm|crm)|perform\s+(?:tasks?|actions?|operations?)\s+(?:on|in)\s+(?:my\s+)?(?:zoho(?:\s+crm)?|crm)|hubspot|salesforce)\b/i;
+
+const CRM_PERM: readonly string[] = ['crm.read', 'crm.write', 'crm.delete'];
+const CRM_JIT: readonly string[] = ['crm.write', 'crm.delete'];
+
+export function isCrmPrompt(prompt: string): boolean {
+  return CRM_INTENT.test(prompt);
+}
+
+function enrichCrmAgent(spec: NLAgentSpec, allowed: Set<string>): NLAgentSpec {
+  return mergeScopes(spec, CRM_PERM, CRM_JIT, allowed, false);
+}
+
+export function enrichCrmPlan(
+  userPrompt: string,
+  plan: AgentCreationPlan,
+  allowed: Set<string>,
+): AgentCreationPlan {
+  if (!isCrmPrompt(userPrompt)) return plan;
+  if (isLeadGenPrompt(userPrompt) || isJobApplyPrompt(userPrompt) || isCompetitorResearchPrompt(userPrompt)) {
+    return plan;
+  }
+  const hasCrm = CRM_PERM.some((s) => allowed.has(s));
+  if (!hasCrm) return plan;
+
+  if (plan.type === 'single') {
+    return {
+      ...plan,
+      agent: enrichCrmAgent(plan.agent, allowed),
+      rationale: `${plan.rationale} CRM enrichment: granted crm.read, crm.write, and crm.delete for full CRM tool access.`,
+    };
+  }
+
+  const supervisor = enrichCrmAgent(plan.team.supervisor, allowed);
+  const workers = plan.team.workers.map((w) => enrichCrmAgent(w, allowed) as NLWorkerSpec);
+  return {
+    ...plan,
+    team: { ...plan.team, supervisor, workers },
+    rationale: `${plan.rationale} CRM enrichment: full CRM scopes wired across the team.`,
+  };
+}

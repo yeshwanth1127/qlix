@@ -1,6 +1,7 @@
-import { makePlaceholderPage } from "@/components/qlix/make-placeholder-page";
+"use client";
 
-export default makePlaceholderPage(
-  "API keys",
-  "Programmatic access to Qlix and Exora APIs.",
-);
+import { ApiKeysView } from "@/components/qlix/api-keys-view";
+
+export default function OrganizationApiKeysPage() {
+  return <ApiKeysView />;
+}

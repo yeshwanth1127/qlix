@@ -6,11 +6,12 @@ import { SectionHeading } from "@/components/qlix/section-heading";
 import { MetricCard } from "@/components/qlix/metric-card";
 import { SketchBox, SketchSection, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getUsageSummary, type UsageSummaryItem } from "@/lib/usage-api";
-import { formatUsd } from "@/lib/billing-display-money";
+import { CurrencyToggle, useDisplayCurrency } from "@/components/qlix/currency-context";
 import { cn } from "@/lib/utils/cn";
 
 export default function IndividualUsagePage() {
   const { session, loading: sessionLoading } = useSession();
+  const { formatUsdCogs } = useDisplayCurrency();
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,13 +67,16 @@ export default function IndividualUsagePage() {
   return (
     <div className="w-full space-y-8">
       <header className="flex flex-col gap-3">
-        <SectionHeading title="Usage" description="Token consumption and inference costs by agent." />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionHeading title="Usage" description="Token consumption and inference costs by agent." />
+          <CurrencyToggle />
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <MetricCard label="Total runs" value={totalRuns.toLocaleString()} subtext="This month" />
         <MetricCard label="Total tokens" value={totalTokens.toLocaleString()} subtext="Input + output" />
-        <MetricCard label="Inference cost" value={formatUsd(totalCost.toString())} subtext="This month" />
+        <MetricCard label="Inference cost" value={formatUsdCogs(totalCost.toString())} subtext="This month" />
       </div>
 
       <SketchSection title="Agents">
@@ -113,7 +117,7 @@ export default function IndividualUsagePage() {
                     <td className="px-4 py-3 tabular-nums text-black">{row.totalRuns.toLocaleString()}</td>
                     <td className="px-4 py-3 tabular-nums text-black">{row.promptTokens.toLocaleString()}</td>
                     <td className="px-4 py-3 tabular-nums text-black">{row.completionTokens.toLocaleString()}</td>
-                    <td className="px-4 py-3 font-mono text-black">{formatUsd(row.totalCostUsd)}</td>
+                    <td className="px-4 py-3 font-mono text-black">{formatUsdCogs(row.totalCostUsd)}</td>
                   </tr>
                 ))}
               </tbody>

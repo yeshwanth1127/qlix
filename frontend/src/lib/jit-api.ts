@@ -40,6 +40,31 @@ export interface ConversationGrantDTO {
   expiresAt: string | null;
 }
 
+/** Pending JIT approval surfaced when the live run stream missed the approval card. */
+export interface PendingJitDTO {
+  jitRequestId: string;
+  agentId: string;
+  scope: string;
+  scopeLabel: string;
+  context: string;
+  runId: string | null;
+  conversationId: string | null;
+  requestedAt: string;
+}
+
+export async function listPendingJit(
+  conversationId: string,
+  agentId: string,
+): Promise<PendingJitDTO[]> {
+  const params = new URLSearchParams({ conversationId, agentId });
+  const res = await fetch(`${apiBase()}/api/v1/jit/pending?${params}`, { credentials: "include" });
+  const body = (await res.json().catch(() => null)) as
+    | { pending?: PendingJitDTO[]; error?: { message?: string } }
+    | null;
+  if (!res.ok) return [];
+  return body?.pending ?? [];
+}
+
 export async function listJitGrants(): Promise<ConversationGrantDTO[]> {
   const res = await fetch(`${apiBase()}/api/v1/jit/grants`, { credentials: "include" });
   const body = (await res.json().catch(() => null)) as
@@ -67,6 +92,14 @@ export function jitScopeLabel(scope: string): string {
     "email.read": "Read email",
     "social.publish": "Publish to social (Orbit)",
     "social.read": "Read social (Orbit)",
+    "crm.write": "Create or update CRM",
+    "crm.delete": "Delete CRM records",
+    "crm.read": "Read Zoho CRM",
+    "slack.send": "Write to Slack",
+    "slack.read": "Read Slack",
+    "whatsapp.contact_send": "Message a WhatsApp contact",
+    "whatsapp.read": "Read WhatsApp chats",
+    "whatsapp.send": "Send files to linked WhatsApp",
     "web.transaction": "Web transactions",
     "system.file_write": "Write files",
   };

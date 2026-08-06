@@ -2,11 +2,17 @@ import { prisma } from '../lib/prisma.js';
 import { ConnectorsRepository } from './connectors.repository.js';
 import type { ConnectorAccountDTO, WhatsAppLinkStatusDTO } from './connectors.types.js';
 import {
+  getWhatsAppServiceHealth,
   getWhatsAppSessionStatus,
   isWhatsAppServiceConfigured,
   startWhatsAppSession,
   stopWhatsAppSession,
 } from './whatsappServiceClient.js';
+import {
+  isWhatsAppLinkReady,
+  waitForWhatsAppLinkPoll,
+  whatsAppLinkNotReadyMessage,
+} from './whatsappLinkWait.js';
 
 const repo = new ConnectorsRepository();
 
@@ -77,6 +83,12 @@ export async function startWhatsAppLink(orgId: string, userId: string): Promise<
     );
   }
   const connector = await repo.upsertWhatsAppPending({ orgId, userId });
+  const health = await getWhatsAppServiceHealth();
+  if (!health.qrLinkingReady) {
+    throw new Error(health.error ?? whatsAppLinkNotReadyMessage());
+  }
+  // Wipe any stale Baileys session so a fresh QR pairing flow can start.
+  await stopWhatsAppSession(connector.id).catch(() => {});
   const started = await startWhatsAppSession(connector.id);
   if (!started.ok) {
     await prisma.connectorAccount.update({
@@ -85,8 +97,18 @@ export async function startWhatsAppLink(orgId: string, userId: string): Promise<
     });
     throw new Error(started.error ?? 'Failed to start WhatsApp session');
   }
-  return pollLinkStatus(connector.id);
+  const status = await waitForWhatsAppLinkPoll(() => pollLinkStatus(connector.id));
+  if (!isWhatsAppLinkReady(status)) {
+    await prisma.connectorAccount.update({
+      where: { id: connector.id },
+      data: { status: 'error' },
+    });
+    throw new Error(whatsAppLinkNotReadyMessage());
+  }
+  return status;
 }
+
+export { waitForWhatsAppLinkPoll, isWhatsAppLinkReady };
 
 export async function pollLinkStatus(connectorId: string): Promise<WhatsAppLinkStatusDTO> {
   const connector = await repo.findById(connectorId);

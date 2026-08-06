@@ -11,32 +11,21 @@ import { isoBase64URL } from '@simplewebauthn/server/helpers';
 import type { WebAuthnEnvironment } from '../config/loadEnvironmentConfig.js';
 import { isDeviceVerificationComplete } from '../deviceVerification/deviceVerification.js';
 import { prisma } from '../lib/prisma.js';
+import { ephemeralDelete, ephemeralGet, ephemeralSet } from '../lib/ephemeralGrants.js';
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
-type ChallengeEntry = { challenge: string; expiresAt: number };
+const REG_NAMESPACE = 'webauthn-reg-challenge';
+const AUTH_NAMESPACE = 'webauthn-auth-challenge';
 
-/** In-memory registration challenges; replace with Redis for multi-instance deployments. */
-const registrationChallengeStore = new Map<string, ChallengeEntry>();
-
-/** In-memory authentication (assertion) challenges. */
-const authenticationChallengeStore = new Map<string, ChallengeEntry>();
-
-function pruneStore(store: Map<string, ChallengeEntry>): void {
-  const now = Date.now();
-  for (const [key, entry] of store) {
-    if (entry.expiresAt <= now) {
-      store.delete(key);
-    }
-  }
+interface ChallengeValue {
+  challenge: string;
 }
 
 export class WebAuthnService {
   constructor(private readonly config: WebAuthnEnvironment) {}
 
   async generateRegistrationOptions(userId: string): Promise<Awaited<ReturnType<typeof generateRegistrationOptions>>> {
-    pruneStore(registrationChallengeStore);
-
     const user = await prisma.user.findUnique({
       where: { id: userId },
     });
@@ -70,20 +59,14 @@ export class WebAuthnService {
 
     const options = await generateRegistrationOptions(opts);
 
-    registrationChallengeStore.set(userId, {
-      challenge: options.challenge,
-      expiresAt: Date.now() + CHALLENGE_TTL_MS,
-    });
+    await ephemeralSet(REG_NAMESPACE, userId, { challenge: options.challenge }, CHALLENGE_TTL_MS);
 
     return options;
   }
 
   async verifyRegistration(userId: string, credential: RegistrationResponseJSON): Promise<boolean> {
-    pruneStore(registrationChallengeStore);
-
-    const entry = registrationChallengeStore.get(userId);
-    if (!entry || entry.expiresAt <= Date.now()) {
-      registrationChallengeStore.delete(userId);
+    const entry = await ephemeralGet<ChallengeValue>(REG_NAMESPACE, userId);
+    if (!entry) {
       throw new Error('Challenge not found or expired');
     }
 
@@ -111,7 +94,7 @@ export class WebAuthnService {
       },
     });
 
-    registrationChallengeStore.delete(userId);
+    await ephemeralDelete(REG_NAMESPACE, userId);
     return true;
   }
 
@@ -121,8 +104,6 @@ export class WebAuthnService {
   async generateAuthenticationOptions(
     userId: string,
   ): Promise<Awaited<ReturnType<typeof generateAuthenticationOptions>>> {
-    pruneStore(authenticationChallengeStore);
-
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -143,10 +124,7 @@ export class WebAuthnService {
       timeout: 60_000,
     });
 
-    authenticationChallengeStore.set(userId, {
-      challenge: options.challenge,
-      expiresAt: Date.now() + CHALLENGE_TTL_MS,
-    });
+    await ephemeralSet(AUTH_NAMESPACE, userId, { challenge: options.challenge }, CHALLENGE_TTL_MS);
 
     return options;
   }
@@ -155,11 +133,8 @@ export class WebAuthnService {
    * Verify a WebAuthn assertion and advance the stored signature counter (replay protection).
    */
   async verifyAuthentication(userId: string, assertion: AuthenticationResponseJSON): Promise<boolean> {
-    pruneStore(authenticationChallengeStore);
-
-    const entry = authenticationChallengeStore.get(userId);
-    if (!entry || entry.expiresAt <= Date.now()) {
-      authenticationChallengeStore.delete(userId);
+    const entry = await ephemeralGet<ChallengeValue>(AUTH_NAMESPACE, userId);
+    if (!entry) {
       throw new Error('Challenge not found or expired');
     }
 
@@ -179,7 +154,7 @@ export class WebAuthnService {
       !user.webauthnPublicKey ||
       !isDeviceVerificationComplete(user)
     ) {
-      authenticationChallengeStore.delete(userId);
+      await ephemeralDelete(AUTH_NAMESPACE, userId);
       return false;
     }
 
@@ -205,7 +180,7 @@ export class WebAuthnService {
       data: { webauthnCounter: verification.authenticationInfo.newCounter },
     });
 
-    authenticationChallengeStore.delete(userId);
+    await ephemeralDelete(AUTH_NAMESPACE, userId);
     return true;
   }
 }

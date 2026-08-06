@@ -1,0 +1,451 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Qlix Developer API",
+    "version": "1.0.0",
+    "description": "Account-scoped programmatic access to Qlix Layer 3 (agent identity), Layer 5 (audit ledger), agent/team executions, and AI Brain.\n\nAuthenticate with `Authorization: Bearer qlix_live_…` or `X-Api-Key: qlix_live_…`. Create keys in the console under API keys. Keys are scoped; session JWT (console) is not restricted by these scopes.\n\nAgent-signed actions (`/actions/*`, `/jit/request`) and runner tokens remain separate auth modes."
+  },
+  "servers": [
+    { "url": "/api/v1", "description": "Versioned API root" }
+  ],
+  "tags": [
+    { "name": "Agents", "description": "Layer 3 — agent identity lifecycle" },
+    { "name": "Credentials", "description": "DIDs, VCs, passports" },
+    { "name": "Audit", "description": "Layer 5 — audit read and compliance export" },
+    { "name": "Runs", "description": "Agent chat executions" },
+    { "name": "Teams", "description": "Team registry and multi-agent runs" },
+    { "name": "Brain", "description": "AI Brain knowledge and query" },
+    { "name": "JIT", "description": "Just-in-time human approvals" },
+    { "name": "Usage", "description": "Usage and subscription reads" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "qlix_live_*",
+        "description": "API key issued from the Qlix console"
+      },
+      "ApiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["code", "message"]
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid API key / session",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Missing scope or not in Developer API surface",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    }
+  },
+  "security": [{ "ApiKeyBearer": [] }, { "ApiKeyHeader": [] }],
+  "paths": {
+    "/agents": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List agents",
+        "operationId": "listAgents",
+        "responses": {
+          "200": { "description": "Agent list for the workspace" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["agents:read"]
+      },
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Create agent",
+        "operationId": "createAgent",
+        "responses": {
+          "200": { "description": "Created agent" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["agents:write"]
+      },
+      "delete": {
+        "tags": ["Agents"],
+        "summary": "Bulk delete agents",
+        "operationId": "deleteAllAgents",
+        "responses": {
+          "200": { "description": "Deletion result" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["agents:write"]
+      }
+    },
+    "/agents/scope-catalog": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List available permission scopes",
+        "operationId": "getScopeCatalog",
+        "responses": { "200": { "description": "Scope catalog" } },
+        "x-qlix-scopes": ["agents:read"]
+      }
+    },
+    "/agents/{id}": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get agent detail",
+        "operationId": "getAgent",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Agent detail" } },
+        "x-qlix-scopes": ["agents:read"]
+      },
+      "delete": {
+        "tags": ["Agents"],
+        "summary": "Delete agent",
+        "operationId": "deleteAgent",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["confirmName"],
+                "properties": { "confirmName": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": { "204": { "description": "Deleted" } },
+        "x-qlix-scopes": ["agents:write"]
+      }
+    },
+    "/agents/{id}/scopes": {
+      "patch": {
+        "tags": ["Agents"],
+        "summary": "Update agent permission scopes",
+        "operationId": "updateAgentScopes",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Updated scopes" } },
+        "x-qlix-scopes": ["agents:write"]
+      }
+    },
+    "/agents/{agentId}/conversations": {
+      "post": {
+        "tags": ["Runs"],
+        "summary": "Create or get primary conversation",
+        "operationId": "createConversation",
+        "parameters": [
+          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Conversation" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/{agentId}/conversations/{conversationId}/messages": {
+      "post": {
+        "tags": ["Runs"],
+        "summary": "Enqueue a chat run",
+        "operationId": "enqueueAgentRun",
+        "parameters": [
+          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "conversationId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Run enqueued" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/{agentId}/runs/{runId}/stream": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "SSE stream for a run",
+        "operationId": "streamAgentRun",
+        "parameters": [
+          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "text/event-stream" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/{agentId}/runs/{runId}/stop": {
+      "post": {
+        "tags": ["Runs"],
+        "summary": "Stop a run",
+        "operationId": "stopAgentRun",
+        "parameters": [
+          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Stopped" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/active-runs": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "List in-flight runs",
+        "operationId": "listActiveRuns",
+        "responses": { "200": { "description": "Active runs" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/run-history": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "Recent finished runs",
+        "operationId": "listRunHistory",
+        "responses": { "200": { "description": "Run history" } },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/{id}/brain/query": {
+      "post": {
+        "tags": ["Brain"],
+        "summary": "Query org brain as an agent",
+        "operationId": "agentBrainQuery",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Brain answer" } },
+        "x-qlix-scopes": ["brain:read"]
+      }
+    },
+    "/credentials": {
+      "get": {
+        "tags": ["Credentials"],
+        "summary": "List workspace credentials / platform DID",
+        "operationId": "listCredentials",
+        "responses": { "200": { "description": "Credentials" } },
+        "x-qlix-scopes": ["credentials:read"]
+      }
+    },
+    "/passports": {
+      "get": {
+        "tags": ["Credentials"],
+        "summary": "List workspace passports",
+        "operationId": "listPassports",
+        "responses": { "200": { "description": "Passports" } },
+        "x-qlix-scopes": ["credentials:read"]
+      }
+    },
+    "/dashboard/audit": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Read org audit log",
+        "operationId": "getAuditLog",
+        "responses": { "200": { "description": "Audit events" } },
+        "x-qlix-scopes": ["audit:read"]
+      }
+    },
+    "/compliance/export": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Export compliance pack (admin/owner)",
+        "operationId": "exportCompliance",
+        "parameters": [
+          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["json", "csv"] } }
+        ],
+        "responses": { "200": { "description": "Export payload" } },
+        "x-qlix-scopes": ["audit:read"]
+      }
+    },
+    "/jit/decide": {
+      "post": {
+        "tags": ["JIT"],
+        "summary": "Approve or deny a JIT request",
+        "operationId": "decideJit",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["jitRequestId", "approved"],
+                "properties": {
+                  "jitRequestId": { "type": "string", "format": "uuid" },
+                  "approved": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Decision recorded" } },
+        "x-qlix-scopes": ["jit:decide"]
+      }
+    },
+    "/jit/grants": {
+      "get": {
+        "tags": ["JIT"],
+        "summary": "List active session grants",
+        "operationId": "listJitGrants",
+        "responses": { "200": { "description": "Grants" } },
+        "x-qlix-scopes": ["jit:decide"]
+      }
+    },
+    "/teams": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "List teams",
+        "operationId": "listTeams",
+        "responses": { "200": { "description": "Teams" } },
+        "x-qlix-scopes": ["teams:read"]
+      },
+      "post": {
+        "tags": ["Teams"],
+        "summary": "Create team",
+        "operationId": "createTeam",
+        "responses": { "200": { "description": "Created team" } },
+        "x-qlix-scopes": ["teams:write"]
+      }
+    },
+    "/teams/{id}": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "Get team",
+        "operationId": "getTeam",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Team detail" } },
+        "x-qlix-scopes": ["teams:read"]
+      }
+    },
+    "/teams/{id}/runs": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "List team runs",
+        "operationId": "listTeamRuns",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Team runs" } },
+        "x-qlix-scopes": ["teams:read"]
+      },
+      "post": {
+        "tags": ["Teams"],
+        "summary": "Start a team run",
+        "operationId": "startTeamRun",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Team run started" } },
+        "x-qlix-scopes": ["teams:write"]
+      }
+    },
+    "/teams/{id}/runs/{runId}/stream": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "SSE stream for a team run",
+        "operationId": "streamTeamRun",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "text/event-stream" } },
+        "x-qlix-scopes": ["teams:read"]
+      }
+    },
+    "/ai-brain/query": {
+      "post": {
+        "tags": ["Brain"],
+        "summary": "RAG / retrieval query",
+        "operationId": "brainQuery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "query": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Query result" } },
+        "x-qlix-scopes": ["brain:read"]
+      }
+    },
+    "/ai-brain/status": {
+      "get": {
+        "tags": ["Brain"],
+        "summary": "Brain status",
+        "operationId": "brainStatus",
+        "responses": { "200": { "description": "Status" } },
+        "x-qlix-scopes": ["brain:read"]
+      }
+    },
+    "/ai-brain/collections": {
+      "get": {
+        "tags": ["Brain"],
+        "summary": "List knowledge collections",
+        "operationId": "listBrainCollections",
+        "responses": { "200": { "description": "Collections" } },
+        "x-qlix-scopes": ["brain:read"]
+      },
+      "post": {
+        "tags": ["Brain"],
+        "summary": "Create knowledge collection",
+        "operationId": "createBrainCollection",
+        "responses": { "200": { "description": "Created collection" } },
+        "x-qlix-scopes": ["brain:write"]
+      }
+    },
+    "/organization/members": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List organization members",
+        "operationId": "listOrgMembers",
+        "responses": { "200": { "description": "Members" } },
+        "x-qlix-scopes": ["agents:read"]
+      }
+    },
+    "/usage/summary": {
+      "get": {
+        "tags": ["Usage"],
+        "summary": "Usage summary",
+        "operationId": "usageSummary",
+        "responses": { "200": { "description": "Usage summary" } },
+        "x-qlix-scopes": ["usage:read"]
+      }
+    },
+    "/billing/subscription": {
+      "get": {
+        "tags": ["Usage"],
+        "summary": "Subscription status",
+        "operationId": "getSubscription",
+        "responses": { "200": { "description": "Subscription" } },
+        "x-qlix-scopes": ["usage:read"]
+      }
+    }
+  }
+}

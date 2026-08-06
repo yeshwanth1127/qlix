@@ -15,13 +15,15 @@ export interface OpenRouterCatalogModel {
   id: string;
   name: string;
   contextLength?: number;
+  /** USD per input token */
+  promptUsdPerToken?: number;
+  /** USD per output token */
+  completionUsdPerToken?: number;
+  /** Blended USD per 1M tokens (0.7 in + 0.3 out) for ranking */
+  blendUsdPer1M?: number;
+  supportsTools?: boolean;
 }
 
-/**
- * Fetches model ids from OpenRouter (`GET /models`) — **exact `id` values** their API accepts.
- * Filters out embedding / non–chat-query models where architecture metadata is present.
- * Requires `OPENROUTER_API_KEY`.
- */
 function isOpenRouterChatQueryModel(row: Record<string, unknown>, id: string): boolean {
   const lid = id.toLowerCase();
   if (lid.includes('embed')) return false;
@@ -39,7 +41,30 @@ function isOpenRouterChatQueryModel(row: Record<string, unknown>, id: string): b
   return true;
 }
 
-export async function fetchOpenRouterModelCatalog(): Promise<OpenRouterCatalogModel[]> {
+function parseUsdPerToken(raw: unknown): number | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+let catalogCache: { at: number; models: OpenRouterCatalogModel[] } | null = null;
+const CATALOG_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Fetches model ids + pricing from OpenRouter (`GET /models`).
+ * Requires `OPENROUTER_API_KEY`.
+ */
+export async function fetchOpenRouterModelCatalog(options?: {
+  forceRefresh?: boolean;
+}): Promise<OpenRouterCatalogModel[]> {
+  const now = Date.now();
+  if (!options?.forceRefresh && catalogCache && now - catalogCache.at < CATALOG_TTL_MS) {
+    return catalogCache.models;
+  }
+
   const url = modelsListUrl();
   const response = await fetch(url, {
     headers: {
@@ -67,8 +92,26 @@ export async function fetchOpenRouterModelCatalog(): Promise<OpenRouterCatalogMo
         : typeof r.contextLength === 'number'
           ? r.contextLength
           : undefined;
-    out.push({ id, name, contextLength: ctx });
+    const pricing = (r.pricing ?? {}) as Record<string, unknown>;
+    const promptUsdPerToken = parseUsdPerToken(pricing.prompt);
+    const completionUsdPerToken = parseUsdPerToken(pricing.completion);
+    let blendUsdPer1M: number | undefined;
+    if (promptUsdPerToken != null && completionUsdPerToken != null) {
+      blendUsdPer1M = 1e6 * (0.7 * promptUsdPerToken + 0.3 * completionUsdPerToken);
+    }
+    const supported = r.supported_parameters;
+    const supportsTools = Array.isArray(supported) && supported.map(String).includes('tools');
+    out.push({
+      id,
+      name,
+      contextLength: ctx,
+      promptUsdPerToken,
+      completionUsdPerToken,
+      blendUsdPer1M,
+      supportsTools,
+    });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
+  catalogCache = { at: now, models: out };
   return out;
 }

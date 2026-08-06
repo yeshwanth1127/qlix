@@ -1,5 +1,4 @@
 import { prisma } from '../lib/prisma.js';
-import { enqueueAgentRun } from '../agentChat/agentRunService.js';
 import { getConnectedWhatsAppForOrg } from '../connectors/whatsappConnector.service.js';
 import {
   getWhatsAppSessionStatus,
@@ -11,11 +10,27 @@ import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 import { ConnectorsRepository } from '../connectors/connectors.repository.js';
 import { goalRequestsWhatsAppDelivery } from './whatsappDeliveryIntent.js';
 import {
+  buildDisambiguationOptions,
+  buildWhatsAppIntentRoster,
+  classifyWhatsAppIntent,
+  formatDisambiguationMenu,
+  parseDisambiguationSelection,
+  routeHintForConfidence,
+  type IntentRouteDecision,
+} from './whatsappIntentRouter.js';
+import {
+  clearPendingRoute,
+  getPendingRoute,
+  resolvePendingSelection,
+  savePendingRoute,
+} from './whatsappPendingRoute.service.js';
+import {
   parseWhatsAppRunModifiers,
   resolveUseBrainForWhatsAppRun,
 } from './whatsappRunModifiers.js';
 
 const WHATSAPP_BODY_MAX = 1500;
+const LOW_CONFIDENCE_THRESHOLD = 0.45;
 
 function truncateBody(text: string): string {
   return text.length > WHATSAPP_BODY_MAX ? `${text.slice(0, WHATSAPP_BODY_MAX)}…` : text;
@@ -33,8 +48,12 @@ function isLikelyOutboundEcho(text: string): boolean {
     'Qlix API error',
     'Multiple agents',
     'set a default agent in Connectors',
+    'WhatsApp default agent',
     'No team named',
     'Queued —',
+    'matched:',
+    'I can help — which agent',
+    'Reply 1–',
     '📋 *Qlix',
     '*Team run active*',
     'Added guidance to active team run',
@@ -146,62 +165,27 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
 
 const repo = new ConnectorsRepository();
 
-/** Parse optional `@AgentName: message` or `@AgentName message` prefix. */
-export function parseAgentTarget(text: string): { agentName: string | null; prompt: string } {
-  const colon = text.match(/^@([^:]+):\s*([\s\S]*)$/);
-  if (colon) {
-    return { agentName: colon[1]!.trim(), prompt: colon[2]!.trim() || text };
-  }
-  const bare = text.match(/^@(\S+)\s+([\s\S]+)$/);
-  if (bare) {
-    return { agentName: bare[1]!.trim(), prompt: bare[2]!.trim() };
-  }
-  return { agentName: null, prompt: text };
-}
-
 function agentScopeWhere(connector: ConnectorAccountDTO) {
   const userId = connector.userId;
   return { OR: [{ orgId: connector.orgId }, { userId, orgId: null }] };
 }
 
-async function findAgentByName(
+async function resolveDefaultAgent(
   connector: ConnectorAccountDTO,
-  agentName: string,
 ): Promise<{ id: string; name: string } | null> {
+  if (!connector.whatsappDefaultAgentId) return null;
   return prisma.agent.findFirst({
     where: {
-      name: { equals: agentName.trim(), mode: 'insensitive' },
+      id: connector.whatsappDefaultAgentId,
       ...agentScopeWhere(connector),
+      agentKind: { not: 'org_brain' },
     },
     select: { id: true, name: true },
   });
 }
 
-async function resolveAgentId(
-  connector: ConnectorAccountDTO,
-  agentName: string | null,
-): Promise<{ id: string; name: string }> {
-  const userId = connector.userId;
-
-  if (agentName) {
-    const byName = await findAgentByName(connector, agentName);
-    if (!byName) throw new Error(`No agent named "${agentName}"`);
-    return byName;
-  }
-
-  if (connector.whatsappDefaultAgentId) {
-    const agent = await prisma.agent.findFirst({
-      where: {
-        id: connector.whatsappDefaultAgentId,
-        ...agentScopeWhere(connector),
-      },
-      select: { id: true, name: true },
-    });
-    if (!agent) throw new Error('Default WhatsApp agent is invalid — re-save it in Connectors');
-    return agent;
-  }
-
-  const routable = await prisma.agent.findMany({
+async function listRoutableAgents(connector: ConnectorAccountDTO) {
+  return prisma.agent.findMany({
     where: {
       ...agentScopeWhere(connector),
       agentKind: { not: 'org_brain' },
@@ -209,19 +193,6 @@ async function resolveAgentId(
     select: { id: true, name: true, runtime: true },
     orderBy: { createdAt: 'asc' },
   });
-
-  if (routable.length === 0) {
-    throw new Error('No agents registered for WhatsApp (org brain cannot be triggered from chat)');
-  }
-  if (routable.length === 1) return routable[0]!;
-
-  const hybridAgents = routable.filter((a) => a.runtime === 'hybrid');
-  if (hybridAgents.length === 1) return hybridAgents[0]!;
-
-  const names = routable.map((a) => a.name).join(', ');
-  throw new Error(
-    `Which agent? You have: ${names}. Use @AgentName: your message (e.g. @local: …) or set Fallback default agent in Connectors.`,
-  );
 }
 
 async function ensureConversation(
@@ -229,13 +200,20 @@ async function ensureConversation(
   userId: string,
   orgId: string | null,
 ): Promise<string> {
-  const convo = await prisma.agentConversation.upsert({
-    where: { agentId_userId: { agentId, userId } },
-    create: { agentId, userId, orgId },
-    update: {},
-    select: { id: true },
-  });
+  const { getOrCreatePrimaryConversation } = await import('../agentChat/conversationService.js');
+  const convo = await getOrCreatePrimaryConversation({ agentId, userId, orgId });
   return convo.id;
+}
+
+function formatQueuedReply(
+  name: string,
+  input: { useBrain: boolean; routeHint?: string | null },
+): string {
+  const hints: string[] = [];
+  if (input.useBrain) hints.push('brain on');
+  if (input.routeHint) hints.push(`matched: ${input.routeHint}`);
+  const suffix = hints.length > 0 ? ` (${hints.join(', ')})` : '';
+  return `Queued — ${name} is on it.${suffix}`;
 }
 
 async function enqueueWhatsAppAgentRun(
@@ -243,6 +221,7 @@ async function enqueueWhatsAppAgentRun(
   agent: { id: string; name: string },
   prompt: string,
   brainFlag: boolean,
+  routeHint?: string | null,
 ): Promise<{ reply: string }> {
   const agentRow = await prisma.agent.findUnique({
     where: { id: agent.id },
@@ -255,26 +234,175 @@ async function enqueueWhatsAppAgentRun(
     permissionScopes: agentRow?.permissionScopes ?? [],
   });
 
-  const conversationId = await ensureConversation(
-    agent.id,
-    connector.userId,
-    agentRow?.orgId ?? connector.orgId,
+  const orgId = agentRow?.orgId ?? connector.orgId;
+  const conversationId = await ensureConversation(agent.id, connector.userId, orgId);
+
+  const { buildWhatsAppInbound, gatewayService } = await import('../gateway/index.js');
+  const turn = await gatewayService.handleInbound(
+    buildWhatsAppInbound({
+      connectorId: connector.id,
+      orgId,
+      userId: connector.userId,
+      body: prompt,
+      useBrain,
+      preResolved: {
+        targetType: 'agent',
+        agentId: agent.id,
+        conversationId,
+        orgId,
+        userId: connector.userId,
+        targetName: agent.name,
+        teamRole: 'whatsapp',
+        routeHint: routeHint ?? null,
+      },
+    }),
   );
 
-  await enqueueAgentRun({
-    agentId: agent.id,
-    conversationId,
-    userId: connector.userId,
-    orgId: agentRow?.orgId ?? connector.orgId,
-    prompt,
-    useBrain,
-    teamRole: 'whatsapp',
-  });
+  if (turn.status === 'accepted' || turn.status === 'steered') {
+    return {
+      reply: turn.ackReply ?? formatQueuedReply(agent.name, { useBrain, routeHint }),
+    };
+  }
+  return {
+    reply: turn.ackReply ?? (turn.status === 'rejected' ? turn.reason : 'Could not queue run'),
+  };
+}
 
-  const hints: string[] = [];
-  if (useBrain) hints.push('brain on');
-  const suffix = hints.length > 0 ? ` (${hints.join(', ')})` : '';
-  return { reply: `Queued — ${agent.name} is on it.${suffix}` };
+async function enqueueWhatsAppTeamRun(
+  connector: ConnectorAccountDTO,
+  team: { id: string; name: string },
+  goal: string,
+  routeHint?: string | null,
+): Promise<{ reply: string }> {
+  const { buildTeamInbound, gatewayService } = await import('../gateway/index.js');
+  const turn = await gatewayService.handleInbound(
+    buildTeamInbound({
+      channel: 'whatsapp',
+      teamId: team.id,
+      teamName: team.name,
+      orgId: connector.orgId,
+      userId: connector.userId,
+      goal,
+      connectorId: connector.id,
+    }),
+  );
+
+  if (turn.status === 'accepted') {
+    const hint = routeHint ? ` (matched: ${routeHint})` : '';
+    return {
+      reply: (turn.ackReply ?? `Queued — ${team.name}.`) + hint,
+    };
+  }
+  return {
+    reply: turn.ackReply ?? (turn.status === 'rejected' ? turn.reason : 'Could not queue team run'),
+  };
+}
+
+async function routeByIntentDecision(
+  connector: ConnectorAccountDTO,
+  prompt: string,
+  brainFlag: boolean,
+  decision: IntentRouteDecision,
+): Promise<{ reply: string }> {
+  const routeHint = routeHintForConfidence(decision);
+
+  if (decision.targetType === 'team') {
+    return enqueueWhatsAppTeamRun(
+      connector,
+      { id: decision.targetId, name: decision.targetName },
+      prompt,
+      routeHint,
+    );
+  }
+
+  return enqueueWhatsAppAgentRun(
+    connector,
+    { id: decision.targetId, name: decision.targetName },
+    prompt,
+    brainFlag,
+    routeHint,
+  );
+}
+
+async function fallbackAgentRoute(
+  connector: ConnectorAccountDTO,
+  prompt: string,
+  brainFlag: boolean,
+): Promise<{ reply: string }> {
+  const defaultAgent = await resolveDefaultAgent(connector);
+  if (defaultAgent) {
+    return enqueueWhatsAppAgentRun(connector, defaultAgent, prompt, brainFlag);
+  }
+
+  const routable = await listRoutableAgents(connector);
+  if (routable.length === 0) {
+    throw new Error('No agents registered for WhatsApp (org brain cannot be triggered from chat)');
+  }
+  if (routable.length === 1) {
+    return enqueueWhatsAppAgentRun(connector, routable[0]!, prompt, brainFlag);
+  }
+
+  const hybridAgents = routable.filter((a) => a.runtime === 'hybrid');
+  if (hybridAgents.length === 1) {
+    return enqueueWhatsAppAgentRun(connector, hybridAgents[0]!, prompt, brainFlag);
+  }
+
+  const { agents } = await buildWhatsAppIntentRoster(connector);
+  const options = buildDisambiguationOptions(agents);
+  await savePendingRoute(connector.id, { prompt, brainFlag, options });
+  return { reply: formatDisambiguationMenu(options) };
+}
+
+async function routePlainTextMessage(
+  connector: ConnectorAccountDTO,
+  prompt: string,
+  brainFlag: boolean,
+): Promise<{ reply: string }> {
+  const decision = await classifyWhatsAppIntent(connector, prompt);
+
+  if (decision && decision.confidence >= LOW_CONFIDENCE_THRESHOLD) {
+    return routeByIntentDecision(connector, prompt, brainFlag, decision);
+  }
+
+  if (decision && decision.confidence < LOW_CONFIDENCE_THRESHOLD) {
+    const defaultAgent = await resolveDefaultAgent(connector);
+    if (defaultAgent) {
+      return enqueueWhatsAppAgentRun(connector, defaultAgent, prompt, brainFlag);
+    }
+  }
+
+  return fallbackAgentRoute(connector, prompt, brainFlag);
+}
+
+async function tryResolvePendingDisambiguation(
+  connector: ConnectorAccountDTO,
+  text: string,
+): Promise<{ reply: string } | null> {
+  const pending = await getPendingRoute(connector.id);
+  if (!pending) return null;
+
+  const index = parseDisambiguationSelection(text, pending.options.length);
+  if (index == null) return null;
+
+  const resolved = await resolvePendingSelection(connector.id, index);
+  if (!resolved) {
+    return { reply: 'That selection expired. Send your request again.' };
+  }
+
+  const { selected, prompt, brainFlag } = resolved;
+  if (selected.targetType === 'team') {
+    return enqueueWhatsAppTeamRun(
+      connector,
+      { id: selected.targetId, name: selected.name },
+      prompt,
+    );
+  }
+  return enqueueWhatsAppAgentRun(
+    connector,
+    { id: selected.targetId, name: selected.name },
+    prompt,
+    brainFlag,
+  );
 }
 
 export async function handleWhatsAppInbound(
@@ -300,39 +428,50 @@ export async function handleWhatsAppInbound(
     return { reply: agentStatus };
   }
 
-  const { useBrain: brainFlag, text: routedText } = parseWhatsAppRunModifiers(trimmed);
-  const { agentName, prompt } = parseAgentTarget(routedText);
-
-  // `@local:` / `@AgentName:` must hit agents when the name matches — not team routing.
-  if (agentName) {
-    const namedAgent = await findAgentByName(connector, agentName);
-    if (namedAgent) {
-      if (!prompt) {
-        return {
-          reply: `Add your request after @${namedAgent.name}: …`,
-        };
-      }
-      return enqueueWhatsAppAgentRun(connector, namedAgent, prompt, brainFlag);
-    }
-  }
-
-  const { tryHandleTeamWhatsAppInbound } = await import('../teams/teamChannel.service.js');
-  const teamResult = await tryHandleTeamWhatsAppInbound(connector, trimmed);
-  if (teamResult.handled) {
-    return { reply: teamResult.reply };
-  }
-
-  if (!prompt) {
+  if (lower === '!help') {
     return {
       reply:
-        'Send a message or use @AgentName: your request\n' +
-        '• Add #brain to use company AI brain\n' +
-        '• Hybrid agents can open files on your PC (say "open" + full path)',
+        'Just type your request — Qlix picks the right agent.\n' +
+        '• @TeamName: goal — run a team\n' +
+        '• #brain — use company AI brain\n' +
+        '• !status · !cancel · yes/no for approvals',
     };
   }
 
-  const agent = await resolveAgentId(connector, agentName);
-  return enqueueWhatsAppAgentRun(connector, agent, prompt, brainFlag);
+  const pendingReply = await tryResolvePendingDisambiguation(connector, trimmed);
+  if (pendingReply) return pendingReply;
+
+  // Non-numeric message clears stale pending picker state.
+  if (await getPendingRoute(connector.id)) {
+    await clearPendingRoute(connector.id);
+  }
+
+  const { useBrain: brainFlag, text: promptText } = parseWhatsAppRunModifiers(trimmed);
+
+  // @ prefix is reserved for teams.
+  if (trimmed.startsWith('@')) {
+    const { tryHandleTeamWhatsAppInbound } = await import('../teams/teamChannel.service.js');
+    const teamResult = await tryHandleTeamWhatsAppInbound(connector, trimmed);
+    if (teamResult.handled) {
+      return { reply: teamResult.reply };
+    }
+    return {
+      reply:
+        'Use @TeamName: your goal for teams, or type your request plainly for a single agent.',
+    };
+  }
+
+  if (!promptText.trim()) {
+    return {
+      reply:
+        'Just type your request — Qlix routes it to the best agent.\n' +
+        '• @TeamName: goal for teams\n' +
+        '• Add #brain for company knowledge\n' +
+        '• Hybrid agents can open files on your PC (include the full path)',
+    };
+  }
+
+  return routePlainTextMessage(connector, promptText, brainFlag);
 }
 
 export async function formatAgentsStatus(connectorId: string): Promise<string> {

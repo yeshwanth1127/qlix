@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import { ensureQlixJobsMcpForOrg } from './ensureQlixJobsMcp.js';
 import type { PermissionScope } from '../agents/agents.types.js';
 
-const DEFAULT_MODEL = 'openrouter/openai/gpt-4o-mini';
+const DEFAULT_MODEL = 'openrouter/qlix/auto';
 
 const APPLY_SCOPES: PermissionScope[] = [
   'web.read',

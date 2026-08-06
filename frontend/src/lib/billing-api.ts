@@ -108,3 +108,32 @@ export async function getBillingStatementDetail(billingCycle: string): Promise<B
   return getJson<BillingStatementDetailResponse>(`/api/v1/billing/statements/${encodeURIComponent(billingCycle)}`);
 }
 
+export interface BillingPlanRow {
+  readonly id: string;
+  readonly displayName: string;
+  readonly blurb: string;
+  readonly monthlyPriceInr: string;
+  readonly monthlyPriceUsd: string;
+  readonly maxAgents: number;
+  readonly freeMonthlyCreditInr: string;
+  readonly allowedModelTiers: string[];
+  readonly whatsappMsgLimit: number;
+}
+
+export interface BillingPlansResponse {
+  readonly plans: BillingPlanRow[];
+  readonly fx: { base: string; quote: string; rate: number; asOf: string; source: string };
+}
+
+export async function getBillingPlans(): Promise<BillingPlansResponse | null> {
+  return getJson<BillingPlansResponse>("/api/v1/billing/plans");
+}
+
+export async function getBillingFx(): Promise<{
+  rate: number;
+  asOf: string;
+  source: string;
+} | null> {
+  return getJson("/api/v1/billing/fx");
+}
+

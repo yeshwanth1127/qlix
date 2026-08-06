@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AgentDTO, deleteAllAgents, listAgents } from "@/lib/agents-api";
+import { type AgentDTO, deleteAgent, deleteAllAgents, listAgents } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
+import { canDeleteAgentRecord } from "@/lib/org-permissions";
 import { cn } from "@/lib/utils/cn";
 import {
   SketchBox,
@@ -18,7 +19,11 @@ import {
   sketchLabel,
 } from "@/components/qlix/sketch";
 import { CreateAgentModal } from "./CreateAgentModal";
-import { deriveAgentDisplayStatus, formatDidCompact } from "./agentStatus";
+import {
+  agentListStatusClassName,
+  deriveAgentDisplayStatus,
+  formatDidCompact,
+} from "./agentStatus";
 
 interface AgentsSplitViewProps {
   readonly routePrefix: "/individual" | "/organization";
@@ -36,6 +41,11 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentDTO | null>(null);
+  const [deleteTargetInput, setDeleteTargetInput] = useState("");
+  const [deletingOne, setDeletingOne] = useState(false);
+  const [deleteOneError, setDeleteOneError] = useState<string | null>(null);
+  const deleteTargetRef = useRef<HTMLInputElement>(null);
 
   const isOrg = routePrefix === "/organization";
   const orgId = isOrg ? (session?.organization.id ?? null) : null;
@@ -97,6 +107,31 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
 
   const handleCreated = (agent: AgentDTO) => {
     setAgents((prev) => [agent, ...(prev ?? [])]);
+  };
+
+  const canDeleteAgentRow = (agent: AgentDTO): boolean =>
+    session != null && canDeleteAgentRecord(agent, session);
+
+  const openDeleteOne = (agent: AgentDTO) => {
+    setDeleteTarget(agent);
+    setDeleteTargetInput("");
+    setDeleteOneError(null);
+    setTimeout(() => deleteTargetRef.current?.focus(), 50);
+  };
+
+  const handleDeleteOne = async () => {
+    if (!deleteTarget) return;
+    if (deleteTargetInput.trim() !== deleteTarget.name.trim()) return;
+    setDeletingOne(true);
+    setDeleteOneError(null);
+    const result = await deleteAgent(deleteTarget.id, deleteTargetInput.trim());
+    setDeletingOne(false);
+    if (result.ok) {
+      setAgents((prev) => prev?.filter((a) => a.id !== deleteTarget.id) ?? []);
+      setDeleteTarget(null);
+      return;
+    }
+    setDeleteOneError(result.errorMessage ?? "Failed to delete agent");
   };
 
   return (
@@ -175,7 +210,15 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-2.5">
-                  <span className={cn(sketchLabel, "text-[10px]")}>{status}</span>
+                  <span
+                    className={cn(
+                      sketchLabel,
+                      "text-[10px]",
+                      agentListStatusClassName(status),
+                    )}
+                  >
+                    {status}
+                  </span>
                   <Link
                     href={`${routePrefix}/agents/${a.id}/chat`}
                     className={sketchButtonSecondary}
@@ -188,6 +231,15 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
                   >
                     Details
                   </Link>
+                  {canDeleteAgentRow(a) ? (
+                    <button
+                      type="button"
+                      onClick={() => openDeleteOne(a)}
+                      className={sketchButtonDanger}
+                    >
+                      Delete
+                    </button>
+                  ) : null}
                 </div>
               </SketchRow>
             );
@@ -204,6 +256,53 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
         onCreated={handleCreated}
         orgId={orgId}
       />
+
+      {deleteTarget ? (
+        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-white/70 p-4 backdrop-blur-sm">
+          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-white/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
+            <h2 className={sketchLabel}>Delete agent?</h2>
+            <p className="mt-2 text-[12px] text-black/60">
+              This permanently deletes{" "}
+              <span className="font-medium text-black">{deleteTarget.name}</span>, its credentials,
+              and audit rows. Type the agent name to confirm.
+            </p>
+            <input
+              ref={deleteTargetRef}
+              type="text"
+              value={deleteTargetInput}
+              onChange={(e) => setDeleteTargetInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleDeleteOne();
+              }}
+              placeholder={deleteTarget.name}
+              autoComplete="off"
+              className={cn(sketchInput, "mt-4")}
+            />
+            {deleteOneError ? (
+              <p className="mt-2 text-[12px] text-black">{deleteOneError}</p>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className={sketchButtonGhost}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteOne()}
+                disabled={
+                  deleteTargetInput.trim() !== deleteTarget.name.trim() || deletingOne
+                }
+                className={sketchButtonDanger}
+              >
+                {deletingOne ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {confirmOpen ? (
         <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-white/70 p-4 backdrop-blur-sm">

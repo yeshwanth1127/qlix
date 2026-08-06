@@ -6,7 +6,7 @@ function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultBase).replace(/\/$/, "");
 }
 
-export type ConnectorProvider = "google" | "whatsapp_baileys" | "orbit";
+export type ConnectorProvider = "google" | "whatsapp_baileys" | "orbit" | "zoho" | "slack" | "telegram";
 
 export type ConnectorStatus = "connected" | "revoked" | "error" | "pending_qr";
 
@@ -72,6 +72,19 @@ export async function startGoogleOAuth(): Promise<{ url: string }> {
   return data as { url: string };
 }
 
+export async function startZohoOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/zoho/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start Zoho OAuth");
+  }
+  return data as { url: string };
+}
+
 export async function disconnectGoogle(): Promise<void> {
   const response = await fetch(`${apiBase()}/api/v1/connectors/google`, {
     method: "DELETE",
@@ -80,6 +93,41 @@ export async function disconnectGoogle(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     const data = await parseJson<ApiErrorBody>(response);
     throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Google");
+  }
+}
+
+export async function disconnectZoho(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/zoho`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Zoho");
+  }
+}
+
+export async function startSlackOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/slack/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start Slack OAuth");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectSlack(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/slack`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Slack");
   }
 }
 
@@ -105,12 +153,66 @@ export function googleConnector(connectors: ConnectorAccountDTO[]): ConnectorAcc
   return connectors.find((c) => c.provider === "google" && c.status === "connected");
 }
 
+export function zohoConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "zoho" && c.status === "connected");
+}
+
 export function whatsappConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "whatsapp_baileys");
 }
 
 export function orbitConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "orbit" && c.status === "connected");
+}
+
+export const CONNECTOR_DISPLAY_NAMES: Record<ConnectorProvider, string> = {
+  google: "Gmail",
+  zoho: "Zoho CRM",
+  whatsapp_baileys: "WhatsApp",
+  orbit: "Orbit Social",
+  slack: "Slack",
+  telegram: "Telegram",
+};
+
+export const CONNECTOR_CATALOG_IDS: Record<ConnectorProvider, string> = {
+  google: "google",
+  whatsapp_baileys: "whatsapp",
+  zoho: "zoho",
+  orbit: "facebook",
+  slack: "slack",
+  telegram: "telegram",
+};
+
+export interface LiveConnectorItem {
+  provider: ConnectorProvider;
+  name: string;
+  detail: string | null;
+}
+
+/** Connected workspace connectors (Gmail, WhatsApp, Zoho CRM, Orbit). */
+export function listLiveConnectors(connectors: ConnectorAccountDTO[]): LiveConnectorItem[] {
+  const items: LiveConnectorItem[] = [];
+  const push = (provider: ConnectorProvider, connector: ConnectorAccountDTO) => {
+    items.push({
+      provider,
+      name: CONNECTOR_DISPLAY_NAMES[provider],
+      detail: connector.emailAddress,
+    });
+  };
+
+  const google = googleConnector(connectors);
+  if (google) push("google", google);
+
+  const wa = whatsappConnector(connectors);
+  if (wa?.status === "connected") push("whatsapp_baileys", wa);
+
+  const zoho = zohoConnector(connectors);
+  if (zoho) push("zoho", zoho);
+
+  const orbit = orbitConnector(connectors);
+  if (orbit) push("orbit", orbit);
+
+  return items;
 }
 
 /** Enable Orbit for this workspace using the platform key (no paste). */
@@ -259,5 +361,61 @@ export async function disconnectWhatsApp(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     const data = await parseJson<ApiErrorBody>(response);
     throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect WhatsApp");
+  }
+}
+
+export function slackConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "slack" && c.status === "connected");
+}
+
+export async function connectSlackBot(input: {
+  botToken: string;
+  defaultAgentId?: string;
+  teamName?: string;
+}): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/slack/connect`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to connect Slack");
+  }
+}
+
+export type ChannelDefaultsDTO = {
+  whatsapp: { agentId: string | null; teamId: string | null; connected: boolean };
+  slack: { agentId: string | null; connected: boolean };
+  telegram: { agentId: string | null; connected: boolean };
+};
+
+export async function getChannelDefaults(): Promise<ChannelDefaultsDTO> {
+  const response = await fetch(`${apiBase()}/api/v1/channel-defaults`, {
+    credentials: "include",
+  });
+  const data = await parseJson<ChannelDefaultsDTO>(response);
+  if (!response.ok) {
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to load channel defaults");
+  }
+  return data as ChannelDefaultsDTO;
+}
+
+export async function patchChannelDefaults(input: {
+  whatsappAgentId?: string | null;
+  whatsappTeamId?: string | null;
+  slackAgentId?: string | null;
+  telegramAgentId?: string | null;
+}): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/channel-defaults`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to save channel defaults");
   }
 }

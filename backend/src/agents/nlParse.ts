@@ -1,12 +1,30 @@
 import { openRouterChatCompletion } from '../llm/openrouterClient.js';
+import { getPlanConfig } from '../billings/lib/subscriptionPlans.js';
+import { prisma } from '../lib/prisma.js';
 import { type PermissionScope } from './agents.types.js';
 import { FORCE_JIT_SCOPES } from './jit.js';
 import { getBuildableScopes, reconcileRuntimeWithScopes, type ScopeDef } from './scopeCatalog.js';
 import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
-import { enrichLeadGenPlan, enrichCompetitorResearchPlan, enrichJobApplyPlan } from './nlPlanEnrichment.js';
+import {
+  enrichLeadGenPlan,
+  enrichCompetitorResearchPlan,
+  enrichJobApplyPlan,
+  enrichCrmPlan,
+} from './nlPlanEnrichment.js';
 
 const DEFAULT_NL_PARSE_MODEL = 'openrouter/openai/gpt-4o-mini';
+/** Default runtime model for agents created via AI builder / templates. */
+const DEFAULT_AGENT_MODEL = 'openrouter/qlix/auto';
+
+async function planAllowedTiersForOrg(orgId: string | null): Promise<string[]> {
+  if (!orgId) return getPlanConfig('free').allowedModelTiers;
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { plan: true },
+  });
+  return getPlanConfig(org?.plan ?? 'free').allowedModelTiers;
+}
 
 function sanitizeScopes(raw: unknown, allowed: Set<string>): PermissionScope[] {
   if (!Array.isArray(raw)) return [];
@@ -52,13 +70,23 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
       : 'cloud_api';
   }
 
+  let model =
+    typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : DEFAULT_AGENT_MODEL;
+  // Cloud/hybrid agents default to Auto unless the planner already picked a qlix Auto id.
+  if (runtime === 'cloud' || runtime === 'hybrid') {
+    const lower = model.toLowerCase();
+    if (!lower.includes('qlix/auto')) {
+      model = DEFAULT_AGENT_MODEL;
+    }
+  }
+
   return {
     name: String(raw.name ?? fallbackName).slice(0, 120),
     description: String(raw.description ?? '').slice(0, 10000),
     permissionScopes,
     jitScopes,
     runtime,
-    model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : 'openrouter/openai/gpt-4o-mini',
+    model,
     llmMode,
     localInferenceMode,
     rationale: String(raw.rationale ?? ''),
@@ -89,6 +117,7 @@ export async function parseAgentCreationPrompt(
   model?: string,
 ): Promise<AgentCreationPlan> {
   const resolvedModel = model?.trim() || DEFAULT_NL_PARSE_MODEL;
+  const planAllowedTiers = await planAllowedTiersForOrg(orgId);
 
   // Offer every scope enabled for this org (base + connector-gated), even if the
   // connector isn't linked yet — the link is verified at run time, not build time.
@@ -109,7 +138,7 @@ export async function parseAgentCreationPrompt(
       tools: [buildAgentToolSchema(availableScopes), buildTeamToolSchema(availableScopes)],
       tool_choice: 'required',
     },
-    { timeoutMs: 45_000, retries: 1 },
+    { timeoutMs: 45_000, retries: 1, planAllowedTiers },
   );
 
   if (!result.toolCalls?.length) {
@@ -182,5 +211,6 @@ export async function parseAgentCreationPrompt(
 
   const leadEnriched = enrichLeadGenPlan(userPrompt, plan, allowed);
   const jobEnriched = enrichJobApplyPlan(userPrompt, leadEnriched, allowed);
-  return enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
+  const competitorEnriched = enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
+  return enrichCrmPlan(userPrompt, competitorEnriched, allowed);
 }

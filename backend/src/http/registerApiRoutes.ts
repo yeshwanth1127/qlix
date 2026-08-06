@@ -6,6 +6,7 @@ import { createHealthRouter } from '../routes/createHealthRouter.js';
 import { createOrganizationRouter } from '../routes/createOrganizationRouter.js';
 import { createPassportsRouter } from '../routes/createPassportsRouter.js';
 import { createCredentialsRouter } from '../routes/createCredentialsRouter.js';
+import { createApiKeysRouter } from '../routes/createApiKeysRouter.js';
 import { createWebauthnRouter } from '../routes/createWebauthnRouter.js';
 import { createAgentsRouter } from '../routes/createAgentsRouter.js';
 import { createAgentChatRouter } from '../routes/createAgentChatRouter.js';
@@ -15,6 +16,7 @@ import { createInternalRouter, createWhatsAppRouter } from '../routes/createWhat
 import { createPublicPassportRouter } from '../routes/createPublicPassportRouter.js';
 import { createInferenceProxyRouter } from '../routes/createInferenceProxyRouter.js';
 import { createInferenceCatalogRouter } from '../routes/createInferenceCatalogRouter.js';
+import { createAutoRoutingInfoRouter } from '../routes/createAutoRoutingInfoRouter.js';
 import { createAiBrainRouter } from '../routes/createAiBrainRouter.js';
 import { createTeamsRouter } from '../routes/createTeamsRouter.js';
 import { createConnectorsRouter } from '../routes/createConnectorsRouter.js';
@@ -33,6 +35,15 @@ import { createInternalJobsRouter } from '../routes/createInternalJobsRouter.js'
 import { createSandboxRouter } from '../routes/createSandboxRouter.js';
 import { createWaitlistRouter } from '../routes/createWaitlistRouter.js';
 import { createHomepageVisitsRouter } from '../routes/createHomepageVisitsRouter.js';
+import { createEmployeesRouter } from '../routes/createEmployeesRouter.js';
+import { createSkillsRouter } from '../routes/createSkillsRouter.js';
+import { createEmployeeSchedulesRouter } from '../routes/createEmployeeSchedulesRouter.js';
+import { createComplianceRouter } from '../routes/createComplianceRouter.js';
+import { createSlackRouter } from '../routes/createSlackRouter.js';
+import { createTelegramRouter } from '../routes/createTelegramRouter.js';
+import { createVcVerifyRouter } from '../routes/createVcVerifyRouter.js';
+import { createChannelDefaultsRouter } from '../routes/createChannelDefaultsRouter.js';
+import { createOpenApiRouter } from '../routes/createOpenApiRouter.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -42,10 +53,12 @@ export interface RegisterApiRoutesOptions {
  * Mounts versioned API routers under `/api/v1`.
  */
 export function registerApiRoutes(application: Express, options: RegisterApiRoutesOptions): void {
+  application.use('/api/v1', createOpenApiRouter());
   application.use('/api/v1/auth', createAuthRouter());
   application.use('/api/v1/dashboard', createDashboardRouter());
   application.use('/api/v1/passports', createPassportsRouter());
   application.use('/api/v1/credentials', createCredentialsRouter());
+  application.use('/api/v1/api-keys', createApiKeysRouter());
   application.use('/api/v1/organization', createOrganizationRouter());
   application.use('/api/v1/billing', createBillingRouter());
   application.use('/api/v1/billing/ingest', createBillingIngestRouter());
@@ -55,6 +68,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/agents', createAgentChatRouter());
   application.use('/api/v1/agents', createInferenceProxyRouter());
   application.use('/api/v1/inference', createInferenceCatalogRouter());
+  application.use('/api/v1/inference', createAutoRoutingInfoRouter());
   application.use('/api/v1/ai-brain', createAiBrainRouter());
   application.use('/api/v1/teams', createTeamsRouter());
   application.use('/api/v1/connectors', createConnectorsRouter());
@@ -72,6 +86,14 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/jobs', createJobsRouter());
   application.use('/api/v1/sandbox', createSandboxRouter());
   application.use('/api/v1/waitlist', createWaitlistRouter());
+  application.use('/api/v1/employees', createEmployeesRouter());
+  application.use('/api/v1/employee-schedules', createEmployeeSchedulesRouter());
+  application.use('/api/v1/skills', createSkillsRouter());
+  application.use('/api/v1/compliance', createComplianceRouter());
+  application.use('/api/v1/slack', createSlackRouter());
+  application.use('/api/v1/telegram', createTelegramRouter());
+  application.use('/api/v1/verify', createVcVerifyRouter());
+  application.use('/api/v1/channel-defaults', createChannelDefaultsRouter());
   application.use('/api/v1/homepage-visits', createHomepageVisitsRouter());
   application.use(createPublicPassportRouter());
   application.use('/api/v1/mobile', createMobileRouter());

@@ -38,6 +38,20 @@ export function canDeleteAgent(role: string): boolean {
   return r === "owner" || r === "admin";
 }
 
+/** Matches backend delete rules for agents in the active workspace org. */
+export function canDeleteAgentRecord(
+  agent: { userId: string; orgId: string | null },
+  session: { user: { id: string; role: string }; organization: { id: string } },
+): boolean {
+  if (agent.orgId == null) {
+    return agent.userId === session.user.id;
+  }
+  if (agent.orgId !== session.organization.id) {
+    return false;
+  }
+  return canDeleteAgent(session.user.role);
+}
+
 export function canManageBrain(role: string): boolean {
   const r = normalizeOrgRole(role);
   return r === "owner" || r === "admin";

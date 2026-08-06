@@ -9,10 +9,11 @@ import { MetricCard } from "@/components/qlix/metric-card";
 import { SketchBox, SketchSection, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { canAccessBilling } from "@/lib/org-permissions";
 import { getBillingOverview, type BillingOverviewResponse } from "@/lib/billing-api";
-import { formatBillingMoney } from "@/lib/billing-display-money";
+import { CurrencyToggle, useDisplayCurrency } from "@/components/qlix/currency-context";
 
 export default function OrganizationBillingPage() {
   const { session, loading: sessionLoading } = useSession();
+  const { formatInr } = useDisplayCurrency();
   const [data, setData] = useState<BillingOverviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,7 +116,10 @@ export default function OrganizationBillingPage() {
   return (
     <div className="w-full space-y-8">
       <header className="flex flex-col gap-3">
-        <SectionHeading title="Billing" description={`Usage and action credits for ${data.organization.name}.`} />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionHeading title="Billing" description={`Usage and action credits for ${data.organization.name}.`} />
+          <CurrencyToggle />
+        </div>
         <div className="font-serif text-[11px] uppercase tracking-widest text-black/50">
           Billing cycle: <span className="font-mono text-black">{data.billingCycle}</span>
         </div>
@@ -124,12 +128,12 @@ export default function OrganizationBillingPage() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <MetricCard
           label="Action credits"
-          value={formatBillingMoney(data.wallet.balance)}
+          value={formatInr(data.wallet.balance)}
           subtext={overdrawn ? "Overdrawn — review usage & add credits" : "Available balance"}
         />
         <MetricCard
           label="Spend (MTD)"
-          value={formatBillingMoney(data.monthToDate.spend)}
+          value={formatInr(data.monthToDate.spend)}
           subtext={`${data.monthToDate.successfulEvents.toLocaleString()} successful events`}
         />
         <MetricCard
@@ -180,11 +184,11 @@ export default function OrganizationBillingPage() {
                         <div className="font-mono text-[11px] text-black/50">{row.serviceKey}</div>
                       </td>
                       <td className="px-4 py-3 font-mono text-black">
-                        {formatBillingMoney(row.unitPrice)}
+                        {formatInr(row.unitPrice)}
                       </td>
                       <td className="px-4 py-3 tabular-nums text-black">{row.mtdSuccesses.toLocaleString()}</td>
                       <td className="px-4 py-3 font-mono text-black">
-                        {formatBillingMoney(row.mtdSpend)}
+                        {formatInr(row.mtdSpend)}
                       </td>
                     </tr>
                   ))}
@@ -202,7 +206,7 @@ export default function OrganizationBillingPage() {
                       <td className="px-4 py-3 font-mono text-black">—</td>
                       <td className="px-4 py-3 tabular-nums text-black">{row.mtdSuccesses.toLocaleString()}</td>
                       <td className="px-4 py-3 font-mono text-black">
-                        {formatBillingMoney(row.mtdSpend)}
+                        {formatInr(row.mtdSpend)}
                       </td>
                     </tr>
                   ))}

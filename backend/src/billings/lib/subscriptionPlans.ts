@@ -10,6 +10,7 @@ export interface PlanConfig {
   whatsappMsgLimit: number;
 }
 
+/** Internal plan slugs. UI names: Spark / Ignition / Nova / Quasar / Helix / Apex. */
 export const PLAN_CONFIG: Record<string, PlanConfig> = {
   free: {
     monthlyPriceInr: new Prisma.Decimal('0'),

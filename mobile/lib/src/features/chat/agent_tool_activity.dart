@@ -34,18 +34,25 @@ const Map<String, _ToolMeta> _toolMeta = {
   'brain_knowledge_read': _ToolMeta('AI Brain', ToolCategory.brain, 'Read knowledge'),
   'shell_exec': _ToolMeta('Shell', ToolCategory.system, 'Run command'),
   'code_interpreter': _ToolMeta('Code', ToolCategory.system, 'Run code'),
-  's3_read_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Read file'),
-  's3_write_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Write file'),
-  's3_list_dir': _ToolMeta('Agent-S3', ToolCategory.agents3, 'List directory'),
-  's3_open_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Open on desktop'),
-  's3_bash': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Shell (LocalEnv)'),
-  's3_python': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Python (LocalEnv)'),
-  's3_code_task': _ToolMeta('Agent-S3', ToolCategory.agents3, 'CodeAgent task'),
+  'luna_local_read_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Read file'),
+  'luna_local_write_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Write file'),
+  'luna_local_list_dir': _ToolMeta('Agent-S3', ToolCategory.agents3, 'List directory'),
+  'luna_local_open_file': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Open on desktop'),
+  'luna_local_search_files': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Search files'),
+  'luna_local_patch': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Apply patch'),
+  'luna_local_pwd': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Print cwd'),
+  'luna_local_cd': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Change cwd'),
+  'luna_local_bash': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Shell (LocalEnv)'),
+  'luna_local_python': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Python (LocalEnv)'),
+  'luna_local_code_task': _ToolMeta('Agent-S3', ToolCategory.agents3, 'CodeAgent task'),
+  'luna_local_create_pdf': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Create PDF'),
+  'luna_local_create_xlsx': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Create spreadsheet'),
+  'luna_local_send_whatsapp_document': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Send WhatsApp file'),
   'gui_control': _ToolMeta('Agent-S3', ToolCategory.agents3, 'Desktop (GUI)'),
 };
 
 bool _isAgents3ToolId(String toolId) =>
-    toolId == 'gui_control' || toolId.startsWith('s3_');
+    toolId == 'gui_control' || toolId.startsWith('luna_local_');
 
 class FormattedTool {
   const FormattedTool(this.short, this.category, this.group);
@@ -63,7 +70,7 @@ FormattedTool formatToolId(String toolId) {
     return FormattedTool(meta.verb ?? meta.label, meta.category, meta.label);
   }
   if (_isAgents3ToolId(toolId)) {
-    final human = toolId.replaceFirst(RegExp(r'^s3_'), '').replaceAll('_', ' ');
+    final human = toolId.replaceFirst(RegExp(r'^luna_local_'), '').replaceAll('_', ' ');
     return FormattedTool(_capitalize(human), ToolCategory.agents3, 'Agent-S3');
   }
   final human = toolId
@@ -190,6 +197,7 @@ ActivityStep? _buildActivityStep(int seq, Object? raw) {
         final toolId = _str(d['tool']);
         final f = formatToolId(toolId);
         final failed = d['ok'] == false;
+        final patchSummary = _str(d['patchSummary']).trim();
         if (failed) {
           final error = _str(d['error']).trim();
           return ActivityStep(
@@ -202,10 +210,11 @@ ActivityStep? _buildActivityStep(int seq, Object? raw) {
             toolId: toolId,
           );
         }
+        final base = '${f.short}${toolId.isNotEmpty ? ' ($toolId)' : ''}';
         return ActivityStep(
           id: id,
           label: f.group == 'Agent-S3' ? 'Done — Agent-S3' : 'Done — ${f.group}',
-          detail: '${f.short}${toolId.isNotEmpty ? ' ($toolId)' : ''}',
+          detail: patchSummary.isNotEmpty ? '$base · $patchSummary' : base,
           tone: ActivityTone.success,
           kind: ActivityKind.toolDone,
           category: f.category,

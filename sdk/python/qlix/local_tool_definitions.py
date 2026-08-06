@@ -166,4 +166,68 @@ def openai_always_tool_definitions() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_tools",
+                "description": (
+                    "Search the expanded tool catalog (MCP + browser_ab_* + connectors) when "
+                    "the default tool list is too large. Returns matching tool names and short docs."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keyword or substring to search tool names/descriptions",
+                        },
+                        "limit": {"type": "integer", "description": "Max results (default 15)"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "call_tool",
+                "description": (
+                    "Invoke a tool discovered via find_tools by exact name. "
+                    "Use when the tool is not in the default visible set."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Exact tool name"},
+                        "arguments": {
+                            "type": "object",
+                            "description": "JSON arguments for the tool",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delegate_task",
+                "description": (
+                    "Spawn a lightweight child agent run for a subtask without creating a Team. "
+                    "Use for parallel research or bounded side work. Returns the child run id."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "Subtask instructions"},
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional skill/scope filter for the child",
+                        },
+                    },
+                    "required": ["prompt"],
+                },
+            },
+        },
     ]

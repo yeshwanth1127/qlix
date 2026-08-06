@@ -125,39 +125,138 @@ def _remap_legacy_params(tool_name: str, resolved: str, params: dict[str, Any]) 
     return params
 
 
+# OpenClaw-style action → browser_ab_* mapping (collapsed mega-tool).
+_BROWSER_ACTION_MAP: dict[str, str] = {
+    "navigate": "browser_ab_open",
+    "open": "browser_ab_open",
+    "snapshot": "browser_ab_snapshot",
+    "click": "browser_ab_click",
+    "dblclick": "browser_ab_dblclick",
+    "type": "browser_ab_type",
+    "fill": "browser_ab_fill",
+    "press": "browser_ab_press",
+    "hover": "browser_ab_hover",
+    "focus": "browser_ab_focus",
+    "check": "browser_ab_check",
+    "uncheck": "browser_ab_uncheck",
+    "select": "browser_ab_select",
+    "drag": "browser_ab_drag",
+    "upload": "browser_ab_upload",
+    "download": "browser_ab_download",
+    "scroll": "browser_ab_scroll",
+    "scrollintoview": "browser_ab_scrollintoview",
+    "wait": "browser_ab_wait",
+    "screenshot": "browser_ab_screenshot",
+    "pdf": "browser_ab_pdf",
+    "eval": "browser_ab_eval",
+    "find": "browser_ab_find",
+    "get": "browser_ab_get",
+    "extract": "browser_ab_get",
+    "is": "browser_ab_is",
+    "back": "browser_ab_back",
+    "forward": "browser_ab_forward",
+    "reload": "browser_ab_reload",
+    "mouse": "browser_ab_mouse",
+    "set": "browser_ab_set",
+    "network": "browser_ab_network",
+    "tab": "browser_ab_tab",
+    "console": "browser_ab_console",
+    "errors": "browser_ab_errors",
+    "highlight": "browser_ab_highlight",
+    "cookies": "browser_ab_cookies",
+    "storage": "browser_ab_storage",
+    "trace": "browser_ab_trace",
+    "record": "browser_ab_record",
+    "session": "browser_ab_session",
+    "connect": "browser_ab_connect",
+    "close": "browser_ab_close",
+}
+
+
+def browser_collapse_enabled() -> bool:
+    """Default ON — expose one `browser` tool (OpenClaw-style). Set QLIX_BROWSER_COLLAPSE=0 to expand."""
+    raw = os.environ.get("QLIX_BROWSER_COLLAPSE", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def resolve_browser_action(action: str) -> str | None:
+    key = (action or "").strip().lower().replace("-", "_")
+    if key.startswith("browser_ab_"):
+        return key
+    return _BROWSER_ACTION_MAP.get(key)
+
+
+def _collapsed_browser_tool_definition() -> dict[str, Any]:
+    actions = sorted(_BROWSER_ACTION_MAP.keys())
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser",
+            "description": (
+                "Control the browser. Pass action= to select the operation "
+                "(navigate, snapshot, click, fill, type, extract/get, screenshot, wait, …). "
+                "Prefer snapshot before click/fill. Use extract/get for page Q&A without a full dump."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": actions,
+                        "description": "Browser operation to perform",
+                    },
+                    "url": {"type": "string", "description": "URL for navigate/open"},
+                    "selector": {"type": "string", "description": "CSS/ARIA selector or ref"},
+                    "text": {"type": "string", "description": "Text to type/fill/find"},
+                    "value": {"type": "string", "description": "Value for fill/select/set"},
+                    "query": {"type": "string", "description": "Extract/query text for page Q&A"},
+                    "what": {"type": "string", "description": "What to get (text, html, …)"},
+                    "key": {"type": "string", "description": "Key for press"},
+                    "path": {"type": "string", "description": "File path for upload/download/pdf"},
+                    "timeout_ms": {"type": "integer", "description": "Wait timeout"},
+                    "full_page": {"type": "boolean", "description": "Full-page screenshot"},
+                },
+                "required": ["action"],
+            },
+        },
+    }
+
+
 def openai_browser_tool_definitions(
     identity: AgentIdentity,
     skill_filter: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """Generate OpenAI-compatible tool definitions for agent-browser tools only.
+    """Generate OpenAI-compatible tool definitions for agent-browser tools.
 
-    Filters by:
-    1. Agent's permission scopes (web.read, web.click, etc.)
-    2. Skill filter (if provided; narrows available tools further)
+    When collapse is enabled (default), returns a single `browser` mega-tool
+    (OpenClaw pattern). Individual browser_ab_* tools remain executable via the
+    mega-tool action map and via find_tools/call_tool.
     """
     granted = _effective_granted_scopes(identity)
     ids = list(browser_tool_order())
     scopes = browser_tool_scopes()
 
-    # Narrow by skill filter if provided.
-    # skill_filter may contain scope names (e.g. 'web.read' from team delegatedScopes)
-    # or tool IDs (e.g. 'browser_ab_click'). Scope names contain '.'; tool IDs don't.
-    # When scope names are present, include tools whose required scopes overlap the filter.
     if skill_filter:
         filt = {str(s).strip() for s in skill_filter if str(s).strip()}
         if any("." in s for s in filt):
-            # Scope-based filter (team worker runs): include tool if any required scope is in filt
             ids = [t for t in ids if any(s in filt for s in scopes.get(t, ()))]
         else:
-            # Tool-ID-based filter: match directly
-            ids = [t for t in ids if t in filt]
+            ids = [t for t in ids if t in filt or t == "browser"]
+
+    # Need at least one allowed browser tool under granted scopes
+    allowed = [
+        tid
+        for tid in ids
+        if all(s in granted for s in scopes.get(tid, ()))
+    ]
+    if not allowed:
+        return []
+
+    if browser_collapse_enabled():
+        return [_collapsed_browser_tool_definition()]
 
     out: list[dict[str, Any]] = []
-    for tid in ids:
-        # Skip if agent lacks required scopes for this tool
-        req = scopes.get(tid, ())
-        if any(s not in granted for s in req):
-            continue
+    for tid in allowed:
         try:
             cls = ToolRegistry.get(tid)
             out.append(cls().to_openai_function())
@@ -289,6 +388,29 @@ def tool_allowed_for_identity(tool_name: str, identity: AgentIdentity) -> bool:
     return all(s in granted for s in req)
 
 
+def truncation_key(tool_name: str, arguments: str | dict[str, Any] | None = None) -> str:
+    """Resolve the name whose truncation rule should apply.
+
+    With browser collapse on (the default) the model only ever calls `browser`, so
+    keying truncation on the literal call name meant the snapshot and extract caps
+    never matched and every browser result fell through to the 120k-char default.
+    Mapping `browser(action=...)` back to its `browser_ab_*` id restores them.
+    """
+    if tool_name != "browser":
+        return tool_name
+    params: dict[str, Any] = {}
+    if isinstance(arguments, dict):
+        params = arguments
+    elif isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+            if isinstance(parsed, dict):
+                params = parsed
+        except json.JSONDecodeError:
+            params = {}
+    return resolve_browser_action(str(params.get("action") or "")) or tool_name
+
+
 def smart_truncate_tool_result(
     tool_name: str,
     result: str,
@@ -326,11 +448,17 @@ def smart_truncate_tool_result(
             return truncated, True
         return result, False
 
-    # Default: 120K characters (plenty for most uses)
-    max_chars = 120_000
+    # Default cap. 120k chars is ~30k tokens — a single large file read or CRM dump
+    # could dwarf an entire run's budget, and it is re-sent on every subsequent round
+    # until compaction kicks in. 8k chars (~2k tokens) is ample for a tool result the
+    # model has to reason over; anything genuinely larger should be paged or searched.
+    max_chars = int(os.environ.get("QLIX_TOOL_RESULT_MAX_CHARS", "8000"))
     if len(result) > max_chars:
         truncated = result[:max_chars]
-        truncated += f"\n\n[Output truncated from {len(result)} chars]"
+        truncated += (
+            f"\n\n[Output truncated: showing {max_chars} of {len(result)} chars. "
+            "Narrow the request (filter, search, or read a specific range) to see more.]"
+        )
         return truncated, True
 
     return result, False

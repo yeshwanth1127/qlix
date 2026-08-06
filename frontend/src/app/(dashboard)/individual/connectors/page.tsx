@@ -6,7 +6,10 @@ import { McpServersView } from "@/components/qlix/mcp/McpServersView";
 
 function ConnectorsFallback() {
   return (
-    <div className="max-w-2xl py-8 text-[13px] text-black/50">Loading connectors…</div>
+    <div className="max-w-2xl py-8">
+      <div className="sketch-skeleton mb-3 h-4 w-32 rounded-full" />
+      <div className="sketch-skeleton h-3 w-64 rounded-full" />
+    </div>
   );
 }
 

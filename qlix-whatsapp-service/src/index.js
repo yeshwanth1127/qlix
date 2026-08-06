@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { createApiRouter } from './api.js';
-import { resumeSavedSessions } from './sessionManager.js';
+import { ensureBaileysVersionReady, resumeSavedSessions } from './sessionManager.js';
 import { resumePendingApprovals } from './handlers.js';
 
 const REQUIRED = ['PORT', 'QLIX_URL', 'SERVICE_SECRET', 'WHATSAPP_AUTH_ENCRYPTION_KEY'];
@@ -26,6 +26,8 @@ async function main() {
   console.log(`  HTTP port: ${port}`);
   console.log(`  Qlix URL:  ${process.env.QLIX_URL}`);
   console.log('────────────────────────────────────────');
+
+  await ensureBaileysVersionReady();
 
   const app = express();
   app.use(createApiRouter());

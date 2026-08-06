@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, ChevronLeft, Copy, Download, Fingerprint, Loader2, MessageSquare, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Copy, Download, Fingerprint, Loader2, MessageSquare, Pencil, Trash2, X } from "lucide-react";
 import {
   type AgentDTO,
   type VerifiableCredentialDTO,
@@ -14,9 +14,10 @@ import {
   clearCloudRunnerProvisioning,
   reissueHybridStarterPack,
   updateAgentDescription,
+  updateAgentToolProfile,
 } from "@/lib/agents-api";
 import { downloadBase64File, getStashedStarterPack, type StarterPack } from "@/lib/download";
-import { canDeleteAgent } from "@/lib/org-permissions";
+import { canDeleteAgentRecord } from "@/lib/org-permissions";
 import {
   SketchBox,
   SketchListSkeleton,
@@ -235,14 +236,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
     session != null &&
     (agent.userId === session.user.id || (agent.orgId != null && agent.orgId === session.organization.id));
 
-  const isOrgConsole = routePrefix === "/organization";
-  const canDelete =
-    session != null &&
-    (isOrgConsole
-      ? agent.orgId != null &&
-        agent.orgId === session.organization.id &&
-        canDeleteAgent(session.user.role)
-      : agent.orgId == null && agent.userId === session.user.id);
+  const canDelete = session != null && canDeleteAgentRecord(agent, session);
 
   const nameMatchesDelete = deleteNameInput.trim() === agent.name.trim();
 
@@ -338,9 +332,14 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
               </div>
             ) : (
               <div className="group flex items-start gap-2">
-                <p className={cn("flex-1 text-[13px] leading-relaxed", agent.description ? "text-black/70" : "italic text-black/50")}>
-                  {agent.description ?? "No description — click to add one."}
-                </p>
+                <div className="min-w-0 flex-1">
+                  <p className={cn("text-[13px] leading-relaxed", agent.description ? "text-black/70" : "italic text-black/50")}>
+                    {agent.description ?? "No description — click to add one."}
+                  </p>
+                  <p className="mt-1 text-[11px] text-black/45">
+                    Description helps Qlix route WhatsApp messages to this agent.
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={() => { setDescDraft(agent.description ?? ""); setDescEditing(true); setDescError(null); }}
@@ -416,7 +415,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                     onClick={async () => {
                       if (
                         !window.confirm(
-                          "Re-issue the starter pack? A fresh ZIP will download and the previously-downloaded starter pack will stop working. The agent's DID, scopes, runs and audit history are preserved.",
+                          "Download agent again? A fresh ZIP will download and the previously downloaded pack will stop working. The agent's DID, scopes, runs and audit history are preserved.",
                         )
                       ) {
                         return;
@@ -438,7 +437,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                         setReissueDone(true);
                       } catch (err) {
                         setReissueError(
-                          err instanceof Error ? err.message : "Failed to re-issue starter pack.",
+                          err instanceof Error ? err.message : "Failed to download agent again.",
                         );
                       } finally {
                         setReissuing(false);
@@ -448,20 +447,18 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                   >
                     {reissuing ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : reissueDone ? (
-                      <Download className="size-3.5" aria-hidden />
                     ) : (
-                      <RefreshCw className="size-3.5" aria-hidden />
+                      <Download className="size-3.5" aria-hidden />
                     )}
                     {reissuing
-                      ? "Re-issuing…"
+                      ? "Downloading…"
                       : reissueDone
-                        ? "Downloaded — re-issue again"
-                        : "Re-issue starter pack"}
+                        ? "Downloaded — download again"
+                        : "Download agent again"}
                   </button>
                   <p className="max-w-[260px] text-right text-[10px] leading-snug text-black/50">
                     Lost the ZIP? This rotates the signing key and runner token and downloads a fresh
-                    starter pack. The old pack stops working.
+                    pack. The old pack stops working.
                   </p>
                   {reissueError ? <p className="text-[11px] text-black">{reissueError}</p> : null}
                 </div>
@@ -607,6 +604,25 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                 className="sm:col-span-2"
               />
             ) : null}
+            <label className="sm:col-span-2">
+              <span className={sketchLabel}>Tool profile</span>
+              <select
+                className={`${sketchInput} mt-1`}
+                value={agent.toolProfile ?? "full"}
+                onChange={(e) => {
+                  const next = e.target.value as "minimal" | "coding" | "full";
+                  void updateAgentToolProfile(agent.id, next).then((updated) => {
+                    if (updated) {
+                      setData((prev) => (prev ? { ...prev, agent: updated } : prev));
+                    }
+                  });
+                }}
+              >
+                <option value="minimal">Minimal — core tools only</option>
+                <option value="coding">Coding — files + code focused</option>
+                <option value="full">Full — all granted scopes</option>
+              </select>
+            </label>
           </div>
         </section>
 

@@ -2,9 +2,9 @@ import { Buffer } from 'node:buffer';
 
 /**
  * Talks to the sandbox file store hosted in the qlix-mcp service. The store keeps
- * generated report PDFs; the backend uploads bytes to it and later streams them back
- * to the user's browser via createSandboxRouter (server-side proxy, so the mcp service
- * stays internal-only).
+ * generated files (PDFs, spreadsheets, etc.); the backend uploads bytes to it and
+ * later streams them back to the user's browser via createSandboxRouter (server-side
+ * proxy, so the mcp service stays internal-only).
  */
 
 function mcpBase(): string {

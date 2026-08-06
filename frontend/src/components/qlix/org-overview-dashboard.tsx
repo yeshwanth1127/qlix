@@ -5,8 +5,10 @@ import { useEffect, useState } from "react";
 import type { AuditResultUi, DashboardHomeResponse } from "@/lib/dashboard-api";
 import { getOrganizationMembers, type OrgMemberRow } from "@/lib/organization-api";
 import { normalizeOrgRole } from "@/lib/org-permissions";
+import { useConnectorsOverview } from "@/lib/hooks/use-connectors-overview";
 import { cn } from "@/lib/utils/cn";
 import { formatCompactCount } from "@/lib/workspace";
+import { OverviewConnectorsPanel } from "./overview-connectors-panel";
 import {
   SketchBox,
   SketchMetric,
@@ -35,6 +37,10 @@ function auditRowTone(result: AuditResultUi): string {
 
 export function OrgOverviewDashboard({ data }: { readonly data: DashboardHomeResponse }) {
   const [memberPreview, setMemberPreview] = useState<OrgMemberRow[]>([]);
+  const {
+    liveConnectors,
+    loading: connectorsLoading,
+  } = useConnectorsOverview();
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -98,6 +104,11 @@ export function OrgOverviewDashboard({ data }: { readonly data: DashboardHomeRes
               )}
             </SketchBox>
           </SketchSection>
+          <OverviewConnectorsPanel
+            connectorsHref="/organization/connectors"
+            liveConnectors={liveConnectors}
+            loading={connectorsLoading}
+          />
         </div>
 
         <div

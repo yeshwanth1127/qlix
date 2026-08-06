@@ -636,13 +636,17 @@ function Step3({
         >
           {modelOptions.map((m) => (
             <option key={m} value={m} className="bg-white text-black">
-              {m.replace("openrouter/", "")}
+              {m === "openrouter/qlix/auto"
+                ? "Auto (Qlix picks ≤ your plan)"
+                : m.replace("openrouter/", "")}
             </option>
           ))}
         </select>
         <p className="mt-1 text-[11px] text-[--text-tertiary]">
           {runtime === "cloud" || runtime === "hybrid"
-            ? "Used for all LLM calls (routed through Qlix)."
+            ? model === "openrouter/qlix/auto"
+              ? "Auto routes to the cheapest capable model within your billable tier. Price stays fixed."
+              : "Pinned model — used for all LLM calls (routed through Qlix)."
             : "Override with your local model if needed."}
         </p>
       </label>

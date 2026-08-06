@@ -24,6 +24,15 @@ export function normalizeQlixInferenceModelId(raw: string): string {
 
 export function assertModelAllowed(model: string): void {
   const normalized = model.trim().toLowerCase();
+  // Auto virtual models are resolved before OpenRouter; always allow.
+  if (
+    normalized === 'openrouter/qlix/auto' ||
+    normalized === 'openrouter/qlix/auto-economy' ||
+    normalized === 'openrouter/qlix/auto-standard' ||
+    normalized === 'qlix/auto'
+  ) {
+    return;
+  }
   const prefixes = allowedModelPrefixes().map((p) => p.toLowerCase());
   if (!prefixes.some((prefix) => normalized.startsWith(prefix))) {
     throw new ModelPolicyError(

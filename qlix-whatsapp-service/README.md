@@ -33,6 +33,19 @@ QLIX_INTERNAL_SERVICE_SECRET=<shared secret>
 
 Run DB migration: `npx prisma migrate deploy` in `backend/`.
 
+## QR linking requirements (do not regress)
+
+WhatsApp Web changes frequently. **Baileys must use `fetchLatestBaileysVersion()`** when creating sockets — without it, pairing fails with HTTP 405 and **no QR is ever emitted** (Connectors shows “Generating QR…” forever).
+
+Safeguards in this service:
+
+- **Startup:** `ensureBaileysVersionReady()` — process exits if version lookup fails
+- **`GET /health`:** returns `qr_linking_ready`, `baileys_version`, `baileys_version_ok` (503 when not ready)
+- **Reconnect:** on 405 disconnect, version cache is invalidated and refreshed
+- **Tests:** `npm test` in this directory
+
+If QR linking breaks after a Baileys upgrade, verify `/health` shows `baileys_version_ok: true`.
+
 ## Customer flow (SaaS)
 
 1. User opens **Connectors** (`/individual/connectors` or `/organization/connectors`).
@@ -59,20 +72,25 @@ That workspace’s agents use this number for:
 | POST | `/sessions/:connectorId/start` | Start / resume session |
 | GET | `/sessions/:connectorId/status` | `{ connected, qr, ownerJid }` |
 | DELETE | `/sessions/:connectorId` | Logout + wipe session |
-| POST | `/send` | `{ connector_id, message }` |
+| POST | `/send` | `{ connector_id, message }` — self-chat only |
+| POST | `/send-to` | `{ connector_id, recipient, message }` — contact / phone |
+| POST | `/contacts/list` | `{ connector_id, query?, limit? }` |
+| POST | `/chats/messages` | `{ connector_id, recipient, limit? }` |
 | POST | `/send-approval` | `{ connector_id, action_id, … }` |
 | POST | `/send-notification` | `{ connector_id, message, level }` |
 
-## Hybrid + AI brain (agent chat from WhatsApp)
+## Agent chat from WhatsApp (intent routing)
 
-Message your linked number:
+In **Message yourself** on the linked WhatsApp account, send plain text — no `@AgentName` needed:
 
 ```
-@local #brain: Follow company playbook. Read C:\path\to\AgentDebug.log on my PC, open it in Notepad, summarize errors.
+#brain Follow our field support playbook. Read C:\path\to\AgentDebug.log on my PC, open it in Notepad, and summarize errors.
 ```
 
+- Qlix **intent routing** picks the best agent from descriptions, scopes, and online status.
 - `#brain` — enables org AI brain for that run (agent needs `brain.query` scope).
-- Hybrid agents run tools on the PC (`s3_read_file`, `s3_open_file`, etc.); results are sent back to WhatsApp when the run completes.
+- `@TeamName: goal` — run a multi-agent team instead of a single agent.
+- Hybrid agents run tools on the PC; results are sent back to WhatsApp when the run completes.
 
 See [docs/e2e/hybrid-whatsapp-brain-field-support.md](../docs/e2e/hybrid-whatsapp-brain-field-support.md).
 

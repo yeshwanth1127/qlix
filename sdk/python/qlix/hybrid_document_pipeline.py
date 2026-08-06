@@ -74,7 +74,7 @@ _ARTIFACT_MARKERS = (
     re.compile(r"Created spreadsheet:\s*(.+)", re.IGNORECASE),
     re.compile(r"Created document:\s*(.+)", re.IGNORECASE),
 )
-# Generic file writes (s3_write_file). Lets the safety-net deliver any file type
+# Generic file writes (luna_local_write_file). Lets the safety-net deliver any file type
 # (.csv/.png/.json/…), but only when no dedicated artifact was produced, so a
 # scratch write doesn't get sent instead of the real deliverable.
 _WRITE_MARKERS = (re.compile(r"Wrote file:\s*(.+)", re.IGNORECASE),)
@@ -123,7 +123,7 @@ def latest_created_artifact(executed: list[ExecutedTool]) -> str | None:
 
 def whatsapp_delivery_succeeded(executed: list[ExecutedTool]) -> bool:
     for record in executed:
-        if record.get("name") == "s3_send_whatsapp_document":
+        if record.get("name") == "luna_local_send_whatsapp_document":
             if record.get("output", "").startswith("Sent"):
                 return True
     return False
@@ -149,17 +149,17 @@ async def verify_and_complete_outcomes(
     # Outcome: a document artifact was requested but the model produced none.
     # We only rescue this when we have material to put in it (a source file we
     # can read) — we never fabricate content here.
-    if wants_pdf_output(prompt) and artifact is None and "s3_create_pdf" in tool_executors:
+    if wants_pdf_output(prompt) and artifact is None and "luna_local_create_pdf" in tool_executors:
         source = resolve_source_path(prompt)
         if source and source.is_file():
             body = source.read_text(encoding="utf-8", errors="replace")
             title = source.stem.replace("_", " ").replace("-", " ").strip() or "Document"
             if log:
                 log("outcome_complete", outcome="artifact", kind="pdf", title=title)
-            create_out = await tool_executors["s3_create_pdf"](
+            create_out = await tool_executors["luna_local_create_pdf"](
                 json.dumps({"title": title, "content": body})
             )
-            extra.append("s3_create_pdf")
+            extra.append("luna_local_create_pdf")
             parts.append(create_out)
             if create_out.startswith("[failed]"):
                 return extra, create_out
@@ -169,7 +169,7 @@ async def verify_and_complete_outcomes(
 
     # Outcome: delivery requested but not done — send whatever artifact exists.
     if wants_whatsapp_delivery(prompt) and not whatsapp_delivery_succeeded(executed):
-        send_fn = tool_executors.get("s3_send_whatsapp_document")
+        send_fn = tool_executors.get("luna_local_send_whatsapp_document")
         if artifact and send_fn:
             name = Path(artifact).name
             if log:
@@ -177,7 +177,7 @@ async def verify_and_complete_outcomes(
             send_out = await send_fn(
                 json.dumps({"file_path": artifact, "file_name": name})
             )
-            extra.append("s3_send_whatsapp_document")
+            extra.append("luna_local_send_whatsapp_document")
             parts.append(send_out)
         elif log:
             log(

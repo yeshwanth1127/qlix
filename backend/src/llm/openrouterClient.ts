@@ -1,5 +1,9 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { InferenceChatRequest } from './inferenceSchemas.js';
+import {
+  resolveOpenRouterApiModel,
+  type ResolveOpenRouterModelOptions,
+} from './routing/resolveOpenRouterModel.js';
 
 export class OpenRouterConfigError extends Error {
   constructor(message = 'OPENROUTER_API_KEY is required for proxy inference') {
@@ -30,6 +34,11 @@ export interface OpenRouterChatResult {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    /** Real spend for this call. Only returned when `usage.include` is requested. */
+    cost?: number;
+    total_cost?: number;
+    /** `cached_tokens` here is the prefix-cache hit — how much of the prompt was free/discounted. */
+    prompt_tokens_details?: { cached_tokens?: number };
   };
   provider?: string | null;
 }
@@ -79,17 +88,20 @@ export async function openrouterEmbeddings(
 
 export async function openRouterChatCompletion(
   request: InferenceChatRequest,
-  options?: { timeoutMs?: number; retries?: number },
+  options?: { timeoutMs?: number; retries?: number } & ResolveOpenRouterModelOptions,
 ): Promise<OpenRouterChatResult> {
   const timeoutMs = options?.timeoutMs ?? 120_000;
   const retries = options?.retries ?? 2;
   const url = `${openRouterBaseUrl().replace(/\/$/, '')}/chat/completions`;
   const body: Record<string, unknown> = {
-    model: request.model.replace(/^openrouter\//, ''),
+    model: resolveOpenRouterApiModel(request, options),
     messages: request.messages,
     temperature: request.temperature,
     max_tokens: request.max_tokens,
     stream: false,
+    // Without this OpenRouter omits cost and cached-token counts, so RunUsage.totalCostUsd
+    // was always 0 and prompt-cache hit rate was unobservable.
+    usage: { include: true },
   };
   if (request.tools != null && request.tools.length > 0) {
     body.tools = request.tools;

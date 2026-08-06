@@ -30,6 +30,7 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const { session } = useSession();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   const items = useMemo(() => {
     const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false);
@@ -51,7 +52,7 @@ export function AppSidebar({
   const navLinkActive =
     "border-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold text-[color:var(--sketch-purple)]";
   const navLinkIdle =
-    "text-black/50 hover:border-[color:var(--sketch-purple)]/40 hover:bg-[color:var(--sketch-purple-soft)]/60 hover:text-black/80 hover:pl-3";
+    "text-black hover:border-[color:var(--sketch-purple)]/40 hover:bg-[color:var(--sketch-purple-soft)]/60 hover:text-black hover:pl-3";
 
   return (
     <aside
@@ -137,7 +138,10 @@ export function AppSidebar({
           {(more.length > 0 || showUpgradeCta) && (
             <button
               type="button"
-              onClick={() => setMoreOpen((v) => !v)}
+              onClick={() => {
+                setMoreOpen((v) => !v);
+                setAccountOpen(false);
+              }}
               style={{ "--qlix-stagger-i": primary.length } as React.CSSProperties}
               className={cn(
                 sketchNavLink,
@@ -150,7 +154,14 @@ export function AppSidebar({
             </button>
           )}
           <div className="pt-2">
-            <UserAccountMenu variant="sidebar" />
+            <UserAccountMenu
+              variant="sidebar"
+              open={accountOpen}
+              onOpenChange={(next) => {
+                setAccountOpen(next);
+                if (next) setMoreOpen(false);
+              }}
+            />
           </div>
         </nav>
       </div>

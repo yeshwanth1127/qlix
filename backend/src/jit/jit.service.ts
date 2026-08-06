@@ -10,6 +10,7 @@ import {
   getWhatsAppConnectorForAgent,
 } from '../connectors/whatsappConnector.service.js';
 import { isWhatsAppJitEnabled, sendApproval } from './whatsappNotifier.js';
+import { ephemeralHas, ephemeralSet } from '../lib/ephemeralGrants.js';
 
 /** ±5 minutes — same window as actions. */
 const SIGNATURE_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
@@ -109,31 +110,25 @@ const RUN_SCOPED_JIT_MS = 20 * 60_000;
 const WHATSAPP_RUN_AUTO_SCOPES = new Set(['system.file_write', 'system.gui_control']);
 
 /**
- * In-memory run-scoped approval grants: once the user approves a scope for a run,
- * every later request for the same run+scope auto-approves (no repeat prompts).
- * Keyed by `${runId}::${actionType}` -> grant expiry epoch ms.
+ * Run-scoped approval grants: once the user approves a scope for a run, every later
+ * request for the same run+scope auto-approves (no repeat prompts). Previously an
+ * in-process `Map` — safe only under a single backend instance; now DB-backed via
+ * `EphemeralGrant` (namespace `jit-run-scoped-grant`, key `${runId}::${actionType}`).
  */
-const runScopedGrants = new Map<string, number>();
+const RUN_SCOPED_GRANT_NAMESPACE = 'jit-run-scoped-grant';
 
 function grantKey(runId: string, actionType: string): string {
   return `${runId}::${actionType}`;
 }
 
-function recordRunScopedGrant(runId: string | null, actionType: string): void {
+async function recordRunScopedGrant(runId: string | null, actionType: string): Promise<void> {
   if (!runId) return;
-  runScopedGrants.set(grantKey(runId, actionType), Date.now() + RUN_SCOPED_JIT_MS);
+  await ephemeralSet(RUN_SCOPED_GRANT_NAMESPACE, grantKey(runId, actionType), true, RUN_SCOPED_JIT_MS);
 }
 
-function hasRunScopedGrantInMemory(runId: string | null, actionType: string): boolean {
+async function hasRunScopedGrantInMemory(runId: string | null, actionType: string): Promise<boolean> {
   if (!runId) return false;
-  const key = grantKey(runId, actionType);
-  const expiry = runScopedGrants.get(key);
-  if (expiry == null) return false;
-  if (Date.now() > expiry) {
-    runScopedGrants.delete(key);
-    return false;
-  }
-  return true;
+  return ephemeralHas(RUN_SCOPED_GRANT_NAMESPACE, grantKey(runId, actionType));
 }
 
 function extractRunId(payload: unknown): string | null {
@@ -157,6 +152,21 @@ function formatJitApprovalContext(payload: unknown): string {
     const parts = [
       subject ? `Subject: ${subject}` : '',
       to.length > 0 ? `To: ${to.join(', ')}` : '',
+    ].filter(Boolean);
+    return parts.join(' · ').slice(0, 500);
+  }
+  const recipient =
+    (typeof p.recipient === 'string' && p.recipient.trim()) ||
+    (typeof p.to === 'string' && p.to.trim()) ||
+    '';
+  const message =
+    (typeof p.message === 'string' && p.message.trim()) ||
+    (typeof p.text === 'string' && p.text.trim()) ||
+    '';
+  if (recipient || message) {
+    const parts = [
+      recipient ? `To: ${recipient}` : '',
+      message ? `Message: ${message.slice(0, 200)}` : '',
     ].filter(Boolean);
     return parts.join(' · ').slice(0, 500);
   }
@@ -207,7 +217,13 @@ async function hasRunScopedJitGrant(
 }
 
 /** Scopes for which one human approval covers the whole conversation ("approve once per session"). */
-const CONVERSATION_SCOPED_GRANT_SCOPES = new Set(['email.send']);
+const CONVERSATION_SCOPED_GRANT_SCOPES = new Set([
+  'email.send',
+  'crm.write',
+  'crm.delete',
+  'slack.send',
+  'whatsapp.contact_send',
+]);
 
 /** Safety expiry for a conversation-scoped grant; slid forward each time it auto-approves a request. */
 const CONVERSATION_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -271,6 +287,10 @@ function formatScopeLabel(scope: string): string {
     'system.file_read': 'Read files',
     'system.gui_control': 'Control desktop',
     'email.send': 'Send email',
+    'crm.write': 'Create or update CRM records',
+    'crm.delete': 'Delete CRM records',
+    'slack.send': 'Post Slack messages',
+    'whatsapp.contact_send': 'Message a WhatsApp contact',
     'web.transaction': 'Web transactions',
   };
   return labels[scope] ?? scope;
@@ -280,12 +300,47 @@ async function emitJitRunLog(
   runId: string | null,
   data: Record<string, unknown>,
 ): Promise<void> {
-  if (!runId) return;
+  if (!runId) {
+    console.warn('[jit] emitJitRunLog skipped: missing runId', data.message ?? '');
+    return;
+  }
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: { id: true },
+  });
+  if (!run) {
+    console.warn(`[jit] emitJitRunLog skipped: unknown runId=${runId}`, data.message ?? '');
+    return;
+  }
   try {
     await appendAgentRunLogEvent(runId, data);
   } catch (err) {
     console.warn('[jit] failed to append run activity log:', err);
   }
+}
+
+/** Pending JIT rows always surface on the dashboard chat — WhatsApp is optional extra. */
+function dashboardJitPendingPayload(input: {
+  actionLogId: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  whatsappSent?: boolean;
+  whatsappError?: string;
+  whatsappExpected?: boolean;
+  whatsappStatus?: 'disconnected' | 'not_linked';
+}): Record<string, unknown> {
+  return {
+    message: 'jit_approval_pending',
+    scope: input.actionType,
+    scopeLabel: formatScopeLabel(input.actionType),
+    channel: 'dashboard',
+    context: formatJitApprovalContext(input.payload),
+    jitRequestId: input.actionLogId,
+    ...(input.whatsappSent ? { whatsappSent: true } : {}),
+    ...(input.whatsappError ? { whatsappError: input.whatsappError } : {}),
+    ...(input.whatsappExpected ? { whatsappExpected: true } : {}),
+    ...(input.whatsappStatus ? { whatsappStatus: input.whatsappStatus } : {}),
+  };
 }
 
 async function autoApproveJitRequest(actionLogId: string): Promise<void> {
@@ -317,6 +372,17 @@ export interface ConversationGrantDTO {
   expiresAt: string | null;
 }
 
+export interface PendingJitDTO {
+  jitRequestId: string;
+  agentId: string;
+  scope: string;
+  scopeLabel: string;
+  context: string;
+  runId: string | null;
+  conversationId: string | null;
+  requestedAt: string;
+}
+
 export class JitService {
   /**
    * Creates a pending JIT approval row (append-only action log + approval).
@@ -339,33 +405,85 @@ export class JitService {
     await assertSignature(signedPayload, signature, agent.publicKey);
 
     const scopes = agent.jitScopes as string[];
-    // Use the shared matcher so a whole-server `mcp.<slug>.*` jitScope covers a
-    // per-tool `mcp.<slug>.<tool>` request — otherwise wildcard-bound (stdio) servers
-    // can never have their tool calls approved, even though `/actions/start` allows them.
     if (!scopeRequiresJit(scopes, signedPayload.actionType)) {
       throw new NotJitScopeError(`Action ${signedPayload.actionType} is not a JIT scope for this agent`);
     }
 
+    return this.createJitRequestForAgent({
+      agent,
+      actionType: signedPayload.actionType,
+      payload: signedPayload.payload,
+      signature,
+      requestedAtMs: signedPayload.timestampMs,
+    });
+  }
+
+  /**
+   * Cloud/hybrid runners already authenticate with X-QLIX-Runner-Token for tool calls.
+   * This path skips Ed25519 signing so JIT approval is not blocked by signature drift.
+   */
+  async requestFromRunner(input: {
+    agentId: string;
+    actionType: string;
+    payload: Record<string, unknown>;
+  }): Promise<{ jitRequestId: string; expiresAtMs: number; pollToken: string }> {
+    const agent = await prisma.agent.findUnique({
+      where: { id: input.agentId },
+      select: { id: true, did: true, name: true, userId: true, orgId: true, publicKey: true, jitScopes: true },
+    });
+    if (!agent) throw new AgentNotFoundError(`Unknown agent: ${input.agentId}`);
+
+    const scopes = agent.jitScopes as string[];
+    if (!scopeRequiresJit(scopes, input.actionType)) {
+      throw new NotJitScopeError(`Action ${input.actionType} is not a JIT scope for this agent`);
+    }
+
+    return this.createJitRequestForAgent({
+      agent,
+      actionType: input.actionType,
+      payload: input.payload,
+      signature: null,
+      requestedAtMs: Date.now(),
+    });
+  }
+
+  private async createJitRequestForAgent(input: {
+    agent: {
+      id: string;
+      did: string;
+      name: string;
+      userId: string;
+      orgId: string | null;
+    };
+    actionType: string;
+    payload: Record<string, unknown>;
+    signature: string | null;
+    requestedAtMs: number;
+  }): Promise<{ jitRequestId: string; expiresAtMs: number; pollToken: string }> {
+    const { agent, actionType, payload, signature, requestedAtMs } = input;
     const prevHash = await computePrevHashForAgent(agent.id);
     const ttlSeconds = isWhatsAppJitEnabled() ? 300 : 120;
-    const expiresAtMs = signedPayload.timestampMs + ttlSeconds * 1000;
+    const expiresAtMs = requestedAtMs + ttlSeconds * 1000;
+    const runId = extractRunId(payload);
+    const conversationId = await resolveConversationId(runId);
 
     const actionLog = await prisma.actionLog.create({
       data: {
         agentId: agent.id,
         userId: agent.userId,
-        actionType: signedPayload.actionType,
+        actionType,
         payload: {
-          phase: 'jit_request',
-          did: signedPayload.did,
-          toolPayload: signedPayload.payload,
+          phase: signature ? 'jit_request' : 'jit_request_runner',
+          did: agent.did,
+          conversationId,
+          toolPayload: payload,
         } as Prisma.InputJsonValue,
         riskLevel: 'high',
         status: 'pending',
         approvalStatus: 'pending',
-        signature,
+        signature: signature ?? '',
         prevHash,
-        timestampMs: BigInt(signedPayload.timestampMs),
+        timestampMs: BigInt(requestedAtMs),
       },
     });
 
@@ -374,45 +492,45 @@ export class JitService {
         actionLogId: actionLog.id,
         userId: agent.userId,
         decision: 'pending',
-        requestedAtMs: BigInt(signedPayload.timestampMs),
+        requestedAtMs: BigInt(requestedAtMs),
         ttlSeconds,
       },
     });
 
-    const runId = extractRunId(signedPayload.payload);
+    const runIdForGrant = runId;
     const envAutoApprove =
       process.env.QLIX_JIT_AUTO_APPROVE === '1' || process.env.QLIX_JIT_AUTO_APPROVE === 'true';
     const whatsappRunAuto =
-      runId != null &&
-      WHATSAPP_RUN_AUTO_SCOPES.has(signedPayload.actionType) &&
-      (await isActiveWhatsAppAgentRun(runId));
-    const memoryGrant = hasRunScopedGrantInMemory(runId, signedPayload.actionType);
+      runIdForGrant != null &&
+      WHATSAPP_RUN_AUTO_SCOPES.has(actionType) &&
+      (await isActiveWhatsAppAgentRun(runIdForGrant));
+    const memoryGrant = await hasRunScopedGrantInMemory(runIdForGrant, actionType);
     const runScopedReuse =
       memoryGrant ||
-      (runId != null && (await hasRunScopedJitGrant(agent.id, signedPayload.actionType, runId)));
+      (runIdForGrant != null && (await hasRunScopedJitGrant(agent.id, actionType, runIdForGrant)));
 
     // Conversation-scoped grant: one earlier "yes" covers this scope for the whole
     // conversation (across tasks/runs), until revoked or the safety TTL lapses.
-    const conversationId = CONVERSATION_SCOPED_GRANT_SCOPES.has(signedPayload.actionType)
-      ? await resolveConversationId(runId)
+    const grantConversationId = CONVERSATION_SCOPED_GRANT_SCOPES.has(actionType)
+      ? conversationId
       : null;
     const conversationGrant =
-      conversationId != null &&
-      (await hasConversationScopedGrant(conversationId, signedPayload.actionType));
+      grantConversationId != null &&
+      (await hasConversationScopedGrant(grantConversationId, actionType));
 
     console.log(
-      `[jit] request created: actionId=${actionLog.id} agent=${agent.name} actionType=${signedPayload.actionType} ttl=${ttlSeconds}s ` +
-        `runId=${runId ?? 'NULL'} envAuto=${envAutoApprove} whatsappRunAuto=${whatsappRunAuto} memoryGrant=${memoryGrant} runScopedReuse=${runScopedReuse} conversationGrant=${conversationGrant} ` +
+      `[jit] request created: actionId=${actionLog.id} agent=${agent.name} actionType=${actionType} ttl=${ttlSeconds}s ` +
+        `runId=${runIdForGrant ?? 'NULL'} conversationId=${conversationId ?? 'NULL'} envAuto=${envAutoApprove} whatsappRunAuto=${whatsappRunAuto} memoryGrant=${memoryGrant} runScopedReuse=${runScopedReuse} conversationGrant=${conversationGrant} ` +
         `auto=${envAutoApprove || whatsappRunAuto || runScopedReuse || conversationGrant}`,
     );
 
     if (envAutoApprove || whatsappRunAuto || runScopedReuse || conversationGrant) {
       await autoApproveJitRequest(actionLog.id);
       // Remember this run+scope so all later requests in the run auto-approve too.
-      recordRunScopedGrant(runId, signedPayload.actionType);
+      await recordRunScopedGrant(runIdForGrant, actionType);
       // Slide the conversation grant's safety TTL forward on each use.
-      if (conversationGrant && conversationId) {
-        await touchConversationScopedGrant(conversationId, signedPayload.actionType);
+      if (conversationGrant && grantConversationId) {
+        await touchConversationScopedGrant(grantConversationId, actionType);
       }
       const reason = envAutoApprove
         ? 'env'
@@ -424,10 +542,10 @@ export class JitService {
               ? 'memory-grant'
               : 'run-scoped-db';
       console.log(`[jit] auto-approved: actionId=${actionLog.id} reason=${reason}`);
-      void emitJitRunLog(runId, {
+      await emitJitRunLog(runId, {
         message: 'jit_approval_granted',
-        scope: signedPayload.actionType,
-        scopeLabel: formatScopeLabel(signedPayload.actionType),
+        scope: actionType,
+        scopeLabel: formatScopeLabel(actionType),
         auto: true,
         reason: envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : conversationGrant ? 'conversation' : 'run-scoped',
       });
@@ -435,72 +553,80 @@ export class JitService {
       const wa = await getWhatsAppConnectorForAgent(agent.id);
       if (wa) {
         console.log(
-          `[jit] sending WhatsApp approval: actionId=${actionLog.id} connector=${wa.id} context=${formatJitApprovalContext(signedPayload.payload)}`,
+          `[jit] sending WhatsApp approval: actionId=${actionLog.id} connector=${wa.id} context=${formatJitApprovalContext(payload)}`,
         );
         const sent = await sendApproval({
           connector_id: wa.id,
           action_id: actionLog.id,
           agent_name: agent.name,
-          scope: signedPayload.actionType,
-          context: formatJitApprovalContext(signedPayload.payload),
+          scope: actionType,
+          context: formatJitApprovalContext(payload),
         });
+        // Also fan out to Slack (or tracked chat) via gateway ReplyDispatcher when applicable.
+        void import('../gateway/jitChatDelivery.js').then(({ deliverJitApprovalToChat }) =>
+          deliverJitApprovalToChat({
+            runId,
+            orgId: agent.orgId ?? '',
+            actionType,
+            actionLogId: actionLog.id,
+            agentName: agent.name,
+            context: formatJitApprovalContext(payload),
+          }),
+        );
         if (sent.ok) {
-          void emitJitRunLog(runId, {
-            message: 'jit_approval_pending',
-            scope: signedPayload.actionType,
-            scopeLabel: formatScopeLabel(signedPayload.actionType),
-            channel: 'whatsapp',
-            context: formatJitApprovalContext(signedPayload.payload),
-            jitRequestId: actionLog.id,
-          });
+          await emitJitRunLog(
+            runId,
+            dashboardJitPendingPayload({
+              actionLogId: actionLog.id,
+              actionType,
+              payload,
+              whatsappSent: true,
+            }),
+          );
         } else {
           // WhatsApp delivery failed (e.g. session reconnecting) — never leave
           // the request silently stuck; surface it on the dashboard instead.
           console.warn(
             `[jit] WhatsApp approval delivery failed, falling back to dashboard: actionId=${actionLog.id} error=${sent.error}`,
           );
-          void emitJitRunLog(runId, {
-            message: 'jit_approval_pending',
-            scope: signedPayload.actionType,
-            scopeLabel: formatScopeLabel(signedPayload.actionType),
-            channel: 'dashboard',
-            context: formatJitApprovalContext(signedPayload.payload),
-            jitRequestId: actionLog.id,
-            whatsappError: sent.error ?? 'delivery failed',
-            // Connector was linked but the message couldn't be delivered (session
-            // reconnecting/down) — tell the user WhatsApp isn't reachable right now.
-            whatsappExpected: true,
-            whatsappStatus: 'disconnected',
-          });
+          await emitJitRunLog(
+            runId,
+            dashboardJitPendingPayload({
+              actionLogId: actionLog.id,
+              actionType,
+              payload,
+              whatsappError: sent.error ?? 'delivery failed',
+              whatsappExpected: true,
+              whatsappStatus: 'disconnected',
+            }),
+          );
         }
       } else {
         const waConn = await getWhatsAppConnectionForAgent(agent.id);
         console.log(
           `[jit] WhatsApp not connected for agent: agentId=${agent.id} exists=${waConn.exists} connected=${waConn.connected}`,
         );
-        void emitJitRunLog(runId, {
-          message: 'jit_approval_pending',
-          scope: signedPayload.actionType,
-          scopeLabel: formatScopeLabel(signedPayload.actionType),
-          channel: 'dashboard',
-          context: formatJitApprovalContext(signedPayload.payload),
-          jitRequestId: actionLog.id,
-          // WhatsApp is the configured approval channel for this deployment but it
-          // isn't connected — surface it so the user can reconnect (or approve here).
-          whatsappExpected: true,
-          whatsappStatus: waConn.exists ? 'disconnected' : 'not_linked',
-        });
+        await emitJitRunLog(
+          runId,
+          dashboardJitPendingPayload({
+            actionLogId: actionLog.id,
+            actionType,
+            payload,
+            whatsappExpected: true,
+            whatsappStatus: waConn.exists ? 'disconnected' : 'not_linked',
+          }),
+        );
       }
     } else {
       console.log(`[jit] waiting for approval (WhatsApp not enabled): actionId=${actionLog.id}`);
-      void emitJitRunLog(runId, {
-        message: 'jit_approval_pending',
-        scope: signedPayload.actionType,
-        scopeLabel: formatScopeLabel(signedPayload.actionType),
-        channel: 'dashboard',
-        context: formatJitApprovalContext(signedPayload.payload),
-        jitRequestId: actionLog.id,
-      });
+      await emitJitRunLog(
+        runId,
+        dashboardJitPendingPayload({
+          actionLogId: actionLog.id,
+          actionType,
+          payload,
+        }),
+      );
     }
 
     return { jitRequestId: actionLog.id, expiresAtMs, pollToken: computeJitPollToken(actionLog.id) };
@@ -572,7 +698,7 @@ export class JitService {
         const p = payload as Record<string, unknown>;
         const grantRunId = extractRunId(p.toolPayload ?? p);
         if (grantRunId) {
-          recordRunScopedGrant(grantRunId, row.actionType);
+          await recordRunScopedGrant(grantRunId, row.actionType);
           console.log(
             `[jit] recorded run-scoped grant: runId=${grantRunId} actionType=${row.actionType} (future ${row.actionType} requests in this run auto-approve)`,
           );
@@ -580,7 +706,7 @@ export class JitService {
       }
       // For session-scoped scopes (e.g. email.send), this one "yes" covers the whole
       // conversation: write a durable grant so every later run in the chat auto-approves.
-      if (CONVERSATION_SCOPED_GRANT_SCOPES.has(row.actionType)) {
+      if (CONVERSATION_SCOPED_GRANT_SCOPES.has(row.actionType) && row.agentId) {
         const convoId = await resolveConversationId(runId);
         if (convoId) {
           await recordConversationScopedGrant({
@@ -634,6 +760,63 @@ export class JitService {
     });
 
     return { ok: true, status: decision };
+  }
+
+  /**
+   * Hybrid local-terminal decision: runner token already authenticated for agentId.
+   */
+  async decideFromRunner(input: {
+    jitRequestId: string;
+    agentId: string;
+    approved: boolean;
+  }): Promise<{ ok: true; status: 'approved' | 'denied' | 'expired' }> {
+    const row = await prisma.actionLog.findUnique({
+      where: { id: input.jitRequestId },
+      select: { agentId: true },
+    });
+    if (!row) throw new JitRequestNotFoundError();
+    if (row.agentId !== input.agentId) throw new JitForbiddenError();
+
+    return this.decide({
+      jitRequestId: input.jitRequestId,
+      approved: input.approved,
+      reason: input.approved ? 'local_terminal' : 'denied_by_local_terminal',
+    });
+  }
+
+  /**
+   * Deny every still-pending JIT tied to a run (e.g. Active Runs → Stop).
+   * Unblocks hybrid runners stuck in JIT poll so they can exit promptly.
+   */
+  async denyPendingForRun(runId: string, reason = 'run_canceled'): Promise<number> {
+    if (!runId.trim()) return 0;
+    const pending = await prisma.approval.findMany({
+      where: { decision: 'pending' },
+      include: {
+        actionLog: { select: { id: true, payload: true } },
+      },
+      take: 50,
+      orderBy: { requestedAtMs: 'desc' },
+    });
+    let denied = 0;
+    for (const row of pending) {
+      const pl = row.actionLog.payload;
+      if (!pl || typeof pl !== 'object') continue;
+      const payload = pl as Record<string, unknown>;
+      const rid = extractRunId(payload.toolPayload ?? payload);
+      if (rid !== runId) continue;
+      try {
+        await this.decide({
+          jitRequestId: row.actionLog.id,
+          approved: false,
+          reason,
+        });
+        denied += 1;
+      } catch {
+        // Already decided / expired — ignore
+      }
+    }
+    return denied;
   }
 
   /**
@@ -787,5 +970,72 @@ export class JitService {
   async touchConversationGrantForRun(runId: string | null, scope: string): Promise<void> {
     const conversationId = await resolveConversationId(runId);
     if (conversationId) await touchConversationScopedGrant(conversationId, scope);
+  }
+
+  /**
+   * Pending JIT approvals for a chat conversation — safety net when run SSE closed
+   * before the approval card was streamed.
+   */
+  async listPendingForConversation(input: {
+    userId: string;
+    conversationId: string;
+    agentId: string;
+  }): Promise<PendingJitDTO[]> {
+    const convo = await prisma.agentConversation.findUnique({
+      where: { id: input.conversationId },
+      select: { userId: true, agentId: true },
+    });
+    if (!convo || convo.userId !== input.userId || convo.agentId !== input.agentId) {
+      return [];
+    }
+
+    const pending = await prisma.approval.findMany({
+      where: {
+        decision: 'pending',
+        userId: input.userId,
+        actionLog: { agentId: input.agentId },
+      },
+      include: {
+        actionLog: {
+          select: { id: true, actionType: true, payload: true, timestampMs: true, agentId: true },
+        },
+      },
+      orderBy: { requestedAtMs: 'desc' },
+      take: 30,
+    });
+
+    const now = Date.now();
+    const out: PendingJitDTO[] = [];
+
+    for (const row of pending) {
+      const ttlMs = (row.ttlSeconds ?? 120) * 1000;
+      const requestedMs = Number(row.requestedAtMs);
+      if (requestedMs + ttlMs < now) continue;
+
+      const payload = row.actionLog.payload;
+      if (!payload || typeof payload !== 'object') continue;
+      const pl = payload as Record<string, unknown>;
+      const storedConvo = typeof pl.conversationId === 'string' ? pl.conversationId : null;
+      const runId = extractRunId(pl.toolPayload ?? pl);
+      let matchesConversation = storedConvo === input.conversationId;
+      if (!matchesConversation && runId) {
+        const convId = await resolveConversationId(runId);
+        matchesConversation = convId === input.conversationId;
+      }
+      if (!matchesConversation) continue;
+
+      out.push({
+        jitRequestId: row.actionLog.id,
+        agentId: input.agentId,
+        scope: row.actionLog.actionType,
+        scopeLabel: formatScopeLabel(row.actionLog.actionType),
+        context: formatJitApprovalContext(pl.toolPayload ?? pl),
+        runId,
+        conversationId: storedConvo ?? input.conversationId,
+        requestedAt: new Date(requestedMs).toISOString(),
+      });
+    }
+
+    return out;
   }
 }

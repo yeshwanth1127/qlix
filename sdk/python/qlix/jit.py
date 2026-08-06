@@ -20,6 +20,7 @@ Expected backend contract:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -53,6 +54,26 @@ class JITClient:
         self._private_key_hex = private_key_hex
         self._poll_interval_s = poll_interval_s
         self._timeout_s = timeout_s
+
+    async def request_and_wait_via_runner(
+        self,
+        *,
+        agent_id: str,
+        runner_token: str,
+        action_type: str,
+        payload: dict[str, Any],
+    ) -> JITApproval:
+        headers = {"X-QLIX-Runner-Token": runner_token}
+        response = await self._http.post_json(
+            f"/api/v1/agents/{agent_id}/jit/request",
+            {"actionType": action_type, "payload": payload},
+            headers=headers,
+        )
+        request_id = response.get("jitRequestId") or response.get("jit_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise PermissionDeniedError("JIT request did not return a request id")
+        poll_token = response.get("pollToken") or response.get("poll_token") or ""
+        return await self._poll(request_id, poll_token)
 
     async def request_and_wait(
         self,
@@ -107,3 +128,39 @@ class JITClient:
                     f"JIT approval not granted within {self._timeout_s}s"
                 )
             await asyncio.sleep(self._poll_interval_s)
+
+
+async def request_jit_via_runner(
+    *,
+    agent_id: str,
+    runner_token: str,
+    backend_url: str,
+    did: str,
+    private_key_hex: str,
+    action_type: str,
+    payload: dict[str, Any],
+    qlix_sdk: Any | None = None,
+) -> JITApproval:
+    """Cloud/hybrid runners must use runner-token JIT — never the signed /jit/request path."""
+    token = (runner_token or os.environ.get("QLIX_RUNNER_TOKEN", "")).strip()
+    aid = agent_id.strip()
+    if not token or not aid:
+        raise PermissionDeniedError(
+            "JIT approval requires runner authentication (QLIX_RUNNER_TOKEN). "
+            "Restart the cloud runner or re-download the agent starter pack."
+        )
+    if qlix_sdk is not None:
+        return await qlix_sdk.jit.request_and_wait_via_runner(
+            agent_id=aid,
+            runner_token=token,
+            action_type=action_type,
+            payload=payload,
+        )
+    async with QlixHttpClient(base_url=backend_url, timeout_s=120.0) as http:
+        jit = JITClient(http=http, did=did, private_key_hex=private_key_hex)
+        return await jit.request_and_wait_via_runner(
+            agent_id=aid,
+            runner_token=token,
+            action_type=action_type,
+            payload=payload,
+        )

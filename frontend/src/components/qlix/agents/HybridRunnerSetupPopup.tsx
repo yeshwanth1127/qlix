@@ -41,6 +41,13 @@ export function HybridRunnerSetupPopup({
   const launcher = LAUNCHER_BY_PLATFORM[platform];
   const zipLabel = zipFilename?.trim() || "the starter-pack ZIP";
 
+  const startBody =
+    platform === "linux"
+      ? `Open a terminal in the unzipped folder and run: chmod +x install.sh && ./install.sh  (or: bash "${launcher}"). Double-clicking .sh from a file manager often fails on Linux.`
+      : platform === "macos"
+        ? `Open the unzipped folder and double-click ${launcher}. If macOS says “Not Opened”, open Terminal in that folder and run: bash "${launcher}" — that clears quarantine so later double-clicks work. Or use System Settings → Privacy & Security → Open Anyway.`
+        : `Open the unzipped folder and double-click ${launcher} (${PLATFORM_LABEL[platform]}).`;
+
   const steps = [
     {
       title: "Find the ZIP",
@@ -52,15 +59,15 @@ export function HybridRunnerSetupPopup({
     },
     {
       title: "Start the runner",
-      body: `Open the unzipped folder and double-click ${launcher} (${PLATFORM_LABEL[platform]}).`,
+      body: startBody,
     },
     {
       title: "Leave the window open",
-      body: "The first launch may take a minute while Python packages install. If prompted, install Python 3.10+ from python.org (on Windows, check \"Add to PATH\"). Keep the terminal/console window open while you use the agent.",
+      body: "The first launch may take a minute while Python packages install. If prompted, install Python 3.10+ from python.org (on Windows, check \"Add to PATH\"). Keep the terminal open — when you see >>>, type there to chat with your agent.",
     },
     {
-      title: "Return to Qlix",
-      body: "Come back to this browser tab. When the agent shows online, you can chat with it from the dashboard.",
+      title: "Optional: chat in Qlix too",
+      body: "You can also chat from this browser when the agent shows online. WhatsApp still works if connected. Approvals (JIT) appear in Qlix or WhatsApp.",
     },
   ] as const;
 

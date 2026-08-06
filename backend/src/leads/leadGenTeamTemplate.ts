@@ -10,7 +10,7 @@ import { mcpService } from '../mcp/mcp.service.js';
 
 const mcpRepo = new McpRepository();
 
-const DEFAULT_MODEL = 'openrouter/openai/gpt-4o-mini';
+const DEFAULT_MODEL = 'openrouter/qlix/auto';
 
 export async function createLeadGenPipelineTeam(params: {
   orgId: string;

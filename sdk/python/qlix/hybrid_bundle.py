@@ -19,7 +19,13 @@ _LAUNCHER_BY_PLATFORM: dict[HybridPlatform, str] = {
 }
 
 _WHEEL_CANDIDATES = (
+    Path(__file__).resolve().parents[3]
+    / "backend"
+    / "assets"
+    / "hybrid-starter"
+    / "qlix-0.1.0-py3-none-any.whl",
     Path(__file__).resolve().parents[3] / "backend" / "assets" / "hybrid-starter" / "qlix-agent.whl",
+    Path(__file__).resolve().parents[1] / "dist" / "qlix-0.1.0-py3-none-any.whl",
     Path(__file__).resolve().parents[1] / "dist" / "qlix-agent.whl",
 )
 
@@ -64,7 +70,8 @@ def build_hybrid_starter_zip(
             zf.write(launcher_path, arcname=launcher)
         wheel = _find_wheel()
         if wheel:
-            zf.write(wheel, arcname="qlix-agent.whl")
+            # PEP 427 name required — pip rejects aliases like "qlix-agent.whl".
+            zf.write(wheel, arcname="qlix-0.1.0-py3-none-any.whl")
     return buf.getvalue(), _safe_zip_name(agent_name, platform)
 
 

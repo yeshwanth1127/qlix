@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import {
   buildLeadGenStageGoal,
   extractCampaignIdFromText,
@@ -26,9 +27,9 @@ describe('parseLeadGenRequest', () => {
     const p = parseLeadGenRequest(
       'generate 5 leads for salons around Bangalore and send personalised email',
     );
-    expect(p.searchQuery).toBe('salons');
-    expect(p.location).toBe('Bangalore');
-    expect(p.maxResults).toBe(5);
+    assert.equal(p.searchQuery, 'salons');
+    assert.equal(p.location, 'Bangalore');
+    assert.equal(p.maxResults, 5);
   });
 });
 
@@ -39,10 +40,10 @@ describe('isLeadGenPipelineTeam', () => {
       member(['mcp.qlix-leads.list_leads', 'web.read']),
       member(['email.send']),
     ];
-    expect(isLeadGenPipelineTeam(members)).toBe(true);
-    expect(memberLeadGenStage(members[0]!)).toBe('scrape');
-    expect(memberLeadGenStage(members[1]!)).toBe('enrich');
-    expect(memberLeadGenStage(members[2]!)).toBe('outreach');
+    assert.equal(isLeadGenPipelineTeam(members), true);
+    assert.equal(memberLeadGenStage(members[0]!), 'scrape');
+    assert.equal(memberLeadGenStage(members[1]!), 'enrich');
+    assert.equal(memberLeadGenStage(members[2]!), 'outreach');
   });
 
   it('classifies outreach agent with list_leads as outreach, not enrich', () => {
@@ -51,7 +52,7 @@ describe('isLeadGenPipelineTeam', () => {
       'mcp.qlix-leads.list_leads',
       'mcp.qlix-leads.start_outreach',
     ]);
-    expect(memberLeadGenStage(outreach)).toBe('outreach');
+    assert.equal(memberLeadGenStage(outreach), 'outreach');
   });
 });
 
@@ -59,17 +60,17 @@ describe('buildLeadGenStageGoal', () => {
   it('scrape stage mentions gmb_search_leads and salons', () => {
     const parsed = parseLeadGenRequest('generate 5 leads for salons around Bangalore');
     const goal = buildLeadGenStageGoal('scrape', 'user goal', parsed, null);
-    expect(goal).toContain('gmb_search_leads');
-    expect(goal).toContain('salons');
-    expect(goal).toContain('Bangalore');
+    assert.match(goal, /gmb_search_leads/);
+    assert.match(goal, /salons/);
+    assert.match(goal, /Bangalore/);
   });
 
   it('outreach stage mentions email_send, not browser enrichment', () => {
     const parsed = parseLeadGenRequest('generate 5 leads for salons around Bangalore');
     const goal = buildLeadGenStageGoal('outreach', 'user goal', parsed, 'cm123');
-    expect(goal).toContain('email_send');
-    expect(goal).toContain('start_outreach');
-    expect(goal).not.toContain('browser_ab_open');
+    assert.match(goal, /email_send/);
+    assert.match(goal, /start_outreach/);
+    assert.doesNotMatch(goal, /browser_ab_open/);
   });
 });
 
@@ -80,7 +81,7 @@ describe('validateLeadGenWorkerOutput', () => {
       toolsUsed: ['think', 'think'],
       findings: 'No response generated.',
     });
-    expect(err).toMatch(/gmb_search_leads/);
+    assert.match(err ?? '', /gmb_search_leads/);
   });
 
   it('fails enricher that only update_lead_email', () => {
@@ -89,7 +90,7 @@ describe('validateLeadGenWorkerOutput', () => {
       toolsUsed: ['mcp__qlix-leads__update_lead_email'],
       findings: '',
     });
-    expect(err).toMatch(/list_leads/);
+    assert.match(err ?? '', /list_leads/);
   });
 
   it('passes scraper with gmb call and object findings', () => {
@@ -98,7 +99,7 @@ describe('validateLeadGenWorkerOutput', () => {
       toolsUsed: ['mcp__qlix-leads__gmb_search_leads', 'mcp__qlix-leads__list_leads'],
       findings: { campaignId: 'cm123abc', leads: [{ businessName: 'Salon A' }] },
     });
-    expect(err).toBeNull();
+    assert.equal(err, null);
   });
 
   it('passes outreach with start_outreach', () => {
@@ -107,12 +108,12 @@ describe('validateLeadGenWorkerOutput', () => {
       toolsUsed: ['mcp__qlix-leads__start_outreach'],
       findings: { campaignId: 'cm123' },
     });
-    expect(err).toBeNull();
+    assert.equal(err, null);
   });
 });
 
 describe('extractCampaignIdFromText', () => {
   it('extracts campaignId from JSON', () => {
-    expect(extractCampaignIdFromText('{"campaignId":"cmabc123xyz"}')).toBe('cmabc123xyz');
+    assert.equal(extractCampaignIdFromText('{"campaignId":"cmabc123xyz"}'), 'cmabc123xyz');
   });
 });

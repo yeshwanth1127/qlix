@@ -4,10 +4,9 @@ import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "./theme-provider";
 import { SessionProvider } from "./session-context";
+import { CurrencyProvider } from "./currency-context";
 
 export function Providers({ children }: Readonly<{ children: React.ReactNode }>) {
-  // One QueryClient per browser session. Without this provider, components using `useQuery`
-  // (e.g. the Leads views) throw "No QueryClient set" at runtime.
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -19,7 +18,9 @@ export function Providers({ children }: Readonly<{ children: React.ReactNode }>)
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <SessionProvider>{children}</SessionProvider>
+        <SessionProvider>
+          <CurrencyProvider>{children}</CurrencyProvider>
+        </SessionProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

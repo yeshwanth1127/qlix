@@ -17,7 +17,7 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
     "files": ("system.file_read", "system.file_write"),
     "code": ("system.file_read",),
     "gui": ("system.gui_control",),
-    "comms": ("email.read", "email.send", "whatsapp.send"),
+    "comms": ("email.read", "email.send", "whatsapp.send", "whatsapp.read", "whatsapp.contact_send", "crm.read", "crm.write", "crm.delete", "slack.read", "slack.send"),
     "knowledge": ("brain.query", "brain.knowledge_read"),
     "always": (),
 }
@@ -78,6 +78,18 @@ LEAD_BROWSER_ENRICHMENT_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
+# Internal group ids are jargon to the model ("comms" means nothing to it); describe
+# the capability instead so the steer is actually actionable.
+_GROUP_LABELS: dict[ToolGroup, str] = {
+    "research": "web research tools",
+    "web": "browser tools",
+    "files": "local file tools",
+    "code": "shell and code tools",
+    "gui": "desktop control tools",
+    "comms": "messaging and CRM tools",
+    "knowledge": "the company knowledge base",
+}
+
 _GROUP_ORDER: tuple[ToolGroup, ...] = (
     "research",
     "web",
@@ -133,6 +145,10 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "linkedin",
             "v2ex",
             "rss",
+            "excel",
+            "xlsx",
+            "spreadsheet",
+            "workbook",
         }
     ),
     "web": frozenset(
@@ -202,7 +218,6 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "desktop",
             "excel",
             "figma",
-            "slack",
             "quickbooks",
             "screen",
             "application",
@@ -225,6 +240,24 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "outlook",
             "whatsapp",
             "whats app",
+            "zoho",
+            "crm",
+            "lead",
+            "leads",
+            "contact",
+            "contacts",
+            "deal",
+            "deals",
+            "pipeline",
+            "slack",
+            "channel",
+            "channels",
+            "direct message",
+            "workspace message",
+            "post to slack",
+            "slack list",
+            "list item",
+            "task board",
         }
     ),
     "knowledge": frozenset(
@@ -241,11 +274,34 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
 }
 
 
+ESCALATION_LADDER_GUIDANCE = (
+    "## Tool escalation (research → fetch → browser)\n"
+    "Prefer the cheapest sufficient tool:\n"
+    "1. research_* / curated APIs for facts and sources.\n"
+    "2. If research is thin or blocked, use a lightweight HTTP fetch / open of a specific URL.\n"
+    "3. Only then escalate to interactive browser tools (browser / browser_ab_*) for JS-heavy pages, "
+    "logins, or multi-step navigation.\n"
+    "Do not open the browser first for a simple lookup."
+)
+
+
 @dataclass(frozen=True)
 class ToolRouterResult:
+    """Plan for one run.
+
+    ``groups`` is the keyword-intent classification. It no longer decides WHICH tools
+    are offered — only what the run-context block nudges the model toward. The tool
+    array is built from ``scope_groups``, which depends solely on granted scopes,
+    runtime and skill filter, so it is identical for every run of an agent and can be
+    served from the model provider's cached prompt prefix.
+    """
+
     groups: tuple[ToolGroup, ...]
     instruction: str
     skill_filter: list[str] | None
+    guidance: str = ""
+    scope_groups: tuple[ToolGroup, ...] = ()
+    read_only_intent: bool = False
 
 
 def _granted_scopes(identity: AgentIdentity) -> set[str]:
@@ -272,6 +328,100 @@ def _granted_scope_set(identity: AgentIdentity) -> set[str]:
 
 def has_qlix_leads_scope(identity: AgentIdentity) -> bool:
     return any(s.startswith("mcp.qlix-leads.") for s in _granted_scope_set(identity))
+
+
+def has_crm_scope(identity: AgentIdentity) -> bool:
+    granted = _granted_scope_set(identity)
+    return any(s.startswith("crm.") for s in granted)
+
+
+def has_slack_scope(identity: AgentIdentity) -> bool:
+    granted = _granted_scope_set(identity)
+    return "slack.read" in granted or "slack.send" in granted
+
+
+def is_slack_api_intent(text: str) -> bool:
+    lower = text.lower()
+    if "slack" in lower:
+        return True
+    if any(w in lower for w in ("project tracker", "slack list", "list item", "tracker task")):
+        return True
+    if any(
+        phrase in lower
+        for phrase in (
+            "its status",
+            "it's status",
+            "that task",
+            "this task",
+            "mark it",
+            "complete it",
+            "reopen it",
+            "delete it",
+            "change its",
+        )
+    ):
+        return True
+    if "channel" in lower or "channels" in lower:
+        return any(w in lower for w in ("slack", "workspace", "dm", "message", "post", "tracker", "todo", "list"))
+    return False
+
+
+def slack_run_guidance() -> str:
+    return (
+        "## Slack (this run)\n"
+        "Create: slack_create_list_item(channel=\"todo\", title=\"...\"). "
+        "Update: slack_update_list_item(channel=\"todo\", taskTitle=\"...\", status=\"In progress\"). "
+        "List/search: slack_list_list_items(channel=\"todo\", query=\"...\"). "
+        "Complete/reopen: slack_set_list_task_completion(channel=\"todo\", taskTitle=\"...\", completed=true). "
+        "Delete only after explicit request: slack_delete_list_item(channel=\"todo\", taskTitle=\"...\"). "
+        "Use Active Slack task context for pronouns such as 'it' only when it is present; never guess ids."
+    )
+
+
+CRM_MUTATION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "add a lead",
+        "add lead",
+        "add a new lead",
+        "create a lead",
+        "create lead",
+        "new lead",
+        "add a contact",
+        "create a contact",
+        "new contact",
+        "add a deal",
+        "create a deal",
+        "update lead",
+        "update contact",
+        "update crm",
+        "zoho crm",
+        "in crm",
+        "to crm",
+    }
+)
+
+
+def is_crm_mutation_intent(text: str) -> bool:
+    """True when the user wants to create/update/delete a CRM record (not GMB lead scraping)."""
+    lower = text.lower()
+    if any(kw in lower for kw in LEAD_GENERATION_KEYWORDS):
+        return False
+    if "google maps" in lower or "gmb" in lower or "scrape" in lower:
+        return False
+    return any(kw in lower for kw in CRM_MUTATION_KEYWORDS)
+
+
+def crm_jit_run_guidance() -> str:
+    return (
+        "## CRM actions (this run)\n"
+        "When the user asks to add, create, update, or delete a CRM record (Lead, Contact, Deal, etc.), "
+        "call the matching CRM tool immediately (e.g. crm_create with module Leads and the fields they provided). "
+        "Do NOT tell them to check the dashboard or wait for approval first.\n"
+        "If the action requires approval, an Approve/Deny card appears in this chat — the run pauses until "
+        "they choose. After they approve once, later CRM writes/deletes in this conversation proceed automatically.\n"
+        "Use crm_describe_module if you need Zoho field API names. For a single person with name and phone, "
+        "use module Leads with Last_Name, First_Name, Phone (or Mobile) as appropriate."
+    )
 
 
 def is_lead_browser_enrichment_intent(text: str) -> bool:
@@ -348,6 +498,92 @@ def lead_generation_run_guidance() -> str:
     )
 
 
+def scope_groups(
+    identity: AgentIdentity,
+    *,
+    runner_runtime: str,
+    skill_filter: list[str] | None = None,
+) -> tuple[ToolGroup, ...]:
+    """Groups derived from granted scopes + runtime ONLY — no keyword intent.
+
+    This is what decides the tool array. Because it ignores the prompt, the array is
+    identical for every run of an agent, so the provider can serve the tool schema
+    (the largest fixed cost, re-sent on every round) from its cached prompt prefix.
+
+    Intent still matters, but it now steers the model through ``tool_preference_text``
+    instead of removing tools from the schema. Keyword-based removal saved ~1.2k tokens
+    on a good run and cost 100% of cache hits on every run — a bad trade — and it made
+    tool availability non-deterministic for the same agent.
+
+    ``skill_filter`` is honoured because it is an explicit user selection, not a guess.
+    It yields one extra stable variant per distinct selection.
+    """
+    selected: set[ToolGroup] = set()
+    filt = {str(s).strip() for s in (skill_filter or []) if str(s).strip()} or None
+    scoped_filter = bool(filt and any("." in s for s in filt))
+    granted = _granted_scopes(identity)
+
+    for group in _GROUP_ORDER:
+        if not _group_allowed(group, identity, runner_runtime):
+            continue
+        if scoped_filter and group != "always":
+            required = GROUP_REQUIRED_SCOPES.get(group, ())
+            if not any(s in filt and s in granted for s in required):
+                continue
+        selected.add(group)
+
+    selected.add("always")
+    return tuple(g for g in _GROUP_ORDER if g in selected)
+
+
+def tool_preference_text(
+    intent_groups: tuple[ToolGroup, ...],
+    available: tuple[ToolGroup, ...],
+    *,
+    read_only: bool,
+) -> str:
+    """TIER B nudge replacing what keyword-based tool removal used to do implicitly.
+
+    Every scoped tool stays callable; this just tells the model which ones fit the
+    task, and hard-forbids writes on a read-only request. Costs ~20-60 tokens once per
+    run instead of invalidating a multi-thousand-token cached prefix.
+    """
+    lines: list[str] = []
+    preferred = [
+        _GROUP_LABELS.get(g, g) for g in intent_groups if g in available and g != "always"
+    ]
+    if preferred:
+        lines.append(
+            "Most relevant for this request: "
+            + ", ".join(preferred)
+            + ". Other tools remain available if the task turns out to need them."
+        )
+    if "research" in available:
+        if "research" in intent_groups and "web" not in intent_groups:
+            lines.append(
+                "Use research_* tools for read/search tasks here; do not open the "
+                "browser for a simple lookup."
+            )
+        elif "research" in intent_groups and "web" in intent_groups:
+            lines.append(
+                "Use research_* tools for read/search on known platforms (Twitter, "
+                "GitHub, YouTube, Bilibili, Exa). Use browser_* only for login, forms, "
+                "or when research_* returns blocked."
+            )
+    # `read_only` comes from is_read_only_file_intent, which detects intent about
+    # FILES. Only say this when local file/code tools are actually loaded — otherwise
+    # a Slack or CRM agent asked "what are my open tasks?" (the verb "open" matches)
+    # would be told its write tools are blocked, and may refuse to create a task.
+    if read_only and any(g in available for g in ("files", "code")):
+        lines.append(
+            "This request is read-only with respect to local files: inspect and report, "
+            "but do NOT create, modify, overwrite or delete any file, and do not run "
+            "shell commands that change state. Local file-write tools are blocked for "
+            "this run and will return an error. This does not restrict non-file tools."
+        )
+    return "\n".join(lines)
+
+
 def classify_groups(
     instruction: str,
     identity: AgentIdentity,
@@ -419,6 +655,12 @@ def classify_groups(
         if not any(kw in text for kw in ("whatsapp", "whats app")):
             selected.discard("web")
 
+    # Slack API tools live under comms (cloud + hybrid). "slack" used to match gui only,
+    # which loads nothing on cloud runners — so channel/list questions got only find_tools.
+    if has_slack_scope(identity) and is_slack_api_intent(text):
+        if _group_allowed("comms", identity, runner_runtime):
+            selected.add("comms")
+
     final: list[ToolGroup] = []
     for g in _GROUP_ORDER:
         if g == "always" or g in selected:
@@ -440,6 +682,9 @@ class ToolRouter:
     ) -> None:
         self.identity = identity
         self.runner_runtime = runner_runtime
+        #: Set by build_tool_definitions when the budget dropped anything, so the
+        #: runner can emit it as telemetry. None when nothing was removed.
+        self.last_budget_report: dict[str, Any] | None = None
 
     def plan_run(
         self,
@@ -464,20 +709,55 @@ class ToolRouter:
             runner_runtime=self.runner_runtime,
             skill_filter=skill_filter,
         )
+        guidance_parts: list[str] = []
+        if "research" in groups and "web" in groups:
+            guidance_parts.append(ESCALATION_LADDER_GUIDANCE)
+        if is_crm_mutation_intent(routing_text) and "comms" in groups:
+            guidance_parts.append(crm_jit_run_guidance())
+        if is_lead_browser_enrichment_intent(routing_text):
+            guidance_parts.append(lead_enrichment_run_guidance())
+        elif is_lead_generation_intent(routing_text):
+            guidance_parts.append(lead_generation_run_guidance())
+        if "comms" in groups and has_slack_scope(self.identity) and is_slack_api_intent(routing_text):
+            guidance_parts.append(slack_run_guidance())
+        guidance = "\n\n".join(guidance_parts)
+        # The tool array comes from scopes alone so it is byte-stable across runs and
+        # can be served from the provider's cached prefix; `groups` above now only
+        # steers the model via the run-context block.
+        available = scope_groups(
+            self.identity,
+            runner_runtime=self.runner_runtime,
+            skill_filter=skill_filter,
+        )
         return ToolRouterResult(
             groups=groups,
             instruction=routing_text,
             skill_filter=skill_filter,
+            guidance=guidance,
+            scope_groups=available,
+            read_only_intent=is_read_only_file_intent(instruction),
+        )
+
+    def tool_preference(self, plan: ToolRouterResult) -> str:
+        """Tier B text that replaces intent-based tool removal."""
+        return tool_preference_text(
+            plan.groups,
+            plan.scope_groups or plan.groups,
+            read_only=plan.read_only_intent,
         )
 
     def build_tool_definitions(
         self,
         plan: ToolRouterResult,
         mcp_servers: Any = None,
+        *,
+        tool_profile: str = "full",
     ) -> list[dict[str, Any]]:
         from .cloud_browser_runtime import openai_browser_tool_definitions
         from .cloud_document_runtime import openai_document_tool_definitions
         from .cloud_email_runtime import openai_email_tool_definitions
+        from .cloud_crm_runtime import openai_crm_tool_definitions
+        from .cloud_slack_runtime import openai_slack_tool_definitions
         from .cloud_research_runtime import openai_research_tool_definitions
         from .cloud_whatsapp_runtime import openai_whatsapp_tool_definitions
         from .agents3_runtime import openai_agents3_tool_definitions
@@ -488,29 +768,35 @@ class ToolRouter:
 
         tools: list[dict[str, Any]] = []
         sf = plan.skill_filter if plan.skill_filter else None
+        # Scope-derived, NOT keyword-derived: same agent -> same array -> cache hit.
+        groups = plan.scope_groups or plan.groups
 
-        if "research" in plan.groups:
+        if "research" in groups:
             tools.extend(openai_research_tool_definitions(self.identity, sf))
             tools.extend(openai_document_tool_definitions(self.identity, sf))
-        if "web" in plan.groups:
+        if "web" in groups:
             tools.extend(openai_browser_tool_definitions(self.identity, sf))
         if self.runner_runtime == "hybrid" and any(
-            g in plan.groups for g in ("files", "code", "gui")
+            g in groups for g in ("files", "code", "gui")
         ):
             tools.extend(
                 openai_agents3_tool_definitions(
                     self.identity,
-                    groups=plan.groups,
+                    groups=groups,
                     skill_filter=sf,
-                    instruction=plan.instruction,
+                    # No instruction: read-only narrowing would make the schema
+                    # prompt-dependent. It is enforced in the executor instead.
+                    instruction=None,
                 )
             )
-        if "comms" in plan.groups:
+        if "comms" in groups:
             tools.extend(openai_email_tool_definitions(self.identity, sf))
+            tools.extend(openai_crm_tool_definitions(self.identity, sf))
+            tools.extend(openai_slack_tool_definitions(self.identity, sf))
             tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
-        if "knowledge" in plan.groups:
+        if "knowledge" in groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
-        if "always" in plan.groups:
+        if "always" in groups:
             tools.extend(openai_always_tool_definitions())
 
         if mcp_servers:
@@ -525,7 +811,22 @@ class ToolRouter:
                 )
             )
 
-        return tools
+        # Applied last, to the assembled list, so one policy covers every group —
+        # built-in, connector and MCP alike. Inputs are agent-level only, so the
+        # result stays byte-stable per agent and the cached prefix survives.
+        from .tool_budget import apply_tool_budget
+
+        self.last_budget_report = None
+        budgeted = apply_tool_budget(
+            tools,
+            tool_profile=tool_profile,
+            has_mcp_servers=bool(mcp_servers),
+        )
+        if len(budgeted) != len(tools):
+            from .tool_budget import budget_report
+
+            self.last_budget_report = budget_report(tools, budgeted)
+        return budgeted
 
     def build_executor_map(
         self,
@@ -552,6 +853,7 @@ class ToolRouter:
         )
         from .cloud_document_runtime import build_document_tool_executors
         from .cloud_email_runtime import build_email_tool_executors
+        from .cloud_crm_runtime import build_crm_tool_executors
         from .cloud_research_runtime import build_research_tool_executors
         from .cloud_whatsapp_runtime import build_whatsapp_tool_executors
         from .agents3_runtime import build_agents3_executors
@@ -559,8 +861,11 @@ class ToolRouter:
 
         executor_map: dict[str, callable] = {}
         sf = plan.skill_filter
+        # Must mirror build_tool_definitions exactly, or a tool appears in the
+        # schema with no executor behind it.
+        groups = plan.scope_groups or plan.groups
 
-        if "research" in plan.groups:
+        if "research" in groups:
             executor_map.update(
                 build_research_tool_executors(
                     identity=self.identity,
@@ -579,10 +884,40 @@ class ToolRouter:
                 )
             )
 
-        if "web" in plan.groups:
+        if "web" in groups:
+            from .cloud_browser_runtime import (
+                browser_collapse_enabled,
+                resolve_browser_action,
+            )
+            from .luna.browser.agent_browser_cli import run_agent_browser_tool
+
+            scopes = _effective_granted_scopes(self.identity)
             tools_list = openai_browser_tool_definitions(self.identity, sf)
+
+            # Always register collapsed `browser` executor when collapse is on
+            # (even if definition list is empty due to filters — runner_common may call it).
+            if browser_collapse_enabled():
+
+                def _execute_browser(args_json: str, scps=scopes):
+                    params = json.loads(args_json) if args_json.strip() else {}
+                    if not isinstance(params, dict):
+                        params = {}
+                    action = str(params.pop("action", "") or "").strip()
+                    resolved = resolve_browser_action(action)
+                    if not resolved:
+                        return f"[failed] Unknown browser action: {action or '(empty)'}"
+                    # Map query → what/text for extract convenience
+                    if action.lower() in ("extract", "get") and params.get("query") and not params.get("what"):
+                        params.setdefault("text", params.get("query"))
+                    ok, content = run_agent_browser_tool(resolved, params, granted_scopes=scps)
+                    return ("" if ok else "[failed] ") + content
+
+                executor_map["browser"] = _execute_browser
+
             for tool_def in tools_list:
                 tool_name = tool_def["function"]["name"]
+                if tool_name == "browser":
+                    continue  # already registered
                 original_name = tool_name
                 resolved_name = resolve_tool_name(tool_name)
                 use_ab = (
@@ -593,9 +928,6 @@ class ToolRouter:
                     )
                 )
                 if use_ab:
-                    from .luna.browser.agent_browser_cli import run_agent_browser_tool
-
-                    scopes = _effective_granted_scopes(self.identity)
 
                     def _make_ab(name, scps):
                         def _execute(args_json: str):
@@ -636,20 +968,22 @@ class ToolRouter:
                     )
 
         if self.runner_runtime == "hybrid" and any(
-            g in plan.groups for g in ("files", "code", "gui")
+            g in groups for g in ("files", "code", "gui")
         ):
             executor_map.update(
                 build_agents3_executors(
                     self.identity,
-                    groups=plan.groups,
+                    groups=groups,
                     qlix_sdk=qlix_sdk,
                     skill_filter=sf,
                     agents3_context=agents3_context,
-                    instruction=plan.instruction,
+                    # Write tools stay in the schema (so the cached prefix is stable)
+                    # but are refused at execution time on a read-only request.
+                    read_only_run=plan.read_only_intent,
                 )
             )
 
-        if "comms" in plan.groups and agent_id and run_id and backend_url and runner_token:
+        if "comms" in groups and agent_id and run_id and backend_url and runner_token:
             email_executors = build_email_tool_executors(
                 identity=self.identity,
                 skill_filter=sf,
@@ -660,6 +994,28 @@ class ToolRouter:
                 qlix_sdk=qlix_sdk,
             )
             executor_map.update(email_executors)
+            crm_executors = build_crm_tool_executors(
+                identity=self.identity,
+                skill_filter=sf,
+                agent_id=agent_id,
+                run_id=run_id,
+                backend_url=backend_url,
+                runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
+            )
+            executor_map.update(crm_executors)
+            from .cloud_slack_runtime import build_slack_tool_executors
+
+            slack_executors = build_slack_tool_executors(
+                identity=self.identity,
+                skill_filter=sf,
+                agent_id=agent_id,
+                run_id=run_id,
+                backend_url=backend_url,
+                runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
+            )
+            executor_map.update(slack_executors)
             whatsapp_executors = build_whatsapp_tool_executors(
                 identity=self.identity,
                 skill_filter=sf,
@@ -667,24 +1023,120 @@ class ToolRouter:
                 run_id=run_id,
                 backend_url=backend_url,
                 runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
             )
             executor_map.update(whatsapp_executors)
 
-        if "knowledge" in plan.groups:
+        if "knowledge" in groups:
             def _brain_stub(_args: str) -> str:
                 return "Company brain context is prepended to the user message for this run."
 
             executor_map.setdefault("brain_query", _brain_stub)
 
-        if "always" in plan.groups:
+        if "always" in groups:
             def _think(args_json: str) -> str:
                 return "Thought recorded."
 
             def _done(args_json: str) -> str:
                 return "Task marked complete."
 
+            # Catalog for find_tools — includes collapsed browser actions + registered executors.
+            catalog: list[tuple[str, str]] = []
+            for name in sorted(executor_map.keys()):
+                catalog.append((name, f"Registered tool {name}"))
+            try:
+                from .cloud_browser_runtime import _BROWSER_ACTION_MAP
+
+                for action, tid in sorted(_BROWSER_ACTION_MAP.items()):
+                    catalog.append((f"browser:{action}", f"Browser action → {tid}"))
+            except Exception:
+                pass
+            if mcp_servers:
+                for srv in mcp_servers if isinstance(mcp_servers, list) else []:
+                    tools = getattr(srv, "tools", None) or (srv.get("tools") if isinstance(srv, dict) else None) or []
+                    slug = getattr(srv, "slug", None) or (srv.get("slug") if isinstance(srv, dict) else "mcp")
+                    for t in tools:
+                        tname = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+                        tdesc = getattr(t, "description", None) or (t.get("description") if isinstance(t, dict) else "")
+                        if tname:
+                            catalog.append((f"mcp.{slug}.{tname}", str(tdesc or "")[:200]))
+
+            def _find_tools(args_json: str, cat=catalog) -> str:
+                params = json.loads(args_json) if args_json.strip() else {}
+                query = str(params.get("query", "")).strip().lower()
+                limit = int(params.get("limit") or 15)
+                if not query:
+                    return "query is required"
+                hits = [
+                    f"- {name}: {desc}"
+                    for name, desc in cat
+                    if query in name.lower() or query in desc.lower()
+                ][: max(1, min(limit, 40))]
+                return "\n".join(hits) if hits else "No matching tools."
+
+            def _call_tool(args_json: str, emap=executor_map) -> str:
+                params = json.loads(args_json) if args_json.strip() else {}
+                name = str(params.get("name", "")).strip()
+                arguments = params.get("arguments") or {}
+                if not name:
+                    return "[failed] name is required"
+                # browser:action shorthand
+                if name.startswith("browser:"):
+                    action = name.split(":", 1)[1]
+                    browser_exec = emap.get("browser")
+                    if not browser_exec:
+                        return "[failed] browser tool not available"
+                    payload = {"action": action, **(arguments if isinstance(arguments, dict) else {})}
+                    return browser_exec(json.dumps(payload))
+                fn = emap.get(name)
+                if not fn:
+                    return f"[failed] Unknown tool: {name}. Use find_tools first."
+                return fn(json.dumps(arguments if isinstance(arguments, dict) else {}))
+
+            def _delegate_task(
+                args_json: str,
+                *,
+                _agent_id=agent_id,
+                _run_id=run_id,
+                _backend=backend_url,
+                _token=runner_token,
+            ) -> str:
+                params = json.loads(args_json) if args_json.strip() else {}
+                prompt = str(params.get("prompt", "")).strip()
+                if not prompt:
+                    return "[failed] prompt is required"
+                if not (_agent_id and _run_id and _backend and _token):
+                    return "[failed] delegate_task unavailable in this runner context"
+                import urllib.request
+
+                body = json.dumps(
+                    {
+                        "prompt": prompt,
+                        "skills": params.get("skills") or [],
+                        "parentRunId": _run_id,
+                    }
+                ).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{_backend.rstrip('/')}/api/v1/agents/{_agent_id}/runs/delegate",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {_token}",
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        raw = resp.read().decode("utf-8")
+                    return f"Delegated: {raw}"
+                except Exception as exc:
+                    return f"[failed] delegate_task: {exc}"
+
             executor_map.setdefault("think", _think)
             executor_map.setdefault("done", _done)
+            executor_map.setdefault("find_tools", _find_tools)
+            executor_map.setdefault("call_tool", _call_tool)
+            executor_map.setdefault("delegate_task", _delegate_task)
 
         if mcp_servers and qlix_sdk is not None:
             from .cloud_mcp_runtime import build_mcp_tool_executors

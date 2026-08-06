@@ -36,7 +36,7 @@ function agentPropertiesSchema(scopeIds: string[]): Record<string, unknown> {
       enum: ['cloud', 'hybrid', 'local'],
       description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
     },
-    model: { type: 'string', description: 'LLM model ID, e.g. "openrouter/openai/gpt-4o-mini"' },
+    model: { type: 'string', description: 'LLM model ID. For cloud/hybrid always use "openrouter/qlix/auto" unless the user names a specific pinned model.' },
     llmMode: {
       type: 'string',
       enum: ['proxy', 'direct'],
@@ -186,6 +186,8 @@ Pick ALL scopes that apply — err toward completeness over minimalism:
 - Lead website email enrichment (cloud): after gmb_search_leads, call list_leads with includeAll=true, then for EACH lead in needsBrowserEnrichment: browser_ab_open(website) → check /contact → update_lead_email OR record_lead_enrichment(no_email_on_site). Email domain must match website — never use Wix placeholders like info@mysite.com. Outreach is blocked until every website lead is browser-enriched.
 - Lead email outreach after enrichment: add email.send plus mcp.qlix-leads.start_outreach (start_outreach is JIT — include in jitScopes)
 - Lead gen pipeline team: supervisor orchestrates; finder worker scrapes GMB (mcp.qlix-leads.*), qualifier worker enriches websites (web.read + web.click + update_lead_email), outreach worker sends (email.send + start_outreach)
+- Zoho CRM / CRM automation (cloud): crm.read + crm.write + crm.delete — request ALL THREE whenever the agent creates, updates, deletes, converts, links, attaches files to, or notes on CRM records (Leads, Contacts, Deals, etc.). crm.write and crm.delete are JIT-forced and must appear in jitScopes when granted. Start with crm_list_modules / crm_describe_module before mutating records.
+- Slack (cloud): slack.read + slack.send — request BOTH whenever the agent reads channels/messages/lists OR posts messages, creates channels, opens DMs, or adds/updates Slack List task items. slack.send is JIT-forced (no separate slack.write scope). User must connect Slack under Connectors first; scopes can still be granted at build time.
 
 ## MCP scopes
 Scopes starting with mcp.<server>.<tool> are MCP server tools registered for this org. Request them like any other scope when the task needs that capability — bindings are created automatically at agent creation.
@@ -201,7 +203,7 @@ Request every scope the agent's core task requires — incomplete permissions pr
 Connector-gated scopes (e.g. email, WhatsApp) MAY be requested even if the connector isn't linked yet — the user links it in Connectors and the link is verified when the agent runs. Request such a scope only when the task explicitly involves that channel.
 
 ## Defaults
-- model: "openrouter/openai/gpt-4o-mini"
+- model: "openrouter/qlix/auto"  (Qlix Auto — always use this for cloud/hybrid agents unless the user explicitly asks for a pinned model)
 - runtime: "cloud"
 - llmMode: "proxy"
 - localInferenceMode: null`;

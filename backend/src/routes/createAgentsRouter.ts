@@ -31,6 +31,7 @@ import {
 import { reconcileRuntimeWithScopes, scopesRequireHybrid, getBuildableScopes } from '../agents/scopeCatalog.js';
 import { permissionScopeSchema, permissionScopesArraySchema } from '../agents/scopeValidation.js';
 import { wireAgentMcpFromScopes } from '../agents/agentMcpWire.js';
+import { recordApiKeySensitiveUse } from '../lib/apiKeyAudit.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest, checkGuestAgentCap } from '../lib/stepUpOrGuest.js';
@@ -47,6 +48,7 @@ import {
 } from '../agentChat/runnerAuth.js';
 import { listActiveAgentRuns, listAgentRunHistory } from '../agentChat/agentRunService.js';
 import { BrainQueryService } from '../aiBrain/brainQuery.service.js';
+import { isAgentEngaged } from '../employees/employees.repository.js';
 import {
   assertStandardAgentCanQueryBrain,
   BrainNotProvisionedError,
@@ -766,8 +768,22 @@ export function createAgentsRouter(): Router {
       return;
     }
     const auth = request.auth!;
+    const engaged = await isAgentEngaged(agent.id);
+    if (engaged) {
+      response.status(403).json({
+        error: {
+          code: 'employee_scope_locked',
+          message: 'This agent is a hired AI Employee. Update scopes via the employee management flow.',
+        },
+      });
+      return;
+    }
     try {
       const updated = await service.updateAgentScopes(auth.userId, auth.orgId, agent.id, body.data);
+      recordApiKeySensitiveUse(request, 'api_key.agent_scopes_updated', {
+        agentId: agent.id,
+        permissionScopes: body.data.permissionScopes,
+      });
       response.json({ agent: updated });
     } catch (err) {
       if (err instanceof AgentNotFoundError) {
@@ -811,6 +827,33 @@ export function createAgentsRouter(): Router {
     response.json({ agent: updated });
   });
 
+  router.patch('/:id/tool-profile', authenticateUser(true), async (request: Request, response: Response) => {
+    const schema = z.object({ toolProfile: z.enum(['minimal', 'coding', 'lean', 'full']) });
+    const body = schema.safeParse(request.body);
+    if (!body.success) {
+      response.status(400).json({
+        error: {
+          code: 'validation_error',
+          message: 'toolProfile must be minimal | coding | lean | full',
+        },
+      });
+      return;
+    }
+    const agent = await agentsRepo.findById(String(request.params.id));
+    if (!agent) {
+      response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+      return;
+    }
+    const auth = request.auth!;
+    const ownsAgent = agent.orgId ? agent.orgId === auth.orgId : agent.userId === auth.userId;
+    if (!ownsAgent) {
+      response.status(403).json({ error: { code: 'forbidden', message: 'Not your agent' } });
+      return;
+    }
+    const updated = await agentsRepo.updateToolProfile(agent.id, body.data.toolProfile);
+    response.json({ agent: updated });
+  });
+
   router.patch('/:id/confirm-download', authenticateUser(true), async (request: Request, response: Response) => {
     try {
       const id = String(request.params.id);
@@ -847,6 +890,10 @@ export function createAgentsRouter(): Router {
       const id = String(request.params.id);
       const auth = request.auth!;
       await service.deleteAgent(auth.userId, auth.orgId, auth.role, id, parsedBody.data.confirmName);
+      recordApiKeySensitiveUse(request, 'api_key.agent_deleted', {
+        agentId: id,
+        confirmName: parsedBody.data.confirmName,
+      });
       response.status(204).send();
     } catch (err) {
       if (err instanceof AgentNotFoundError) {
@@ -879,6 +926,7 @@ export function createAgentsRouter(): Router {
     try {
       const auth = request.auth!;
       const deleted = await service.deleteAllAgents(auth.userId, auth.orgId, auth.role);
+      recordApiKeySensitiveUse(request, 'api_key.agents_bulk_deleted', { deleted });
       response.json({ ok: true, deleted });
     } catch (err) {
       if (err instanceof AgentDeleteForbiddenError) {

@@ -42,6 +42,23 @@ function safeProvisioningErrorMessage(input: unknown): string {
   return raw.length > 2000 ? `${raw.slice(0, 2000)}…(truncated)` : raw;
 }
 
+/** Fail provisioning if the runner image is missing core research CLIs (Exa/mcporter). */
+async function verifyRunnerResearchStack(
+  orchestrator: RunnerOrchestrator,
+  containerName: string,
+): Promise<void> {
+  const result = await orchestrator.execContainer(
+    containerName,
+    ['sh', '-c', 'command -v mcporter && command -v agent-reach'],
+    15_000,
+  );
+  if (result.ok) return;
+  const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  throw new CloudProvisionFailedError(
+    `Runner missing research stack (mcporter/agent-reach). Rebuild the shared cloud runner image.${detail ? `\n${detail}` : ''}`,
+  );
+}
+
 /** When DOCKER_HOST=ssh://…, bind-mount paths resolve on the remote daemon host. */
 function dockerSshTarget(): string | null {
   const host = process.env.DOCKER_HOST?.trim();
@@ -257,6 +274,11 @@ export class CloudProvisionerService {
       cmd: ['python', '-m', 'qlix.cloud_runner'],
     });
 
+    await verifyRunnerResearchStack(this.orchestrator, containerName).catch(async (err) => {
+      await this.orchestrator.removeContainerIfExists(containerName);
+      throw err;
+    });
+
     if (teamContext) {
       await clearPendingTeamContext(runnerStateRoot, params.agent.id);
     }
@@ -405,6 +427,7 @@ export class CloudProvisionerService {
       cloudProvisioningError: null,
       hybridLastHeartbeatAt: null,
       agentKind: (row.agentKind as AgentDTO['agentKind']) ?? 'standard',
+      toolProfile: 'full',
     };
 
     const identity = buildSdkAgentJson(agentDto, privateKey, backendUrl);
@@ -536,6 +559,7 @@ export class CloudProvisionerService {
       cloudProvisioningError: null,
       hybridLastHeartbeatAt: null,
       agentKind: (row.agentKind as AgentDTO['agentKind']) ?? 'standard',
+      toolProfile: 'full',
     };
 
     const identity = buildSdkAgentJson(agentDto, privateKey, backendUrl);

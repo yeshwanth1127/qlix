@@ -7,6 +7,8 @@ import {
   isCompetitorResearchPrompt,
   enrichJobApplyPlan,
   isJobApplyPrompt,
+  enrichCrmPlan,
+  isCrmPrompt,
 } from './nlPlanEnrichment.js';
 import type { AgentCreationPlan, NLAgentSpec } from './nlTypes.js';
 
@@ -218,5 +220,28 @@ describe('enrichJobApplyPlan', () => {
     assert.ok(out.agent.permissionScopes.includes('web.transaction'));
     assert.ok(out.agent.jitScopes.includes('web.transaction'));
     assert.match(out.agent.description, /## Job apply method/);
+  });
+
+  const CRM_ALLOWED = new Set(['crm.read', 'crm.write', 'crm.delete', 'web.read']);
+
+  it('detects Zoho CRM prompts', () => {
+    assert.equal(isCrmPrompt('I need an agent to perform tasks on my Zoho CRM'), true);
+    assert.equal(isCrmPrompt('manage CRM records and deals'), true);
+    assert.equal(isCrmPrompt('summarize my inbox'), false);
+  });
+
+  it('adds full CRM scopes when the model under-scopes', () => {
+    const plan = singleAgentPlan('Zoho CRM agent', ['crm.read', 'crm.write']);
+    const out = enrichCrmPlan('agent to perform tasks on my zoho crm', plan, CRM_ALLOWED);
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.deepEqual(
+      [...out.agent.permissionScopes].sort(),
+      ['crm.delete', 'crm.read', 'crm.write'],
+    );
+    assert.ok(out.agent.jitScopes.includes('crm.write'));
+    assert.ok(out.agent.jitScopes.includes('crm.delete'));
   });
 });

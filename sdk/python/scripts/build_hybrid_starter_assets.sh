@@ -5,9 +5,22 @@ set -euo pipefail
 SDK_PYTHON="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$SDK_PYTHON/../.." && pwd)"
 ASSETS="$ROOT/backend/assets/hybrid-starter"
+STARTER_SRC="$SDK_PYTHON/qlix/starter_pack"
+TEMPLATES="$ASSETS/templates"
 VENV="$SDK_PYTHON/.venv"
 
-mkdir -p "$ASSETS" "$SDK_PYTHON/dist"
+mkdir -p "$ASSETS" "$TEMPLATES" "$SDK_PYTHON/dist"
+
+# Sync launcher templates (source of truth: sdk/python/qlix/starter_pack).
+cp -f "$STARTER_SRC/Start Qlix Agent.bat" "$TEMPLATES/"
+cp -f "$STARTER_SRC/Start Qlix Agent.sh" "$TEMPLATES/"
+cp -f "$STARTER_SRC/Start Qlix Agent.command" "$TEMPLATES/"
+cp -f "$STARTER_SRC/README.txt" "$TEMPLATES/"
+if [[ -f "$STARTER_SRC/install.sh" ]]; then
+  cp -f "$STARTER_SRC/install.sh" "$TEMPLATES/"
+fi
+chmod +x "$TEMPLATES/Start Qlix Agent.sh" "$TEMPLATES/Start Qlix Agent.command" "$TEMPLATES/install.sh" 2>/dev/null || true
+echo "Synced starter templates → $TEMPLATES"
 
 if [[ ! -x "$VENV/bin/pip" ]]; then
   python3 -m venv "$VENV"

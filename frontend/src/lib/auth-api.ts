@@ -249,3 +249,53 @@ export async function getSession(): Promise<AuthSuccessResponse | null> {
     return null;
   }
 }
+
+export type OAuthLoginProvider = "google" | "github";
+
+/** Full-page redirect URL to begin Google / GitHub sign-in on the API. */
+export function oauthStartUrl(
+  provider: OAuthLoginProvider,
+  opts?: {
+    workspaceType?: "individual" | "organization";
+    invite?: string | null;
+    next?: string;
+  },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.workspaceType) params.set("workspaceType", opts.workspaceType);
+  if (opts?.invite?.trim()) params.set("invite", opts.invite.trim());
+  if (opts?.next?.startsWith("/")) params.set("next", opts.next);
+  const q = params.toString();
+  return `${apiBase()}/api/v1/auth/oauth/${provider}/start${q ? `?${q}` : ""}`;
+}
+
+/** Human-readable messages for `?error=` codes returned by the OAuth callback. */
+export function oauthErrorMessage(code: string | null | undefined): string | null {
+  if (!code) return null;
+  switch (code) {
+    case "oauth_not_configured":
+      return "Social sign-in is not configured on this server.";
+    case "oauth_denied":
+      return "Sign-in was cancelled.";
+    case "oauth_failed":
+    case "missing_code":
+    case "invalid_state":
+    case "provider_error":
+    case "token_exchange_failed":
+      return "Social sign-in failed. Please try again.";
+    case "email_required":
+    case "email_unverified":
+      return "Your provider account must have a verified email address.";
+    case "invite_email_mismatch":
+      return "Sign in with the email address that received the invitation.";
+    case "invalid_invite":
+    case "invalid_invite_context":
+      return "This invitation is invalid or expired.";
+    case "account_inactive":
+      return "This account is inactive.";
+    case "unknown_provider":
+      return "Unsupported sign-in provider.";
+    default:
+      return "Social sign-in failed. Please try again.";
+  }
+}

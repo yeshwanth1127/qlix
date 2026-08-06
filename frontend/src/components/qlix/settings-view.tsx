@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { postChangePassword, postLogout } from "@/lib/auth-api";
+import { ChannelDefaultsPanel } from "./ChannelDefaultsPanel";
 import { useSession } from "./session-context";
 import {
   SketchBox,
@@ -16,6 +17,8 @@ import {
 
 export function SettingsView() {
   const { session } = useSession();
+  const isOrg = session?.organization.workspaceKind === "organization";
+  const canManageChannels = session?.user.role !== "member";
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -134,6 +137,8 @@ export function SettingsView() {
           </form>
         </SketchBox>
       </SketchSection>
+
+      {isOrg && canManageChannels ? <ChannelDefaultsPanel /> : null}
 
       <SketchSection title="Account">
         <SketchBox className="flex items-center justify-between p-4">

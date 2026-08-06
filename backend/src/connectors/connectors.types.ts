@@ -1,4 +1,4 @@
-export type ConnectorProvider = 'google' | 'whatsapp_baileys' | 'orbit';
+export type ConnectorProvider = 'google' | 'whatsapp_baileys' | 'orbit' | 'zoho' | 'slack' | 'telegram';
 
 /** Orbit (Postiz) Public API credentials stored encrypted in tokenEnc. */
 export interface StoredOrbitCredentials {
@@ -16,11 +16,23 @@ export interface StoredOrbitCredentials {
 export type ConnectorStatus = 'connected' | 'revoked' | 'error' | 'pending_qr';
 
 export interface StoredOAuthTokens {
+  /** Primary token — Gmail/Zoho access token; Slack **user** token (xoxp-…). */
   accessToken: string;
   refreshToken: string;
   expiresAtMs: number | null;
   scopes: string[];
   emailAddress: string | null;
+  /** Zoho API domain from token response (e.g. https://www.zohoapis.in). */
+  apiDomain?: string | null;
+  /** Zoho accounts server used for refresh (e.g. https://accounts.zoho.in). */
+  accountsUrl?: string | null;
+  /** Slack bot token (xoxb-…) when app installs with bot scopes. */
+  slackBotAccessToken?: string | null;
+  /** Slack workspace id (team.id). */
+  teamId?: string | null;
+  teamName?: string | null;
+  /** Slack user id of the authorizing member (authed_user.id). */
+  slackUserId?: string | null;
 }
 
 export interface ConnectorAccountDTO {

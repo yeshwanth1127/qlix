@@ -285,42 +285,37 @@ def _build_tool_executor_map(
     return executor_map
 
 
-def _build_system_prompt(
-    agent_description: str | None,
+def _build_run_guidance(
     identity: AgentIdentity,
-    tools: list[dict[str, Any]],
     *,
-    groups: tuple[str, ...] | None = None,
-    instruction: str = "",
+    groups: tuple[str, ...] | None,
+    instruction: str,
+    base_guidance: str,
 ) -> str:
-    """Tell the model who it is and what it can actually do.
+    """TIER B guidance — intent-specific, so it must stay out of the cached prefix.
 
-    Without this, models answer capability questions from their training prior
-    (e.g. "I can't browse the internet") even when tools are attached. Capabilities
-    are derived from the agent's granted scopes (see `describe_capabilities`), so it
-    works for any tool the agent has — current or future.
+    `base_guidance` is what ToolRouter.plan_run already derived. Added here is the
+    leads-scope-aware advisory, which plan_run cannot produce because it does not
+    inspect mcp.qlix-leads.* grants.
     """
-    from .runner_common import describe_capabilities
     from .tool_router import (
         has_qlix_leads_scope,
+        has_crm_scope,
+        is_crm_mutation_intent,
         is_lead_browser_enrichment_intent,
         is_lead_generation_intent,
+        crm_jit_run_guidance,
         lead_enrichment_run_guidance,
         lead_generation_run_guidance,
     )
+    from .cloud_crm_runtime import crm_jit_needs_sdk
 
-    identity_line = (agent_description or "").strip() or (
-        "an autonomous AI agent running on the Qlix platform"
-    )
     granted = (
         set(identity.permission_scopes)
         | set(identity.always_scopes)
         | set(identity.jit_scopes)
     )
-    parts = [
-        f"You are {identity_line}.",
-        describe_capabilities(granted, tools, groups=groups),
-    ]
+    parts: list[str] = []
     enrich_intent = is_lead_browser_enrichment_intent(instruction)
     gen_intent = is_lead_generation_intent(instruction)
     if enrich_intent and has_qlix_leads_scope(identity):
@@ -336,6 +331,57 @@ def _build_system_prompt(
             parts.append(lead_enrichment_run_guidance())
     elif gen_intent and has_qlix_leads_scope(identity):
         parts.append(lead_generation_run_guidance())
+    if has_crm_scope(identity) and crm_jit_needs_sdk(identity):
+        if is_crm_mutation_intent(instruction) or (groups and "comms" in groups):
+            parts.append(crm_jit_run_guidance())
+    # plan_run's guidance last so run-specific playbooks read after the advisories.
+    if base_guidance.strip():
+        parts.append(base_guidance.strip())
+    # De-dup: plan_run and the checks above can derive the same playbook.
+    seen: set[str] = set()
+    unique = [p for p in parts if not (p in seen or seen.add(p))]
+    return "\n\n".join(unique)
+
+
+def _build_system_prompt(
+    agent_description: str | None,
+    identity: AgentIdentity,
+) -> str:
+    """TIER A — who the agent is and what its scopes allow. Invariant per agent.
+
+    Everything here is a function of the agent alone (description + granted scopes),
+    never of the current prompt or the clock. Together with the scope-derived tool
+    array this forms the cached prompt prefix, so it is served from the provider's
+    cache on every round of every run rather than re-billed each time.
+
+    Anything per-run — the clock, intent guidance, retrieved brain/memory context, the
+    task itself — belongs in the run-context block (see `build_run_context_block`),
+    which is appended to the user message *after* this prefix.
+    """
+    from .runner_common import describe_capabilities
+
+    identity_line = (agent_description or "").strip() or (
+        "an autonomous AI agent running on the Qlix platform"
+    )
+    # Descriptions written by the AI builder usually already start with "You are ...";
+    # prefixing again produced "You are You are a Slack assistant.".
+    if re.match(r"^you\s+are\b", identity_line, re.IGNORECASE):
+        identity_statement = identity_line.rstrip(".") + "."
+    else:
+        identity_statement = f"You are {identity_line.rstrip('.')}."
+    granted = (
+        set(identity.permission_scopes)
+        | set(identity.always_scopes)
+        | set(identity.jit_scopes)
+    )
+    parts = [
+        identity_statement,
+        describe_capabilities(granted),
+        (
+            "Reply directly to the user in plain language. Never include internal reasoning, "
+            "thought traces, or meta-commentary about tools, scopes, or prior errors."
+        ),
+    ]
     return "\n\n".join(parts)
 
 
@@ -352,13 +398,20 @@ async def _run_backend_proxy_inference(
     selected_skills: list[str],
     agent_description: str | None = None,
     mcp_servers: Any = None,
+    tool_profile: str = "full",
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email/MCP tools."""
     import hashlib
 
-    from .runner_common import default_log, run_backend_proxy_inference
+    from .runner_common import (
+        build_run_context_block,
+        default_log,
+        run_backend_proxy_inference,
+    )
     from .tool_router import ToolRouter
     from .cloud_email_runtime import email_send_needs_jit
+    from .cloud_crm_runtime import crm_jit_needs_sdk
+    from .cloud_whatsapp_runtime import whatsapp_contact_send_needs_jit
 
     router = ToolRouter(identity, runner_runtime="cloud")
     instruction = enriched_prompt.split("\n\nSelected skills/tools:")[0].strip()
@@ -372,14 +425,25 @@ async def _run_backend_proxy_inference(
     )
     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
 
-    tools = router.build_tool_definitions(plan, mcp_servers=mcp_servers)
+    tools = router.build_tool_definitions(
+        plan, mcp_servers=mcp_servers, tool_profile=tool_profile
+    )
+    if router.last_budget_report:
+        _log("tool_budget", run_id=run_id, **router.last_budget_report)
     backend_url = os.environ.get("QLIX_BACKEND_URL", identity.backend_url).strip()
     runner_token = os.environ.get("QLIX_RUNNER_TOKEN", "").strip()
-    # MCP, research, and JIT-gated email tools use the signed Qlix action / approval lifecycle.
+    # MCP, research, and JIT-gated email/CRM/WhatsApp contact tools need the SDK.
     needs_sdk = (
         bool(mcp_servers)
         or "research" in plan.groups
-        or ("comms" in plan.groups and email_send_needs_jit(identity))
+        or (
+            "comms" in plan.groups
+            and (
+                email_send_needs_jit(identity)
+                or crm_jit_needs_sdk(identity)
+                or whatsapp_contact_send_needs_jit(identity)
+            )
+        )
     )
     mcp_sdk = None
     if needs_sdk:
@@ -399,8 +463,24 @@ async def _run_backend_proxy_inference(
     tools_json = json.dumps(tools, sort_keys=True)
     tools_hash = hashlib.md5(tools_json.encode()).hexdigest()[:8]
 
-    system_prompt = _build_system_prompt(
-        agent_description, identity, tools, groups=plan.groups, instruction=instruction
+    # Tier A: invariant per agent -> cached prompt prefix.
+    system_prompt = _build_system_prompt(agent_description, identity)
+    # Tier B: everything that varies per run, appended after the cached prefix.
+    granted_scopes = (
+        set(identity.permission_scopes)
+        | set(identity.always_scopes)
+        | set(identity.jit_scopes)
+    )
+    enriched_prompt = build_run_context_block(
+        prompt=enriched_prompt,
+        granted_scopes=granted_scopes,
+        guidance=_build_run_guidance(
+            identity,
+            groups=plan.groups,
+            instruction=instruction,
+            base_guidance=plan.guidance,
+        ),
+        tool_preference=router.tool_preference(plan),
     )
 
     # Capture UI screenshot frames whenever browser tools are in play, so the live
@@ -409,6 +489,16 @@ async def _run_backend_proxy_inference(
     live_view_enabled = "web" in plan.groups and os.environ.get(
         "QLIX_BROWSER_LIVE_VIEW", "1"
     ).strip().lower() not in ("0", "false", "off", "no")
+
+    if "web" in plan.groups:
+        try:
+            from .browser_pool import ensure_managed_browser_env
+
+            cdp = ensure_managed_browser_env()
+            if cdp:
+                _log("browser_pool_cdp", run_id=run_id, configured=True)
+        except Exception as exc:  # noqa: BLE001
+            _log("browser_pool_cdp_failed", run_id=run_id, error=str(exc)[:200])
 
     return await run_backend_proxy_inference(
         http,
@@ -614,10 +704,24 @@ async def _poll_and_execute_loop() -> None:
                     event_type="log",
                     data={"message": "inference_request", "model": model},
                 )
+                from dataclasses import replace as dc_replace
+
+                from .tool_profiles import filter_scopes_by_tool_profile
+
+                tool_profile = str(run.get("toolProfile") or run.get("tool_profile") or "full")
+                scoped_identity = dc_replace(
+                    identity,
+                    permission_scopes=tuple(
+                        filter_scopes_by_tool_profile(list(identity.permission_scopes), tool_profile)
+                    ),
+                    always_scopes=tuple(
+                        filter_scopes_by_tool_profile(list(identity.always_scopes), tool_profile)
+                    ),
+                )
                 seq, content, duration_ms, turns, tool_calls, proxy_usage, _executed_tools = (
                     await _run_backend_proxy_inference(
                         inference_http,
-                        identity=identity,
+                        identity=scoped_identity,
                         agent_id=identity.agent_id,
                         headers=headers,
                         seq=seq,
@@ -627,6 +731,7 @@ async def _poll_and_execute_loop() -> None:
                         selected_skills=selected_skills,
                         agent_description=run.get("agentDescription"),
                         mcp_servers=run.get("mcpServers") or [],
+                        tool_profile=tool_profile,
                     )
                 )
                 seq = await _emit_event(
@@ -646,17 +751,16 @@ async def _poll_and_execute_loop() -> None:
                 )
                 if not content.strip():
                     content = "No response generated."
-                words = content.split(" ")
-                for word in words:
-                    seq = await _emit_event(
-                        http,
-                        agent_id=identity.agent_id,
-                        run_id=run_id,
-                        headers=headers,
-                        seq=seq,
-                        event_type="delta",
-                        data={"text": word + " "},
-                    )
+                from .runner_common import stream_assistant_deltas
+
+                seq = await stream_assistant_deltas(
+                    http,
+                    agent_id=identity.agent_id,
+                    run_id=run_id,
+                    headers=headers,
+                    seq=seq,
+                    content=content,
+                )
                 seq = await _emit_event(
                     http,
                     agent_id=identity.agent_id,
@@ -675,6 +779,11 @@ async def _poll_and_execute_loop() -> None:
                 _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms)
             except Exception as exc:
                 # Log only critical errors, not retries
+                from .runner_common import RunCanceledError
+
+                if isinstance(exc, RunCanceledError):
+                    _log("run_canceled_by_user", run_id=run_id or "")
+                    continue
                 error_msg = str(exc)
                 if "Unique constraint" not in error_msg and "Network" not in error_msg:
                     _log("poll_execute_error", error=error_msg)

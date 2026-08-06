@@ -36,7 +36,7 @@ export function CreateTeamModal({ open, orgId: _orgId, onClose, onCreated }: Cre
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [pipelineMode, setPipelineMode] = useState(true);
-  const [defaultModel, setDefaultModel] = useState<string>("");
+  const [defaultModel, setDefaultModel] = useState<string>("openrouter/qlix/auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -152,7 +152,9 @@ export function CreateTeamModal({ open, orgId: _orgId, onClose, onCreated }: Cre
                   <option value="">Per-agent defaults</option>
                   {CLOUD_MODELS.map((m) => (
                     <option key={m} value={m}>
-                      {m.replace("openrouter/", "")}
+                      {m === "openrouter/qlix/auto"
+                        ? "Auto (Qlix picks ≤ your plan)"
+                        : m.replace("openrouter/", "")}
                     </option>
                   ))}
                 </select>

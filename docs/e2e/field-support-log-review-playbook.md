@@ -21,12 +21,12 @@ Always use the **full absolute path** the user provides. Do not guess filenames 
 ## Required workflow
 
 1. **Query this playbook** when the user mentions policy, playbook, brain, field support, or `#brain`.
-2. **List or read** the target directory if the exact file is unclear (`s3_list_dir` on the Debug folder).
-3. **Read** the log with `s3_read_file` (optionally last N lines for large files).
+2. **List or read** the target directory if the exact file is unclear (`luna_local_list_dir` on the Debug folder).
+3. **Read** the log with `luna_local_read_file` (optionally last N lines for large files).
 4. **Open on the user's screen** so they can watch along:
-   - File: default app or Notepad (`s3_open_file`, mode `default`, or `application: notepad`).
-   - Highlight in Explorer: `s3_open_file`, mode `reveal`.
-   - Open folder: `s3_open_file`, mode `folder`.
+   - File: default app or Notepad (`luna_local_open_file`, mode `default`, or `application: notepad`).
+   - Highlight in Explorer: `luna_local_open_file`, mode `reveal`.
+   - Open folder: `luna_local_open_file`, mode `folder`.
 5. **Analyze** lines containing (case-insensitive): `error`, `exception`, `fail`, `fatal`, `critical`.
 6. **Reply** with a short summary suitable for WhatsApp (max 15 bullets, plain text, no markdown tables).
 
@@ -34,21 +34,21 @@ Always use the **full absolute path** the user provides. Do not guess filenames 
 
 | Task | Tool |
 |------|------|
-| Read log content | `s3_read_file` (use `max_lines` for large files) |
-| Open file in Notepad / default app | `s3_open_file` (mode `default` or `application: notepad`) |
-| Show file in Explorer | `s3_open_file` (mode `reveal`) |
-| List Debug folder | `s3_list_dir` |
+| Read log content | `luna_local_read_file` (use `max_lines` for large files) |
+| Open file in Notepad / default app | `luna_local_open_file` (mode `default` or `application: notepad`) |
+| Show file in Explorer | `luna_local_open_file` (mode `reveal`) |
+| List Debug folder | `luna_local_list_dir` |
 
-Prefer `s3_read_file` / `s3_open_file` over `gui_control` for logs unless the user explicitly asks for desktop UI automation.
+Prefer `luna_local_read_file` / `luna_local_open_file` over `gui_control` for logs unless the user explicitly asks for desktop UI automation.
 
 ## Do not
 
-- Use `s3_write_file`, `s3_python`, or `s3_bash` unless the user explicitly asks to **create, save, or modify** a file on disk.
+- Use `luna_local_write_file`, `luna_local_python`, or `luna_local_bash` unless the user explicitly asks to **create, save, or modify** a file on disk.
 - Do not write `error_summary.txt` or other sidecar files unless the user requests a saved report.
 - Delete, overwrite, or truncate log files unless the user explicitly requests it.
 - Open paths outside the user-specified project folders without confirmation.
 - Paste more than ~1500 characters in the final user-facing summary (WhatsApp limit).
-- Claim a file was opened unless `s3_open_file` succeeded.
+- Claim a file was opened unless `luna_local_open_file` succeeded.
 
 ## Escalation
 

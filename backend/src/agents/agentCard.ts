@@ -40,9 +40,16 @@ const SCOPE_SKILL_MAP: Record<string, { name: string; description: string }> = {
   'brain.knowledge_read': { name: 'Knowledge Read', description: 'Read from knowledge collections' },
   'email.read': { name: 'Email Reading', description: 'Read and search connected Gmail inbox' },
   'email.send': { name: 'Email Sending', description: 'Send email via connected Gmail account (JIT)' },
-  'whatsapp.send': { name: 'WhatsApp', description: 'Send messages/files on connected WhatsApp' },
+  'whatsapp.send': { name: 'WhatsApp', description: 'Send files to your linked WhatsApp self-chat' },
+  'whatsapp.read': { name: 'WhatsApp', description: 'Read WhatsApp contact chats' },
+  'whatsapp.contact_send': { name: 'WhatsApp', description: 'Message WhatsApp contacts (with approval)' },
   'social.read': { name: 'Orbit Social Read', description: 'List Orbit channels, posts, and analytics' },
   'social.publish': { name: 'Orbit Social Publish', description: 'Publish or schedule posts via Orbit (JIT)' },
+  'crm.read': { name: 'CRM Read', description: 'Search and read records in the connected CRM platform' },
+  'crm.write': { name: 'CRM Write', description: 'Create, update, convert, and link CRM records (JIT)' },
+  'crm.delete': { name: 'CRM Delete', description: 'Delete CRM records (JIT)' },
+  'slack.read': { name: 'Slack Read', description: 'Channels, search, history, and Slack List items' },
+  'slack.send': { name: 'Slack Write', description: 'Post, channels, DMs, and create/update Slack List task rows (JIT)' },
 };
 
 export function buildAgentCard(agent: AgentDTO, backendBaseUrl: string): A2AAgentCard {

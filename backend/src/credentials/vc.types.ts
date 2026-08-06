@@ -1,6 +1,6 @@
 import type { PermissionScope } from '../agents/agents.types.js';
 
-export type VCType = 'identity' | 'scope' | 'jit';
+export type VCType = 'identity' | 'scope' | 'jit' | 'employment';
 
 export interface IdentityClaims {
   humanVerified: boolean;
@@ -15,7 +15,14 @@ export interface ScopeClaims {
   alwaysScopes: PermissionScope[];
 }
 
-export type VCClaims = IdentityClaims | ScopeClaims | Record<string, unknown>;
+export interface EmploymentClaims {
+  roleSlug: string;
+  packVersion: string;
+  packHash: string;
+  hiredAt: string;
+}
+
+export type VCClaims = IdentityClaims | ScopeClaims | EmploymentClaims | Record<string, unknown>;
 
 export interface VerifiableCredentialDTO {
   id: string;

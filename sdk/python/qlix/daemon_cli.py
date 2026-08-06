@@ -1,10 +1,9 @@
-"""Local daemon CLI for hybrid agents: ``qlix daemon start|status|install``."""
+"""Local daemon CLI for hybrid agents: ``qlix daemon start|status|install`` and ``qlix chat``."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -23,17 +22,28 @@ def _agent_file() -> Path:
         sys.exit(1)
 
 
-def cmd_start(_args: argparse.Namespace) -> None:
+def cmd_start(args: argparse.Namespace) -> None:
     agent = _agent_file()
     if not agent.exists():
         print(f"agent.json not found: {agent}", file=sys.stderr)
         sys.exit(1)
     env = os.environ.copy()
     env.setdefault("QLIX_AGENT_FILE", str(agent))
-    print(f"Starting hybrid runner (agent={agent.name})…", file=sys.stderr)
+    os.environ.update(env)
+    if getattr(args, "headless", False):
+        os.environ["QLIX_HEADLESS"] = "1"
+    mode = "headless" if getattr(args, "headless", False) else "interactive"
+    print(f"Starting hybrid runner ({mode}, agent={agent.name})…", file=sys.stderr)
     from .hybrid_runner import main as hybrid_main
 
-    hybrid_main()
+    argv = ["--headless"] if getattr(args, "headless", False) else []
+    hybrid_main(argv)
+
+
+def cmd_chat(args: argparse.Namespace) -> None:
+    """Alias for interactive start (local-primary chat)."""
+    args.headless = False
+    cmd_start(args)
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
@@ -69,24 +79,40 @@ def cmd_install(args: argparse.Namespace) -> None:
     agent = _agent_file()
     python = sys.executable
     cmd = (
-        f'{python} -m qlix.hybrid_runner'
+        f"{python} -m qlix.hybrid_runner --headless"
         if args.module == "hybrid_runner"
-        else f'{python} -m qlix.daemon_cli start'
+        else f"{python} -m qlix.daemon_cli start --headless"
     )
     print("Add a user service that runs:")
     print(f"  QLIX_AGENT_FILE={agent}")
     print(f"  QLIX_RUNNER_TOKEN=<from agent creation>")
+    print(f"  QLIX_HEADLESS=1")
     print(f"  {cmd}")
-    print("\nOr: pip install qlix && qlix daemon start")
+    print("\nOr: pip install qlix && qlix daemon start --headless")
+    print("For interactive local chat (default): qlix chat   or   qlix daemon start")
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qlix", description="Qlix hybrid local daemon")
-    sub = p.add_subparsers(dest="command", required=True)  # type: ignore[arg-type]
-    start_p = sub.add_parser("start", help="Run hybrid poll loop in foreground")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    start_p = sub.add_parser(
+        "start",
+        help="Run hybrid runner (interactive chat on TTY; use --headless for services)",
+    )
+    start_p.add_argument(
+        "--headless",
+        action="store_true",
+        help="Poll + ping only (no local chat REPL)",
+    )
     start_p.set_defaults(func=cmd_start)
+
+    chat_p = sub.add_parser("chat", help="Interactive local terminal chat (same as start)")
+    chat_p.set_defaults(func=cmd_chat)
+
     status_p = sub.add_parser("status", help="Query agent runtime status from backend")
     status_p.set_defaults(func=cmd_status)
+
     install_p = sub.add_parser("install", help="Print install instructions for a background service")
     install_p.add_argument(
         "--module",
@@ -103,6 +129,11 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
     if len(argv) >= 2 and argv[0] == "daemon":
         argv = argv[1:]
+    # Support `qlix chat` without the daemon prefix.
+    if argv and argv[0] == "chat":
+        ns = parser.parse_args(argv)
+        ns.func(ns)
+        return
     ns = parser.parse_args(argv)
     ns.func(ns)
 

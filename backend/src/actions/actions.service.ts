@@ -181,7 +181,7 @@ export class ActionsService {
     // Lead-outreach UX gate: record when the agent lists/scrapes leads so email.send
     // can require this "present leads to the user first" step (see leadOutreachGate).
     if (isLeadListingActionType(signedPayload.actionType)) {
-      markLeadsListed(agent.id);
+      await markLeadsListed(agent.id);
     }
 
     return {

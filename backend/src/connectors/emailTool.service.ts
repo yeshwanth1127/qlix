@@ -278,8 +278,8 @@ export async function executeEmailSend(params: {
   //   2. every recipient must exist as a verified scraped lead (no hallucinated emails)
   if (await agentDoesLeadOutreach(params.agentId, ctx)) {
     const listed =
-      hasListedLeadsRecently(params.agentId) ||
-      (ctx.teamRunId != null && hasListedLeadsRecentlyForTeamRun(ctx.teamRunId));
+      (await hasListedLeadsRecently(params.agentId)) ||
+      (ctx.teamRunId != null && (await hasListedLeadsRecentlyForTeamRun(ctx.teamRunId)));
     if (!listed) {
       throw new EmailToolError(
         'Refusing to send: you must scrape and present the leads to the user before any outreach. ' +
@@ -293,7 +293,7 @@ export async function executeEmailSend(params: {
     // Skip the campaign-wide enrichment-complete block when the user already reviewed
     // this campaign's leads in the UI and approved outreach — they saw which leads
     // still lack emails. Per-recipient verified-email checks below still apply.
-    if (campaignId && !isCampaignOutreachApproved(campaignId)) {
+    if (campaignId && !(await isCampaignOutreachApproved(campaignId))) {
       try {
         await leadsService.assertBrowserEnrichmentComplete(ctx.orgId, campaignId);
       } catch (err) {

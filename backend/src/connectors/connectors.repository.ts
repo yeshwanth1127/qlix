@@ -82,6 +82,69 @@ export class ConnectorsRepository {
     return toDto(row);
   }
 
+  async upsertZoho(params: {
+    orgId: string;
+    userId: string;
+    tokens: StoredOAuthTokens;
+  }): Promise<ConnectorAccountDTO> {
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.tokens));
+    const row = await prisma.connectorAccount.upsert({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'zoho' } },
+      create: {
+        orgId: params.orgId,
+        userId: params.userId,
+        provider: 'zoho',
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: params.tokens.emailAddress,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+      update: {
+        userId: params.userId,
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: params.tokens.emailAddress,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+    });
+    return toDto(row);
+  }
+
+  async upsertSlack(params: {
+    orgId: string;
+    userId: string;
+    tokens: StoredOAuthTokens;
+  }): Promise<ConnectorAccountDTO> {
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.tokens));
+    const display =
+      params.tokens.emailAddress ??
+      (params.tokens.teamName ? `${params.tokens.teamName} (Slack)` : 'Slack workspace');
+    const row = await prisma.connectorAccount.upsert({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'slack' } },
+      create: {
+        orgId: params.orgId,
+        userId: params.userId,
+        provider: 'slack',
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+      update: {
+        userId: params.userId,
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+    });
+    return toDto(row);
+  }
+
   async loadTokens(orgId: string, provider: ConnectorProvider): Promise<StoredOAuthTokens | null> {
     const row = await prisma.connectorAccount.findUnique({
       where: { orgId_provider: { orgId, provider } },

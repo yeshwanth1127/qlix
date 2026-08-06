@@ -3,9 +3,19 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeFile, unlink } from 'node:fs/promises';
+import multer from 'multer';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
-import { enqueueAgentRun } from '../agentChat/agentRunService.js';
+import { buildWebChatInbound, buildLocalInbound, gatewayService, replyDispatcher } from '../gateway/index.js';
+import {
+  buildPromptWithAttachments,
+  CHAT_ATTACHMENT_MAX_FILES,
+  CHAT_ATTACHMENT_MAX_BYTES,
+  CHAT_ATTACHMENT_MAX_MB,
+  processChatUploads,
+  storedChatAttachments,
+  type ChatAttachmentMeta,
+} from '../agentChat/chatAttachment.service.js';
 import {
   buildMemoryBlock,
   extractAndStoreMemories,
@@ -19,7 +29,12 @@ import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAu
 import { McpRepository } from '../mcp/mcp.repository.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
-import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
+import { appendAgentRunLogEvent, ensureLocalConversation } from '../agentChat/agentRunService.js';
+import {
+  createLocalConversation,
+  forkConversation,
+  listConversationsForAgent,
+} from '../agentChat/conversationService.js';
 import { BrainQueryService } from '../aiBrain/brainQuery.service.js';
 import {
   assertStandardAgentCanQueryBrain,
@@ -53,9 +68,26 @@ import {
   sendWhatsAppDocument,
   startWhatsAppSession,
 } from '../connectors/whatsappServiceClient.js';
+import {
+  executeWhatsAppContactSend,
+  executeWhatsAppListContacts,
+  executeWhatsAppReadChat,
+  WhatsAppNotLinkedError,
+  WhatsAppScopeDeniedError,
+  WhatsAppToolError,
+} from '../connectors/whatsappTool.service.js';
 import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
 import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
 import { storeSandboxFile } from '../sandbox/sandboxClient.js';
+import { registerCrmToolRoutes } from './registerCrmToolRoutes.js';
+import { registerSlackToolRoutes } from './registerSlackToolRoutes.js';
+import {
+  AgentNotFoundError,
+  JitForbiddenError,
+  JitRequestNotFoundError,
+  JitService,
+  NotJitScopeError,
+} from '../jit/jit.service.js';
 
 const createConversationBody = z.object({});
 
@@ -67,6 +99,37 @@ const postMessageBody = z.object({
   /** When true, cloud runner retrieves org brain context for this turn (requires `brain.query` on the agent). */
   useBrain: z.boolean().optional().default(false),
 });
+
+const chatMessageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: CHAT_ATTACHMENT_MAX_BYTES, files: CHAT_ATTACHMENT_MAX_FILES },
+});
+
+function parseMultipartMessageFields(body: Record<string, unknown>): {
+  content: string;
+  skills: string[];
+  model?: string;
+  useBrain: boolean;
+} {
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  let skills: string[] = [];
+  if (typeof body.skills === 'string' && body.skills.trim()) {
+    try {
+      const parsed = JSON.parse(body.skills) as unknown;
+      if (Array.isArray(parsed)) {
+        skills = parsed.filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
+      }
+    } catch {
+      skills = [];
+    }
+  }
+  const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined;
+  const useBrain =
+    body.useBrain === true ||
+    body.useBrain === 'true' ||
+    body.useBrain === '1';
+  return { content, skills, model, useBrain };
+}
 
 const runnerBrainQueryBody = z.object({
   question: z.string().trim().min(1).max(4000).optional(),
@@ -108,6 +171,12 @@ async function appendAgentRunEvent(
       await prisma.agentRunEvent.create({
         data: { runId, seq, type, data: data as any },
       });
+      const createdAt = new Date().toISOString();
+      void import('../gateway/runEventBus.js')
+        .then(({ runEventBus }) =>
+          runEventBus.publish({ runId, seq, type, data, createdAt }),
+        )
+        .catch(() => undefined);
       return seq;
     } catch (err) {
       if (
@@ -151,6 +220,25 @@ const emailSendBody = z.object({
     .optional(),
 });
 
+const whatsappListContactsBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  query: z.string().trim().max(200).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
+const whatsappReadChatBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200),
+  limit: z.number().int().min(1).max(80).optional(),
+});
+
+const whatsappContactSendBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200),
+  message: z.string().trim().min(1).max(4000),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
 const socialChannelsBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
 });
@@ -189,6 +277,38 @@ const whatsappSendFileBody = z.object({
 
 // Report PDF upload cap — large enough for a ~25-page PDF with images.
 const REPORT_PDF_MAX_BYTES = 50 * 1024 * 1024;
+const SANDBOX_FILE_MAX_BYTES = REPORT_PDF_MAX_BYTES;
+
+async function storeRunnerSandboxUpload(
+  request: Request,
+  response: Response,
+  agentId: string,
+  defaultFileName: string,
+  defaultContentType: string,
+): Promise<void> {
+  try {
+    await assertRunnerAuth(agentId, request);
+    const buffer = request.body;
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'request body (file bytes) is required' } });
+      return;
+    }
+    if (buffer.length > SANDBOX_FILE_MAX_BYTES) {
+      response.status(413).json({ error: { code: 'file_too_large', message: 'File exceeds the size limit' } });
+      return;
+    }
+    const fileName = String(request.header('x-file-name') || defaultFileName);
+    const contentType = String(request.header('x-content-type') || defaultContentType);
+    const stored = await storeSandboxFile(buffer, fileName, contentType);
+    response.json({ ok: true, url: stored.url, expiresAt: stored.expiresAt });
+  } catch (err) {
+    if (err instanceof RunnerUnauthorizedError) {
+      response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+      return;
+    }
+    throw err;
+  }
+}
 
 /**
  * Shared WhatsApp document delivery: verify the service + linked connector + live
@@ -265,6 +385,7 @@ async function recoverStaleRuns(agentId: string): Promise<void> {
 async function claimNextQueuedRun(agentId: string): Promise<{
   id: string;
   prompt: string;
+  attachments: unknown;
   skills: string[];
   conversationId: string;
   userId: string;
@@ -296,6 +417,7 @@ async function claimNextQueuedRun(agentId: string): Promise<{
     select: {
       id: true,
       prompt: true,
+      attachments: true,
       skills: true,
       conversationId: true,
       userId: true,
@@ -305,6 +427,208 @@ async function claimNextQueuedRun(agentId: string): Promise<{
     },
   });
   return row;
+}
+
+const RUN_TERMINAL_STATUSES = new Set(['success', 'failed', 'canceled', 'cancelled']);
+
+function extractRunResultText(result: unknown): string | undefined {
+  if (typeof result === 'string') {
+    const t = result.trim();
+    return t || undefined;
+  }
+  if (result == null) return undefined;
+  try {
+    const t = JSON.stringify(result, null, 2).trim();
+    return t && t !== '{}' && t !== 'null' ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function streamAgentRunEvents(
+  request: Request,
+  response: Response,
+  agentId: string,
+  runId: string,
+): Promise<void> {
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: { id: true, agentId: true, status: true, conversationId: true, startedAt: true, result: true },
+  });
+  if (!run || run.agentId !== agentId) {
+    response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
+    return;
+  }
+
+  response.status(200);
+  response.setHeader('Content-Type', 'text/event-stream');
+  response.setHeader('Cache-Control', 'no-cache, no-transform');
+  response.setHeader('Connection', 'keep-alive');
+  response.setHeader('X-Accel-Buffering', 'no');
+  response.flushHeaders?.();
+
+  let lastSeq = -1;
+  const start = Date.now();
+  const maxMs = 600_000;
+  let closed = false;
+  // Serialize every SSE write. The EventBus listener and the poll interval otherwise
+  // interleave `event:` / `data:` lines (especially during the final delta flood), so
+  // clients pair `event: done` with a delta payload and see an empty reply.
+  let writeChain: Promise<void> = Promise.resolve();
+
+  const writeEvent = (event: string, data: unknown, allowAfterClose = false) => {
+    if (closed && !allowAfterClose) return;
+    writeChain = writeChain.then(() => {
+      if (closed && !allowAfterClose) return;
+      response.write(`event: ${event}\n`);
+      response.write(`data: ${JSON.stringify(data)}\n\n`);
+      // Express / compression may buffer; flush so hybrid TTY and Active Runs see
+      // tool + JIT events in real time (not only when the buffer fills or the run ends).
+      const flushable = response as Response & { flush?: () => void };
+      if (typeof flushable.flush === 'function') {
+        flushable.flush();
+      }
+    }).catch(() => undefined);
+  };
+
+  const resolveAssistant = async (): Promise<string | undefined> => {
+    // Prefer this run's result — conversation-latest agent message can be from a prior
+    // run, and may also race the complete() transaction.
+    const fresh = await prisma.agentRun.findUnique({
+      where: { id: runId },
+      select: { result: true, startedAt: true, finishedAt: true },
+    });
+    const fromResult = extractRunResultText(fresh?.result);
+    if (fromResult) return fromResult;
+
+    if (!run.conversationId) return undefined;
+    const since = fresh?.startedAt ?? run.startedAt ?? undefined;
+    const agentMsg = await prisma.agentMessage.findFirst({
+      where: {
+        conversationId: run.conversationId,
+        role: 'agent',
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true },
+    });
+    return agentMsg?.content?.trim() || undefined;
+  };
+
+  let unsubscribe: () => void = () => undefined;
+  let interval: ReturnType<typeof setInterval> | null = null;
+  let pollInFlight = false;
+
+  const endStream = (status: string, assistant: string | null = null, error?: string | null) => {
+    if (closed) return;
+    closed = true;
+    if (interval) clearInterval(interval);
+    // Stop live bus writes before the terminal frame so `done` cannot interleave
+    // with a late delta from Redis/in-process pubsub.
+    unsubscribe();
+    unsubscribe = () => undefined;
+    writeEvent(
+      'done',
+      {
+        status,
+        assistant,
+        ...(error ? { error } : {}),
+      },
+      true,
+    );
+    void writeChain.finally(() => {
+      try {
+        response.end();
+      } catch {
+        // ignore
+      }
+    });
+  };
+
+  const pumpEvents = async (): Promise<void> => {
+    const events = await prisma.agentRunEvent.findMany({
+      where: { runId, seq: { gt: lastSeq } },
+      orderBy: { seq: 'asc' },
+      take: 200,
+      select: { seq: true, type: true, data: true, createdAt: true },
+    });
+    for (const e of events) {
+      lastSeq = Math.max(lastSeq, e.seq);
+      writeEvent(e.type, { seq: e.seq, data: e.data, createdAt: e.createdAt.toISOString() });
+    }
+  };
+
+  // Dump backlog immediately so late subscribers (local chat) see JIT/tools that
+  // already landed — do not wait for the first poll tick.
+  try {
+    await pumpEvents();
+  } catch {
+    endStream('failed', null, 'stream_error');
+    return;
+  }
+
+  if (RUN_TERMINAL_STATUSES.has(run.status)) {
+    const assistant = (await resolveAssistant()) ?? extractRunResultText(run.result) ?? null;
+    endStream(run.status === 'cancelled' ? 'canceled' : run.status, assistant);
+    return;
+  }
+
+  const { runEventBus } = await import('../gateway/runEventBus.js');
+  unsubscribe = await runEventBus.subscribe(runId, (ev) => {
+    if (closed || ev.seq <= lastSeq) return;
+    lastSeq = Math.max(lastSeq, ev.seq);
+    writeEvent(ev.type, { seq: ev.seq, data: ev.data, createdAt: ev.createdAt });
+  });
+
+  interval = setInterval(() => {
+    if (closed || pollInFlight) return;
+    pollInFlight = true;
+    void (async () => {
+      try {
+        await pumpEvents();
+
+        const r = await prisma.agentRun.findUnique({
+          where: { id: runId },
+          select: { status: true, result: true },
+        });
+        const timedOut = Date.now() - start > maxMs;
+        const status = r?.status ?? 'unknown';
+        const isCanceled = status === 'canceled' || status === 'cancelled';
+        const isFailed = status === 'failed';
+        let readyToClose = isFailed || isCanceled || timedOut;
+        if (status === 'success') {
+          // complete() writes status + result in one transaction; result is the
+          // reliable signal. Do not treat an older conversation agent message as
+          // "this run's reply is ready".
+          readyToClose = Boolean(extractRunResultText(r?.result));
+        }
+        if (readyToClose) {
+          const assistant = (await resolveAssistant()) ?? null;
+          const doneStatus = timedOut && !RUN_TERMINAL_STATUSES.has(status)
+            ? 'timeout'
+            : isCanceled
+              ? 'canceled'
+              : status;
+          endStream(
+            doneStatus,
+            assistant,
+            isCanceled ? 'Stopped by user' : timedOut ? 'stream timed out' : null,
+          );
+        }
+      } catch {
+        endStream('failed', null, 'stream_error');
+      } finally {
+        pollInFlight = false;
+      }
+    })();
+  }, 400);
+
+  request.on('close', () => {
+    if (closed) return;
+    closed = true;
+    if (interval) clearInterval(interval);
+    unsubscribe();
+  });
 }
 
 export function createAgentChatRouter(): Router {
@@ -321,15 +645,11 @@ export function createAgentChatRouter(): Router {
       const agentId = String(request.params.agentId);
       await assertOwnsAgent(request, agentId);
 
-      const convo = await prisma.agentConversation.upsert({
-        where: { agentId_userId: { agentId, userId: request.auth!.userId } },
-        create: {
-          agentId,
-          userId: request.auth!.userId,
-          orgId: request.auth!.orgId,
-        },
-        update: {},
-        select: { id: true, createdAt: true },
+      const { getOrCreatePrimaryConversation } = await import('../agentChat/conversationService.js');
+      const convo = await getOrCreatePrimaryConversation({
+        agentId,
+        userId: request.auth!.userId,
+        orgId: request.auth!.orgId,
       });
 
       response.json({ conversationId: convo.id, createdAt: convo.createdAt.toISOString() });
@@ -364,13 +684,14 @@ export function createAgentChatRouter(): Router {
           where: { conversationId },
           orderBy: { createdAt: 'asc' },
           take: 200,
-          select: { id: true, role: true, content: true, createdAt: true },
+          select: { id: true, role: true, content: true, attachments: true, createdAt: true },
         });
         response.json({
           messages: messages.map((m) => ({
             id: m.id,
             role: m.role,
             content: m.content,
+            attachments: m.attachments ?? null,
             createdAt: m.createdAt.toISOString(),
           })),
         });
@@ -421,17 +742,39 @@ export function createAgentChatRouter(): Router {
     },
   );
 
-  // UI: post a user message -> enqueue run
+  // UI: post a user message -> enqueue run (JSON or multipart with up to 8 files)
   router.post(
     '/:agentId/conversations/:conversationId/messages',
     authenticateUser(true),
     requireSubscriptionAccess,
-    async (request: Request, response: Response) => {
-      const parsed = postMessageBody.safeParse(request.body);
-      if (!parsed.success) {
-        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid message payload' } });
+    (request: Request, response: Response, next) => {
+      if (request.is('multipart/form-data')) {
+        chatMessageUpload.array('files', CHAT_ATTACHMENT_MAX_FILES)(request, response, (err) => {
+          if (err instanceof multer.MulterError) {
+            response.status(400).json({
+              error: {
+                code: 'upload_error',
+                message:
+                  err.code === 'LIMIT_FILE_SIZE'
+                    ? `File is too large (max ${CHAT_ATTACHMENT_MAX_MB} MB).`
+                    : err.code === 'LIMIT_FILE_COUNT'
+                      ? `Too many files (max ${CHAT_ATTACHMENT_MAX_FILES}).`
+                      : err.message,
+              },
+            });
+            return;
+          }
+          if (err) {
+            response.status(400).json({ error: { code: 'upload_error', message: 'File upload failed' } });
+            return;
+          }
+          next();
+        });
         return;
       }
+      next();
+    },
+    async (request: Request, response: Response) => {
       try {
         const agentId = String(request.params.agentId);
         const conversationId = String(request.params.conversationId);
@@ -446,25 +789,89 @@ export function createAgentChatRouter(): Router {
           return;
         }
 
+        const isMultipart = request.is('multipart/form-data');
+        let content: string;
+        let skills: string[];
+        let model: string | undefined;
+        let useBrain: boolean;
+        let storedAttachments: ChatAttachmentMeta[] = [];
+        let processedAttachments: Awaited<ReturnType<typeof processChatUploads>> = [];
+
+        if (isMultipart) {
+          const fields = parseMultipartMessageFields(request.body as Record<string, unknown>);
+          content = fields.content;
+          skills = fields.skills;
+          model = fields.model;
+          useBrain = fields.useBrain;
+          processedAttachments = await processChatUploads((request.files as Express.Multer.File[]) ?? []);
+          storedAttachments = storedChatAttachments(processedAttachments);
+          if (!content && storedAttachments.length === 0) {
+            response.status(400).json({
+              error: { code: 'invalid_body', message: 'Message text or at least one file is required' },
+            });
+            return;
+          }
+          if (content.length > 20_000) {
+            response.status(400).json({ error: { code: 'invalid_body', message: 'Message is too long' } });
+            return;
+          }
+        } else {
+          const parsed = postMessageBody.safeParse(request.body);
+          if (!parsed.success) {
+            response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid message payload' } });
+            return;
+          }
+          content = parsed.data.content;
+          skills = parsed.data.skills;
+          model = parsed.data.model;
+          useBrain = parsed.data.useBrain;
+        }
+
         let inferenceModel: string | null = null;
-        if (parsed.data.model != null && parsed.data.model.length > 0) {
-          inferenceModel = normalizeQlixInferenceModelId(parsed.data.model);
+        if (model != null && model.length > 0) {
+          inferenceModel = normalizeQlixInferenceModelId(model);
           assertModelAllowed(inferenceModel);
         }
 
-        const { runId, messageId } = await enqueueAgentRun({
-          agentId,
-          conversationId,
-          userId: request.auth!.userId,
-          orgId: convo.orgId,
-          email: request.auth!.email,
-          prompt: parsed.data.content,
-          skills: parsed.data.skills,
-          inferenceModel,
-          useBrain: parsed.data.useBrain,
-        });
+        const runnerPrompt =
+          processedAttachments.length > 0
+            ? buildPromptWithAttachments(content, processedAttachments)
+            : content;
 
-        response.status(201).json({ messageId, runId });
+        const turn = await gatewayService.handleInbound(
+          buildWebChatInbound({
+            agentId,
+            conversationId,
+            userId: request.auth!.userId,
+            orgId: convo.orgId,
+            email: request.auth!.email,
+            body: runnerPrompt,
+            displayBody: content,
+            attachments: storedAttachments.length > 0 ? storedAttachments : undefined,
+            skills,
+            inferenceModel,
+            useBrain,
+          }),
+        );
+
+        if (turn.status === 'accepted') {
+          response.status(201).json({ messageId: turn.messageId, runId: turn.runId });
+          return;
+        }
+        if (turn.status === 'steered') {
+          response.status(202).json({ runId: turn.runId, status: 'steered' });
+          return;
+        }
+        const message =
+          turn.status === 'rejected'
+            ? turn.reason
+            : (turn.ackReply ?? 'Gateway could not accept message');
+        response.status(turn.status === 'rejected' ? 409 : 202).json({
+          error: {
+            code: turn.status === 'rejected' ? 'gateway_rejected' : 'gateway_busy',
+            message,
+          },
+        });
       } catch (err) {
         if (err instanceof ModelPolicyError) {
           response.status(400).json({ error: { code: 'model_not_allowed', message: err.message } });
@@ -472,6 +879,12 @@ export function createAgentChatRouter(): Router {
         }
         if ((err as any)?.code === 'insufficient_balance') {
           response.status(402).json({ error: { code: 'insufficient_balance', message: (err as Error).message } });
+          return;
+        }
+        if ((err as any)?.code === 'too_many_files' || (err as any)?.code === 'file_too_large') {
+          response.status((err as any).status ?? 400).json({
+            error: { code: (err as any).code, message: (err as Error).message },
+          });
           return;
         }
         console.error('post message error', err);
@@ -488,6 +901,300 @@ export function createAgentChatRouter(): Router {
       }
     },
   );
+
+  const localMessageBody = z.object({
+    message: z.string().trim().min(1).max(32_000),
+    conversationId: z.string().trim().min(1).max(80).optional(),
+  });
+
+  // Hybrid runner: enqueue a local-terminal chat turn (channel=local).
+  router.post('/:agentId/runner/local-message', async (request: Request, response: Response) => {
+    const parsed = localMessageBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'message required' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          orgId: true,
+          runtime: true,
+          user: { select: { email: true } },
+        },
+      });
+      if (!agent) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+        return;
+      }
+      if (agent.runtime !== 'hybrid') {
+        response.status(409).json({
+          error: { code: 'not_hybrid', message: 'Local terminal chat requires a hybrid agent' },
+        });
+        return;
+      }
+
+      let conversationId: string;
+      try {
+        conversationId = await ensureLocalConversation({
+          agentId: agent.id,
+          userId: agent.userId,
+          orgId: agent.orgId,
+          conversationId: parsed.data.conversationId,
+        });
+      } catch (e: any) {
+        if (e?.code === 'conversation_not_found') {
+          response.status(404).json({ error: { code: e.code, message: e.message } });
+          return;
+        }
+        throw e;
+      }
+
+      const turn = await gatewayService.handleInbound(
+        buildLocalInbound({
+          agentId: agent.id,
+          conversationId,
+          userId: agent.userId,
+          orgId: agent.orgId,
+          email: agent.user?.email ?? undefined,
+          body: parsed.data.message,
+          agentName: agent.name,
+        }),
+      );
+
+      if (turn.status === 'rejected') {
+        response.status(400).json({
+          error: { code: 'local_message_rejected', message: turn.reason ?? 'Rejected' },
+        });
+        return;
+      }
+      if (turn.status === 'steered') {
+        response.status(202).json({
+          conversationId,
+          runId: turn.runId,
+          status: 'steered',
+        });
+        return;
+      }
+      if (turn.status !== 'accepted') {
+        response.status(500).json({
+          error: { code: 'local_message_failed', message: 'Unexpected gateway result' },
+        });
+        return;
+      }
+
+      response.status(201).json({
+        conversationId,
+        runId: turn.runId,
+        messageId: turn.messageId,
+        status: 'accepted',
+        channel: 'local',
+      });
+    } catch (e: unknown) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      console.error('runner local-message error', e);
+      response.status(500).json({
+        error: { code: 'local_message_failed', message: 'Failed to enqueue local message' },
+      });
+    }
+  });
+
+  // Hybrid runner: list / create / fork conversations + history + JIT decide
+  router.get('/:agentId/runner/conversations', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { userId: true },
+      });
+      if (!agent) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+        return;
+      }
+      const conversations = await listConversationsForAgent({
+        agentId,
+        userId: agent.userId,
+      });
+      response.json({ conversations });
+    } catch (e: unknown) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      response.status(500).json({ error: { code: 'list_failed', message: 'Failed to list conversations' } });
+    }
+  });
+
+  router.post('/:agentId/runner/conversations', async (request: Request, response: Response) => {
+    const schema = z.object({ title: z.string().trim().min(1).max(120).optional() });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid body' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { userId: true, orgId: true, runtime: true },
+      });
+      if (!agent || agent.runtime !== 'hybrid') {
+        response.status(409).json({ error: { code: 'not_hybrid', message: 'Hybrid agent required' } });
+        return;
+      }
+      const convo = await createLocalConversation({
+        agentId,
+        userId: agent.userId,
+        orgId: agent.orgId,
+        title: parsed.data.title,
+      });
+      response.status(201).json({ conversation: convo });
+    } catch (e: unknown) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      response.status(500).json({ error: { code: 'create_failed', message: 'Failed to create conversation' } });
+    }
+  });
+
+  router.post('/:agentId/runner/conversations/:conversationId/fork', async (request: Request, response: Response) => {
+    const schema = z.object({ title: z.string().trim().min(1).max(120).optional() });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid body' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    const conversationId = String(request.params.conversationId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { userId: true, orgId: true, runtime: true },
+      });
+      if (!agent || agent.runtime !== 'hybrid') {
+        response.status(409).json({ error: { code: 'not_hybrid', message: 'Hybrid agent required' } });
+        return;
+      }
+      const forked = await forkConversation({
+        agentId,
+        userId: agent.userId,
+        orgId: agent.orgId,
+        sourceConversationId: conversationId,
+        title: parsed.data.title,
+      });
+      response.status(201).json({ conversation: forked });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e?.code === 'conversation_not_found') {
+        response.status(404).json({ error: { code: e.code, message: e.message } });
+        return;
+      }
+      response.status(500).json({ error: { code: 'fork_failed', message: 'Failed to fork conversation' } });
+    }
+  });
+
+  router.get(
+    '/:agentId/runner/conversations/:conversationId/messages',
+    async (request: Request, response: Response) => {
+      const agentId = String(request.params.agentId);
+      const conversationId = String(request.params.conversationId);
+      const limit = Math.min(200, Math.max(1, Number(request.query.limit ?? 50) || 50));
+      try {
+        await assertRunnerAuth(agentId, request);
+        const agent = await prisma.agent.findUnique({
+          where: { id: agentId },
+          select: { userId: true },
+        });
+        if (!agent) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+          return;
+        }
+        const convo = await prisma.agentConversation.findFirst({
+          where: { id: conversationId, agentId, userId: agent.userId },
+          select: { id: true, title: true, kind: true },
+        });
+        if (!convo) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Conversation not found' } });
+          return;
+        }
+        const messages = await prisma.agentMessage.findMany({
+          where: { conversationId },
+          orderBy: { createdAt: 'asc' },
+          take: limit,
+          select: { id: true, role: true, content: true, createdAt: true },
+        });
+        response.json({
+          conversation: convo,
+          messages: messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            createdAt: m.createdAt.toISOString(),
+          })),
+        });
+      } catch (e: unknown) {
+        if (e instanceof RunnerUnauthorizedError) {
+          response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+          return;
+        }
+        response.status(500).json({ error: { code: 'messages_failed', message: 'Failed to load messages' } });
+      }
+    },
+  );
+
+  router.post('/:agentId/runner/jit/decide', async (request: Request, response: Response) => {
+    const schema = z.object({
+      jitRequestId: z.string().trim().min(1).max(80),
+      approved: z.boolean(),
+    });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'jitRequestId and approved required' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const jit = new JitService();
+      const result = await jit.decideFromRunner({
+        jitRequestId: parsed.data.jitRequestId,
+        agentId,
+        approved: parsed.data.approved,
+      });
+      response.json(result);
+    } catch (e: unknown) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e instanceof JitRequestNotFoundError) {
+        response.status(404).json({ error: { code: e.code, message: 'JIT request not found' } });
+        return;
+      }
+      if (e instanceof JitForbiddenError) {
+        response.status(403).json({ error: { code: e.code, message: e.message } });
+        return;
+      }
+      console.error('runner jit decide error', e);
+      response.status(500).json({ error: { code: 'jit_decide_failed', message: 'Failed to decide JIT' } });
+    }
+  });
 
   // Runner: org brain query (retrieval or full RAG) — auditable via run ownership + runner token.
   router.post('/:agentId/runs/:runId/brain/query', async (request: Request, response: Response) => {
@@ -579,24 +1286,28 @@ export function createAgentChatRouter(): Router {
         response.json({ run: null });
         return;
       }
+      const { takePrefetchedMemory } = await import('../gateway/memoryPrefetch.js');
+      const prefetched = takePrefetchedMemory(run.id);
       const [agentRow, waConnector, memoryBlock, mcpServers] = await Promise.all([
         prisma.agent.findUnique({
           where: { id: agentId },
-          select: { description: true, orgId: true, llmModel: true },
+          select: { description: true, orgId: true, llmModel: true, toolProfile: true, permissionScopes: true },
         }),
         prisma.connectorAccount.findFirst({
           where: { whatsappDefaultAgentId: agentId },
           select: { id: true },
         }),
-        buildMemoryBlock({
-          agentId,
-          userId: run.userId,
-          conversationId: run.conversationId,
-          currentPrompt: run.prompt,
-        }).catch((err) => {
-          console.error('[agent-memory] buildMemoryBlock failed', err instanceof Error ? err.message : err);
-          return null;
-        }),
+        prefetched !== undefined
+          ? Promise.resolve(prefetched)
+          : buildMemoryBlock({
+              agentId,
+              userId: run.userId,
+              conversationId: run.conversationId,
+              currentPrompt: run.prompt,
+            }).catch((err) => {
+              console.error('[agent-memory] buildMemoryBlock failed', err instanceof Error ? err.message : err);
+              return null;
+            }),
         new McpRepository().runtimeServersForAgent(agentId).catch((err) => {
           console.error('[mcp] runtimeServersForAgent failed', err instanceof Error ? err.message : err);
           return [];
@@ -611,10 +1322,32 @@ export function createAgentChatRouter(): Router {
             })
           : null
       );
+      // Gateway MCP governance: drop tools whose scopes are org-disabled.
+      let mcpServersFiltered = mcpServers as typeof mcpServers;
+      if (agentRow?.orgId && Array.isArray(mcpServers) && mcpServers.length > 0) {
+        const org = await prisma.organization.findUnique({
+          where: { id: agentRow.orgId },
+          select: { disabledScopes: true },
+        });
+        const disabled = org?.disabledScopes ?? [];
+        if (disabled.length > 0) {
+          mcpServersFiltered = mcpServers.map((server) => {
+            const slug = String(server.slug ?? '');
+            const tools = (server.tools ?? []).filter((t) => {
+              const scope = `mcp.${slug}.${t.name}`;
+              const wild = `mcp.${slug}.*`;
+              return !disabled.includes(scope) && !disabled.includes(wild) && !disabled.includes('mcp.*');
+            });
+            return { ...server, tools };
+          }) as typeof mcpServers;
+        }
+      }
+
       response.json({
         run: {
           id: run.id,
           prompt: run.prompt,
+          attachments: run.attachments ?? null,
           skills: run.skills,
           // Fall back to the agent's configured model when the run didn't specify one,
           // so runs use the agent's chosen model instead of the runner's weak default.
@@ -628,11 +1361,87 @@ export function createAgentChatRouter(): Router {
           agentDescription: agentRow?.description ?? null,
           waConnectorId: waConnectorResolved?.id ?? null,
           memoryBlock: memoryBlock ?? null,
-          mcpServers,
+          mcpServers: mcpServersFiltered,
+          toolProfile: agentRow?.toolProfile ?? 'full',
+          permissionScopes: agentRow?.permissionScopes ?? [],
         },
       });
     } catch (e: any) {
       response.status(401).json({ error: { code: 'runner_unauthorized', message: e?.message ?? 'Unauthorized' } });
+    }
+  });
+
+  // Runner: lightweight child run (Hermes-style delegate_task) without a Team.
+  router.post('/:agentId/runs/delegate', async (request: Request, response: Response) => {
+    const schema = z.object({
+      prompt: z.string().trim().min(1).max(8000),
+      skills: z.array(z.string()).max(50).optional(),
+      parentRunId: z.string().optional(),
+    });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'prompt required' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parent = parsed.data.parentRunId
+        ? await prisma.agentRun.findUnique({
+            where: { id: parsed.data.parentRunId },
+            select: { conversationId: true, userId: true, orgId: true, agentId: true },
+          })
+        : null;
+      if (parent && parent.agentId !== agentId) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Parent run not found' } });
+        return;
+      }
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { userId: true, orgId: true, name: true },
+      });
+      if (!agent) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
+        return;
+      }
+      const userId = parent?.userId ?? agent.userId;
+      const orgId = parent?.orgId ?? agent.orgId;
+      let conversationId = parent?.conversationId ?? null;
+      if (!conversationId) {
+        const { getOrCreatePrimaryConversation } = await import('../agentChat/conversationService.js');
+        conversationId = (
+          await getOrCreatePrimaryConversation({ agentId, userId, orgId })
+        ).id;
+      }
+
+      const turn = await gatewayService.handleInbound(
+        buildWebChatInbound({
+          agentId,
+          conversationId,
+          userId,
+          orgId,
+          body: parsed.data.prompt,
+          skills: parsed.data.skills,
+          agentName: agent.name,
+        }),
+      );
+      if (turn.status !== 'accepted') {
+        response.status(409).json({
+          error: {
+            code: 'delegate_rejected',
+            message: turn.status === 'rejected' ? turn.reason : turn.status,
+          },
+        });
+        return;
+      }
+      response.status(201).json({ runId: turn.runId, messageId: turn.messageId, parentRunId: parsed.data.parentRunId ?? null });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      console.error('[delegate]', e);
+      response.status(500).json({ error: { code: 'delegate_failed', message: 'Failed to delegate' } });
     }
   });
 
@@ -678,15 +1487,71 @@ export function createAgentChatRouter(): Router {
     }
   });
 
-  // Runner: drain user-injected messages for mid-run guidance
+  // Runner: optional compliance before/after_tool_call hook
+  router.post('/:agentId/runs/:runId/compliance-hook', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    const runId = String(request.params.runId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const phase = typeof request.body?.phase === 'string' ? request.body.phase : '';
+      const tool = typeof request.body?.tool === 'string' ? request.body.tool : '';
+      // Soft policy: block only when org disabledScopes matches tool scope prefix.
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { orgId: true, permissionScopes: true },
+      });
+      let block = false;
+      let reason: string | undefined;
+      if (agent?.orgId && tool) {
+        const org = await prisma.organization.findUnique({
+          where: { id: agent.orgId },
+          select: { disabledScopes: true },
+        });
+        const disabled = new Set(org?.disabledScopes ?? []);
+        const maybeScope = tool.startsWith('mcp__')
+          ? `mcp.${tool.split('__')[1] ?? ''}.*`
+          : tool.includes('.')
+            ? tool
+            : null;
+        if (maybeScope && [...disabled].some((d) => maybeScope.startsWith(d.replace(/\*$/, '')) || d === maybeScope)) {
+          block = true;
+          reason = `Tool blocked by org disabled scope policy (${maybeScope})`;
+        }
+      }
+      void appendAgentRunEvent(runId, 'log', {
+        message: 'compliance_hook',
+        phase,
+        tool,
+        block,
+        reason: reason ?? null,
+      }).catch(() => undefined);
+      response.json({ ok: true, block, reason });
+    } catch (e: any) {
+      response.status(401).json({ error: { code: 'runner_unauthorized', message: e?.message ?? 'Unauthorized' } });
+    }
+  });
+
+  // Runner: drain user-injected messages for mid-run guidance (+ run status for cancel)
   router.get('/:agentId/runs/:runId/injections', async (request: Request, response: Response) => {
     const agentId = String(request.params.agentId);
     const runId = String(request.params.runId);
     try {
       await assertRunnerAuth(agentId, request);
+      const run = await prisma.agentRun.findUnique({
+        where: { id: runId },
+        select: { agentId: true, status: true },
+      });
+      if (!run || run.agentId !== agentId) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
+        return;
+      }
       const messages = await drainInjections(runId);
-      response.json({ messages });
+      response.json({ messages, status: run.status });
     } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
       response.status(401).json({ error: { code: 'runner_unauthorized', message: e?.message ?? 'Unauthorized' } });
     }
   });
@@ -738,10 +1603,24 @@ export function createAgentChatRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const run = await prisma.agentRun.findUnique({
         where: { id: runId },
-        select: { agentId: true, conversationId: true, userId: true, orgId: true, prompt: true, skills: true },
+        select: {
+          agentId: true,
+          conversationId: true,
+          userId: true,
+          orgId: true,
+          prompt: true,
+          skills: true,
+          status: true,
+        },
       });
       if (!run || run.agentId !== agentId) {
         response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
+        return;
+      }
+
+      // Stop from Active Runs wins — do not overwrite canceled with success/failed.
+      if (run.status === 'canceled' || run.status === 'cancelled') {
+        response.json({ ok: true, status: 'canceled', ignored: true });
         return;
       }
 
@@ -753,8 +1632,8 @@ export function createAgentChatRouter(): Router {
 
       const finishedAt = new Date();
       await prisma.$transaction(async (tx) => {
-        await tx.agentRun.update({
-          where: { id: runId },
+        const updated = await tx.agentRun.updateMany({
+          where: { id: runId, status: { notIn: ['canceled', 'cancelled'] } },
           data: {
             status: parsed.data.ok ? 'success' : 'failed',
             finishedAt,
@@ -762,6 +1641,9 @@ export function createAgentChatRouter(): Router {
             errorMessage: parsed.data.errorMessage ?? null,
           },
         });
+        if (updated.count === 0) {
+          return;
+        }
         if (parsed.data.ok) {
           const content =
             typeof parsed.data.result === 'string'
@@ -780,14 +1662,31 @@ export function createAgentChatRouter(): Router {
           });
         }
       });
+
+      const after = await prisma.agentRun.findUnique({
+        where: { id: runId },
+        select: { status: true },
+      });
+      if (after?.status === 'canceled' || after?.status === 'cancelled') {
+        response.json({ ok: true, status: 'canceled', ignored: true });
+        return;
+      }
       if (!parsed.data.ok) {
         console.warn(
           `[agent-run] failed runId=${runId} agentId=${agentId} error=${String(parsed.data.errorMessage ?? '').slice(0, 500)}`,
         );
       }
 
-      const { notifyWhatsappRunComplete } = await import('../whatsapp/whatsappChannel.service.js');
-      void notifyWhatsappRunComplete(runId);
+      // Unified channel delivery (WhatsApp / Slack / tracked targets).
+      void replyDispatcher
+        .deliver(runId, {
+          ok: parsed.data.ok,
+          result: parsed.data.result,
+          errorMessage: parsed.data.errorMessage ?? null,
+        })
+        .catch((err) => {
+          console.warn('[gateway] replyDispatcher.deliver', err instanceof Error ? err.message : err);
+        });
 
       // Fire-and-forget: learn long-term memory (facts / episode / recipe) from this run.
       // Never allowed to affect the run outcome.
@@ -846,7 +1745,51 @@ export function createAgentChatRouter(): Router {
         const agentId = String(request.params.agentId);
         const runId = String(request.params.runId);
         await assertOwnsAgent(request, agentId);
+        await streamAgentRunEvents(request, response, agentId, runId);
+      } catch (err) {
+        console.error('stream error', err);
+        if (!response.headersSent) {
+          response.status(500).json({ error: { code: 'stream_failed', message: 'Failed to stream run' } });
+        }
+      }
+    },
+  );
 
+  // Hybrid runner: same SSE stream, authenticated with runner token.
+  router.get('/:agentId/runner/runs/:runId/stream', async (request: Request, response: Response) => {
+    try {
+      const agentId = String(request.params.agentId);
+      const runId = String(request.params.runId);
+      await assertRunnerAuth(agentId, request);
+      await streamAgentRunEvents(request, response, agentId, runId);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      console.error('runner stream error', err);
+      if (!response.headersSent) {
+        response.status(500).json({ error: { code: 'stream_failed', message: 'Failed to stream run' } });
+      }
+    }
+  });
+
+  // UI / gateway: mid-run steer (inject guidance into active run)
+  router.post(
+    '/:agentId/runs/:runId/inject',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    async (request: Request, response: Response) => {
+      const schema = z.object({ message: z.string().trim().min(1).max(8000) });
+      const parsed = schema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'message required' } });
+        return;
+      }
+      try {
+        const agentId = String(request.params.agentId);
+        const runId = String(request.params.runId);
+        await assertOwnsAgent(request, agentId);
         const run = await prisma.agentRun.findUnique({
           where: { id: runId },
           select: { id: true, agentId: true, status: true, conversationId: true },
@@ -855,75 +1798,32 @@ export function createAgentChatRouter(): Router {
           response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
           return;
         }
-
-        response.status(200);
-        response.setHeader('Content-Type', 'text/event-stream');
-        response.setHeader('Cache-Control', 'no-cache, no-transform');
-        response.setHeader('Connection', 'keep-alive');
-        response.flushHeaders?.();
-
-        let lastSeq = -1;
-        const start = Date.now();
-        // Browser runs (navigate + tools + model) often exceed 60s.
-        const maxMs = 600_000;
-
-        const writeEvent = (event: string, data: unknown) => {
-          response.write(`event: ${event}\n`);
-          response.write(`data: ${JSON.stringify(data)}\n\n`);
-        };
-
-        const interval = setInterval(async () => {
-          try {
-            const events = await prisma.agentRunEvent.findMany({
-              where: { runId, seq: { gt: lastSeq } },
-              orderBy: { seq: 'asc' },
-              take: 200,
-              select: { seq: true, type: true, data: true, createdAt: true },
-            });
-            for (const e of events) {
-              lastSeq = Math.max(lastSeq, e.seq);
-              writeEvent(e.type, { seq: e.seq, data: e.data, createdAt: e.createdAt.toISOString() });
-            }
-
-            const r = await prisma.agentRun.findUnique({
-              where: { id: runId },
-              select: { status: true, conversationId: true },
-            });
-            const timedOut = Date.now() - start > maxMs;
-            let readyToClose = r?.status === 'failed' || timedOut;
-            if (r?.status === 'success' && run.conversationId) {
-              const agentMsg = await prisma.agentMessage.findFirst({
-                where: { conversationId: run.conversationId, role: 'agent' },
-                orderBy: { createdAt: 'desc' },
-                select: { content: true },
-              });
-              readyToClose = Boolean(agentMsg?.content?.trim());
-            } else if (r?.status === 'success') {
-              readyToClose = true;
-            }
-            if (readyToClose) {
-              writeEvent('done', { status: r?.status ?? (timedOut ? 'timeout' : 'unknown') });
-              clearInterval(interval);
-              response.end();
-            }
-          } catch (err) {
-            writeEvent('log', { level: 'error', message: 'stream_error' });
-            clearInterval(interval);
-            response.end();
-          }
-        }, 500);
-
-        request.on('close', () => {
-          clearInterval(interval);
+        if (run.status === 'success' || run.status === 'failed' || run.status === 'canceled') {
+          response.status(409).json({ error: { code: 'run_finished', message: 'Run already finished' } });
+          return;
+        }
+        const { addInjection } = await import('../teams/runInjectionStore.js');
+        await addInjection(runId, parsed.data.message);
+        const seq = await appendAgentRunEvent(runId, 'log', {
+          message: 'user_steer',
+          text: parsed.data.message,
         });
+        await prisma.agentMessage.create({
+          data: {
+            conversationId: run.conversationId,
+            role: 'user',
+            content: `[steer] ${parsed.data.message}`,
+          },
+        });
+        response.json({ ok: true, seq });
       } catch (err) {
-        console.error('stream error', err);
-        response.status(500).json({ error: { code: 'stream_failed', message: 'Failed to stream run' } });
+        console.error('inject error', err);
+        response.status(500).json({ error: { code: 'inject_failed', message: 'Failed to inject' } });
       }
     },
   );
 
-  // UI: Stop a running execution
+  // UI: Stop a running execution (propagates to hybrid runner + local_chat via SSE done)
   router.post(
     '/:agentId/runs/:runId/stop',
     authenticateUser(true),
@@ -943,15 +1843,31 @@ export function createAgentChatRouter(): Router {
           return;
         }
 
-        // Mark run as cancelled if not already completed
-        if (run.status !== 'success' && run.status !== 'failed') {
+        const alreadyTerminal = RUN_TERMINAL_STATUSES.has(run.status);
+        if (!alreadyTerminal) {
+          // Canonical spelling is American "canceled" (matches AgentRunTerminalStatus / Active Runs).
           await prisma.agentRun.update({
             where: { id: runId },
-            data: { status: 'cancelled' },
+            data: {
+              status: 'canceled',
+              finishedAt: new Date(),
+              errorMessage: 'Stopped by user',
+            },
           });
+          await appendAgentRunEvent(runId, 'log', {
+            message: 'run_canceled',
+            reason: 'stopped_by_user',
+          });
+          // Unblock any in-flight JIT poll so the hybrid runner can exit the tool promptly.
+          try {
+            const jit = new JitService();
+            await jit.denyPendingForRun(runId, 'run_canceled');
+          } catch (jitErr) {
+            console.warn('[stop] denyPendingForRun failed', jitErr);
+          }
         }
 
-        response.json({ ok: true, message: 'Run stopped' });
+        response.json({ ok: true, message: 'Run stopped', status: 'canceled' });
       } catch (err) {
         console.error('stop run error', err);
         response.status(500).json({ error: { code: 'stop_failed', message: 'Failed to stop run' } });
@@ -1194,6 +2110,168 @@ export function createAgentChatRouter(): Router {
     }
   });
 
+  router.post('/:agentId/tools/whatsapp/list-contacts', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappListContactsBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid WhatsApp contacts payload' } });
+        return;
+      }
+      const result = await executeWhatsAppListContacts({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppNotLinkedError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/list-contacts', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_list_contacts_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'WhatsApp list contacts failed',
+        },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/whatsapp/read-chat', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappReadChatBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid WhatsApp read-chat payload' } });
+        return;
+      }
+      const result = await executeWhatsAppReadChat({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppNotLinkedError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/read-chat', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_read_chat_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'WhatsApp read chat failed',
+        },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/whatsapp/send-message', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappContactSendBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid WhatsApp send-message payload' } });
+        return;
+      }
+      const result = await executeWhatsAppContactSend({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
+        response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppNotLinkedError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/send-message', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_send_message_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'WhatsApp send message failed',
+        },
+      });
+    }
+  });
+
+  registerCrmToolRoutes(router);
+  registerSlackToolRoutes(router);
+
+  const jitService = new JitService();
+  const runnerJitRequestBody = z.object({
+    actionType: z.string().trim().min(1).max(255),
+    payload: z.record(z.string(), z.unknown()),
+  });
+
+  router.post('/:agentId/jit/request', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = runnerJitRequestBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({
+          error: { code: 'invalid_body', message: 'Invalid JIT request', issues: parsed.error.issues },
+        });
+        return;
+      }
+      const result = await jitService.requestFromRunner({
+        agentId,
+        actionType: parsed.data.actionType,
+        payload: parsed.data.payload,
+      });
+      response.status(201).json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof AgentNotFoundError) {
+        response.status(404).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof NotJitScopeError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[jit] runner request', err);
+      response.status(500).json({ error: { code: 'jit_request_failed', message: 'Failed to create JIT request' } });
+    }
+  });
+
   // Runner: send a local document (e.g. a generated PDF) to the agent's linked WhatsApp.
   router.post('/:agentId/tools/whatsapp/send-document', async (request: Request, response: Response) => {
     const agentId = String(request.params.agentId);
@@ -1268,33 +2346,31 @@ export function createAgentChatRouter(): Router {
     }
   });
 
-  // Runner (cloud): upload a generated report PDF (raw binary) to the sandbox store and
-  // get back a browser-facing download link the agent can share in chat. Raw body (not
-  // base64 JSON) so large image PDFs avoid ~33% bloat and the global JSON limit.
+  // Runner (cloud): upload a generated file (PDF, spreadsheet, etc.) to the sandbox store
+  // and get back a browser-facing download link the agent can share in chat.
+  router.post(
+    '/:agentId/runs/:runId/sandbox-file',
+    raw({ type: () => true, limit: '60mb' }),
+    async (request: Request, response: Response) => {
+      const agentId = String(request.params.agentId);
+      try {
+        await storeRunnerSandboxUpload(request, response, agentId, 'download.bin', 'application/octet-stream');
+      } catch (err) {
+        console.error('runs/sandbox-file', err);
+        response.status(502).json({ error: { code: 'sandbox_upload_failed', message: 'Could not create download link' } });
+      }
+    },
+  );
+
+  // Backward-compatible alias for PDF uploads (delegates to the same sandbox store).
   router.post(
     '/:agentId/runs/:runId/report-pdf',
     raw({ type: () => true, limit: '60mb' }),
     async (request: Request, response: Response) => {
       const agentId = String(request.params.agentId);
       try {
-        await assertRunnerAuth(agentId, request);
-        const buffer = request.body;
-        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-          response.status(400).json({ error: { code: 'invalid_body', message: 'request body (PDF bytes) is required' } });
-          return;
-        }
-        if (buffer.length > REPORT_PDF_MAX_BYTES) {
-          response.status(413).json({ error: { code: 'file_too_large', message: 'Report PDF exceeds the size limit' } });
-          return;
-        }
-        const fileName = String(request.header('x-file-name') || 'report.pdf');
-        const stored = await storeSandboxFile(buffer, fileName);
-        response.json({ ok: true, url: stored.url, expiresAt: stored.expiresAt });
+        await storeRunnerSandboxUpload(request, response, agentId, 'report.pdf', 'application/pdf');
       } catch (err) {
-        if (err instanceof RunnerUnauthorizedError) {
-          response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
-          return;
-        }
         console.error('runs/report-pdf', err);
         response.status(502).json({ error: { code: 'sandbox_upload_failed', message: 'Could not create download link' } });
       }

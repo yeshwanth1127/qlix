@@ -59,8 +59,9 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "(4) list_leads contactable and present verified emails to the user, "
                 "(5) only then email_send. Sends are blocked while website leads lack browser enrichment. "
                 "Never use Wix placeholders like info@mysite.com. "
-                "The first send in a chat may pause for one-time dashboard approval; "
-                "after you approve, later sends in the same conversation proceed automatically. "
+                "The first send in a chat may pause for one-time Approve/Deny in this chat; "
+                "call email_send when ready — do not tell the user to check the dashboard first. "
+                "After they approve once, later sends in the same conversation proceed automatically. "
                 "If Gmail is not connected, tell the user to open Connectors → Google (Gmail) → Connect Google."
             ),
             "parameters": {
@@ -228,20 +229,24 @@ def build_email_tool_executors(
 
             jit_token = params.get("jitToken")
             if email_send_needs_jit(identity) and not jit_token:
-                if qlix_sdk is None:
-                    return (
-                        "[failed] email.send requires dashboard approval but the runner "
-                        "could not initialize the approval client"
-                    )
+                jit_payload = {
+                    "runId": run_id,
+                    "tool": "email_send",
+                    "to": body.get("to"),
+                    "subject": body.get("subject"),
+                }
                 try:
-                    approval = await qlix_sdk.jit.request_and_wait(
+                    from .jit import request_jit_via_runner
+
+                    approval = await request_jit_via_runner(
+                        agent_id=agent_id,
+                        runner_token=runner_token,
+                        backend_url=backend_url,
+                        did=identity.did,
+                        private_key_hex=identity.private_key_hex,
                         action_type="email.send",
-                        payload={
-                            "runId": run_id,
-                            "tool": "email_send",
-                            "to": body.get("to"),
-                            "subject": body.get("subject"),
-                        },
+                        payload=jit_payload,
+                        qlix_sdk=qlix_sdk,
                     )
                     jit_token = getattr(approval, "jit_token", None)
                 except Exception as exc:  # noqa: BLE001

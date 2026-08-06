@@ -4,7 +4,6 @@ import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 import { addInjection } from './runInjectionStore.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamsService, TeamNotFoundError } from './teams.service.js';
-import { launchTeamRun } from './teamsRunLauncher.js';
 import type { TeamRunDTO } from './teams.types.js';
 
 const connectorsRepo = new ConnectorsRepository();
@@ -221,16 +220,23 @@ export async function tryHandleTeamWhatsAppInbound(
     throw err;
   }
 
-  const { run } = await launchTeamRun({
-    teamId: team.id,
-    orgId: connector.orgId,
-    userId: connector.userId,
-    goal,
-    source: { channel: 'whatsapp', connectorId: connector.id },
-  });
+  const { buildTeamInbound, gatewayService } = await import('../gateway/index.js');
+  const turn = await gatewayService.handleInbound(
+    buildTeamInbound({
+      channel: 'whatsapp',
+      teamId: team.id,
+      teamName: team.name,
+      orgId: connector.orgId,
+      userId: connector.userId,
+      goal,
+      connectorId: connector.id,
+    }),
+  );
 
   return {
-    reply: `Queued — ${team.name} (run ${run.id.slice(0, 10)}…). Reply here to steer mid-run; !status · !cancel`,
+    reply:
+      turn.ackReply ??
+      `Queued — ${team.name} (run ${turn.status === 'accepted' ? turn.runId.slice(0, 10) : '?'}…). Reply here to steer mid-run; !status · !cancel`,
     handled: true,
   };
 }

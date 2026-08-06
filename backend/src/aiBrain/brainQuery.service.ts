@@ -6,6 +6,21 @@ import { appendBrainActionLog, type BrainAuditSurface } from './brainAudit.servi
 
 const EMBEDDING_MODEL = 'openai/text-embedding-3-small';
 const TOP_K = 5;
+/**
+ * Chunks injected into an agent run's context, as opposed to answered in the console.
+ * Chunks are 2000 chars, so 5 of them was ~2.5k tokens prepended to the prompt and
+ * re-sent on every round of the tool loop. The top 2 carry nearly all the relevant
+ * signal; the rest were mostly padding. Console "Ask" still synthesises over TOP_K.
+ */
+const AGENT_CONTEXT_TOP_K = Math.max(
+  1,
+  Number(process.env.QLIX_BRAIN_AGENT_TOP_K || '2'),
+);
+/** Per-chunk cap for agent context so one huge chunk can't blow the budget. */
+const AGENT_CONTEXT_CHUNK_CHARS = Math.max(
+  200,
+  Number(process.env.QLIX_BRAIN_AGENT_CHUNK_CHARS || '1200'),
+);
 const BATCH_SIZE = Math.max(200, Number(process.env.BRAIN_QUERY_BATCH_SIZE || '2000'));
 
 /**
@@ -219,6 +234,20 @@ export class BrainQueryService {
     const model = normalizeQlixInferenceModelId(input.brainModel);
 
     if (input.contextOnly) {
+      // Agent-run context: trim to the strongest few chunks. The full citation list is
+      // still returned (and audited) so the UI and audit trail are unchanged — only
+      // what gets prepended to the model's prompt shrinks.
+      const trimmed = scored.slice(0, AGENT_CONTEXT_TOP_K).map((s) => ({
+        ...s,
+        chunk: {
+          ...s.chunk,
+          textContent:
+            s.chunk.textContent.length > AGENT_CONTEXT_CHUNK_CHARS
+              ? `${s.chunk.textContent.slice(0, AGENT_CONTEXT_CHUNK_CHARS)}…`
+              : s.chunk.textContent,
+        },
+      }));
+      const agentContextBlock = this.buildContextBlocks(trimmed).join('\n\n---\n\n');
       if (input.writeAudit !== false) {
         await appendBrainActionLog({
           brainAgentId: input.brainAgentId,
@@ -227,6 +256,7 @@ export class BrainQueryService {
           payload: {
             description: `Brain retrieval (context-only): "${input.question.slice(0, 100)}"`,
             chunksRetrieved: scored.length,
+            chunksInjected: trimmed.length,
             contextOnly: true,
           },
           status: 'success',
@@ -238,7 +268,7 @@ export class BrainQueryService {
       return {
         answer: '',
         citations,
-        contextBlock,
+        contextBlock: agentContextBlock,
       };
     }
 

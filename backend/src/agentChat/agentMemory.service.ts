@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { openRouterChatCompletion } from '../llm/openrouterClient.js';
 import { normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import { loadSlackFocus } from '../connectors/slackFocus.service.js';
 
 // Stage 1 "foundation" memory. Four kinds delivered through one text block:
 //  - working  : recent conversation turns (reused from AgentMessage, not stored here)
@@ -9,15 +10,22 @@ import { normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
 //  - recipe   : an approach/tools that worked for a kind of task (procedural)
 // Plain text, no embeddings. Recall = "load the recent rows", write = automatic after a run.
 
-const WORKING_MESSAGES = 10;
-const FACT_LIMIT = 20;
-const EPISODE_LIMIT = 5;
-const RECIPE_LIMIT = 5;
-const MAX_MSG_CHARS = 1500;
+// This block is prepended to the run prompt and, because the chat API is stateless,
+// re-sent on EVERY round of the tool loop. At the old budget that was ~1.5k tokens
+// multiplied by up to 12 rounds. The limits below keep the recall that actually gets
+// used and drop the long tail; raise them via env if a deployment needs more.
+const WORKING_MESSAGES = Math.max(2, Number(process.env.QLIX_MEMORY_WORKING_MESSAGES || '6'));
+const FACT_LIMIT = Math.max(1, Number(process.env.QLIX_MEMORY_FACT_LIMIT || '8'));
+const EPISODE_LIMIT = 3;
+const RECIPE_LIMIT = 3;
+const MAX_MSG_CHARS = 600;
 /** Hard cap on the rolling conversation summary; it re-compresses to stay under this. */
-const MAX_SUMMARY_CHARS = 2000;
+const MAX_SUMMARY_CHARS = 1200;
 /** Overall budget for the assembled memory block; oldest verbatim chat is trimmed first. */
-const MAX_BLOCK_CHARS = 6000;
+const MAX_BLOCK_CHARS = Math.max(
+  500,
+  Number(process.env.QLIX_MEMORY_MAX_BLOCK_CHARS || '2500'),
+);
 
 /** Cheap model for the after-run extraction; override via env if desired. */
 const MEMORY_MODEL = process.env.QLIX_MEMORY_MODEL?.trim() || 'openrouter/openai/gpt-4o-mini';
@@ -44,7 +52,7 @@ export async function buildMemoryBlock(input: {
   conversationId: string;
   currentPrompt: string;
 }): Promise<string | null> {
-  const [recentDesc, memories, conversation] = await Promise.all([
+  const [recentDesc, memories, conversation, slackFocus] = await Promise.all([
     prisma.agentMessage.findMany({
       where: { conversationId: input.conversationId },
       orderBy: { createdAt: 'desc' },
@@ -60,6 +68,11 @@ export async function buildMemoryBlock(input: {
     prisma.agentConversation.findUnique({
       where: { id: input.conversationId },
       select: { summary: true },
+    }),
+    loadSlackFocus({
+      agentId: input.agentId,
+      userId: input.userId,
+      conversationId: input.conversationId,
     }),
   ]);
 
@@ -79,19 +92,34 @@ export async function buildMemoryBlock(input: {
 
   // High-priority sections (kept whole within budget).
   const fixedSections: string[] = [];
+  if (slackFocus) {
+    fixedSections.push(
+      [
+        'Active Slack task context (use only for follow-ups in this same Slack thread):',
+        `- channel: ${slackFocus.channel}`,
+        `- tracker: ${slackFocus.listTitle ?? slackFocus.listId}`,
+        `- task: ${slackFocus.taskTitle ?? '(none)'}`,
+        `- itemId: ${slackFocus.itemId ?? '(none)'}`,
+        `- status: ${slackFocus.status ?? '(unknown)'}`,
+      ].join('\n'),
+    );
+  }
+  // Per-item clips sized so the high-priority sections cannot on their own consume
+  // MAX_BLOCK_CHARS and starve the recent conversation, which is usually the most
+  // load-bearing part of the block.
   if (facts.length > 0) {
     fixedSections.push(
-      ['What you know about this user:', ...facts.map((f) => `- ${clip(f.content, 300)}`)].join('\n'),
+      ['What you know about this user:', ...facts.map((f) => `- ${clip(f.content, 200)}`)].join('\n'),
     );
   }
   if (recipes.length > 0) {
     fixedSections.push(
-      ['Approaches that worked before:', ...recipes.map((r) => `- ${clip(r.content, 400)}`)].join('\n'),
+      ['Approaches that worked before:', ...recipes.map((r) => `- ${clip(r.content, 250)}`)].join('\n'),
     );
   }
   if (episodes.length > 0) {
     fixedSections.push(
-      ['What happened in past tasks:', ...episodes.map((e) => `- ${clip(e.content, 300)}`)].join('\n'),
+      ['What happened in past tasks:', ...episodes.map((e) => `- ${clip(e.content, 200)}`)].join('\n'),
     );
   }
 

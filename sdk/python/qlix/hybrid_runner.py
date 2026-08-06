@@ -16,12 +16,15 @@ from .exceptions import HttpError
 from .http_client import QlixHttpClient
 from .identity import AgentIdentity, load_identity
 from .runner_common import (
+    RunCanceledError,
+    build_run_context_block,
     default_log,
     describe_capabilities,
     emit_event,
     maybe_prepend_brain_context,
     run_backend_proxy_inference,
     stream_assistant_deltas,
+    tty_safe_notice,
 )
 from .sdk import QlixSDK
 from .agents3_proxy import Agents3RunContext
@@ -37,49 +40,109 @@ _log = default_log("hybrid_runner")
 _ping_error_logged = False
 _poll_conn_error_logged = False
 
+# Transient statuses: retry quietly (nginx rate-limit returns 503; deploys return 502).
+_TRANSIENT_HTTP = frozenset({0, 408, 425, 429, 500, 502, 503, 504})
+
 
 def _is_network_error(exc: Exception) -> bool:
     """True for transport/connection failures (backend unreachable), not HTTP 4xx/5xx."""
     return isinstance(exc, HttpError) and getattr(exc, "status_code", None) == 0
 
 
+def _is_transient_error(exc: Exception) -> bool:
+    """True for transport failures and retryable HTTP statuses (incl. nginx 503 rate-limit)."""
+    if isinstance(exc, HttpError):
+        code = getattr(exc, "status_code", None)
+        if code in _TRANSIENT_HTTP:
+            return True
+    name = type(exc).__name__.lower()
+    return any(tok in name for tok in ("timeout", "connect", "network", "transport"))
+
+
+def _build_run_guidance(
+    identity: AgentIdentity,
+    *,
+    groups: tuple[str, ...] | None,
+    instruction: str,
+    base_guidance: str,
+) -> str:
+    """TIER B guidance for hybrid runs — intent- and session-specific.
+
+    The live session cwd belongs here too: `luna_local_cd` changes it mid-run, so
+    baking it into the system prompt would invalidate the cached prefix.
+    """
+    from .cloud_crm_runtime import crm_jit_needs_sdk
+    from .tool_router import crm_jit_run_guidance, has_crm_scope, is_crm_mutation_intent
+
+    parts: list[str] = []
+    if has_crm_scope(identity) and crm_jit_needs_sdk(identity):
+        if is_crm_mutation_intent(instruction) or (groups and "comms" in groups):
+            parts.append(crm_jit_run_guidance())
+    if base_guidance.strip():
+        parts.append(base_guidance.strip())
+    try:
+        from .hybrid_cwd import cwd_prompt_line
+
+        parts.append(cwd_prompt_line())
+    except Exception:
+        pass
+    seen: set[str] = set()
+    return "\n\n".join(p for p in parts if not (p in seen or seen.add(p)))
+
+
 def _build_system_prompt(
     agent_description: str,
     wa_connector_id: str,
     identity: AgentIdentity,
-    tools: list[dict[str, Any]],
-    *,
-    groups: tuple[str, ...] | None = None,
 ) -> str | None:
+    """TIER A — invariant per agent + machine, so it stays in the cached prefix.
+
+    Excludes the clock, per-run guidance and the live session cwd; those move to the
+    run-context block appended to the user message.
+    """
     parts: list[str] = []
     if agent_description:
         parts.append(agent_description)
 
-    # General capability awareness (so the model never denies what its tools/scopes
-    # enable), derived from granted scopes (incl. approval-required JIT scopes) + the
-    # tools loaded this run.
+    # Capability awareness from granted scopes (incl. approval-required JIT scopes),
+    # so the model never denies something its scopes actually allow.
     granted = (
         set(identity.permission_scopes)
         | set(identity.always_scopes)
         | set(identity.jit_scopes)
     )
-    parts.append(describe_capabilities(granted, tools, groups=groups))
+    parts.append(describe_capabilities(granted))
 
+    # Probed machine paths: stable for this host, so safe in the cached prefix.
     local_env = get_cached_environment()
     if local_env:
         parts.append(format_environment_prompt(local_env))
 
     # Steer the model to the dedicated tools instead of refusing or hand-rolling.
     parts.append(
+        "Local files and coding:\n"
+        "- Prefer luna_local_search_files → luna_local_read_file → luna_local_patch "
+        "(explore before editing).\n"
+        "- Single-file surgical edits: luna_local_patch mode=replace (old_string→new_string). "
+        "Multi-file / scaffolding / Add+Update+Delete+Move: mode=patch with a V4A body "
+        "(*** Begin Patch … *** End Patch).\n"
+        "- On patch failure: re-read the file, use fuzzy 'Did you mean' hints in the error; "
+        "after repeated failures fall back to luna_local_write_file.\n"
+        "- Prefer luna_local_cd / luna_local_pwd over shell `cd` (subshell cwd does not persist).\n"
+        "- Prefer search/patch over ad-hoc bash edits (sed/echo redirects).\n"
+        "- luna_local_bash: safe inspect commands skip approval; destructive commands need JIT.\n"
+        "- Keep using luna_local_open_file to launch apps and gui_control for in-app UI actions.\n"
+    )
+    parts.append(
         "Producing documents and delivering them:\n"
         "- When asked to create or generate a PDF/document/report, you CAN do it: call the "
-        "s3_create_pdf tool with the title and content (markdown supported). It writes a real "
+        "luna_local_create_pdf tool with the title and content (markdown supported). It writes a real "
         "PDF on the user's computer and returns its absolute path. NEVER tell the user to "
         "copy-paste text into Word — that is not acceptable.\n"
-        "- To deliver a created file to the user on WhatsApp, call s3_send_whatsapp_document "
-        "with the absolute file_path returned by s3_create_pdf.\n"
+        "- To deliver a created file to the user on WhatsApp, call luna_local_send_whatsapp_document "
+        "with the absolute file_path returned by luna_local_create_pdf.\n"
         "- Typical flow for 'make a PDF and send it on WhatsApp': read any needed source files, "
-        "call s3_create_pdf, then call s3_send_whatsapp_document with the returned path.\n"
+        "call luna_local_create_pdf, then call luna_local_send_whatsapp_document with the returned path.\n"
         "- Complete the ENTIRE request in this run. After a tool returns (e.g. after reading "
         "a file), immediately continue to the next required tool call instead of stopping. "
         "Only finish once every requested step (create, send, etc.) is actually done."
@@ -89,8 +152,8 @@ def _build_system_prompt(
     wa_secret = os.environ.get("QLIX_WA_SECRET", "").strip()
     if wa_connector_id and wa_secret:
         parts.append(
-            "If s3_send_whatsapp_document is unavailable, you may instead send a file via "
-            "s3_python:\n"
+            "If luna_local_send_whatsapp_document is unavailable, you may instead send a file via "
+            "luna_local_python:\n"
             "```python\n"
             "import urllib.request, json as _j\n"
             f'_req = urllib.request.Request("{wa_url}/send-document",\n'
@@ -116,13 +179,28 @@ def _runner_token(identity: AgentIdentity) -> str:
 
 
 async def _ping_loop(identity: AgentIdentity, runner_token: str) -> None:
-    interval_ms_raw = os.environ.get("QLIX_HYBRID_PING_INTERVAL_MS", "5000").strip()
+    """Background connectivity heartbeat.
+
+    Never dumps JSON / errors onto the interactive >>> input line. Transient
+    failures (503 rate-limit, brief outages) retry quietly with backoff; only
+    after sustained failure do we show a single one-line warning.
+    """
+    interval_ms_raw = os.environ.get("QLIX_HYBRID_PING_INTERVAL_MS", "15000").strip()
     try:
         interval_ms = max(1000, int(interval_ms_raw))
     except ValueError:
-        interval_ms = 5000
+        interval_ms = 15000
+
+    # How long to stay silent before surfacing a connectivity warning.
+    warn_after_s = float(os.environ.get("QLIX_HYBRID_PING_WARN_AFTER_S", "45").strip() or "45")
+    warn_after_s = max(15.0, warn_after_s)
 
     headers = {"X-QLIX-Runner-Token": runner_token}
+    consecutive_failures = 0
+    first_failure_at: float | None = None
+    warned = False
+    backoff_s = 0.0
+
     async with QlixHttpClient(base_url=identity.backend_url) as http:
         while True:
             t0 = time.time()
@@ -133,13 +211,44 @@ async def _ping_loop(identity: AgentIdentity, runner_token: str) -> None:
                     headers=headers,
                 )
                 global _ping_error_logged
+                if consecutive_failures > 0 or warned:
+                    _log("connectivity_ok", message="Backend reachable again")
+                    if warned:
+                        tty_safe_notice("Connected again.")
+                consecutive_failures = 0
+                first_failure_at = None
+                warned = False
+                backoff_s = 0.0
                 _ping_error_logged = False
             except Exception as exc:
-                if not _ping_error_logged:
-                    _log("ping_error", error=str(exc))
-                    _ping_error_logged = True
+                consecutive_failures += 1
+                if first_failure_at is None:
+                    first_failure_at = t0
+                # Structured log only (TTY-silent in interactive quiet mode).
+                _log("ping_error", error=str(exc), consecutive=consecutive_failures)
+                _ping_error_logged = True
+
+                elapsed = t0 - (first_failure_at or t0)
+                if not warned and elapsed >= warn_after_s:
+                    warned = True
+                    if _is_transient_error(exc):
+                        msg = (
+                            "Backend temporarily unavailable (retrying) — "
+                            f"{exc}. Your prompt is fine; keep typing."
+                        )
+                    else:
+                        msg = f"Lost connection to backend: {exc}"
+                    _log("connectivity_warning", message=msg, error=str(exc))
+
+                # Quiet exponential backoff on transient errors (cap 30s).
+                if _is_transient_error(exc):
+                    backoff_s = min(30.0, max(2.0, (backoff_s or 2.0) * 1.5))
+                else:
+                    backoff_s = min(30.0, max(5.0, (backoff_s or 5.0) * 1.5))
+
             dt = time.time() - t0
-            await asyncio.sleep(max(0.1, (interval_ms / 1000.0) - dt))
+            base_sleep = max(0.1, (interval_ms / 1000.0) - dt)
+            await asyncio.sleep(max(base_sleep, backoff_s))
 
 
 async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> None:
@@ -189,7 +298,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             _log(
                                 "poll_waiting",
                                 agent_id=identity.agent_id,
-                                message="Connected. Send a message in Qlix chat to start a run.",
+                                message="Connected. Chat here or send a message in Qlix / WhatsApp.",
                             )
                         elif idle_polls % 30 == 0:
                             _log("poll_idle", agent_id=identity.agent_id, count=idle_polls)
@@ -200,6 +309,12 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     run_id = str(run.get("id", ""))
                     seq = 0
                     prompt = str(run.get("prompt", ""))
+                    try:
+                        from .local_chat import notice_remote_run
+
+                        notice_remote_run(run_id, prompt)
+                    except Exception:
+                        pass
                     agent_description = str(run.get("agentDescription") or "").strip()
                     wa_connector_id = str(run.get("waConnectorId") or "").strip()
                     run_inference_model = str(
@@ -209,6 +324,13 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     selected_skills = [str(s).strip() for s in skills if str(s).strip()]
                     mcp_servers = run.get("mcpServers") or []
                     _log("run_claimed", run_id=run_id, skills=skills, mcp_servers=len(mcp_servers))
+
+                    try:
+                        from .hybrid_cwd import reset_cwd
+
+                        reset_cwd()
+                    except Exception:
+                        pass
 
                     seq = await emit_event(
                         http,
@@ -251,15 +373,36 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
 
                     # The agent's standing description (set at creation) is the trusted
                     # source of intent — the per-run prompt can't always be relied on.
-                    plan = router.plan_run(
-                        prompt,
+                    from dataclasses import replace as dc_replace
+
+                    from .tool_profiles import filter_scopes_by_tool_profile
+
+                    tool_profile = str(run.get("toolProfile") or run.get("tool_profile") or "full")
+                    run_router = ToolRouter(
+                        dc_replace(
+                            identity,
+                            permission_scopes=tuple(
+                                filter_scopes_by_tool_profile(
+                                    list(identity.permission_scopes), tool_profile
+                                )
+                            ),
+                            always_scopes=tuple(
+                                filter_scopes_by_tool_profile(
+                                    list(identity.always_scopes), tool_profile
+                                )
+                            ),
+                        ),
+                        runner_runtime="hybrid",
+                    )
+                    plan = run_router.plan_run(
+                        prompt_for_skills,
                         skill_filter=selected_skills or None,
                         context=agent_description,
                     )
                     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
 
                     # Debug: explain why each local tool is / isn't offered. This makes a
-                    # silently-dropped s3_create_pdf / s3_write_file visible in the run feed.
+                    # silently-dropped luna_local_create_pdf / luna_local_write_file visible in the run feed.
                     from .agents3_runtime import diagnose_local_tools
 
                     tool_diag = diagnose_local_tools(
@@ -302,7 +445,11 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         },
                     )
 
-                    tools = router.build_tool_definitions(plan, mcp_servers=mcp_servers)
+                    tools = run_router.build_tool_definitions(
+                        plan, mcp_servers=mcp_servers, tool_profile=tool_profile
+                    )
+                    if run_router.last_budget_report:
+                        _log("tool_budget", run_id=run_id, **run_router.last_budget_report)
 
                     model = run_inference_model or str(
                         adk.manifest.get("model")
@@ -325,6 +472,9 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     )
                     async def _agents3_log_emit(data: dict) -> None:
                         nonlocal seq
+                        # soft=True: parallel tools spam /event; nginx api_limit
+                        # used to 503 and abort the tool mid-write. Telemetry
+                        # must never kill an otherwise-successful local action.
                         seq = await emit_event(
                             http,
                             agent_id=identity.agent_id,
@@ -333,6 +483,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             seq=seq,
                             event_type="log",
                             data=data,
+                            soft=True,
                         )
 
                     agents3_context = Agents3RunContext(
@@ -342,7 +493,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         run_id=run_id,
                         log_emit=_agents3_log_emit,
                     )
-                    tool_executors = router.build_executor_map(
+                    tool_executors = run_router.build_executor_map(
                         plan,
                         agent_id=identity.agent_id,
                         run_id=run_id,
@@ -371,6 +522,24 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         },
                     )
 
+                    # Tier B: clock, intent guidance, session cwd and the task itself
+                    # sit after the cached prefix, not inside it.
+                    granted_scopes = (
+                        set(identity.permission_scopes)
+                        | set(identity.always_scopes)
+                        | set(identity.jit_scopes)
+                    )
+                    run_prompt = build_run_context_block(
+                        prompt=enriched_prompt,
+                        granted_scopes=granted_scopes,
+                        guidance=_build_run_guidance(
+                            identity,
+                            groups=plan.groups,
+                            instruction=enriched_prompt,
+                            base_guidance=plan.guidance,
+                        ),
+                        tool_preference=run_router.tool_preference(plan),
+                    )
                     seq, content, duration_ms, turns, tool_calls, proxy_usage, executed_tools = (
                         await run_backend_proxy_inference(
                             inference_http,
@@ -380,7 +549,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                             seq=seq,
                             run_id=run_id,
                             model=model,
-                            enriched_prompt=enriched_prompt,
+                            enriched_prompt=run_prompt,
                             tools=tools,
                             tool_executors=tool_executors,
                             tools_hash=tools_hash,
@@ -391,8 +560,6 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                                 agent_description,
                                 wa_connector_id,
                                 identity,
-                                tools,
-                                groups=plan.groups,
                             ),
                         )
                     )
@@ -526,23 +693,33 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         headers=headers,
                     )
                     _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms, ok=run_ok)
+                except RunCanceledError:
+                    _log("run_canceled_by_user", run_id=run_id or "")
+                    # Status already set by Active Runs stop; skip complete overwrite.
+                    continue
                 except Exception as exc:
                     import traceback as _tb
                     error_msg = str(exc)
-                    # Backend unreachable before a run is claimed (e.g. backend still
-                    # starting up) is transient: log once, back off quietly, no traceback.
-                    if not run_id and _is_network_error(exc):
+                    # Backend unreachable / rate-limited / restarting before a run is
+                    # claimed: retry quietly — never dump "Something went wrong" onto >>>.
+                    if not run_id and (_is_network_error(exc) or _is_transient_error(exc)):
                         if not _poll_conn_error_logged:
                             _log(
                                 "poll_waiting_backend",
                                 backend=identity.backend_url,
                                 message="Backend not reachable yet — retrying until it is up.",
+                                error=error_msg,
                             )
                             _poll_conn_error_logged = True
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(2.0 if _is_network_error(exc) else 3.0)
                         continue
                     _log("poll_execute_error", error=error_msg)
-                    print("[hybrid_runner] TRACEBACK:\n" + _tb.format_exc(), file=__import__("sys").stderr, flush=True)
+                    if os.environ.get("QLIX_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+                        print(
+                            "[hybrid_runner] TRACEBACK:\n" + _tb.format_exc(),
+                            file=__import__("sys").stderr,
+                            flush=True,
+                        )
                     if run_id:
                         try:
                             await http.post_json(
@@ -555,7 +732,17 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     await asyncio.sleep(1.0)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="qlix.hybrid_runner", description="Qlix hybrid runner")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Disable local TTY chat (poll + ping only; for systemd/services)",
+    )
+    args, _unknown = parser.parse_known_args(argv)
+
     identity = load_identity()
     runner_token = _runner_token(identity)
     if not runner_token:
@@ -565,11 +752,24 @@ def main() -> None:
         )
         sys.exit(1)
 
+    from .local_chat import run_local_chat_repl, want_interactive_chat
+
+    interactive = want_interactive_chat(headless=True if args.headless else None)
+
     async def _main() -> None:
-        await asyncio.gather(
-            _ping_loop(identity, runner_token),
-            _poll_and_execute_loop(identity, runner_token),
-        )
+        tasks = [
+            asyncio.create_task(_ping_loop(identity, runner_token)),
+            asyncio.create_task(_poll_and_execute_loop(identity, runner_token)),
+        ]
+        if interactive:
+            tasks.append(asyncio.create_task(run_local_chat_repl(identity, runner_token)))
+        else:
+            print(
+                "[hybrid_runner] Headless mode — poll only. "
+                "Unset QLIX_HEADLESS / omit --headless for local chat.",
+                flush=True,
+            )
+        await asyncio.gather(*tasks)
 
     asyncio.run(_main())
 

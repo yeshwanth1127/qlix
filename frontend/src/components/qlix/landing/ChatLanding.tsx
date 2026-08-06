@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowUp,
   Bot,
@@ -31,6 +32,15 @@ import {
   type CreateAgentResponse,
 } from "@/lib/agents-api";
 import { createTeam, setSupervisorAgent, addTeamMember } from "@/lib/teams-api";
+import {
+  listConnectors,
+  type ConnectorProvider,
+} from "@/lib/connectors-api";
+import {
+  missingRequiredConnectors,
+  requiredConnectorInfos,
+  type RequiredConnectorInfo,
+} from "@/lib/required-connectors";
 import { downloadBase64File, downloadJsonFile, stashStarterPack } from "@/lib/download";
 import { detectHybridClientPlatform } from "@/lib/hybrid-platform";
 import { scopesRequireHybrid } from "@/lib/agent-runtime";
@@ -40,6 +50,7 @@ import { ClaimAccountModal } from "@/components/qlix/ClaimAccountModal";
 import { HybridRunnerSetupPopup } from "@/components/qlix/agents/HybridRunnerSetupPopup";
 import { NLPlanPreview } from "@/components/qlix/agents/nl/NLPlanPreview";
 import { NLCreationProgress, type CreationStep } from "@/components/qlix/agents/nl/NLCreationProgress";
+import { RequiredConnectorsPopup } from "@/components/qlix/agents/nl/RequiredConnectorsPopup";
 import { QlixWordmark } from "@/components/qlix/landing/QlixWordmark";
 import {
   ParticleConstellation,
@@ -144,6 +155,7 @@ function ResultRow({ output, routePrefix }: { readonly output: AgentOutput; read
   const [downloaded, setDownloaded] = useState(false);
   const isHybrid = agent.runtime === "hybrid";
   const [setupPopupOpen, setSetupPopupOpen] = useState(isHybrid);
+  const autoDownloadFiredRef = useRef(false);
 
   // Stash the just-created starter pack so the agent's own page can offer a
   // re-download without re-issuing (which would rotate the signing key).
@@ -160,6 +172,19 @@ function ResultRow({ output, routePrefix }: { readonly output: AgentOutput; read
     setDownloaded(true);
     void confirmDownload(agent.id);
   };
+
+  // Auto-download hybrid starter ZIP as soon as this result appears.
+  useEffect(() => {
+    if (!isHybrid) return;
+    if (autoDownloadFiredRef.current) return;
+    if (!hybridStarterPack?.base64) return;
+    autoDownloadFiredRef.current = true;
+    const t = window.setTimeout(() => {
+      download();
+    }, 50);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHybrid, hybridStarterPack?.base64]);
 
   if (isHybrid) {
     return (
@@ -182,9 +207,9 @@ function ResultRow({ output, routePrefix }: { readonly output: AgentOutput; read
         <div className="space-y-2">
           {(
             [
-              { n: "1", text: "Download the ZIP below" },
+              { n: "1", text: "ZIP downloads automatically (check Downloads)" },
               { n: "2", text: "Unzip the file" },
-              { n: "3", text: "Double-click the file to start your agent" },
+              { n: "3", text: "Double-click Start Qlix Agent" },
             ] as const
           ).map(({ n, text }) => (
             <div key={n} className="flex items-center gap-2.5">
@@ -296,11 +321,18 @@ export interface ChatLandingProps {
   readonly orgId?: string | null;
 }
 
+interface PendingConnectorGate {
+  planItemId: number;
+  plan: AgentCreationPlan;
+  connectors: RequiredConnectorInfo[];
+}
+
 export function ChatLanding({
   variant = "public",
   orgId: orgIdProp = null,
 }: ChatLandingProps = {}) {
   const isDashboard = variant === "dashboard";
+  const router = useRouter();
   const { session, refresh: refreshSession } = useSession();
   const [introDone, setIntroDone] = useState(isDashboard);
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -308,6 +340,7 @@ export function ChatLanding({
   const [busy, setBusy] = useState(false);
   const [claimOpen, setClaimOpen] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [connectorGate, setConnectorGate] = useState<PendingConnectorGate | null>(null);
   const idRef = useRef(0);
   const busyRef = useRef(false);
   const sessionRef = useRef<AuthSuccessResponse | null>(null);
@@ -419,7 +452,66 @@ export function ChatLanding({
     }
   };
 
-  const handleCreate = async (planItemId: number, plan: AgentCreationPlan) => {
+  const loadConnectedProviders = async (): Promise<Set<ConnectorProvider>> => {
+    try {
+      const res = await listConnectors();
+      return new Set(
+        res.connectors.filter((c) => c.status === "connected").map((c) => c.provider),
+      );
+    } catch {
+      return new Set();
+    }
+  };
+
+  /** Gate create on missing connectors, then create (and optionally open Connectors). */
+  const requestCreate = async (planItemId: number, plan: AgentCreationPlan) => {
+    if (busyRef.current || connectorGate) return;
+    const sess = sessionRef.current ?? session;
+    if (!sess) return;
+
+    const effectivePlan = sess.user.isGuest ? adaptPlanForGuest(plan).plan : plan;
+
+    busyRef.current = true;
+    setBusy(true);
+    let missing: ConnectorProvider[] = [];
+    try {
+      const connected = await loadConnectedProviders();
+      missing = missingRequiredConnectors(effectivePlan, connected);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+
+    if (missing.length > 0) {
+      setConnectorGate({
+        planItemId,
+        plan: effectivePlan,
+        connectors: requiredConnectorInfos(missing),
+      });
+      return;
+    }
+
+    await handleCreate(planItemId, effectivePlan, { redirectToConnectors: false });
+  };
+
+  const proceedAfterConnectorGate = async (redirectToConnectors: boolean) => {
+    if (!connectorGate) return;
+    const { planItemId, plan, connectors } = connectorGate;
+    setConnectorGate(null);
+    await handleCreate(planItemId, plan, {
+      redirectToConnectors,
+      neededProviders: connectors.map((c) => c.provider),
+    });
+  };
+
+  const handleCreate = async (
+    planItemId: number,
+    plan: AgentCreationPlan,
+    options: {
+      redirectToConnectors: boolean;
+      neededProviders?: ConnectorProvider[];
+    } = { redirectToConnectors: false },
+  ) => {
     if (busyRef.current) return;
     const sess = sessionRef.current ?? session;
     if (!sess) return;
@@ -515,6 +607,11 @@ export function ChatLanding({
         }
         setStep(assembleIdx, { status: "done", label: `Team assembled — ${effectivePlan.team.name}` });
         push({ kind: "done", result: { type: "team", teamId: team.id, outputs } });
+      }
+
+      if (options.redirectToConnectors && options.neededProviders && options.neededProviders.length > 0) {
+        const qs = new URLSearchParams({ needed: options.neededProviders.join(",") });
+        router.push(`${routePrefix}/connectors?${qs.toString()}`);
       }
     } catch (err) {
       if (outputs.length > 0) {
@@ -613,6 +710,15 @@ export function ChatLanding({
         </div>
       ) : null}
 
+      <RequiredConnectorsPopup
+        open={connectorGate != null}
+        connectors={connectorGate?.connectors ?? []}
+        busy={busy}
+        onConnectNow={() => void proceedAfterConnectorGate(true)}
+        onConnectLater={() => void proceedAfterConnectorGate(false)}
+        onDismiss={() => setConnectorGate(null)}
+      />
+
       {/* Animated particle constellation — scrambles, then re-forms per turn */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <ParticleConstellation shape={constShape} side={shapeSide} className="absolute inset-0" />
@@ -683,6 +789,14 @@ export function ChatLanding({
             <p className="mt-5 max-w-md text-center text-[14px] font-light leading-relaxed tracking-[0.025em] text-[#26203a]/70 sm:mt-6 sm:text-[15px]">
               Describe it in plain words. Qlix designs it, wires up its permissions, and brings it to life — right here.
             </p>
+            {isDashboard ? (
+              <Link
+                href={`${routePrefix}/ai-employees`}
+                className="mt-4 text-[12px] font-medium text-[#1c1830]/70 underline underline-offset-2 hover:text-[#1c1830]"
+              >
+                Looking for a ready-made role? Hire an AI Employee →
+              </Link>
+            ) : null}
           </div>
         ) : (
           <div
@@ -777,7 +891,7 @@ export function ChatLanding({
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => void handleCreate(item.id, plan)}
+                          onClick={() => void requestCreate(item.id, plan)}
                           className={cn(
                             "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-white",
                             "bg-[#1c1830]",

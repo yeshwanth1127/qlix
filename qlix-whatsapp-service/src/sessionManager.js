@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import { migratePlaintextAuthDir, useEncryptedMultiFileAuthState } from './encryptedAuthState.js';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -21,6 +21,64 @@ const BAILEYS_LOG_LEVEL =
   (process.env.NODE_ENV === 'production' ? 'silent' : 'silent');
 
 const logger = pino({ level: BAILEYS_LOG_LEVEL });
+
+const VERSION_TTL_MS = 60 * 60 * 1000;
+/** @type {number[]|null} */
+let cachedBaileysVersion = null;
+let cachedBaileysVersionAt = 0;
+/** @type {string|null} */
+let lastBaileysVersionError = null;
+
+const CONNECTOR_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isValidConnectorId(connectorId) {
+  return CONNECTOR_ID_RE.test(String(connectorId ?? ''));
+}
+
+async function getBaileysVersion(forceRefresh = false) {
+  if (
+    !forceRefresh &&
+    cachedBaileysVersion &&
+    Date.now() - cachedBaileysVersionAt < VERSION_TTL_MS
+  ) {
+    return cachedBaileysVersion;
+  }
+  try {
+    const { version } = await fetchLatestBaileysVersion();
+    cachedBaileysVersion = version;
+    cachedBaileysVersionAt = Date.now();
+    lastBaileysVersionError = null;
+    return version;
+  } catch (err) {
+    lastBaileysVersionError = err instanceof Error ? err.message : String(err);
+    throw err;
+  }
+}
+
+/** Fail fast at process start if WA Web version cannot be resolved (QR linking requires this). */
+export async function ensureBaileysVersionReady() {
+  const version = await getBaileysVersion(true);
+  if (!Array.isArray(version) || version.length < 3) {
+    throw new Error('fetchLatestBaileysVersion returned an invalid version tuple');
+  }
+  console.log(
+    `[qlix-whatsapp] Baileys WA Web version ${version.join('.')} (required for QR linking)`,
+  );
+  return version;
+}
+
+/** Exposed for /health — ops can detect stale/missing version before users hit a blank QR. */
+export function getBaileysVersionHealth() {
+  return {
+    baileys_version_ok: Boolean(cachedBaileysVersion?.length),
+    baileys_version: cachedBaileysVersion ? cachedBaileysVersion.join('.') : null,
+    baileys_version_fetched_at: cachedBaileysVersionAt
+      ? new Date(cachedBaileysVersionAt).toISOString()
+      : null,
+    baileys_version_error: lastBaileysVersionError,
+  };
+}
 
 /** @type {Map<string, SessionEntry>} */
 const sessions = new Map();
@@ -241,6 +299,10 @@ export async function resumeSavedSessions() {
   const dirs = fs.readdirSync(AUTH_ROOT, { withFileTypes: true }).filter((d) => d.isDirectory());
   for (const dirent of dirs) {
     const connectorId = dirent.name;
+    if (!isValidConnectorId(connectorId)) {
+      console.warn(`[qlix-whatsapp] skipping non-connector auth dir: ${connectorId}`);
+      continue;
+    }
     try {
       await startSession(connectorId);
       console.log(`[qlix-whatsapp] resuming saved session ${connectorId}…`);
@@ -254,6 +316,9 @@ export async function resumeSavedSessions() {
 }
 
 export async function startSession(connectorId) {
+  if (!isValidConnectorId(connectorId)) {
+    throw new Error(`Invalid connector id: ${connectorId}`);
+  }
   if (sessions.has(connectorId)) {
     const existing = sessions.get(connectorId);
     if (existing?.sock) return existing;
@@ -279,6 +344,10 @@ export async function startSession(connectorId) {
     recentOutbound: [],
     recentOutboundIds: new Set(),
     lastOutboundAt: 0,
+    /** Phonebook contacts learned from Baileys sync + inbound push names. */
+    contacts: new Map(),
+    /** Recent 1:1 chat messages buffered for agent read tools. */
+    messagesByJid: new Map(),
     inboundLock: false,
     lastInboundKey: '',
     lastInboundAt: 0,
@@ -300,9 +369,11 @@ export async function startSession(connectorId) {
       }
     }
 
+    // WA Web rejects stale version tuples (405) before emitting a QR — always pass fetchLatestBaileysVersion().
     entry.sock = makeWASocket({
       auth: state,
       logger,
+      version: await getBaileysVersion(),
       printQRInTerminal: false,
     });
 
@@ -355,13 +426,41 @@ export async function startSession(connectorId) {
         }
 
         entry.reconnectAttempts += 1;
+        // Stale WA Web version often surfaces as 405 before any QR is emitted.
+        if (statusCode === 405) {
+          cachedBaileysVersion = null;
+          cachedBaileysVersionAt = 0;
+        }
         const delay = backoffMs(entry.reconnectAttempts - 1);
         setTimeout(() => connect().catch(console.error), delay);
       }
     });
 
+    entry.sock.ev.on('contacts.upsert', (contacts) => {
+      if (!Array.isArray(contacts)) return;
+      for (const c of contacts) rememberContact(entry, c);
+    });
+    entry.sock.ev.on('contacts.update', (updates) => {
+      if (!Array.isArray(updates)) return;
+      for (const c of updates) rememberContact(entry, c);
+    });
+    entry.sock.ev.on('messaging-history.set', ({ contacts: histContacts, messages: histMessages }) => {
+      if (Array.isArray(histContacts)) {
+        for (const c of histContacts) rememberContact(entry, c);
+      }
+      if (Array.isArray(histMessages)) {
+        for (const m of histMessages) rememberChatMessage(entry, m);
+      }
+    });
+
     entry.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // Only real-time messages — never history sync (append) or unknown types.
+      // Buffer messages for agent read tools (notify + append history).
+      if (type === 'notify' || type === 'append') {
+        for (const msg of messages ?? []) {
+          rememberChatMessage(entry, msg);
+        }
+      }
+      // Only real-time messages trigger agent runs — never history sync.
       if (type !== 'notify') return;
 
       for (const msg of messages) {
@@ -372,11 +471,7 @@ export async function startSession(connectorId) {
         if (remoteJid.endsWith('@g.us')) continue;
         if (msg.message.protocolMessage || msg.message.senderKeyDistributionMessage) continue;
 
-        const text =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.buttonsResponseMessage?.selectedDisplayText ||
-          '';
+        const text = extractMessageText(msg);
         const trimmed = text.trim();
         if (!trimmed) {
           continue;
@@ -387,8 +482,8 @@ export async function startSession(connectorId) {
 
         const now = Date.now();
 
-        // Single authoritative gate: only the QR-linked account's own self-chat is allowed.
-        // This rejects all other contacts (including their @lid addresses).
+        // Single authoritative gate: only the QR-linked account's own self-chat is allowed
+        // to *trigger* agent runs. Contact chats are buffered above for read tools only.
         if (!isAllowedInboundChat(entry, remoteJid, Boolean(msg.key.fromMe))) {
           continue;
         }
@@ -451,6 +546,342 @@ export async function stopSession(connectorId) {
 
 export function isSessionConnected(connectorId) {
   return sessions.get(connectorId)?.connected === true;
+}
+
+const MAX_CONTACTS = 5000;
+const MAX_CHATS_WITH_MESSAGES = 300;
+const MAX_MESSAGES_PER_CHAT = 80;
+
+function digitsOnly(value) {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+function normalizePhoneDigits(value) {
+  const d = digitsOnly(value);
+  return d || null;
+}
+
+function jidFromPhoneDigits(digits) {
+  if (!digits || digits.length < 8) return null;
+  return `${digits}@s.whatsapp.net`;
+}
+
+function rememberContact(entry, contact) {
+  if (!entry.contacts) entry.contacts = new Map();
+  const jid = contact?.id || contact?.jid;
+  if (!jid || typeof jid !== 'string') return;
+  if (jid.endsWith('@g.us') || jid === 'status@broadcast') return;
+  const phone = normalizePhoneDigits(jid.split('@')[0].split(':')[0]);
+  const name =
+    (typeof contact.name === 'string' && contact.name.trim()) ||
+    (typeof contact.notify === 'string' && contact.notify.trim()) ||
+    (typeof contact.verifiedName === 'string' && contact.verifiedName.trim()) ||
+    null;
+  const prev = entry.contacts.get(jid) ?? {};
+  entry.contacts.set(jid, {
+    jid,
+    phone: phone ?? prev.phone ?? null,
+    name: name ?? prev.name ?? null,
+    notify: typeof contact.notify === 'string' ? contact.notify : prev.notify ?? null,
+  });
+  if (entry.contacts.size > MAX_CONTACTS) {
+    const first = entry.contacts.keys().next().value;
+    if (first) entry.contacts.delete(first);
+  }
+}
+
+function extractMessageText(msg) {
+  if (!msg?.message) return '';
+  return (
+    msg.message.conversation ||
+    msg.message.extendedTextMessage?.text ||
+    msg.message.imageMessage?.caption ||
+    msg.message.videoMessage?.caption ||
+    msg.message.documentMessage?.caption ||
+    msg.message.buttonsResponseMessage?.selectedDisplayText ||
+    msg.message.listResponseMessage?.title ||
+    ''
+  );
+}
+
+function rememberChatMessage(entry, msg) {
+  if (!entry.messagesByJid) entry.messagesByJid = new Map();
+  const remoteJid = msg?.key?.remoteJid;
+  if (!remoteJid || typeof remoteJid !== 'string') return;
+  if (remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') return;
+  const text = extractMessageText(msg).trim();
+  if (!text) return;
+  const row = {
+    id: msg.key?.id ?? null,
+    fromMe: Boolean(msg.key?.fromMe),
+    text: text.slice(0, 4000),
+    timestamp: Number(msg.messageTimestamp ?? 0) * 1000 || Date.now(),
+    pushName: typeof msg.pushName === 'string' ? msg.pushName : null,
+  };
+  const list = entry.messagesByJid.get(remoteJid) ?? [];
+  if (row.id && list.some((m) => m.id === row.id)) return;
+  list.push(row);
+  if (list.length > MAX_MESSAGES_PER_CHAT) list.splice(0, list.length - MAX_MESSAGES_PER_CHAT);
+  entry.messagesByJid.set(remoteJid, list);
+  if (entry.messagesByJid.size > MAX_CHATS_WITH_MESSAGES) {
+    const first = entry.messagesByJid.keys().next().value;
+    if (first) entry.messagesByJid.delete(first);
+  }
+  // Learn contact name from pushName on inbound.
+  if (!row.fromMe && row.pushName) {
+    rememberContact(entry, { id: remoteJid, notify: row.pushName });
+  }
+}
+
+function contactMatchesQuery(contact, query) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  const qDigits = digitsOnly(q);
+  const hay = [contact.name, contact.notify, contact.phone, contact.jid]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (hay.includes(q)) return true;
+  if (qDigits && contact.phone && contact.phone.includes(qDigits)) return true;
+  return false;
+}
+
+export function listContacts(connectorId, query = '', limit = 50) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected) return { ok: false, error: 'WhatsApp not connected' };
+  const max = Math.min(100, Math.max(1, Number(limit) || 50));
+  const all = [...(entry.contacts?.values() ?? [])];
+  const filtered = all.filter((c) => contactMatchesQuery(c, query));
+  filtered.sort((a, b) => String(a.name || a.phone || a.jid).localeCompare(String(b.name || b.phone || b.jid)));
+  return {
+    ok: true,
+    contacts: filtered.slice(0, max).map((c) => ({
+      jid: c.jid,
+      phone: c.phone,
+      name: c.name || c.notify || null,
+    })),
+    total_matched: filtered.length,
+  };
+}
+
+/**
+ * Resolve a human-facing recipient (phone, jid, or contact name) to a WhatsApp JID.
+ * Never returns the linked account's own JIDs — use /send for self-chat delivery.
+ */
+export async function resolveRecipientJid(connectorId, recipient) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected || !entry.sock) {
+    return { ok: false, error: 'WhatsApp not connected' };
+  }
+  const raw = String(recipient ?? '').trim();
+  if (!raw) return { ok: false, error: 'recipient is required' };
+
+  const selfLocals = new Set(
+    [...(entry.knownSelfJids ?? [])]
+      .map((j) => String(j).split('@')[0].split(':')[0])
+      .filter(Boolean),
+  );
+  if (entry.ownerPhoneJid) {
+    selfLocals.add(entry.ownerPhoneJid.split('@')[0].split(':')[0]);
+  }
+
+  let jid = null;
+  let matchedName = null;
+
+  if (raw.includes('@')) {
+    jid = raw;
+  } else {
+    const digits = normalizePhoneDigits(raw);
+    if (digits && digits.length >= 8 && /^[\d\s+\-()]+$/.test(raw.replace(/\s/g, ''))) {
+      jid = jidFromPhoneDigits(digits);
+    } else {
+      const contacts = [...(entry.contacts?.values() ?? [])];
+      const q = raw.toLowerCase();
+      const exact = contacts.filter(
+        (c) =>
+          (c.name && c.name.toLowerCase() === q) ||
+          (c.notify && c.notify.toLowerCase() === q),
+      );
+      const partial = contacts.filter((c) => contactMatchesQuery(c, raw));
+      const pick = exact[0] ?? (partial.length === 1 ? partial[0] : null);
+      if (!pick && partial.length > 1) {
+        return {
+          ok: false,
+          error: `Multiple contacts match "${raw}". Be more specific or use a phone number.`,
+          matches: partial.slice(0, 8).map((c) => ({
+            name: c.name || c.notify || null,
+            phone: c.phone,
+            jid: c.jid,
+          })),
+        };
+      }
+      if (!pick) {
+        return {
+          ok: false,
+          error: `No contact found for "${raw}". Use whatsapp_list_contacts or pass a phone number with country code.`,
+        };
+      }
+      jid = pick.jid;
+      matchedName = pick.name || pick.notify || null;
+    }
+  }
+
+  if (!jid) return { ok: false, error: 'Could not resolve recipient' };
+  if (jid.endsWith('@g.us')) {
+    return { ok: false, error: 'Group chats are not supported for agent messaging yet' };
+  }
+
+  const local = jid.split('@')[0].split(':')[0];
+  if (selfLocals.has(local)) {
+    return {
+      ok: false,
+      error: 'Recipient is your own linked WhatsApp. Use self-chat delivery (whatsapp_send) instead.',
+    };
+  }
+
+  // Confirm the number is on WhatsApp when we have a phone JID.
+  if (jid.endsWith('@s.whatsapp.net') && typeof entry.sock.onWhatsApp === 'function') {
+    try {
+      const results = await entry.sock.onWhatsApp(local);
+      const hit = Array.isArray(results) ? results.find((r) => r?.exists) : null;
+      if (!hit) {
+        return { ok: false, error: `Phone ${local} is not registered on WhatsApp` };
+      }
+      if (typeof hit.jid === 'string' && hit.jid) jid = hit.jid;
+    } catch (err) {
+      console.warn('[qlix-whatsapp] onWhatsApp lookup failed:', err?.message ?? err);
+    }
+  }
+
+  const contact = entry.contacts?.get(jid);
+  return {
+    ok: true,
+    jid,
+    phone: normalizePhoneDigits(jid.split('@')[0].split(':')[0]),
+    name: matchedName || contact?.name || contact?.notify || null,
+  };
+}
+
+export async function sendToRecipient(connectorId, recipient, text) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected || !entry.sock) {
+    return { ok: false, error: 'WhatsApp not connected' };
+  }
+  const message = String(text ?? '').trim();
+  if (!message) return { ok: false, error: 'message is required' };
+  if (message.length > 4000) return { ok: false, error: 'message too long (max 4000 chars)' };
+
+  const resolved = await resolveRecipientJid(connectorId, recipient);
+  if (!resolved.ok) return resolved;
+
+  return throttledSend(connectorId, async () => {
+    try {
+      const sent = await entry.sock.sendMessage(resolved.jid, { text: message });
+      rememberOutboundMessageId(entry, sent?.key);
+      rememberChatMessage(entry, {
+        key: { remoteJid: resolved.jid, fromMe: true, id: sent?.key?.id },
+        message: { conversation: message },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      });
+      console.log(
+        `[qlix-whatsapp] sent-to-contact connector=${connectorId} to=${resolved.jid} name=${resolved.name ?? 'n/a'}`,
+      );
+      return {
+        ok: true,
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: resolved.name,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err) {
+      return { ok: false, error: err?.message || 'Send failed' };
+    }
+  });
+}
+
+export function getChatMessages(connectorId, recipient, limit = 30) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected) return { ok: false, error: 'WhatsApp not connected' };
+  const max = Math.min(80, Math.max(1, Number(limit) || 30));
+
+  // Resolve synchronously from contacts / phone / jid (no onWhatsApp needed for read).
+  const raw = String(recipient ?? '').trim();
+  if (!raw) return { ok: false, error: 'recipient is required' };
+
+  let jid = null;
+  let name = null;
+  if (raw.includes('@')) {
+    jid = raw;
+  } else {
+    const digits = normalizePhoneDigits(raw);
+    if (digits && digits.length >= 8 && /^[\d\s+\-()]+$/.test(raw.replace(/\s/g, ''))) {
+      jid = jidFromPhoneDigits(digits);
+    } else {
+      const contacts = [...(entry.contacts?.values() ?? [])];
+      const q = raw.toLowerCase();
+      const exact = contacts.filter(
+        (c) =>
+          (c.name && c.name.toLowerCase() === q) ||
+          (c.notify && c.notify.toLowerCase() === q),
+      );
+      const partial = contacts.filter((c) => contactMatchesQuery(c, raw));
+      const pick = exact[0] ?? (partial.length === 1 ? partial[0] : null);
+      if (!pick && partial.length > 1) {
+        return {
+          ok: false,
+          error: `Multiple contacts match "${raw}". Be more specific or use a phone number.`,
+          matches: partial.slice(0, 8).map((c) => ({
+            name: c.name || c.notify || null,
+            phone: c.phone,
+            jid: c.jid,
+          })),
+        };
+      }
+      if (!pick) {
+        // Fall back: search message map keys' contact names
+        return {
+          ok: false,
+          error: `No contact/chat found for "${raw}". Messages are available after chats sync while WhatsApp is linked.`,
+        };
+      }
+      jid = pick.jid;
+      name = pick.name || pick.notify || null;
+    }
+  }
+
+  // Also try LID aliases: match by phone local part across stored chats.
+  let list = entry.messagesByJid?.get(jid) ?? [];
+  if (list.length === 0 && jid?.endsWith('@s.whatsapp.net')) {
+    const phone = jid.split('@')[0];
+    for (const [key, msgs] of entry.messagesByJid?.entries() ?? []) {
+      if (key.includes(phone)) {
+        jid = key;
+        list = msgs;
+        break;
+      }
+    }
+  }
+
+  const contact = entry.contacts?.get(jid);
+  const slice = list.slice(-max);
+  return {
+    ok: true,
+    jid,
+    name: name || contact?.name || contact?.notify || null,
+    phone: contact?.phone || normalizePhoneDigits(jid?.split('@')[0] ?? ''),
+    messages: slice.map((m) => ({
+      id: m.id,
+      from_me: m.fromMe,
+      text: m.text,
+      timestamp: new Date(m.timestamp).toISOString(),
+      push_name: m.pushName,
+    })),
+    note:
+      slice.length === 0
+        ? 'No recent messages buffered for this chat yet. Open the chat on your phone or wait for new messages while WhatsApp stays linked.'
+        : undefined,
+  };
 }
 
 export async function sendToConnector(connectorId, text) {

@@ -46,6 +46,9 @@ model Organization {
 
   /// Deny-list of catalog scope ids disabled for this org (Skills page). Empty = all supported scopes enabled.
   disabledScopes String[] @default([]) @map("disabled_scopes")
+
+  employeeSchedules EmployeeSchedule[]
+  orgSkills         OrgSkill[]
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
@@ -62,7 +65,8 @@ model User {
   isSuperAdmin  Boolean  @default(false) @map("is_super_admin")
   publicKey     String?  @map("public_key")
   biometricRef  String?  @map("biometric_ref")
-  passwordHash  String   @map("password_hash")
+  /// Null for OAuth-only accounts (Google / GitHub) that never set a password.
+  passwordHash  String?  @map("password_hash")
   isActive      Boolean  @default(true) @map("is_active")
   /// Auto-provisioned exploration account (chat-first landing). Claimable via /auth/claim.
   isGuest       Boolean  @default(false) @map("is_guest")
@@ -94,9 +98,28 @@ model User {
   jobApplyCampaigns  JobApplyCampaign[]       @relation("JobApplyCampaignCreator")
   apiKeys            ApiKey[]
   mcpServersCreated  McpServer[]
+  oauthAccounts      OAuthAccount[]
+  employeeEngagementsHired EmployeeEngagement[] @relation("EmployeeHiredBy")
 
   @@index([orgId])
   @@map("users")
+}
+
+/// Linked Google / GitHub identities for passwordless sign-in.
+model OAuthAccount {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  /// `google` | `github`
+  provider          String
+  providerAccountId String   @map("provider_account_id")
+  email             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
 }
 
 /// OAuth connector account (Google Gmail for email.read / email.send).
@@ -126,6 +149,18 @@ model ConnectorAccount {
   @@unique([orgId, provider])
   @@index([userId])
   @@map("connector_accounts")
+}
+
+/// Pending agent-picker state when WhatsApp intent routing is ambiguous (one row per connector).
+model WhatsAppPendingRoute {
+  connectorId String   @id @map("connector_id") @db.Uuid
+  prompt      String
+  brainFlag   Boolean  @default(false) @map("brain_flag")
+  optionsJson Json     @map("options_json")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("whatsapp_pending_routes")
 }
 
 /// Email invite to join an organization workspace (`admin` or `member` only). Token is stored hashed.
@@ -165,7 +200,7 @@ model Agent {
 
   runtime            String  @default("cloud")
   /// DB column `model` — default LLM / runtime label (Prisma field cannot be named `model`).
-  llmModel           String  @default("claude-sonnet-4-6") @map("model")
+  llmModel           String  @default("openrouter/qlix/auto") @map("model")
   /// Where LLM calls go: `direct` (local engine / OpenRouter) or `proxy` (through Qlix backend).
   /// Constraint enforced in service layer: runtime=cloud + llmMode=direct is invalid.
   llmMode            String  @default("proxy") @map("llm_mode")
@@ -209,6 +244,9 @@ model Agent {
   /// Agent billing tier: `free` | `paid`. Defaults to `free`.
   agentTier String @default("free") @map("agent_tier")
 
+  /// Tool visibility profile: `minimal` | `coding` | `full` (OpenClaw-style).
+  toolProfile String @default("full") @map("tool_profile")
+
   createdAt  DateTime  @default(now()) @map("created_at")
   lastActive DateTime? @map("last_active")
 
@@ -225,10 +263,41 @@ model Agent {
   supervisedTeams  Team[]                 @relation("TeamSupervisor")
   teamMemberships  TeamMember[]
   mcpBindings      AgentMcpBinding[]
+  employeeEngagement EmployeeEngagement?
+  schedules        EmployeeSchedule[]
+  orgSkills        OrgSkill[]
 
   @@index([orgId])
   @@index([userId])
   @@map("agents")
+}
+
+/// Product record for a hired AI Employee — links a standard Agent to a versioned role pack snapshot.
+model EmployeeEngagement {
+  id              String    @id @default(cuid())
+  agentId         String    @unique @map("agent_id")
+  workspaceOrgId  String    @map("workspace_org_id") @db.Uuid
+  hiredByUserId   String    @map("hired_by_user_id") @db.Uuid
+  roleSlug        String    @map("role_slug")
+  packVersion     String    @map("pack_version")
+  packHash        String    @map("pack_hash")
+  packSnapshot    Json      @map("pack_snapshot")
+  configOverrides Json      @default("{}") @map("config_overrides")
+  /// `active` | `suspended` | `replaced` | `archived`
+  status          String    @default("active")
+  hiredAt         DateTime  @default(now()) @map("hired_at")
+  suspendedAt     DateTime? @map("suspended_at")
+  terminatedAt    DateTime? @map("terminated_at")
+  replacedById    String?   @map("replaced_by_id")
+
+  agent   Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  hiredBy User  @relation("EmployeeHiredBy", fields: [hiredByUserId], references: [id], onDelete: Cascade)
+  schedules EmployeeSchedule[]
+
+  @@index([workspaceOrgId])
+  @@index([roleSlug])
+  @@index([status])
+  @@map("employee_engagements")
 }
 
 /// A registered MCP (Model Context Protocol) server, org-scoped. Its tools are consumed by
@@ -361,22 +430,34 @@ model AgentConversation {
   agentId         String   @map("agent_id")
   userId          String   @map("user_id") @db.Uuid
   orgId           String?  @map("org_id") @db.Uuid
+  /// Display title (web / local terminal chat list).
+  title           String?
+  /// `chat` (default web) or `local` (terminal threads).
+  kind            String   @default("chat")
+  /// Fork parent when created via /fork.
+  parentConversationId String? @map("parent_conversation_id")
+  /// Stable gateway session key for cross-channel routing (optional).
+  sessionKey      String?  @map("session_key")
   /// Stage 2 compaction: rolling summary of messages older than the recent window.
   /// Hard-capped (~2000 chars) and re-compressed on each update, so it can't snowball.
   summary         String?  @db.Text
   /// How many of this conversation's messages are already folded into `summary`.
   summarizedCount Int      @default(0) @map("summarized_count")
   createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
 
   agent          Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent         AgentConversation?  @relation("ConversationForks", fields: [parentConversationId], references: [id], onDelete: SetNull)
+  forks          AgentConversation[] @relation("ConversationForks")
   messages       AgentMessage[]
   runs           AgentRun[]
   jitScopeGrants JitScopeGrant[]
 
-  @@unique([agentId, userId])
+  @@index([agentId, userId])
   @@index([agentId])
   @@index([userId])
+  @@index([sessionKey])
   @@map("agent_conversations")
 }
 
@@ -385,6 +466,8 @@ model AgentMessage {
   conversationId String   @map("conversation_id")
   role           String
   content        String
+  /// Chat file attachments: [{ id, fileName, mimeType, url, sizeBytes, textPreview? }]
+  attachments    Json?
   createdAt      DateTime @default(now()) @map("created_at")
 
   conversation   AgentConversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -505,6 +588,8 @@ model AgentRun {
   orgId          String?   @map("org_id") @db.Uuid
   status         String    @default("queued")
   prompt         String
+  /// File attachments for this run (same shape as AgentMessage.attachments).
+  attachments    Json?
   skills         String[]  @default([])
   /// Normalized OpenRouter model id for proxy inference (`openrouter/provider/model`). Null = runner manifest default.
   inferenceModel String?   @map("inference_model")
@@ -1390,6 +1475,8 @@ model ApiKey {
   label      String
   keyPrefix  String    @map("key_prefix")
   keyHash    String    @unique @map("key_hash")
+  /// Developer API scopes (e.g. agents:read). Empty treated as full grant at read time for legacy rows.
+  scopes     String[]  @default([]) @map("scopes")
   createdAt  DateTime  @default(now()) @map("created_at")
   lastUsedAt DateTime? @map("last_used_at")
   revokedAt  DateTime? @map("revoked_at")
@@ -1399,4 +1486,59 @@ model ApiKey {
   @@index([userId])
   @@index([orgId])
   @@map("api_keys")
+}
+
+/// Cron / schedule for AI Employees (Hermes-style cronjob).
+model EmployeeSchedule {
+  id                   String    @id @default(cuid())
+  orgId                String    @map("org_id") @db.Uuid
+  agentId              String    @map("agent_id")
+  engagementId         String?   @map("engagement_id")
+  /// 5-field cron expression (UTC), e.g. `0 9 * * 1-5`
+  cronExpression       String    @map("cron_expression")
+  /// Natural-language description of the schedule (optional).
+  label                String?
+  /// Prompt / goal enqueued on each tick.
+  prompt               String
+  enabled              Boolean   @default(true)
+  lastEnqueuedAt       DateTime? @map("last_enqueued_at")
+  nextRunAt            DateTime? @map("next_run_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  org        Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent      Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  engagement EmployeeEngagement? @relation(fields: [engagementId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, enabled])
+  @@index([nextRunAt])
+  @@index([agentId])
+  @@map("employee_schedules")
+}
+
+/// Org skill library — promote a successful run into a reusable skill.
+model OrgSkill {
+  id              String    @id @default(cuid())
+  orgId           String    @map("org_id") @db.Uuid
+  name            String
+  description     String    @default("")
+  /// Skill body / instructions (markdown or plain).
+  content         String
+  /// Optional source run that was promoted.
+  sourceRunId     String?   @map("source_run_id")
+  sourceAgentId   String?   @map("source_agent_id")
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  /// `draft` | `approved` | `archived`
+  status          String    @default("draft")
+  approvedAt      DateTime? @map("approved_at")
+  approvedByUserId String?  @map("approved_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sourceAgent Agent?       @relation(fields: [sourceAgentId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, name])
+  @@index([orgId, status])
+  @@map("org_skills")
 }

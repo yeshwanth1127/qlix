@@ -14,8 +14,11 @@ export function createInferenceCatalogRouter(): Router {
           id: m.id,
           name: m.name,
           contextLength: m.contextLength ?? null,
-          /** Canonical id stored on runs and sent to inference proxy */
           qlixModelId: m.id.toLowerCase().startsWith('openrouter/') ? m.id : `openrouter/${m.id}`,
+          promptUsdPerToken: m.promptUsdPerToken ?? null,
+          completionUsdPerToken: m.completionUsdPerToken ?? null,
+          blendUsdPer1M: m.blendUsdPer1M ?? null,
+          supportsTools: m.supportsTools ?? null,
         })),
       });
     } catch (err) {

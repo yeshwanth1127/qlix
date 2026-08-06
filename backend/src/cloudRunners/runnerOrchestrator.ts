@@ -1,6 +1,7 @@
 import {
   dockerBuildImage,
   dockerEnsureNetwork,
+  dockerExec,
   dockerImageExists,
   dockerIsAvailable,
   dockerListImages,
@@ -39,6 +40,7 @@ export interface RunnerOrchestrator {
   runContainer(input: RunRunnerContainerInput): Promise<string>;
   removeContainerIfExists(containerName: string): Promise<void>;
   logs(containerName: string, tail?: number): Promise<string>;
+  execContainer(containerName: string, cmd: string[], timeoutMs?: number): Promise<{ ok: boolean; stdout: string; stderr: string }>;
   listImages(referencePrefix: string): Promise<string[]>;
   removeImageIfExists(imageRef: string): Promise<void>;
 }
@@ -83,6 +85,14 @@ export class DockerRunnerOrchestrator implements RunnerOrchestrator {
 
   async logs(containerName: string, tail = 200): Promise<string> {
     return dockerLogs({ name: containerName, tail });
+  }
+
+  async execContainer(
+    containerName: string,
+    cmd: string[],
+    timeoutMs = 30_000,
+  ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+    return dockerExec({ name: containerName, cmd, timeoutMs });
   }
 
   async listImages(referencePrefix: string): Promise<string[]> {

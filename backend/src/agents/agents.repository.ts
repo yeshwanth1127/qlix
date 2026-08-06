@@ -2,6 +2,7 @@ import type { Agent as PrismaAgent, Prisma } from '@prisma/client';
 import { DeviceVerificationService } from '../deviceVerification/deviceVerification.js';
 import { prisma } from '../lib/prisma.js';
 import type { AgentDTO, AgentRuntime, LocalInferenceMode, LlmMode, PermissionScope } from './agents.types.js';
+import type { ToolProfile } from './toolProfiles.js';
 
 export class OrgMembershipError extends Error {
   readonly code = 'forbidden_org';
@@ -36,7 +37,7 @@ export interface CreateAgentDbInput {
   agentKind?: 'standard' | 'org_brain';
 }
 
-function toDTO(agent: PrismaAgent): AgentDTO {
+export function toAgentDTO(agent: PrismaAgent): AgentDTO {
   return {
     id: agent.id,
     userId: agent.userId,
@@ -66,6 +67,8 @@ function toDTO(agent: PrismaAgent): AgentDTO {
       ? ((agent as any).hybridLastHeartbeatAt as Date).toISOString()
       : null,
     agentKind: (agent.agentKind as AgentDTO['agentKind']) ?? 'standard',
+    toolProfile: (((agent as { toolProfile?: string }).toolProfile as AgentDTO['toolProfile']) ??
+      'full') as AgentDTO['toolProfile'],
   };
 }
 
@@ -119,12 +122,12 @@ export class AgentsRepository {
         agentKind: input.agentKind ?? 'standard',
       },
     });
-    return toDTO(created);
+    return toAgentDTO(created);
   }
 
   async findById(id: string): Promise<AgentDTO | null> {
     const found = await prisma.agent.findUnique({ where: { id } });
-    return found ? toDTO(found) : null;
+    return found ? toAgentDTO(found) : null;
   }
 
   async hasCloudRunnerSecrets(agentId: string): Promise<boolean> {
@@ -137,7 +140,7 @@ export class AgentsRepository {
 
   async findByDid(did: string): Promise<AgentDTO | null> {
     const found = await prisma.agent.findUnique({ where: { did } });
-    return found ? toDTO(found) : null;
+    return found ? toAgentDTO(found) : null;
   }
 
   /**
@@ -163,7 +166,7 @@ export class AgentsRepository {
       where,
       orderBy: { createdAt: 'desc' },
     });
-    return agents.map(toDTO);
+    return agents.map(toAgentDTO);
   }
 
   async markKeypairDelivered(agentId: string): Promise<void> {
@@ -213,7 +216,7 @@ export class AgentsRepository {
       where: { id: agentId },
       data: { publicKey },
     });
-    return toDTO(updated);
+    return toAgentDTO(updated);
   }
 
   async updateCloudFields(
@@ -238,12 +241,23 @@ export class AgentsRepository {
     });
   }
 
+  async updateToolProfile(
+    agentId: string,
+    toolProfile: ToolProfile,
+  ): Promise<AgentDTO> {
+    const updated = await prisma.agent.update({
+      where: { id: agentId },
+      data: { toolProfile },
+    });
+    return toAgentDTO(updated);
+  }
+
   async updateDescription(agentId: string, description: string | null): Promise<AgentDTO> {
     const updated = await prisma.agent.update({
       where: { id: agentId },
       data: { description },
     });
-    return toDTO(updated);
+    return toAgentDTO(updated);
   }
 
   async updatePermissionScopes(
@@ -264,7 +278,7 @@ export class AgentsRepository {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
       },
     });
-    return toDTO(updated);
+    return toAgentDTO(updated);
   }
 
   /**

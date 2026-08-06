@@ -47,6 +47,21 @@ export function formatDidCompact(did: string): string {
   return `${did.slice(0, 16)}…${did.slice(-10)}`;
 }
 
+/** Uppercase list-row status tint (Agents split view). */
+export function agentListStatusClassName(status: string): string {
+  const key = status.toLowerCase().replace(/\s+/g, "_");
+  if (key === "online" || key === "active") {
+    return "text-[color:var(--success)]";
+  }
+  if (key === "provisioning" || key === "restarting" || key === "running") {
+    return "text-[color:var(--warning)]";
+  }
+  if (key === "runner_failed" || key === "failed") {
+    return "text-[color:var(--sketch-red)]";
+  }
+  return "text-black";
+}
+
 const STATUS_META: Record<
   string,
   { label: string; className: string; pulse?: boolean; icon?: "warn" }

@@ -13,6 +13,8 @@ class BackendInferenceResult:
     usage: dict[str, Any]
     provider: str | None
     tool_calls: list[dict[str, Any]] | None
+    """Concrete model the backend router actually used (Auto resolves to one of these)."""
+    routed_model: str | None = None
 
 
 async def backend_proxy_chat_completion(
@@ -28,6 +30,7 @@ async def backend_proxy_chat_completion(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     tools_hash: str | None = None,
+    pinned_model: str | None = None,
 ) -> BackendInferenceResult:
     body: dict[str, Any] = {
         "model": model,
@@ -43,6 +46,8 @@ async def backend_proxy_chat_completion(
         body["tools_hash"] = tools_hash
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
+    if pinned_model:
+        body["pinned_model"] = pinned_model
     response = await http.post_json(
         f"/api/v1/agents/{agent_id}/inference/chat",
         body,
@@ -52,10 +57,12 @@ async def backend_proxy_chat_completion(
     tool_calls: list[dict[str, Any]] | None = None
     if isinstance(raw_calls, list) and len(raw_calls) > 0:
         tool_calls = [c for c in raw_calls if isinstance(c, dict)]
+    routed = response.get("routed_model")
     return BackendInferenceResult(
         content=str(response.get("content", "") or ""),
         finish_reason=response.get("finish_reason") if response.get("finish_reason") is not None else None,
         usage=response.get("usage", {}) if isinstance(response.get("usage"), dict) else {},
         provider=str(response.get("provider")) if response.get("provider") is not None else None,
         tool_calls=tool_calls or None,
+        routed_model=str(routed) if isinstance(routed, str) and routed.strip() else None,
     )

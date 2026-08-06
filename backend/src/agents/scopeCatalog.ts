@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { ConnectorsRepository } from '../connectors/connectors.repository.js';
 import type { ConnectorProvider } from '../connectors/connectors.types.js';
+import { CRM_CONNECTOR_PROVIDERS } from '../connectors/crm/crm.types.js';
 import { getMcpScopeDefsForOrg } from '../mcp/mcpScopeCatalog.js';
 import type { AgentRuntime, BuiltinPermissionScope, PermissionScope } from './agents.types.js';
 
@@ -22,6 +23,8 @@ export interface ScopeDef {
   forceJit: boolean;
   /** Connector that must be `connected` for this scope to be available. Absent = base/always-on. */
   requiresConnector?: ConnectorProvider;
+  /** When set, any connected provider in this family satisfies the connector requirement. */
+  requiresConnectorFamily?: 'crm';
   /** Runtimes whose SDK runner has the backing tool. Informational for now. */
   runtimes: AgentRuntime[];
 }
@@ -137,9 +140,28 @@ export const SCOPE_CATALOG: ScopeDef[] = [
   },
   {
     id: 'whatsapp.send',
-    label: 'Send messages/files on connected WhatsApp',
-    description: 'Send a message or document to the linked WhatsApp account',
+    label: 'Send files to your linked WhatsApp',
+    description:
+      'Deliver files/PDFs/screenshots to the linked WhatsApp self-chat (not to other contacts)',
     forceJit: false,
+    requiresConnector: 'whatsapp_baileys',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'whatsapp.read',
+    label: 'Read WhatsApp contact chats',
+    description:
+      'List phonebook contacts and read recent 1:1 chat messages — only when the user asks to look at a chat',
+    forceJit: false,
+    requiresConnector: 'whatsapp_baileys',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'whatsapp.contact_send',
+    label: 'Message WhatsApp contacts',
+    description:
+      'Send a WhatsApp text to a phonebook contact or phone number — only when the user explicitly asks; requires approval',
+    forceJit: true,
     requiresConnector: 'whatsapp_baileys',
     runtimes: ['cloud', 'hybrid'],
   },
@@ -157,6 +179,47 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     description: 'Create or schedule social posts on connected Orbit channels (Instagram, Facebook, X, …)',
     forceJit: true,
     requiresConnector: 'orbit',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'crm.read',
+    label: 'Read CRM records',
+    description: 'Search, query, and read records in the connected CRM (Zoho, HubSpot, Salesforce, …)',
+    forceJit: false,
+    requiresConnectorFamily: 'crm',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'crm.write',
+    label: 'Create / update CRM records',
+    description: 'Create, update, convert, link records and upload attachments in the connected CRM',
+    forceJit: true,
+    requiresConnectorFamily: 'crm',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'crm.delete',
+    label: 'Delete CRM records',
+    description: 'Delete records in the connected CRM (requires explicit approval)',
+    forceJit: true,
+    requiresConnectorFamily: 'crm',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'slack.read',
+    label: 'Read Slack messages',
+    description: 'List channels, search messages, read history, and read Slack List items',
+    forceJit: false,
+    requiresConnector: 'slack',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'slack.send',
+    label: 'Write to Slack',
+    description:
+      'Post messages, create channels, open DMs, set topics/presence, and create or update Slack List task items',
+    forceJit: true,
+    requiresConnector: 'slack',
     runtimes: ['cloud', 'hybrid'],
   },
 ];
@@ -229,7 +292,10 @@ export async function getEffectiveScopes(orgId: string | null): Promise<Annotate
 
   return SCOPE_CATALOG.map((s) => {
     const enabled = !disabled.has(s.id);
-    const isConnected = !s.requiresConnector || connected.has(s.requiresConnector);
+    let isConnected = !s.requiresConnector || connected.has(s.requiresConnector);
+    if (s.requiresConnectorFamily === 'crm') {
+      isConnected = CRM_CONNECTOR_PROVIDERS.some((p) => connected.has(p));
+    }
     return { ...s, enabled, connected: isConnected, available: enabled && isConnected };
   });
 }

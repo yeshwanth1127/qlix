@@ -20,6 +20,60 @@ const eventsQuerySchema = z.object({
 export function createBillingRouter(): Router {
   const router = Router();
 
+  /** Live USD→INR rate for dual-currency display. */
+  router.get('/fx', authenticateUser(true), async (_request: Request, response: Response) => {
+    try {
+      const { getUsdInrRate } = await import('../../llm/fxRate.js');
+      const fx = await getUsdInrRate();
+      response.json({
+        base: 'USD',
+        quote: 'INR',
+        rate: fx.rate,
+        asOf: fx.asOf,
+        source: fx.source,
+      });
+    } catch (error) {
+      console.error('[billing/fx]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to load FX rate' } });
+    }
+  });
+
+  /** Public catalog of subscription plans with futuristic display names + INR prices. */
+  router.get('/plans', authenticateUser(true), async (_request: Request, response: Response) => {
+    try {
+      await ensureBillingDefaults(prisma);
+      const { PLAN_CONFIG } = await import('../lib/subscriptionPlans.js');
+      const { planDisplayName, planBlurb } = await import('../lib/planDisplay.js');
+      const { getUsdInrRate } = await import('../../llm/fxRate.js');
+      const fx = await getUsdInrRate();
+
+      const slugs = ['starter', 'growth', 'business'] as const;
+      const plans = slugs.map((slug) => {
+        const cfg = PLAN_CONFIG[slug]!;
+        const monthlyInr = Number(cfg.monthlyPriceInr.toString());
+        return {
+          id: slug,
+          displayName: planDisplayName(slug),
+          blurb: planBlurb(slug),
+          monthlyPriceInr: cfg.monthlyPriceInr.toString(),
+          monthlyPriceUsd: (monthlyInr / fx.rate).toFixed(2),
+          maxAgents: cfg.maxAgents,
+          freeMonthlyCreditInr: cfg.freeMonthlyCredit.toString(),
+          allowedModelTiers: cfg.allowedModelTiers,
+          whatsappMsgLimit: cfg.whatsappMsgLimit,
+        };
+      });
+
+      response.json({
+        plans,
+        fx: { base: 'USD', quote: 'INR', rate: fx.rate, asOf: fx.asOf, source: fx.source },
+      });
+    } catch (error) {
+      console.error('[billing/plans]', error);
+      response.status(500).json({ error: { code: 'internal_error', message: 'Failed to load plans' } });
+    }
+  });
+
   /** Any signed-in member can read subscription/trial status (used by Subscriptions page + gates). */
   router.get('/subscription', authenticateUser(true), async (request: Request, response: Response) => {
     try {

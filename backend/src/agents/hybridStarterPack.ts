@@ -82,7 +82,13 @@ export async function buildHybridStarterPackZip(
       }
     }
 
+    const installPath = join(STARTER_TEMPLATES_DIR, 'install.sh');
+    if (existsSync(installPath) && platform !== 'windows') {
+      archive.append(readFileSync(installPath), { name: 'install.sh', mode: 0o755 });
+    }
+
     if (existsSync(WHEEL_PATH)) {
+      // Must be a PEP 427 filename — pip rejects aliases like "qlix-agent.whl".
       archive.append(createReadStream(WHEEL_PATH), { name: 'qlix-0.1.0-py3-none-any.whl' });
     }
 

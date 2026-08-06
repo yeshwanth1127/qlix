@@ -39,7 +39,9 @@ Scopes are not free-form. Each builtin scope maps to real tools in the SDK. Orgs
 | `brain.knowledge_read` | Read org knowledge | Read indexed knowledge base | No | — | cloud, hybrid |
 | `email.read` | Read Gmail | Read connected inbox | No | Google | cloud, hybrid |
 | `email.send` | Send email | Send via Gmail | **Yes** | Google | cloud, hybrid |
-| `whatsapp.send` | Send WhatsApp | Message or file on WhatsApp | No | WhatsApp (Baileys) | cloud, hybrid |
+| `whatsapp.send` | Send files to linked WhatsApp | File to self-chat | No | WhatsApp (Baileys) | cloud, hybrid |
+| `whatsapp.read` | Read WhatsApp chats | List contacts + read 1:1 messages | No | WhatsApp (Baileys) | cloud, hybrid |
+| `whatsapp.contact_send` | Message WhatsApp contacts | Text a contact/phone (user must ask) | Yes | WhatsApp (Baileys) | cloud, hybrid |
 | `mcp.<slug>.<tool>` | MCP tool | One tool on a registered MCP server | Per tool (`auto` / `jit` / `blocked`) | MCP server | cloud (HTTP), hybrid (HTTP + stdio) |
 | `mcp.<slug>.*` | MCP server wildcard | All tools on that server | If listed in JIT scopes | MCP server | same |
 
@@ -61,7 +63,7 @@ The intent router groups tools by required scopes:
 | `files` | `system.file_read`, `system.file_write` | hybrid |
 | `code` | `system.file_read` | hybrid |
 | `gui` | `system.gui_control` | hybrid |
-| `comms` | `email.read`, `email.send`, `whatsapp.send` | cloud, hybrid |
+| `comms` | `email.read`, `email.send`, `whatsapp.send`, `whatsapp.read`, `whatsapp.contact_send` | cloud, hybrid |
 | `knowledge` | `brain.query`, `brain.knowledge_read` | cloud, hybrid |
 | `always` | (none) | cloud, hybrid |
 
@@ -119,6 +121,7 @@ No full browser — structured CLIs / APIs for search and content.
 | `research_video` | YouTube / Bilibili metadata + subtitles |
 | `research_github` | GitHub search or repo view |
 | `create_report_pdf` | Render a Markdown report to PDF (+ download link) |
+| `create_xlsx` | Generate a spreadsheet (+ download link) |
 
 ---
 
@@ -135,12 +138,15 @@ No full browser — structured CLIs / APIs for search and content.
 
 ### 3.4 WhatsApp
 
-**Scope:** `whatsapp.send` · **Connector:** WhatsApp (Baileys)
+**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT)
 
 | Tool | Notes |
 |------|-------|
-| `whatsapp_send` | Send message or file via linked WhatsApp |
-| `s3_send_whatsapp_document` | Hybrid: deliver a local file; needs `system.file_read` **or** `system.file_write` |
+| `whatsapp_send` | Send a file to the linked WhatsApp **self-chat** |
+| `whatsapp_list_contacts` | Search phonebook contacts by name/phone |
+| `whatsapp_read_chat` | Read recent 1:1 messages with a contact (only when user asks) |
+| `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT) |
+| `luna_local_send_whatsapp_document` | Hybrid: deliver a local file to self-chat; needs `system.file_read` **or** `system.file_write` |
 
 ---
 
@@ -150,17 +156,17 @@ No full browser — structured CLIs / APIs for search and content.
 
 | Tool | Scope | Purpose |
 |------|-------|---------|
-| `s3_read_file` | `file_read` | Read a local file |
-| `s3_list_dir` | `file_read` | List a directory |
-| `s3_open_file` | `file_read` | Open a file on the desktop |
-| `s3_write_file` | `file_write` | Write a text file |
-| `s3_bash` | `file_write` | Run a shell command |
-| `s3_python` | `file_write` | Run Python |
-| `s3_code_task` | `file_write` | Higher-level code task |
-| `s3_create_pdf` | `file_write` | Generate a PDF |
-| `s3_create_xlsx` | `file_write` | Generate a spreadsheet |
+| `luna_local_read_file` | `file_read` | Read a local file |
+| `luna_local_list_dir` | `file_read` | List a directory |
+| `luna_local_open_file` | `file_read` | Open a file on the desktop |
+| `luna_local_write_file` | `file_write` | Write a text file |
+| `luna_local_bash` | `file_write` | Run a shell command |
+| `luna_local_python` | `file_write` | Run Python |
+| `luna_local_code_task` | `file_write` | Higher-level code task |
+| `luna_local_create_pdf` | `file_write` | Generate a PDF |
+| `luna_local_create_xlsx` | `file_write` | Generate a spreadsheet |
 
-An older Luna hybrid surface also maps tools such as `file_read`, `file_write`, `apply_patch`, `git_*`, `shell_exec`, `code_interpreter`, `http_request`, and `web_search` — prefer the `s3_*` tools on current hybrid runners.
+An older Luna hybrid surface also maps tools such as `file_read`, `file_write`, `apply_patch`, `git_*`, `shell_exec`, `code_interpreter`, `http_request`, and `web_search` — prefer the `luna_local_*` tools on current hybrid runners.
 
 ---
 
@@ -269,13 +275,13 @@ Supporting agent APIs (non-exhaustive): run poll / events / complete, email & Wh
 | Scope | Primary tools |
 |-------|----------------|
 | `web.read` / `web.click` | `browser_ab_*`, `browser_exec` |
-| `web.research` | `research_*`, `create_report_pdf` |
+| `web.research` | `research_*`, `create_report_pdf`, `create_xlsx` |
 | `web.transaction` | Form/checkout intent (JIT); used with browser tools |
-| `system.file_read` | `s3_read_file`, `s3_list_dir`, `s3_open_file` |
-| `system.file_write` | `s3_write_file`, `s3_bash`, `s3_python`, `s3_code_task`, `s3_create_pdf`, `s3_create_xlsx` |
+| `system.file_read` | `luna_local_read_file`, `luna_local_list_dir`, `luna_local_open_file` |
+| `system.file_write` | `luna_local_write_file`, `luna_local_bash`, `luna_local_python`, `luna_local_code_task`, `luna_local_create_pdf`, `luna_local_create_xlsx` |
 | `system.gui_control` | `gui_control` |
 | `email.read` / `email.send` | `email_read`, `email_send` |
-| `whatsapp.send` | `whatsapp_send` (+ `s3_send_whatsapp_document` with file scopes) |
+| `whatsapp.send` | `whatsapp_send` (+ `luna_local_send_whatsapp_document` with file scopes) |
 | `social.read` | Orbit channels / posts / analytics (via Connectors → Orbit) |
 | `social.publish` | Orbit create/schedule post (JIT; via Connectors → Orbit) |
 | `brain.query` | `brain_query` |

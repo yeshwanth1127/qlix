@@ -2,6 +2,7 @@ import { signAction } from '../agents/keypair.js';
 import { CredentialsRepository } from './credentials.repository.js';
 import { getPlatformIdentity } from './platformIdentity.js';
 import type {
+  EmploymentClaims,
   IdentityClaims,
   ScopeClaims,
   VCClaims,
@@ -60,6 +61,13 @@ export class CredentialsService {
     const identity = await this.issue(agent, 'identity', identityClaims);
     const scope = await this.issue(agent, 'scope', scopeClaims);
     return [identity, scope];
+  }
+
+  async issueEmploymentVC(
+    agent: AgentForVC,
+    claims: EmploymentClaims,
+  ): Promise<VerifiableCredentialDTO> {
+    return this.issue(agent, 'employment', claims);
   }
 
   async issue(

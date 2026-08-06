@@ -6,8 +6,10 @@ import {
   ArrowLeft,
   Bot,
   Brain,
+  FileText,
   Loader2,
   MessageSquare,
+  Paperclip,
   SendHorizonal,
   ShieldCheck,
   Square,
@@ -15,8 +17,9 @@ import {
   Trash2,
   UserRound,
   ChevronDown,
+  X,
 } from "lucide-react";
-import type { AgentDTO, AgentRuntime, OpenRouterCatalogEntry } from "@/lib/agents-api";
+import type { AgentDTO, AgentRuntime, ChatAttachmentDTO, OpenRouterCatalogEntry } from "@/lib/agents-api";
 import {
   clearConversationMessages,
   fetchConversationMessages,
@@ -24,8 +27,9 @@ import {
   getAgent,
   getRuntimeStatus,
   normalizeQlixInferenceModelId,
+  type ConversationMessageDTO,
 } from "@/lib/agents-api";
-import { decideJit } from "@/lib/jit-api";
+import { decideJit, listPendingJit, type PendingJitDTO } from "@/lib/jit-api";
 import { useSession } from "@/components/qlix/session-context";
 import { agentStatusHint, deriveAgentDisplayStatus } from "@/components/qlix/agents/agentStatus";
 import {
@@ -182,9 +186,76 @@ type ChatMsg = {
   id: string;
   role: "user" | "agent" | "system";
   content: string;
+  attachments?: ChatAttachmentDTO[];
   activity?: ActivityStep[];
   browserFrames?: BrowserFrame[];
 };
+
+const CHAT_MAX_FILES = 8;
+const CHAT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+const CHAT_MAX_FILE_MB = 50;
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseAttachments(raw: unknown): ChatAttachmentDTO[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: ChatAttachmentDTO[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+    if (
+      typeof a.id === "string" &&
+      typeof a.fileName === "string" &&
+      typeof a.mimeType === "string" &&
+      typeof a.url === "string" &&
+      typeof a.sizeBytes === "number"
+    ) {
+      out.push({
+        id: a.id,
+        fileName: a.fileName,
+        mimeType: a.mimeType,
+        url: a.url,
+        sizeBytes: a.sizeBytes,
+        ...(typeof a.textPreview === "string" ? { textPreview: a.textPreview } : {}),
+      });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function toChatMsg(m: ConversationMessageDTO): ChatMsg {
+  return {
+    id: m.id,
+    role: (m.role as ChatMsg["role"]) ?? "system",
+    content: m.content ?? "",
+    attachments: parseAttachments(m.attachments),
+  };
+}
+
+function MessageAttachments({ attachments }: { readonly attachments: ChatAttachmentDTO[] }) {
+  return (
+    <ul className="mt-2 flex flex-col gap-1.5">
+      {attachments.map((a) => (
+        <li key={a.id}>
+          <a
+            href={a.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-black/12 bg-white/60 px-2.5 py-1.5 text-[11px] text-black/75 transition-colors hover:bg-white hover:text-black"
+          >
+            <FileText className="size-3 shrink-0" aria-hidden />
+            <span className="truncate font-medium">{a.fileName}</span>
+            <span className="shrink-0 text-black/40">{formatFileSize(a.sizeBytes)}</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 // Render message text with clickable links (no markdown dependency). Supports
 // [label](url) and bare URLs; only http(s) is linkified — never sandbox:/javascript:.
@@ -237,7 +308,7 @@ async function fetchMessagesAfterRun(
   agentId: string,
   conversationId: string,
   runStatus: string | undefined,
-): Promise<Array<{ id: string; role: string; content: string }> | null> {
+): Promise<ConversationMessageDTO[] | null> {
   const delays = [0, 300, 600, 1000, 1500, 2500];
   for (const ms of delays) {
     if (ms > 0) {
@@ -254,7 +325,7 @@ async function fetchMessagesAfterRun(
 }
 
 function mergeServerMessages(
-  rows: Array<{ id: string; role: string; content: string }>,
+  rows: ConversationMessageDTO[],
   opts: {
     preservedContent: string;
     preservedActivity: ActivityStep[];
@@ -281,10 +352,61 @@ function mergeServerMessages(
       id: m.id,
       role,
       content,
+      attachments: parseAttachments(m.attachments),
       activity: isLastAgent && opts.preservedActivity.length > 0 ? opts.preservedActivity : undefined,
       browserFrames: isLastAgent && opts.preservedFrames.length > 0 ? opts.preservedFrames : undefined,
     };
   });
+}
+
+function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO[]): ChatMsg[] {
+  if (pending.length === 0) return messages;
+  const latest = pending[0];
+  if (!latest) return messages;
+
+  let lastAgentIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "agent") {
+      lastAgentIdx = i;
+      break;
+    }
+  }
+  if (lastAgentIdx < 0) return messages;
+
+  const msg = messages[lastAgentIdx]!;
+  const existing = msg.activity ?? [];
+  if (existing.some((s) => s.jitRequestId === latest.jitRequestId)) return messages;
+  if (getPendingJitStep(existing)) return messages;
+
+  const sessionScoped =
+    latest.scope === "email.send" ||
+    latest.scope === "social.publish" ||
+    latest.scope === "crm.write" ||
+    latest.scope === "crm.delete" ||
+    latest.scope === "whatsapp.contact_send";
+
+  const step: ActivityStep = {
+    id: `jit-pending-${latest.jitRequestId}`,
+    label: "Waiting for your approval",
+    detail: [
+      "Waiting for your approval in Qlix",
+      latest.scopeLabel ? `Scope: ${latest.scopeLabel}` : "",
+      sessionScoped ? "Approving covers this whole conversation" : "",
+      latest.context,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    tone: "warn",
+    kind: "jit_pending",
+    category: "approval",
+    jitRequestId: latest.jitRequestId,
+    jitChannel: "dashboard",
+    jitScope: latest.scope,
+  };
+
+  const next = [...messages];
+  next[lastAgentIdx] = { ...msg, activity: [...existing, step] };
+  return next;
 }
 
 export function AgentChatPanel({
@@ -304,6 +426,9 @@ export function AgentChatPanel({
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -311,6 +436,7 @@ export function AgentChatPanel({
   const streamRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   /** Streaming run state preserved across refetch on `done`. */
   const streamingActivityRef = useRef<ActivityStep[]>([]);
   const streamingContentRef = useRef("");
@@ -393,6 +519,23 @@ export function AgentChatPanel({
     };
   }, [agentId]);
 
+  /** Recover approval cards missed by the run SSE stream (e.g. JIT logged after run_result). */
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    const syncPendingJit = async () => {
+      const pending = await listPendingJit(conversationId, agentId);
+      if (cancelled || pending.length === 0) return;
+      setMessages((prev) => mergePendingJitIntoMessages(prev, pending));
+    };
+    void syncPendingJit();
+    const interval = setInterval(syncPendingJit, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [conversationId, agentId]);
+
   /** Keep hybrid/cloud online badge in sync — status uses a 20s heartbeat window. */
   useEffect(() => {
     if (!agent || (agent.runtime !== "cloud" && agent.runtime !== "hybrid")) return;
@@ -440,6 +583,9 @@ export function AgentChatPanel({
     selectedModelRef.current = "";
     setUseBrain(false);
     setBrowserFrames([]);
+    setPendingFiles([]);
+    setFileInputKey((k) => k + 1);
+    setFileError(null);
   }, [agentId]);
 
   useEffect(() => {
@@ -530,13 +676,8 @@ export function AgentChatPanel({
         { credentials: "include" },
       );
       if (!mres.ok || cancelled) return;
-      const mbody = (await mres.json()) as { messages?: Array<{ id: string; role: string; content: string }> };
-      const ms =
-        mbody.messages?.map((m) => ({
-          id: m.id,
-          role: (m.role as ChatMsg["role"]) ?? "system",
-          content: m.content ?? "",
-        })) ?? [];
+      const mbody = (await mres.json()) as { messages?: ConversationMessageDTO[] };
+      const ms = mbody.messages?.map(toChatMsg) ?? [];
       setMessages(ms);
     };
     void boot();
@@ -580,36 +721,144 @@ export function AgentChatPanel({
     return isHostedChatRuntime(agent.runtime) && new Set(agent.permissionScopes).has("brain.query");
   }, [agent]);
 
+  const addPendingFiles = (picked: File[]) => {
+    if (picked.length === 0) return;
+    const oversized = picked.filter((f) => f.size > CHAT_MAX_FILE_BYTES);
+    if (oversized.length > 0) {
+      const names = oversized.map((f) => f.name).join(", ");
+      setFileError(
+        oversized.length === 1
+          ? `"${names}" is too large (max ${CHAT_MAX_FILE_MB} MB).`
+          : `These files are too large (max ${CHAT_MAX_FILE_MB} MB each): ${names}`,
+      );
+      picked = picked.filter((f) => f.size <= CHAT_MAX_FILE_BYTES);
+      if (picked.length === 0) return;
+    } else {
+      setFileError(null);
+    }
+    setPendingFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      const merged = [...prev];
+      for (const file of picked) {
+        if (merged.length >= CHAT_MAX_FILES) break;
+        const key = `${file.name}:${file.size}`;
+        if (!existing.has(key)) {
+          existing.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
+  };
+
   const send = async () => {
     if (!conversationId) return;
     const text = input.trim();
-    if (!text) return;
+    const filesToSend = [...pendingFiles];
+    if (!text && filesToSend.length === 0) return;
+
+    const base = await apiBase();
+
+    // Mid-run steer: while a run is active, inject guidance instead of starting a new run.
+    if (sending && currentRunId && text && filesToSend.length === 0) {
+      setInput("");
+      setError(null);
+      const optimisticId = `steer-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: optimisticId, role: "user", content: `[steer] ${text}` },
+      ]);
+      try {
+        const res = await fetch(
+          `${base}/api/v1/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(currentRunId)}/inject`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text }),
+          },
+        );
+        if (!res.ok) {
+          let msg = "Failed to steer run";
+          try {
+            const body = (await res.json()) as { error?: { message?: string } };
+            if (body?.error?.message) msg = body.error.message;
+          } catch {
+            // ignore
+          }
+          setError(msg);
+        }
+      } catch {
+        setError("Failed to steer run");
+      }
+      return;
+    }
+
     setInput("");
+    setPendingFiles([]);
+    setFileInputKey((k) => k + 1);
     setSending(true);
     setError(null);
 
-    const base = await apiBase();
     const optimisticId = `local-${Date.now()}`;
-    setMessages((prev) => [...prev, { id: optimisticId, role: "user", content: text }]);
-
-    const payload: Record<string, unknown> = { content: text, skills: [] };
-    const modelForSend = selectedModelRef.current.trim();
-    if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
-      payload.model = modelForSend;
-    }
-    if (canUseBrain && useBrain) {
-      payload.useBrain = true;
-    }
-
-    const res = await fetch(
-      `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+    const optimisticAttachments: ChatAttachmentDTO[] = filesToSend.map((f, i) => ({
+      id: `local-file-${i}`,
+      fileName: f.name,
+      mimeType: f.type || "application/octet-stream",
+      url: "#",
+      sizeBytes: f.size,
+    }));
+    setMessages((prev) => [
+      ...prev,
       {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        id: optimisticId,
+        role: "user",
+        content: text,
+        attachments: optimisticAttachments.length > 0 ? optimisticAttachments : undefined,
       },
-    );
+    ]);
+
+    const modelForSend = selectedModelRef.current.trim();
+    let res: Response;
+    if (filesToSend.length > 0) {
+      const form = new FormData();
+      form.append("content", text);
+      form.append("skills", JSON.stringify([]));
+      if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
+        form.append("model", modelForSend);
+      }
+      if (canUseBrain && useBrain) {
+        form.append("useBrain", "true");
+      }
+      for (const file of filesToSend) {
+        form.append("files", file);
+      }
+      res = await fetch(
+        `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        {
+          method: "POST",
+          credentials: "include",
+          body: form,
+        },
+      );
+    } else {
+      const payload: Record<string, unknown> = { content: text, skills: [] };
+      if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
+        payload.model = modelForSend;
+      }
+      if (canUseBrain && useBrain) {
+        payload.useBrain = true;
+      }
+      res = await fetch(
+        `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+    }
     if (!res.ok) {
       setSending(false);
       let msg = "Failed to send message";
@@ -735,6 +984,10 @@ export function AgentChatPanel({
           setMessages(merged);
           if (preservedFrames.length > 0) {
             setBrowserFrames(preservedFrames);
+          }
+          const pending = await listPendingJit(conversationId, agentId);
+          if (pending.length > 0) {
+            setMessages((prev) => mergePendingJitIntoMessages(prev, pending));
           }
         } else if (preservedContent.trim()) {
           setMessages((prev) => {
@@ -1138,7 +1391,10 @@ export function AgentChatPanel({
                                   ) : null}
                                   Approve
                                   {jitPendingStep.jitScope === "email.send" ||
-                                  jitPendingStep.jitScope === "social.publish"
+                                  jitPendingStep.jitScope === "social.publish" ||
+                                  jitPendingStep.jitScope === "crm.write" ||
+                                  jitPendingStep.jitScope === "crm.delete" ||
+                                  jitPendingStep.jitScope === "whatsapp.contact_send"
                                     ? " for this chat"
                                     : ""}
                                 </button>
@@ -1182,7 +1438,14 @@ export function AgentChatPanel({
                           activity={m.activity}
                         />
                       ) : (
-                        <div className="whitespace-pre-wrap text-[13px]">{renderWithLinks(m.content)}</div>
+                        <>
+                          {m.content.trim() ? (
+                            <div className="whitespace-pre-wrap text-[13px]">{renderWithLinks(m.content)}</div>
+                          ) : null}
+                          {m.attachments && m.attachments.length > 0 ? (
+                            <MessageAttachments attachments={m.attachments} />
+                          ) : null}
+                        </>
                       )}
                     </div>
                   </div>
@@ -1244,7 +1507,10 @@ export function AgentChatPanel({
                         ) : null}
                         Approve
                         {stickyJitPending.jitScope === "email.send" ||
-                        stickyJitPending.jitScope === "social.publish"
+                        stickyJitPending.jitScope === "social.publish" ||
+                        stickyJitPending.jitScope === "crm.write" ||
+                        stickyJitPending.jitScope === "crm.delete" ||
+                        stickyJitPending.jitScope === "whatsapp.contact_send"
                           ? " for this chat"
                           : ""}
                       </button>
@@ -1271,7 +1537,64 @@ export function AgentChatPanel({
                 {jitError ? <p className="mt-1.5 text-[10px] text-black">{jitError}</p> : null}
               </div>
             ) : null}
+            {fileError ? (
+              <p className={cn("mb-2 rounded-lg border border-black px-3 py-2 text-[12px] text-black", sketchToneBg.rose)}>
+                {fileError}
+              </p>
+            ) : null}
+            {pendingFiles.length > 0 ? (
+              <ul className="mb-2 flex flex-wrap gap-1.5">
+                {pendingFiles.map((f, i) => (
+                  <li
+                    key={`${f.name}-${f.size}-${i}`}
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/70"
+                  >
+                    <FileText className="size-3 shrink-0" aria-hidden />
+                    <span className="truncate max-w-[10rem]">{f.name}</span>
+                    <span className="shrink-0 text-black/40">{formatFileSize(f.size)}</span>
+                    <button
+                      type="button"
+                      disabled={sending}
+                      onClick={() => {
+                        setPendingFiles((prev) => prev.filter((_, idx) => idx !== i));
+                        setFileError(null);
+                      }}
+                      className="ml-0.5 shrink-0 rounded-full p-0.5 text-black/40 transition-colors hover:bg-black/5 hover:text-black disabled:opacity-40"
+                      title="Remove file"
+                    >
+                      <X className="size-3" aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <div className="chat-composer relative flex items-end gap-2 overflow-visible rounded-[1.35rem] border border-black/12 bg-white/85 p-2 shadow-[0_-4px_28px_-14px_rgba(17,12,34,0.1)] backdrop-blur-xl">
+              <input
+                ref={fileInputRef}
+                key={fileInputKey}
+                type="file"
+                multiple
+                accept=".pdf,.docx,.xlsx,.xls,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml"
+                className="sr-only"
+                disabled={!conversationId || sending || pendingFiles.length >= CHAT_MAX_FILES}
+                onChange={(e) => {
+                  addPendingFiles(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={!conversationId || sending || pendingFiles.length >= CHAT_MAX_FILES}
+                onClick={() => fileInputRef.current?.click()}
+                title={
+                  pendingFiles.length >= CHAT_MAX_FILES
+                    ? `Maximum ${CHAT_MAX_FILES} files`
+                    : "Attach files (up to 8, max 50 MB each)"
+                }
+                className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/12 bg-white text-black/55 transition-all duration-200 hover:border-black/25 hover:text-black disabled:opacity-30"
+              >
+                <Paperclip className="size-4" aria-hidden />
+              </button>
               <div className="flex min-w-0 flex-1 flex-col">
                 <textarea
                   ref={textareaRef}
@@ -1312,21 +1635,32 @@ export function AgentChatPanel({
                 ) : null}
               </div>
               {sending ? (
-                <button
-                  type="button"
-                  onClick={() => void stopRun()}
-                  title="Stop the current execution"
-                  className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-black text-white transition-transform duration-200 hover:scale-[1.03]"
-                >
-                  <Square className="size-3.5 fill-current" aria-hidden />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void send()}
+                    disabled={!conversationId || input.trim().length === 0}
+                    title="Steer the active run (inject guidance)"
+                    className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-white text-black transition-transform duration-200 hover:scale-[1.03] disabled:opacity-30"
+                  >
+                    <SendHorizonal className="size-3.5" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void stopRun()}
+                    title="Stop the current execution"
+                    className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-black text-white transition-transform duration-200 hover:scale-[1.03]"
+                  >
+                    <Square className="size-3.5 fill-current" aria-hidden />
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
                   onClick={() => void send()}
                   disabled={
                     !conversationId ||
-                    input.trim().length === 0 ||
+                    (input.trim().length === 0 && pendingFiles.length === 0) ||
                     (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
                   }
                   title="Send (Enter · Shift+Enter for newline)"

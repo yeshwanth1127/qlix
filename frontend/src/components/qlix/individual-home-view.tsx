@@ -3,8 +3,10 @@
 import Link from "next/link";
 import type { AuditActionType, AuditResultUi } from "@/lib/dashboard-api";
 import { useDashboardHome } from "@/lib/hooks/use-dashboard-home";
+import { useConnectorsOverview } from "@/lib/hooks/use-connectors-overview";
 import { cn } from "@/lib/utils/cn";
 import { userFirstName } from "@/lib/workspace";
+import { OverviewConnectorsPanel } from "./overview-connectors-panel";
 import {
   SketchBox,
   SketchMetric,
@@ -47,6 +49,10 @@ function auditRowTone(result: AuditResultUi): string {
 
 export function IndividualHomeView() {
   const { data, error, loading, refresh } = useDashboardHome();
+  const {
+    liveConnectors,
+    loading: connectorsLoading,
+  } = useConnectorsOverview();
 
   if (loading) {
     return (
@@ -114,6 +120,11 @@ export function IndividualHomeView() {
               )}
             </SketchBox>
           </SketchSection>
+          <OverviewConnectorsPanel
+            connectorsHref={`${RP}/connectors`}
+            liveConnectors={liveConnectors}
+            loading={connectorsLoading}
+          />
         </div>
 
         <div

@@ -1,50 +1,71 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import {
+  ALL_API_KEY_SCOPES,
+  API_KEY_PREFIX,
+  API_KEY_SCOPES,
+  normalizeApiKeyScopes,
+} from '../lib/apiKeyScopes.js';
 import { prisma } from '../lib/prisma.js';
-import { authenticateUser } from '../middleware/authenticateUser.js';
+import { authenticateSessionOnly } from '../middleware/authenticateUser.js';
 
 /**
- * User-issued API keys for programmatic access to the Qlix API. Only a sha256 hash of the
- * key is ever stored — the raw key is returned once, at creation time, and never again.
- * NOTE: requires the `ApiKey` table (see `prisma/schema.prisma`) — apply that migration
- * before this router is live.
+ * User-issued API keys for programmatic access to the Qlix Developer API.
+ * Only a sha256 hash of the key is stored — the raw key is returned once at creation.
+ * Key CRUD requires a browser/session JWT (API keys cannot mint or revoke keys).
  */
-
-const KEY_PREFIX = 'qlix_live_';
 
 function generateApiKey(): { raw: string; prefix: string; hash: string } {
   const secret = crypto.randomBytes(24).toString('base64url');
-  const raw = `${KEY_PREFIX}${secret}`;
-  const prefix = raw.slice(0, KEY_PREFIX.length + 6);
+  const raw = `${API_KEY_PREFIX}${secret}`;
+  const prefix = raw.slice(0, API_KEY_PREFIX.length + 6);
   const hash = crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
   return { raw, prefix, hash };
 }
 
 const createSchema = z.object({
   label: z.string().trim().min(1).max(120),
+  scopes: z.array(z.enum(API_KEY_SCOPES)).optional(),
 });
+
+function canManageOrgKeys(role: string): boolean {
+  const r = role.toLowerCase();
+  return r === 'owner' || r === 'admin';
+}
 
 export function createApiKeysRouter(): Router {
   const router = Router();
 
-  router.get('/', authenticateUser(true), async (request: Request, response: Response) => {
+  router.get('/', authenticateSessionOnly(true), async (request: Request, response: Response) => {
     try {
       const auth = request.auth!;
+      const isAdmin = canManageOrgKeys(auth.role);
       const keys = await prisma.apiKey.findMany({
-        where: { orgId: auth.orgId },
+        where: isAdmin ? { orgId: auth.orgId } : { orgId: auth.orgId, userId: auth.userId },
         orderBy: { createdAt: 'desc' },
-        select: { id: true, label: true, keyPrefix: true, createdAt: true, lastUsedAt: true, revokedAt: true },
+        select: {
+          id: true,
+          label: true,
+          keyPrefix: true,
+          scopes: true,
+          createdAt: true,
+          lastUsedAt: true,
+          revokedAt: true,
+        },
       });
       response.json({
         keys: keys.map((k) => ({
           id: k.id,
           label: k.label,
           keyPrefix: k.keyPrefix,
+          scopes: k.scopes.length > 0 ? k.scopes : [...ALL_API_KEY_SCOPES],
           createdAt: k.createdAt.toISOString(),
           lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
           revokedAt: k.revokedAt ? k.revokedAt.toISOString() : null,
         })),
+        availableScopes: [...ALL_API_KEY_SCOPES],
+        canManage: isAdmin,
       });
     } catch (err) {
       console.error('api-keys list error', err);
@@ -52,14 +73,23 @@ export function createApiKeysRouter(): Router {
     }
   });
 
-  router.post('/', authenticateUser(true), async (request: Request, response: Response) => {
+  router.post('/', authenticateSessionOnly(true), async (request: Request, response: Response) => {
     try {
       const auth = request.auth!;
-      const parsed = createSchema.safeParse(request.body);
-      if (!parsed.success) {
-        response.status(400).json({ error: { code: 'invalid_body', message: 'label is required' } });
+      if (!canManageOrgKeys(auth.role)) {
+        response.status(403).json({
+          error: { code: 'forbidden', message: 'Only owners and admins can create API keys' },
+        });
         return;
       }
+      const parsed = createSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({
+          error: { code: 'invalid_body', message: 'label is required; scopes must be valid API key scopes' },
+        });
+        return;
+      }
+      const scopes = normalizeApiKeyScopes(parsed.data.scopes ?? [...ALL_API_KEY_SCOPES]);
       const { raw, prefix, hash } = generateApiKey();
       const created = await prisma.apiKey.create({
         data: {
@@ -68,6 +98,7 @@ export function createApiKeysRouter(): Router {
           label: parsed.data.label,
           keyPrefix: prefix,
           keyHash: hash,
+          scopes,
         },
       });
       // `key` is only ever present in this one response — it is never retrievable again.
@@ -76,6 +107,7 @@ export function createApiKeysRouter(): Router {
         label: created.label,
         key: raw,
         keyPrefix: created.keyPrefix,
+        scopes: created.scopes,
         createdAt: created.createdAt.toISOString(),
       });
     } catch (err) {
@@ -84,9 +116,15 @@ export function createApiKeysRouter(): Router {
     }
   });
 
-  router.delete('/:id', authenticateUser(true), async (request: Request, response: Response) => {
+  router.delete('/:id', authenticateSessionOnly(true), async (request: Request, response: Response) => {
     try {
       const auth = request.auth!;
+      if (!canManageOrgKeys(auth.role)) {
+        response.status(403).json({
+          error: { code: 'forbidden', message: 'Only owners and admins can revoke API keys' },
+        });
+        return;
+      }
       const id = String(request.params.id);
       const existing = await prisma.apiKey.findUnique({ where: { id } });
       if (!existing || existing.orgId !== auth.orgId) {

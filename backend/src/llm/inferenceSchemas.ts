@@ -25,8 +25,16 @@ export const inferenceChatRequestSchema = z.object({
   tool_choice: z
     .union([z.string(), z.enum(['auto', 'none', 'required']), z.record(z.string(), z.unknown())])
     .optional(),
-  /** OPTIMIZATION: Hash of tool definitions for client-side caching (cloud runner sends tools only on round 1). */
+  /** Hash of the tool definitions; stable per agent once the tool array is scope-derived. */
   tools_hash: z.string().trim().max(16).optional(),
+  /**
+   * Concrete model the router already chose for round 1 of this run. Auto routing
+   * re-scores complexity on every request, and after round 1 the "last user message"
+   * is a tool nudge — so the tier could flip mid-loop, switching provider and
+   * discarding the prompt-prefix cache. The runner echoes this back to pin the model
+   * for the remainder of the run.
+   */
+  pinned_model: z.string().trim().max(200).optional(),
   metadata: z
     .object({
       runId: z.string().trim().min(1).max(120).optional(),

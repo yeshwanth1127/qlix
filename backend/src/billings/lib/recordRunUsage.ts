@@ -39,10 +39,14 @@ export async function recordRunUsage(
     if (data.message === 'inference_success') {
       const usage = data.usage as Record<string, unknown> | null;
       if (usage && typeof usage === 'object') {
+        // The runner now SUMS usage across every round of the tool loop (see
+        // accumulate_usage in runner_common.py), so these are whole-run totals.
         promptTokens = Number(usage.prompt_tokens) || 0;
         completionTokens = Number(usage.completion_tokens) || 0;
         totalTokens = Number(usage.total_tokens) || 0;
-        totalCostUsd = Number(usage.total_cost) || 0;
+        // OpenRouter reports spend as `cost` under `usage.include`; `total_cost` is
+        // the older field name. Accept either.
+        totalCostUsd = Number(usage.cost) || Number(usage.total_cost) || 0;
       }
       model = typeof data.model === 'string' ? data.model : null;
       provider = typeof data.provider === 'string' ? data.provider : null;

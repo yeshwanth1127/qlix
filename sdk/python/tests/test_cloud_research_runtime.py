@@ -9,6 +9,7 @@ import pytest
 
 from qlix.cloud_research_runtime import (
     PLATFORM_SESSION_USER_MESSAGE,
+    ensure_research_stack,
     execute_research_read_url,
     execute_research_web_search,
     openai_research_tool_definitions,
@@ -108,6 +109,31 @@ def test_research_web_search_blocked_without_mcporter(mock_which: MagicMock) -> 
     out = execute_research_web_search({"query": "test"})
     data = json.loads(out)
     assert data["status"] == "blocked"
+
+
+@patch("qlix.cloud_research_runtime._run_cmd")
+@patch("qlix.cloud_research_runtime.shutil.which")
+def test_ensure_research_stack_installs_mcporter(mock_which: MagicMock, mock_run: MagicMock) -> None:
+    seen: list[str | None] = []
+
+    def _which(cmd: str) -> str | None:
+        seen.append(cmd)
+        if cmd == "mcporter" and len(seen) > 2:
+            return "/usr/bin/mcporter"
+        if cmd == "agent-reach":
+            return "/usr/bin/agent-reach"
+        return None
+
+    mock_which.side_effect = _which
+    mock_run.return_value = (True, "ok")
+    ensure_research_stack()
+    mock_run.assert_called_once_with(["agent-reach", "install", "--env=server"], timeout=180)
+
+
+@patch("qlix.cloud_research_runtime.shutil.which", return_value="/usr/bin/mcporter")
+def test_ensure_research_stack_skips_when_present(mock_which: MagicMock) -> None:
+    ensure_research_stack()
+    mock_which.assert_called_once_with("mcporter")
 
 
 def test_parse_research_platform_session_blocked() -> None:

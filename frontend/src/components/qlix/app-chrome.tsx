@@ -33,7 +33,8 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
   const isFullHeightPage =
     /\/teams(\/|$)/.test(pathname) ||
     /\/agent-builder(\/|$)/.test(pathname) ||
-    /\/chat(\/|$)/.test(pathname);
+    /\/chat(\/|$)/.test(pathname) ||
+    /\/ai-employees\/[^/]+\/hire(\/|$)/.test(pathname);
   const isAgentBuilder = /\/agent-builder(\/|$)/.test(pathname);
 
   const sidebar = (

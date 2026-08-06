@@ -10,6 +10,9 @@ export interface EnqueueAgentRunInput {
   orgId: string | null;
   email?: string;
   prompt: string;
+  /** User-visible message text (without attachment blocks). */
+  displayPrompt?: string;
+  attachments?: unknown;
   skills?: string[];
   inferenceModel?: string | null;
   useBrain?: boolean;
@@ -48,10 +51,18 @@ export async function ensureTeamConversation(params: {
       agentId: params.agentId,
       userId: params.userId,
       orgId: params.orgId,
+      kind: 'chat',
+      title: `Team ${params.teamId.slice(0, 8)}`,
     },
   });
   return conv.id;
 }
+
+export {
+  ensureLocalConversation,
+  getOrCreatePrimaryConversation,
+} from './conversationService.js';
+
 
 export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<EnqueueAgentRunResult> {
   const runId = randomUUID();
@@ -77,7 +88,8 @@ export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<Enqu
         id: messageId,
         conversationId: input.conversationId,
         role: 'user',
-        content: input.prompt,
+        content: input.displayPrompt ?? input.prompt,
+        attachments: input.attachments ?? undefined,
       },
     }),
     prisma.agentRun.create({
@@ -89,6 +101,7 @@ export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<Enqu
         orgId: input.orgId,
         status: 'queued',
         prompt: input.prompt,
+        attachments: input.attachments ?? undefined,
         skills: input.skills ?? [],
         inferenceModel: input.inferenceModel ?? null,
         useBrain: input.useBrain ?? false,
@@ -117,14 +130,14 @@ export async function getAgentRunStatus(runId: string): Promise<{
   return run;
 }
 
-const TERMINAL = new Set<string>(['success', 'failed', 'canceled']);
+const TERMINAL = new Set<string>(['success', 'failed', 'canceled', 'cancelled']);
 
 export async function terminateAgentRun(
   runId: string,
   errorMessage: string,
 ): Promise<void> {
   await prisma.agentRun.updateMany({
-    where: { id: runId, status: { notIn: ['success', 'failed', 'canceled'] } },
+    where: { id: runId, status: { notIn: ['success', 'failed', 'canceled', 'cancelled'] } },
     data: {
       status: 'failed',
       errorMessage,
@@ -170,6 +183,17 @@ export async function appendAgentRunLogEvent(
       await prisma.agentRunEvent.create({
         data: { runId, seq, type: 'log', data: data as Prisma.InputJsonValue },
       });
+      void import('../gateway/runEventBus.js')
+        .then(({ runEventBus }) =>
+          runEventBus.publish({
+            runId,
+            seq,
+            type: 'log',
+            data,
+            createdAt: new Date().toISOString(),
+          }),
+        )
+        .catch(() => undefined);
       return seq;
     } catch (err) {
       if (

@@ -8,11 +8,12 @@ import { SectionHeading } from "@/components/qlix/section-heading";
 import { MetricCard } from "@/components/qlix/metric-card";
 import { SketchBox, SketchSection, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getWalletBalance, getWalletTransactions, type WalletBalanceResponse, type WalletTransaction } from "@/lib/wallet-api";
-import { formatBillingMoney } from "@/lib/billing-display-money";
+import { CurrencyToggle, useDisplayCurrency } from "@/components/qlix/currency-context";
 import { cn } from "@/lib/utils/cn";
 
 export default function IndividualWalletPage() {
   const { session, loading: sessionLoading } = useSession();
+  const { formatInr } = useDisplayCurrency();
   const [balance, setBalance] = useState<WalletBalanceResponse | null>(null);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -87,18 +88,21 @@ export default function IndividualWalletPage() {
   return (
     <div className="w-full space-y-8">
       <header className="flex flex-col gap-3">
-        <SectionHeading title="Wallet" description="Your action credits and transaction history." />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionHeading title="Wallet" description="Your action credits and transaction history." />
+          <CurrencyToggle />
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <MetricCard
           label="Action credits"
-          value={formatBillingMoney(balance.balance)}
+          value={formatInr(balance.balance)}
           subtext={overdrawn ? "Overdrawn — add credits to continue" : "Available balance"}
         />
         <MetricCard
           label="Spend (MTD)"
-          value={formatBillingMoney(balance.monthToDate.spend)}
+          value={formatInr(balance.monthToDate.spend)}
           subtext={`${balance.monthToDate.successfulEvents.toLocaleString()} events`}
         />
         <MetricCard label="Billing cycle" value={balance.billingCycle} subtext="Current month" />
@@ -153,7 +157,7 @@ export default function IndividualWalletPage() {
                         {tx.type === "manual_credit" ? "Credit" : "Debit"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-black">{formatBillingMoney(tx.amount)}</td>
+                    <td className="px-4 py-3 font-mono text-black">{formatInr(tx.amount)}</td>
                     <td className="px-4 py-3 text-black">{new Date(tx.createdAt).toLocaleDateString()}</td>
                   </tr>
                 ))}

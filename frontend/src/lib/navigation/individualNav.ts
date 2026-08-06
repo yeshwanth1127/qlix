@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Brain,
+  Briefcase,
   CreditCard,
   Fingerprint,
   Hammer,
@@ -31,6 +32,7 @@ const PRIMARY_NAV_SUFFIXES = [
   "/agent-builder",
   "/overview",
   "/agents",
+  "/ai-employees",
   "/active-runs",
   "/teams",
   "/ai-brain",
@@ -66,6 +68,7 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
+    { href: `${routePrefix}/ai-employees`, label: "AI Employees", icon: Briefcase },
     { href: `${routePrefix}/active-runs`, label: "Active runs", icon: PlayCircle },
     { href: `${routePrefix}/teams`, label: "Teams", icon: UsersRound },
     { href: `${routePrefix}/ai-brain`, label: "exa (ai brain)", icon: Brain },
@@ -96,6 +99,8 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
   if (routePrefix === "/organization") {
     return [
       ...core,
+      { href: `${routePrefix}/schedules`, label: "Schedules", icon: PlayCircle },
+      { href: `${routePrefix}/compliance`, label: "Compliance", icon: ShieldCheck },
       usageItem,
       subscriptionsItem,
       ...(billingExempt

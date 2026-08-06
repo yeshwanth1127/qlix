@@ -3,6 +3,8 @@ import { runBillingRollups } from '../billings/jobs/billingRollups.js';
 import { runSubscriptionRenewals } from '../billings/jobs/runSubscriptionRenewals.js';
 import { reconcileStaleRuns } from '../agentChat/runReconciliation.js';
 import { pruneOrphanedRunnerStateDirs, pruneStaleRunnerImages } from '../cloudRunners/runnerPruning.js';
+import { pruneExpiredEphemeralGrants } from '../lib/ephemeralGrants.js';
+import { tickEmployeeSchedules } from '../employees/employeeSchedule.service.js';
 
 /**
  * In-process interval scheduler for jobs that previously had to be triggered by hand
@@ -48,6 +50,14 @@ async function runPruneJobs(): Promise<void> {
   } catch (err) {
     console.error('[scheduler] runner pruning failed', err);
   }
+  try {
+    const expiredGrants = await pruneExpiredEphemeralGrants();
+    if (expiredGrants > 0) {
+      console.log(`[scheduler] pruned ${expiredGrants} expired ephemeral grant(s)`);
+    }
+  } catch (err) {
+    console.error('[scheduler] ephemeral grant pruning failed', err);
+  }
 }
 
 function every(fn: () => Promise<void>, ms: number, initialDelayMs: number): void {
@@ -68,10 +78,19 @@ export function startBackgroundScheduler(): void {
   every(runBillingCycleJobs, billingIntervalMs, 60_000);
   every(reconcileStaleRuns, runReconcileIntervalMs, 90_000);
   every(runPruneJobs, pruneIntervalMs, 3 * MINUTE_MS);
+  every(async () => {
+    try {
+      const n = await tickEmployeeSchedules();
+      if (n > 0) console.log(`[scheduler] employee schedules enqueued=${n}`);
+    } catch (err) {
+      console.error('[scheduler] employee schedules failed', err);
+    }
+  }, MINUTE_MS, 45_000);
 
   console.log(
     `[scheduler] started — billing every ${(billingIntervalMs / HOUR_MS).toFixed(2)}h, ` +
       `run reconciliation every ${(runReconcileIntervalMs / MINUTE_MS).toFixed(1)}m, ` +
-      `pruning every ${(pruneIntervalMs / HOUR_MS).toFixed(1)}h`,
+      `pruning every ${(pruneIntervalMs / HOUR_MS).toFixed(1)}h, ` +
+      `employee schedules every 1m`,
   );
 }

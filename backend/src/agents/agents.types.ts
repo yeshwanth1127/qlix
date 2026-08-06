@@ -14,8 +14,15 @@ export type BuiltinPermissionScope =
   | 'email.read'
   | 'email.send'
   | 'whatsapp.send'
+  | 'whatsapp.read'
+  | 'whatsapp.contact_send'
   | 'social.read'
-  | 'social.publish';
+  | 'social.publish'
+  | 'crm.read'
+  | 'crm.write'
+  | 'crm.delete'
+  | 'slack.read'
+  | 'slack.send';
 
 /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
 export type McpPermissionScope = `mcp.${string}`;
@@ -79,6 +86,8 @@ export interface AgentDTO {
   /** Hybrid runner: last heartbeat from the user's local daemon. Null for cloud/local agents. */
   hybridLastHeartbeatAt: string | null;
   agentKind: AgentKind;
+  /** OpenClaw-style tool visibility: minimal | coding | full */
+  toolProfile: 'minimal' | 'coding' | 'full';
 }
 
 export interface AgentWithKeypairDTO extends AgentDTO {

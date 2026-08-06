@@ -126,6 +126,30 @@ export async function dockerLogs(params: { name: string; tail?: number }): Promi
   return runDocker(args, { timeoutMs: 30_000 });
 }
 
+export async function dockerExec(params: {
+  name: string;
+  cmd: string[];
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const args = ['exec', params.name, ...params.cmd];
+  try {
+    const { stdout, stderr } = await execFileAsync('docker', args, {
+      timeout: params.timeoutMs ?? 30_000,
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    return {
+      ok: true,
+      stdout: String(stdout ?? '').trim(),
+      stderr: String(stderr ?? '').trim(),
+    };
+  } catch (err: any) {
+    const stdout = String(err?.stdout ?? '').trim();
+    const stderr = String(err?.stderr ?? err?.message ?? '').trim();
+    return { ok: false, stdout, stderr };
+  }
+}
+
 export async function dockerListImages(filterRefPrefix?: string): Promise<string[]> {
   const args = ['images', '--format', '{{.Repository}}:{{.Tag}}'];
   if (filterRefPrefix?.trim()) {

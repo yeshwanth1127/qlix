@@ -2,11 +2,15 @@ import express from 'express';
 import { pendingApprovals, registerPendingApproval } from './handlers.js';
 import * as qlix from './qlix-client.js';
 import {
+  getBaileysVersionHealth,
+  getChatMessages,
   getSessionStatus,
   isSessionConnected,
+  listContacts,
   listSessions,
   sendDocumentToConnector,
   sendToConnector,
+  sendToRecipient,
   startSession,
   stopSession,
 } from './sessionManager.js';
@@ -98,13 +102,17 @@ export function createApiRouter() {
 
   router.get('/health', (_req, res) => {
     const active = listSessions().filter((s) => s.connected).length;
-    res.json({
-      ok: true,
+    const versionHealth = getBaileysVersionHealth();
+    const ok = versionHealth.baileys_version_ok;
+    res.status(ok ? 200 : 503).json({
+      ok,
+      qr_linking_ready: ok,
       connected: active > 0,
       active_sessions: active,
       total_sessions: listSessions().length,
       pending_approvals: pendingApprovals.size,
       uptime: Math.floor((Date.now() - startedAt) / 1000),
+      ...versionHealth,
     });
   });
 
@@ -232,6 +240,63 @@ export function createApiRouter() {
     const resolvedName = file_name || path.basename(file_path);
     const result = await sendDocumentToConnector(connector_id, file_path, resolvedName, resolvedMime);
     res.status(result.ok ? 200 : 503).json(result);
+  });
+
+  /** Send a text message to a contact (phone / jid / contact name) — not self-chat. */
+  router.post('/send-to', async (req, res) => {
+    const connectorId = req.body?.connector_id;
+    const recipient = req.body?.recipient;
+    const message = req.body?.message;
+    if (!connectorId || typeof recipient !== 'string' || !recipient.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and recipient required' });
+      return;
+    }
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ ok: false, error: 'message required' });
+      return;
+    }
+    if (!isSessionConnected(connectorId)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const result = await sendToRecipient(connectorId, recipient, message);
+    if (result.ok) {
+      console.log(`[qlix-whatsapp] /send-to ok connector=${connectorId} to=${result.jid}`);
+      res.json(result);
+      return;
+    }
+    const status = result.matches ? 409 : 400;
+    console.warn(`[qlix-whatsapp] /send-to failed connector=${connectorId}:`, result.error);
+    res.status(result.error?.includes('not connected') ? 503 : status).json(result);
+  });
+
+  router.post('/contacts/list', async (req, res) => {
+    const connectorId = req.body?.connector_id;
+    if (!connectorId) {
+      res.status(400).json({ ok: false, error: 'connector_id required' });
+      return;
+    }
+    if (!isSessionConnected(connectorId)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const result = listContacts(connectorId, req.body?.query ?? '', req.body?.limit ?? 50);
+    res.status(result.ok ? 200 : 503).json(result);
+  });
+
+  router.post('/chats/messages', async (req, res) => {
+    const connectorId = req.body?.connector_id;
+    const recipient = req.body?.recipient;
+    if (!connectorId || typeof recipient !== 'string' || !recipient.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and recipient required' });
+      return;
+    }
+    if (!isSessionConnected(connectorId)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const result = getChatMessages(connectorId, recipient, req.body?.limit ?? 30);
+    res.status(result.ok ? 200 : result.matches ? 409 : 400).json(result);
   });
 
   return router;

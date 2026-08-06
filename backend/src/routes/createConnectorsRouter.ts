@@ -15,6 +15,23 @@ import {
   revokeGoogleToken,
   verifyGoogleOAuthState,
 } from '../connectors/googleOAuth.service.js';
+import {
+  buildZohoAuthUrl,
+  exchangeZohoCode,
+  mintZohoOAuthState,
+  revokeZohoToken,
+  verifyZohoOAuthState,
+  ZohoOAuthNotConfiguredError,
+} from '../connectors/zohoOAuth.service.js';
+import {
+  buildSlackAuthUrl,
+  exchangeSlackCode,
+  mintSlackOAuthState,
+  revokeSlackToken,
+  SlackOAuthNotConfiguredError,
+  verifySlackOAuthState,
+} from '../connectors/slackOAuth.service.js';
+import { clearCachedModules } from '../connectors/crm/crmModuleCache.js';
 import type { ConnectorAccountDTO, N8nIntegrationDTO } from '../connectors/connectors.types.js';
 import {
   disconnectWhatsApp,
@@ -135,6 +152,149 @@ export function createConnectorsRouter(): Router {
     } catch (err) {
       console.error('[connectors] google/callback', err);
       response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.post('/zoho/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintZohoOAuthState(auth.userId, auth.orgId);
+      const url = buildZohoAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof ZohoOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] zoho/start', err);
+      response.status(500).json({ error: { code: 'oauth_start_failed', message: 'Failed to start Zoho OAuth' } });
+    }
+  });
+
+  router.get('/zoho/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+    const accountsServer =
+      typeof request.query['accounts-server'] === 'string' ? request.query['accounts-server'] : null;
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifyZohoOAuthState(state);
+      const tokens = await exchangeZohoCode(code, accountsServer);
+      const connector: ConnectorAccountDTO = await repo.upsertZoho({ orgId, userId, tokens });
+      clearCachedModules(orgId, 'zoho');
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(`${prefix}/connectors?connected=zoho&email=${encodeURIComponent(connector.emailAddress ?? '')}`),
+      );
+    } catch (err) {
+      console.error('[connectors] zoho/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/zoho', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'zoho');
+      if (tokens?.refreshToken) await revokeZohoToken(tokens.refreshToken, tokens.accountsUrl);
+      await repo.delete(request.auth!.orgId, 'zoho');
+      clearCachedModules(request.auth!.orgId, 'zoho');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] zoho/delete', err);
+      response.status(500).json({ error: { code: 'connector_delete_failed', message: 'Failed to disconnect Zoho' } });
+    }
+  });
+
+  router.post('/slack/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintSlackOAuthState(auth.userId, auth.orgId);
+      const url = buildSlackAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof SlackOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] slack/start', err);
+      response.status(500).json({ error: { code: 'oauth_start_failed', message: 'Failed to start Slack OAuth' } });
+    }
+  });
+
+  router.get('/slack/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifySlackOAuthState(state);
+      const tokens = await exchangeSlackCode(code);
+      const connector: ConnectorAccountDTO = await repo.upsertSlack({ orgId, userId, tokens });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(`${prefix}/connectors?connected=slack&email=${encodeURIComponent(connector.emailAddress ?? '')}`),
+      );
+    } catch (err) {
+      console.error('[connectors] slack/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/slack', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'slack');
+      if (tokens?.accessToken) await revokeSlackToken(tokens.accessToken);
+      if (tokens?.slackBotAccessToken) await revokeSlackToken(tokens.slackBotAccessToken);
+      await repo.delete(request.auth!.orgId, 'slack');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] slack/delete', err);
+      response.status(500).json({ error: { code: 'connector_delete_failed', message: 'Failed to disconnect Slack' } });
     }
   });
 

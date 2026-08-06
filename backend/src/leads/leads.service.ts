@@ -279,7 +279,7 @@ export class LeadsService {
     }
     // User approval in the Team Run UI supersedes the enrichment-complete requirement —
     // the user reviewed the lead table (incl. "needs enrichment" rows) and chose to proceed.
-    if (!isCampaignOutreachApproved(params.campaignId)) {
+    if (!(await isCampaignOutreachApproved(params.campaignId))) {
       await this.assertBrowserEnrichmentComplete(params.orgId, params.campaignId);
     }
     const mergedConfig: OutreachConfig = {

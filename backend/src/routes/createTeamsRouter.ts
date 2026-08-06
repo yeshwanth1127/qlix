@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { addInjection } from '../teams/runInjectionStore.js';
-import { launchTeamRun } from '../teams/teamsRunLauncher.js';
+import { buildTeamInbound, gatewayService } from '../gateway/index.js';
 import { injectTeamRunMessage } from '../teams/teamChannel.service.js';
 import { z } from 'zod';
 import { buildAgentCard } from '../agents/agentCard.js';
@@ -425,16 +425,30 @@ export function createTeamsRouter(): Router {
     }
     try {
       const auth = req.auth!;
+      const team = await service.getTeam(req.params.id!, auth.orgId);
       const backendUrl = resolveDockerBackendUrl(req);
-      const { run } = await launchTeamRun({
-        teamId: req.params.id!,
-        orgId: auth.orgId,
-        userId: auth.userId,
-        goal: parsed.data.goal,
-        backendUrl,
-        source: { channel: 'web' },
-      });
-
+      const turn = await gatewayService.handleInbound(
+        buildTeamInbound({
+          channel: 'web',
+          teamId: team.id,
+          teamName: team.name,
+          orgId: auth.orgId,
+          userId: auth.userId,
+          email: auth.email,
+          goal: parsed.data.goal,
+          backendUrl,
+        }),
+      );
+      if (turn.status !== 'accepted') {
+        res.status(turn.status === 'rejected' ? 409 : 202).json({
+          error: {
+            code: 'gateway_rejected',
+            message: turn.status === 'rejected' ? turn.reason : (turn.ackReply ?? turn.status),
+          },
+        });
+        return;
+      }
+      const run = await service.getRun(team.id, turn.runId, auth.orgId);
       res.status(202).json({ run });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }

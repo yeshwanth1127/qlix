@@ -10,6 +10,7 @@ import {
   NotJitScopeError,
   StaleTimestampError,
 } from '../jit/jit.service.js';
+import { recordApiKeySensitiveUse } from '../lib/apiKeyAudit.js';
 import { assertInternalServiceSecret } from '../middleware/assertInternalServiceSecret.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 
@@ -124,6 +125,11 @@ export function createJitRouter(): Router {
         orgId: auth.orgId ?? null,
         approved: parsed.data.approved,
       });
+      recordApiKeySensitiveUse(request, 'api_key.jit_decided', {
+        jitRequestId: parsed.data.jitRequestId,
+        approved: parsed.data.approved,
+        status: result.status,
+      });
       response.status(200).json({ ok: true, status: result.status });
     } catch (error) {
       handleError(error, response);
@@ -136,6 +142,29 @@ export function createJitRouter(): Router {
       const auth = request.auth!;
       const grants = await service.listGrantsForUser({ userId: auth.userId, orgId: auth.orgId ?? null });
       response.status(200).json({ grants });
+    } catch (error) {
+      handleError(error, response);
+    }
+  });
+
+  // Pending JIT approvals for a dashboard chat (fallback when SSE missed the approval card).
+  router.get('/pending', authenticateUser(true), async (request: Request, response: Response) => {
+    const conversationId = String(request.query.conversationId ?? '').trim();
+    const agentId = String(request.query.agentId ?? '').trim();
+    if (!conversationId || !agentId) {
+      response.status(400).json({
+        error: { code: 'invalid_query', message: 'conversationId and agentId are required' },
+      });
+      return;
+    }
+    try {
+      const auth = request.auth!;
+      const pending = await service.listPendingForConversation({
+        userId: auth.userId,
+        conversationId,
+        agentId,
+      });
+      response.status(200).json({ pending });
     } catch (error) {
       handleError(error, response);
     }

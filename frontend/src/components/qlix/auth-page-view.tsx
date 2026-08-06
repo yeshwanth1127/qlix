@@ -1,22 +1,38 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
-import { postLogin, postSignup } from "@/lib/auth-api";
+import { useCallback, useEffect, useState } from "react";
+import { Building2, Check, User } from "lucide-react";
+import { postLogin, postSignup, oauthStartUrl, oauthErrorMessage } from "@/lib/auth-api";
+import type { OAuthLoginProvider } from "@/lib/auth-api";
 import { consoleHomePath } from "@/lib/workspace";
 import { cn } from "@/lib/utils/cn";
 import { QlixWordmark } from "./landing/QlixWordmark";
 import PixelBlast from "./PixelBlast";
 
-const GITHUB_LOGO =
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuBX4zUkUyI36zvrGWZVLlCJPyqxkKF1XYijboyIKSuc3yD8M2xl8vuWvEd-Ue9CGR1VF31JFG22F3iee0Jn97oJ3o0gKXrH_lm_7B1DHVT-QwcuvBUjLZ3Xvqxjx39r9n0Unq9SJEmFI7gk5ztW0UftY61Mr2N1KfEBJFm49KwqHh0-BZq_HPWQ-21WVPwqPebHax2k_I0jHJi3H6NS7plhA5KcvcMk7Z7XhcAbe-n6VYRD9_9EAywphy7wJK0CkK1Ef8wN-B5_No8";
-
-const GOOGLE_LOGO =
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuDaA9TFC9ExFjWYb5eaGWeYXuGOcK3sgoYoeMvCCR-1SyVViDuvdRiVX_CsczmHb1Nto2Y50Rtb0hY1NcaeUUc6PCPoUAtuknbieMCgHBRdSFhyB6mpvNgaFcYzLZfEwbS2rxvZH9Qm1HybQRBF2g6QvWYBFrTzt8VL6L9of2ly0QztyCyxx0MUZvl2XrjBoUSGHm-9A_wXh_vKVwHdNWyOQqzozrztr4vCTqiCmZCbynqf3cRTpmwZGkpOfyhOUc3etcrwj36I5sk";
-
 type AuthMode = "sign-in" | "sign-up";
+type WorkspaceType = "individual" | "organization";
+
+const WORKSPACE_OPTIONS: ReadonlyArray<{
+  value: WorkspaceType;
+  title: string;
+  description: string;
+  icon: typeof User;
+}> = [
+  {
+    value: "individual",
+    title: "Individual",
+    description: "Personal workspace for solo developers.",
+    icon: User,
+  },
+  {
+    value: "organization",
+    title: "Organization",
+    description: "Shared registry, members, and audit for teams.",
+    icon: Building2,
+  },
+];
 
 export interface AuthPageViewProps {
   readonly initialMode: AuthMode;
@@ -73,6 +89,13 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
   const [signUpError, setSignUpError] = useState<string | null>(null);
   const [signUpLoading, setSignUpLoading] = useState(false);
 
+  useEffect(() => {
+    const err = oauthErrorMessage(searchParams.get("error"));
+    if (!err) return;
+    if (mode === "sign-up") setSignUpError(err);
+    else setSignInError(err);
+  }, [searchParams, mode]);
+
   const syncUrl = useCallback(
     (next: AuthMode) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -97,6 +120,23 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
   function setAuthMode(next: AuthMode) {
     setMode(next);
     syncUrl(next);
+  }
+
+  function selectWorkspaceType(next: WorkspaceType) {
+    setWorkspaceType(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("mode", "sign-up");
+    params.set("workspace", next);
+    router.replace(`/sign-in?${params.toString()}`, { scroll: false });
+  }
+
+  function startOAuth(provider: OAuthLoginProvider) {
+    const invite = searchParams.get("invite");
+    const url = oauthStartUrl(provider, {
+      workspaceType: mode === "sign-up" ? (invite ? "organization" : workspaceType) : "individual",
+      invite,
+    });
+    window.location.href = url;
   }
 
   async function onSignIn(e: React.FormEvent) {
@@ -150,7 +190,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
     "focus:border-[#1c1830]/50 focus:ring-1 focus:ring-[#1c1830]/25 focus:outline-none transition-all";
 
   const glassCard =
-    "rounded-2xl border border-black/10 bg-white/65 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_70px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl";
+    "rounded-2xl border border-[color:var(--qlix-card-border)] bg-white/65 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_70px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl";
 
   return (
     <div className="relative flex h-screen w-full overflow-hidden bg-[#f2efe8] text-[#1c1830]">
@@ -211,19 +251,27 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                   </p>
                 </div>
 
+                {signInError ? (
+                  <p className="mb-4 rounded-lg border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-[13px] text-red-700">
+                    {signInError}
+                  </p>
+                ) : null}
+
                 <div className="mb-6 grid gap-3">
                   <button
                     type="button"
+                    onClick={() => startOAuth("github")}
                     className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                   >
-                    <Image src={GITHUB_LOGO} alt="" width={18} height={18} className="size-[18px]" />
+                    <GitHubMark />
                     Continue with GitHub
                   </button>
                   <button
                     type="button"
+                    onClick={() => startOAuth("google")}
                     className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                   >
-                    <Image src={GOOGLE_LOGO} alt="" width={18} height={18} className="size-[18px]" />
+                    <GoogleMark />
                     Continue with Google
                   </button>
                 </div>
@@ -241,11 +289,6 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
 
                 <div className={cn(glassCard, "p-6")}>
                   <form className="space-y-4" onSubmit={onSignIn}>
-                    {signInError ? (
-                      <p className="rounded-lg border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-[13px] text-red-700">
-                        {signInError}
-                      </p>
-                    ) : null}
                     <div className="space-y-1.5">
                       <label htmlFor="email" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Email
@@ -318,56 +361,74 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                       </p>
                     ) : null}
 
-                    <fieldset className="space-y-2">
+                    <fieldset className="space-y-2.5">
                       <legend className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                         Workspace type
                       </legend>
                       {inviteFromUrl ? (
-                        <p className="text-[12px] leading-relaxed text-[#1c1830]/80">
-                          You&apos;re joining an organization via invitation.
-                        </p>
-                      ) : null}
-                      <div className="flex gap-4">
-                        <label
-                          className={cn(
-                            "flex items-center gap-2 text-[13px] text-black/70",
-                            inviteFromUrl ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                          )}
-                        >
-                          <input
-                            type="radio"
-                            name="workspaceType"
-                            checked={signupWorkspaceSelection === "individual"}
-                            disabled={Boolean(inviteFromUrl)}
-                            onChange={() => {
-                              setWorkspaceType("individual");
-                              const params = new URLSearchParams(searchParams.toString());
-                              params.set("mode", "sign-up");
-                              params.set("workspace", "individual");
-                              router.replace(`/sign-in?${params.toString()}`, { scroll: false });
-                            }}
-                            className="accent-[#1c1830]"
-                          />
-                          Individual
-                        </label>
-                        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-black/70">
-                          <input
-                            type="radio"
-                            name="workspaceType"
-                            checked={signupWorkspaceSelection === "organization"}
-                            disabled={Boolean(inviteFromUrl)}
-                            onChange={() => {
-                              setWorkspaceType("organization");
-                              const params = new URLSearchParams(searchParams.toString());
-                              params.set("mode", "sign-up");
-                              params.set("workspace", "organization");
-                              router.replace(`/sign-in?${params.toString()}`, { scroll: false });
-                            }}
-                            className="accent-[#1c1830]"
-                          />
-                          Organization
-                        </label>
-                      </div>
+                        <div className="rounded-xl border border-[#1c1830]/15 bg-[#1c1830]/[0.04] px-3 py-2.5">
+                          <div className="flex items-start gap-2.5">
+                            <Building2 className="mt-0.5 size-4 shrink-0 text-[#1c1830]/70" aria-hidden />
+                            <div>
+                              <p className="text-[13px] font-medium text-[#1c1830]">Organization invite</p>
+                              <p className="mt-0.5 text-[12px] leading-relaxed text-black/55">
+                                You&apos;re joining an organization via invitation.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                          {WORKSPACE_OPTIONS.map(({ value, title, description, icon: Icon }) => {
+                            const selected = signupWorkspaceSelection === value;
+                            return (
+                              <label
+                                key={value}
+                                className={cn(
+                                  "relative flex cursor-pointer flex-col gap-2.5 rounded-xl border p-3.5 transition-all duration-200",
+                                  selected
+                                    ? "border-[#1c1830]/30 bg-[#1c1830]/[0.06] shadow-[inset_0_0_0_1px_rgba(28,24,48,0.06)]"
+                                    : "border-black/12 bg-white/55 hover:border-black/20 hover:bg-white/80",
+                                )}
+                              >
+                                <input
+                                  type="radio"
+                                  name="workspaceType"
+                                  value={value}
+                                  checked={selected}
+                                  onChange={() => selectWorkspaceType(value)}
+                                  className="sr-only"
+                                />
+                                <div className="flex items-start justify-between gap-2">
+                                  <span
+                                    className={cn(
+                                      "flex size-8 items-center justify-center rounded-lg border transition-colors",
+                                      selected
+                                        ? "border-[#1c1830]/20 bg-white/80 text-[#1c1830]"
+                                        : "border-black/10 bg-white/70 text-black/45",
+                                    )}
+                                  >
+                                    <Icon className="size-4" strokeWidth={1.75} aria-hidden />
+                                  </span>
+                                  {selected ? (
+                                    <span className="flex size-5 items-center justify-center rounded-full bg-[#1c1830] text-white">
+                                      <Check className="size-3" strokeWidth={2.5} aria-hidden />
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div>
+                                  <span className="block text-[13px] font-semibold text-[#1c1830]">
+                                    {title}
+                                  </span>
+                                  <span className="mt-1 block text-[11px] leading-snug text-black/50">
+                                    {description}
+                                  </span>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
                     </fieldset>
 
                     <div className="space-y-1.5">
@@ -448,6 +509,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                   <div className="grid gap-3">
                     <button
                       type="button"
+                      onClick={() => startOAuth("github")}
                       className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                     >
                       <GitHubMark />
@@ -455,6 +517,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     </button>
                     <button
                       type="button"
+                      onClick={() => startOAuth("google")}
                       className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
                     >
                       <GoogleMark />

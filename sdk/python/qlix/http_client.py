@@ -17,7 +17,7 @@ from .exceptions import (
 )
 
 DEFAULT_TIMEOUT_S = 15.0
-DEFAULT_RETRIES = 3
+DEFAULT_RETRIES = 5
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
 # Maps backend `error.code` strings to typed exception classes.

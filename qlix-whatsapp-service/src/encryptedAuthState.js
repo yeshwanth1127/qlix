@@ -1,10 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { proto } from '@whiskeysockets/baileys';
-import baileysPkg from '@whiskeysockets/baileys';
-
-const { initAuthCreds, BufferJSON } = baileysPkg;
+import { BufferJSON, initAuthCreds, proto } from '@whiskeysockets/baileys';
 
 /**
  * Baileys' own `useMultiFileAuthState` writes every session/sender-key/creds file as

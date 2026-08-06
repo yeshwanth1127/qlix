@@ -500,7 +500,7 @@ export class TeamsService {
       leadOutreachApprovedAt: new Date(),
       status: 'running',
     });
-    approveLeadOutreachForTeamRun(runId, outreachMember?.agentId, run.leadCampaignId);
+    await approveLeadOutreachForTeamRun(runId, outreachMember?.agentId, run.leadCampaignId);
 
     const refreshed = await this.repo.findRun(runId);
     if (!refreshed) throw new TeamNotFoundError();

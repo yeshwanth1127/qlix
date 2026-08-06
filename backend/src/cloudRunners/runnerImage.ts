@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RunnerOrchestrator } from './runnerOrchestrator.js';
 
-export const RUNNER_DOCKERFILE_REV = 'shared-base-1';
+export const RUNNER_DOCKERFILE_REV = 'shared-base-2';
 
 const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/cloud_runner.py',
@@ -12,6 +12,10 @@ const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/backend_inference_client.py',
   'sdk/python/qlix/http_client.py',
   'sdk/python/qlix/cloud_browser_runtime.py',
+  'sdk/python/qlix/cloud_email_runtime.py',
+  'sdk/python/qlix/cloud_crm_runtime.py',
+  'sdk/python/qlix/cloud_slack_runtime.py',
+  'sdk/python/qlix/jit.py',
   'sdk/python/qlix/cloud_email_runtime.py',
   'sdk/python/qlix/cloud_research_runtime.py',
   'sdk/python/qlix/cloud_document_runtime.py',
@@ -59,17 +63,19 @@ export function sharedRunnerImageRef(sdkHash: string): string {
 }
 
 let sharedImageBuild: Promise<string> | null = null;
+let sharedImageBuildHash: string | null = null;
 
 /**
  * Build (or reuse) one shared runner image for all cloud agents.
  * Per-agent ADK manifests are bind-mounted at container start — not baked into the image.
  */
 export async function ensureSharedRunnerImage(orchestrator: RunnerOrchestrator): Promise<string> {
-  if (sharedImageBuild) return sharedImageBuild;
+  const sdkHash = await computeRunnerSdkHash();
+  if (sharedImageBuild && sharedImageBuildHash === sdkHash) return sharedImageBuild;
 
+  sharedImageBuildHash = sdkHash;
   sharedImageBuild = (async () => {
     await orchestrator.ensureAvailable();
-    const sdkHash = await computeRunnerSdkHash();
     const imageRef = sharedRunnerImageRef(sdkHash);
     const exists = await orchestrator.imageExists(imageRef);
     if (!exists || shouldAlwaysBuildRunnerImage()) {
@@ -86,6 +92,7 @@ export async function ensureSharedRunnerImage(orchestrator: RunnerOrchestrator):
     return await sharedImageBuild;
   } catch (err) {
     sharedImageBuild = null;
+    sharedImageBuildHash = null;
     throw err;
   }
 }

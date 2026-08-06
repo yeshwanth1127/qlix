@@ -38,7 +38,7 @@ export function AppBottomNav({ currentPath, routePrefix, showUpgradeCta }: AppBo
   const moreActive = more.some((item) => isConsoleNavActive(item.href, currentPath, overviewHref));
 
   const tabBase =
-    "sketch-press shrink-0 whitespace-nowrap rounded-full px-3 py-2 text-[10px] transition-all duration-200 ease-out";
+    "sketch-press shrink-0 whitespace-nowrap rounded-full border border-black px-3 py-2 text-[10px] transition-all duration-200 ease-out";
   const tabActive =
     "bg-[color:var(--sketch-purple-soft)] font-semibold text-[color:var(--sketch-purple)]";
   const tabIdle = "text-black/50 hover:bg-black/[0.04] hover:text-black/75";

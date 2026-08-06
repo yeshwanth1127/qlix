@@ -13,6 +13,18 @@ import { sessionUserPayload } from '../deviceVerification/deviceVerification.js'
 import { authenticateUser, loadJwtSecret } from '../middleware/authenticateUser.js';
 import { sessionOrganizationPayload } from '../billings/lib/subscriptionAccess.js';
 import { trialSubscriptionCreateData, TRIAL_PLAN_NAME } from '../billings/lib/trialSubscription.js';
+import {
+  buildOAuthAuthorizeUrl,
+  consoleHomePathForOAuth,
+  exchangeOAuthCode,
+  frontendAuthRedirect,
+  isOAuthLoginProvider,
+  mintOAuthLoginState,
+  OAuthLoginError,
+  OAuthLoginNotConfiguredError,
+  upsertOAuthUserSession,
+  verifyOAuthLoginState,
+} from '../auth/oauthLogin.service.js';
 
 const signupSchema = z.object({
   email: z.string().email().max(320),
@@ -607,6 +619,16 @@ export function createAuthRouter(): Router {
         return;
       }
 
+      if (!user.passwordHash) {
+        response.status(401).json({
+          error: {
+            code: 'invalid_credentials',
+            message: 'Incorrect email or password',
+          },
+        });
+        return;
+      }
+
       const ok = await verifyPassword(body.password, user.passwordHash);
       if (!ok) {
         response.status(401).json({
@@ -741,6 +763,16 @@ export function createAuthRouter(): Router {
           return;
         }
 
+        if (!user.passwordHash) {
+          response.status(400).json({
+            error: {
+              code: 'password_not_set',
+              message: 'This account uses social sign-in and has no password to change',
+            },
+          });
+          return;
+        }
+
         const ok = await verifyPassword(currentPassword, user.passwordHash);
         if (!ok) {
           response.status(400).json({
@@ -759,6 +791,110 @@ export function createAuthRouter(): Router {
       }
     },
   );
+
+  // ── Google / GitHub OAuth login (authorization-code; separate from Gmail connector OAuth) ──
+  const oauthStartLimiter = authRateLimiter(20);
+
+  router.get('/oauth/:provider/start', oauthStartLimiter, (request: Request, response: Response) => {
+    try {
+      const providerRaw = String(request.params.provider ?? '');
+      if (!isOAuthLoginProvider(providerRaw)) {
+        response.status(404).json({
+          error: { code: 'unknown_provider', message: 'Supported providers: google, github' },
+        });
+        return;
+      }
+
+      const workspaceType =
+        request.query.workspaceType === 'organization' ? 'organization' : 'individual';
+      const inviteRaw = typeof request.query.invite === 'string' ? request.query.invite.trim() : '';
+      const inviteToken = inviteRaw.length >= 24 ? inviteRaw : undefined;
+      const nextRaw = typeof request.query.next === 'string' ? request.query.next.trim() : '';
+      const next = nextRaw.startsWith('/') && !nextRaw.startsWith('//') ? nextRaw : undefined;
+
+      if (inviteToken && workspaceType !== 'organization') {
+        response.redirect(
+          frontendAuthRedirect('/sign-in?error=invalid_invite_context&mode=sign-up&workspace=organization'),
+        );
+        return;
+      }
+
+      const state = mintOAuthLoginState({
+        provider: providerRaw,
+        workspaceType: inviteToken ? 'organization' : workspaceType,
+        inviteToken,
+        next,
+      });
+      const url = buildOAuthAuthorizeUrl(providerRaw, state);
+      response.redirect(url);
+    } catch (error) {
+      if (error instanceof OAuthLoginNotConfiguredError) {
+        response.redirect(frontendAuthRedirect(`/sign-in?error=${encodeURIComponent(error.code)}`));
+        return;
+      }
+      console.error('[auth/oauth/start]', error);
+      response.redirect(frontendAuthRedirect('/sign-in?error=oauth_failed'));
+    }
+  });
+
+  router.get('/oauth/:provider/callback', async (request: Request, response: Response) => {
+    const providerRaw = String(request.params.provider ?? '');
+    const fail = (code: string) => {
+      response.redirect(frontendAuthRedirect(`/sign-in?error=${encodeURIComponent(code)}`));
+    };
+
+    try {
+      if (!isOAuthLoginProvider(providerRaw)) {
+        fail('unknown_provider');
+        return;
+      }
+
+      const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+      if (oauthError) {
+        fail(oauthError === 'access_denied' ? 'oauth_denied' : 'oauth_failed');
+        return;
+      }
+
+      const code = typeof request.query.code === 'string' ? request.query.code : '';
+      const state = typeof request.query.state === 'string' ? request.query.state : '';
+      if (!code || !state) {
+        fail('missing_code');
+        return;
+      }
+
+      const claims = verifyOAuthLoginState(state);
+      if (claims.provider !== providerRaw) {
+        fail('invalid_state');
+        return;
+      }
+
+      const profile = await exchangeOAuthCode(providerRaw, code);
+      const session = await upsertOAuthUserSession(providerRaw, profile, {
+        workspaceType: claims.workspaceType,
+        inviteToken: claims.inviteToken,
+        next: claims.next,
+      });
+
+      sendAuthCookie(response, session.token);
+
+      const dest =
+        session.next && session.next.startsWith('/') && !session.next.startsWith('//')
+          ? session.next
+          : consoleHomePathForOAuth(session.workspaceKind, session.isSuperAdmin);
+      response.redirect(frontendAuthRedirect(dest));
+    } catch (error) {
+      if (error instanceof OAuthLoginNotConfiguredError) {
+        fail(error.code);
+        return;
+      }
+      if (error instanceof OAuthLoginError) {
+        fail(error.code);
+        return;
+      }
+      console.error('[auth/oauth/callback]', error);
+      fail('oauth_failed');
+    }
+  });
 
   return router;
 }

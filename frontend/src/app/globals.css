@@ -12,6 +12,7 @@
   --border-subtle: rgba(0, 0, 0, 0.06);
   --border-default: rgba(0, 0, 0, 0.1);
   --border-strong: rgba(0, 0, 0, 0.18);
+  --qlix-card-border: rgba(14, 13, 18, 0.36);
 
   --text-primary: #09090b;
   --text-secondary: #52525b;
@@ -40,7 +41,7 @@
   --landing-page-bg: #fafafa;
   --landing-hero-column-bg: #f4f4f5;
   --landing-form-column-bg: #fafafa;
-  --landing-border: #e4e4e7;
+  --landing-border: #c4c4c8;
   --landing-card: #ffffff;
   --landing-card-muted: #f4f4f5;
   --landing-text: #09090b;
@@ -96,6 +97,7 @@
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-default: rgba(255, 255, 255, 0.1);
   --border-strong: rgba(255, 255, 255, 0.18);
+  --qlix-card-border: rgba(255, 255, 255, 0.24);
 
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
@@ -250,7 +252,7 @@
     background-color: var(--glass-surface-bg);
     -webkit-backdrop-filter: blur(20px) saturate(165%);
     backdrop-filter: blur(20px) saturate(165%);
-    border: 1px solid var(--glass-surface-border);
+    border: 1px solid var(--qlix-card-border, var(--glass-surface-border));
     box-shadow: var(--glass-surface-shadow);
   }
 
@@ -562,8 +564,8 @@ body {
    panels, never from hard wireframe boxes. Scoped to authenticated routes. */
 [data-sketch-console] {
   --text-primary: #0e0d12;
-  --text-secondary: rgba(14, 13, 18, 0.62);
-  --text-tertiary: rgba(14, 13, 18, 0.42);
+  --text-secondary: #0e0d12;
+  --text-tertiary: #0e0d12;
 
   /* Minimal accent palette layered over the black & white UI.
      `--sketch-purple` is the brand accent (orange — name kept for compatibility)
@@ -580,6 +582,8 @@ body {
      `border-black` in the console is remapped onto these (see overrides below). */
   --ink-border: rgba(18, 16, 24, 0.13);
   --ink-border-strong: rgba(18, 16, 24, 0.26);
+  --sketch-card-border: rgba(14, 13, 18, 0.4);
+  --sketch-button-border: #0e0d12;
 
   /* Layered elevation for glass panels: contact line + ambient falloff + a
      top inner highlight that sells the frosted edge. */
@@ -627,8 +631,8 @@ body {
   /* Frosted-glass variables retuned for the light console so `qlix-glass-*`
      panels read as glass here instead of the dark-theme defaults. */
   --glass-surface-bg: rgba(255, 255, 255, 0.55);
-  --glass-surface-border: rgba(18, 16, 24, 0.1);
-  --glass-surface-border-hover: rgba(18, 16, 24, 0.18);
+  --glass-surface-border: var(--sketch-card-border);
+  --glass-surface-border-hover: rgba(14, 13, 18, 0.52);
   --glass-surface-bg-hover: rgba(255, 255, 255, 0.72);
   --glass-surface-shadow: var(--sketch-shadow);
   --glass-muted-bg: rgba(255, 255, 255, 0.4);
@@ -675,14 +679,38 @@ body {
   /* Frosted treatment for sketch cards/frames. */
   :where([data-sketch-console] .sketch-card) {
     border-radius: 1rem;
+    border-color: var(--sketch-card-border) !important;
     background-clip: padding-box;
     -webkit-backdrop-filter: blur(18px) saturate(1.5);
     backdrop-filter: blur(18px) saturate(1.5);
+  }
+
+  /* Console copy is ink-black — no muted gray body or label text. */
+  [data-sketch-console] :where([class*="text-black/"]) {
+    color: var(--text-primary) !important;
+  }
+
+  [data-sketch-console] :where(.text-\[--text-secondary\], .text-\[--text-tertiary\]) {
+    color: var(--text-primary) !important;
+  }
+
+  [data-sketch-console] :where([class*="placeholder:text-black/"])::placeholder {
+    color: var(--text-primary) !important;
+    opacity: 1;
+  }
+
+  /* Buttons and pill links — solid ink borders (not hairline gray). */
+  [data-sketch-console] :where(
+    button[class*="border"],
+    a[class*="border"][class*="rounded-full"]
+  ) {
+    border-color: var(--sketch-button-border) !important;
   }
 }
 
 /* Soft elevation for sketch cards/frames. */
 .sketch-card {
+  border-color: var(--sketch-card-border, var(--qlix-card-border));
   box-shadow: var(--sketch-shadow);
 }
 
@@ -696,6 +724,13 @@ body {
 .sketch-card-hover:hover {
   box-shadow: var(--sketch-shadow-hover);
   transform: translateY(-1px);
+}
+
+/* Frosted marketing/auth card panels — stronger ink outline on light surfaces. */
+@layer utilities {
+  :where([class*="backdrop-blur"][class*="border-black"]) {
+    border-color: var(--qlix-card-border) !important;
+  }
 }
 
 .sketch-press:active {
@@ -764,12 +799,243 @@ body {
   }
 }
 
+/* ── Connectors page — animated card borders & status accents ─────────────── */
+
+@property --connector-border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes connector-border-spin {
+  to {
+    --connector-border-angle: 360deg;
+  }
+}
+
+@keyframes connector-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    filter: blur(0);
+  }
+  50% {
+    opacity: 0.85;
+    filter: blur(0.5px);
+  }
+}
+
+@keyframes connector-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(21, 128, 61, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(21, 128, 61, 0);
+  }
+}
+
+@keyframes connector-highlight-shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+.connector-card-wrap {
+  position: relative;
+  border-radius: 1rem;
+}
+
+.connector-card-wrap::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--connector-border-angle),
+    transparent 0deg,
+    transparent 280deg,
+    rgba(14, 13, 18, 0.08) 300deg,
+    rgba(14, 13, 18, 0.22) 330deg,
+    rgba(14, 13, 18, 0.08) 350deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+  z-index: 1;
+}
+
+.connector-card-wrap:hover::before {
+  opacity: 1;
+  animation: connector-border-spin 4s linear infinite;
+}
+
+.connector-card-wrap--connected::before {
+  background: conic-gradient(
+    from var(--connector-border-angle),
+    transparent 0deg,
+    transparent 240deg,
+    rgba(21, 128, 61, 0.5) 280deg,
+    rgba(34, 197, 94, 0.85) 310deg,
+    rgba(21, 128, 61, 0.5) 340deg,
+    transparent 360deg
+  );
+  opacity: 0.75;
+  animation: connector-border-spin 5s linear infinite;
+}
+
+.connector-card-wrap--highlight::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(249, 115, 22, 0.15) 25%,
+    rgba(249, 115, 22, 0.65) 50%,
+    rgba(249, 115, 22, 0.15) 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  -webkit-mask: none;
+  mask: none;
+  padding: 2px;
+  opacity: 1;
+  animation: connector-highlight-shimmer 2.8s ease-in-out infinite;
+}
+
+.connector-card-inner {
+  position: relative;
+  z-index: 0;
+  border-radius: inherit;
+}
+
+.connector-card-wrap--connected .connector-card-inner {
+  box-shadow:
+    0 0 0 1px rgba(21, 128, 61, 0.12),
+    inset 3px 0 0 rgba(21, 128, 61, 0.55);
+}
+
+.connector-card-wrap--highlight .connector-card-inner {
+  box-shadow:
+    0 0 0 1px rgba(249, 115, 22, 0.2),
+    inset 3px 0 0 rgba(249, 115, 22, 0.65);
+}
+
+.connector-status-dot {
+  display: inline-block;
+  size: 0.5rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+.connector-status-dot--connected {
+  background: var(--sketch-green, #15803d);
+  animation: connector-status-pulse 2.4s ease-in-out infinite;
+}
+
+.connector-status-dot--pending {
+  background: #d97706;
+  animation: qlix-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.connector-status-dot--idle {
+  background: rgba(14, 13, 18, 0.22);
+}
+
+.connector-filter-chip {
+  border: 1px solid rgba(14, 13, 18, 0.18);
+  background: rgba(255, 255, 255, 0.65);
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s ease;
+}
+
+.connector-filter-chip:hover:not(:disabled) {
+  border-color: rgba(14, 13, 18, 0.45);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -8px rgba(16, 14, 22, 0.25);
+}
+
+.connector-filter-chip--active {
+  border-color: #0e0d12;
+  background: #0e0d12;
+  color: #fff;
+  box-shadow: 0 8px 20px -10px rgba(16, 14, 22, 0.45);
+}
+
+.connector-catalog-card {
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.connector-catalog-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 2px 4px rgba(16, 14, 22, 0.04),
+    0 16px 40px -16px rgba(16, 14, 22, 0.2);
+}
+
+.connector-catalog-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    var(--connector-brand-glow, rgba(249, 115, 22, 0.06)) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.connector-catalog-card:hover::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connector-card-wrap::before,
+  .connector-card-wrap--connected::before,
+  .connector-card-wrap--highlight::before {
+    animation: none;
+  }
+  .connector-status-dot--connected,
+  .connector-status-dot--pending {
+    animation: none;
+  }
+  .connector-catalog-card:hover {
+    transform: none;
+  }
+  .connector-filter-chip:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
 /* ReflectiveCard → frosted ink panel inside the console (its stock dark
    video/sheen layers are hidden — they're tuned for dark pages). */
 [data-sketch-console] .rc-container {
   background: rgba(255, 255, 255, 0.6) !important;
   box-shadow: var(--sketch-shadow) !important;
-  border: 1px solid var(--ink-border) !important;
+  border: 1px solid var(--sketch-card-border) !important;
   border-radius: 1rem !important;
   -webkit-backdrop-filter: blur(18px) saturate(1.5);
   backdrop-filter: blur(18px) saturate(1.5);

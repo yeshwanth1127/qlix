@@ -4,9 +4,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import {
-  type AgentDTO,
+  listEmployeeEngagements,
+  type EmployeeEngagementDTO,
+} from "@/lib/employees-api";
+import {
   deleteAllAgents,
   listAgents,
+  type AgentDTO,
 } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
 import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
@@ -20,6 +24,7 @@ interface AgentsListViewProps {
 export function AgentsListView({ routePrefix }: AgentsListViewProps) {
   const { session } = useSession();
   const [agents, setAgents] = useState<AgentDTO[] | null>(null);
+  const [employeesByAgentId, setEmployeesByAgentId] = useState<Map<string, EmployeeEngagementDTO>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -38,13 +43,17 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
     setLoading(true);
     setError(null);
     try {
-      const data = await listAgents(orgId);
+      const [data, engagements] = await Promise.all([
+        listAgents(orgId),
+        listEmployeeEngagements().catch(() => [] as EmployeeEngagementDTO[]),
+      ]);
       if (!data) {
         setError("Could not load agents (try signing in again).");
         setAgents(null);
         return;
       }
       setAgents(data);
+      setEmployeesByAgentId(new Map(engagements.map((e) => [e.agentId, e])));
     } catch {
       setError("Network error");
     } finally {
@@ -161,7 +170,9 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
               </tr>
             </thead>
             <tbody>
-              {agents.map((a) => (
+              {agents.map((a) => {
+                const employee = employeesByAgentId.get(a.id);
+                return (
                 <tr
                   key={a.id}
                   className="border-b border-[--border-subtle] transition-colors last:border-0 hover:bg-[var(--glass-row-hover)]"
@@ -173,6 +184,11 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
                     >
                       {a.name}
                     </Link>
+                    {employee ? (
+                      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-[--text-tertiary]">
+                        Employee · {employee.packSnapshot.label}
+                      </p>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 font-mono text-[12px] text-[--text-secondary]" title={a.did}>
                     {a.did}
@@ -186,7 +202,8 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
                     {derivedStatus(a)}
                   </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         )}

@@ -109,7 +109,7 @@ def environment_facts(env: Mapping[str, Any]) -> list[str]:
         f"Local Desktop folder: {desktop}" if desktop else "Local Desktop folder: (unknown)",
         f"Hybrid runner working directory: {cwd}" if cwd else "Hybrid runner working directory: (unknown)",
         (
-            "When using file tools (s3_read_file, s3_write_file, s3_create_pdf, etc.), "
+            "When using file tools (luna_local_read_file, luna_local_write_file, luna_local_create_pdf, etc.), "
             f"always use these real paths — never placeholder paths like C:\\Users\\User\\..."
         ),
     ]
