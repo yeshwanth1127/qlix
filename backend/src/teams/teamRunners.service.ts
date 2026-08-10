@@ -6,6 +6,7 @@ import {
   type DockerTeamContext,
 } from '../cloudRunners/dockerNaming.js';
 import type { TeamDTO, TeamRunnerStatusEntry, TeamRunnersStatusDTO } from './teams.types.js';
+import { isLlmProviderConfigured } from '../llm/inferenceRouter.js';
 
 const HEARTBEAT_FRESH_MS = 20_000;
 
@@ -18,9 +19,11 @@ export function buildRunnerStatusEntry(params: {
   agent: AgentDTO;
   role: 'supervisor' | 'worker';
   team?: { id: string; name: string } | null;
-  inferenceReady: boolean;
+  inferenceReady?: boolean;
 }): TeamRunnerStatusEntry {
-  const { agent, role, team, inferenceReady } = params;
+  const { agent, role, team } = params;
+  const inferenceReady =
+    params.inferenceReady ?? isLlmProviderConfigured(agent.llmProvider);
   const heartbeatAt =
     agent.runtime === 'hybrid'
       ? agent.hybridLastHeartbeatAt
@@ -32,7 +35,7 @@ export function buildRunnerStatusEntry(params: {
     (agent.runtime === 'cloud' || agent.runtime === 'hybrid') &&
     agent.llmMode === 'proxy' &&
     !inferenceReady
-      ? 'Inference proxy is not configured: OPENROUTER_API_KEY is missing on backend.'
+      ? `Inference proxy is not configured for provider "${agent.llmProvider}".`
       : null;
 
   const identity: DockerAgentIdentity = { id: agent.id, name: agent.name, did: agent.did };
@@ -72,7 +75,7 @@ export function buildRunnerStatusEntry(params: {
 export function buildTeamRunnersStatus(
   team: TeamDTO,
   agents: Map<string, AgentDTO>,
-  inferenceReady: boolean,
+  inferenceReady?: boolean,
 ): TeamRunnersStatusDTO {
   const runners: TeamRunnerStatusEntry[] = [];
 

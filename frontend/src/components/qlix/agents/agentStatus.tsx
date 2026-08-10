@@ -118,6 +118,31 @@ const STATUS_META: Record<
   },
 };
 
+/** Plain-language status text — never the raw `runner_failed` style key. */
+export function agentStatusLabel(status: string): string {
+  const key = status.toLowerCase().replace(/\s+/g, "_");
+  return STATUS_META[key]?.label ?? status.replace(/_/g, " ");
+}
+
+/** Monochrome-first presence dot for list rows. */
+export function agentStatusDotClassName(status: string): string {
+  const key = status.toLowerCase().replace(/\s+/g, "_");
+  if (key === "online" || key === "active") return "bg-[color:var(--success)]";
+  if (key === "provisioning" || key === "restarting" || key === "running") {
+    return "bg-[color:var(--warning)] animate-pulse";
+  }
+  if (key === "runner_failed" || key === "failed") return "bg-[color:var(--sketch-red)]";
+  return "bg-[color:var(--ink-faint)]";
+}
+
+/** Where the agent runs, in words a user recognises. */
+export function agentRuntimeLabel(runtime: AgentRuntime, agentKind?: AgentKind): string {
+  if (agentKind === "org_brain") return "Company brain";
+  if (runtime === "cloud") return "Cloud";
+  if (runtime === "hybrid") return "Your computer";
+  return "Local";
+}
+
 export function AgentStatusBadge({ status }: { readonly status: string }) {
   const key = status.toLowerCase().replace(/\s+/g, "_");
   const meta = STATUS_META[key] ?? {

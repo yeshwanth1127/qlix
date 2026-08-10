@@ -124,6 +124,7 @@ export class NLCreationService {
       runtime: spec.runtime,
       model: spec.model,
       llmMode: spec.llmMode,
+      llmProvider: spec.model.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter',
       localInferenceMode: spec.localInferenceMode,
       orgId,
     });

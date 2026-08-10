@@ -6,7 +6,11 @@ import { useRouter } from "next/navigation";
 import { Check, ChevronLeft, Copy, Download, Fingerprint, Loader2, MessageSquare, Pencil, Trash2, X } from "lucide-react";
 import {
   type AgentDTO,
+  type LlmProvider,
+  type ModelCatalogEntry,
   type VerifiableCredentialDTO,
+  buildProxyModelGroups,
+  llmProviderFromModelId,
   deleteAgent,
   getAgent,
   getRuntimeStatus,
@@ -14,10 +18,14 @@ import {
   clearCloudRunnerProvisioning,
   reissueHybridStarterPack,
   updateAgentDescription,
+  updateAgentInference,
   updateAgentToolProfile,
+  fetchInferenceCapabilities,
+  fetchModelCatalog,
 } from "@/lib/agents-api";
 import { downloadBase64File, getStashedStarterPack, type StarterPack } from "@/lib/download";
 import { canDeleteAgentRecord } from "@/lib/org-permissions";
+import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import {
   SketchBox,
   SketchListSkeleton,
@@ -63,6 +71,96 @@ function shortHexKey(hex: string): string {
   const t = hex.trim();
   if (t.length <= 22) return t;
   return `${t.slice(0, 12)}…${t.slice(-8)}`;
+}
+
+function AgentInferenceSettings({
+  agent,
+  onUpdated,
+}: {
+  readonly agent: AgentDTO;
+  readonly onUpdated: (agent: AgentDTO) => void;
+}) {
+  const [provider, setProvider] = useState<LlmProvider>(agent.llmProvider);
+  const [model, setModel] = useState(agent.model);
+  const [exoraCatalog, setExoraCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [capabilities, setCapabilities] = useState<Awaited<
+    ReturnType<typeof fetchInferenceCapabilities>
+  >>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetchInferenceCapabilities().then(setCapabilities);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([fetchModelCatalog("exora"), fetchModelCatalog("openrouter")]).then(
+      ([exoraResult, openrouterResult]) => {
+        if (cancelled) return;
+        setExoraCatalog(exoraResult.ok ? exoraResult.models : []);
+        setOpenrouterCatalog(openrouterResult.ok ? openrouterResult.models : []);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const modelGroups = buildProxyModelGroups({
+    exoraCatalog,
+    openrouterCatalog,
+    includeExora:
+      agent.llmProvider === "exora" || capabilities?.providers.exora.enabled !== false,
+    includeOpenrouter:
+      agent.llmProvider === "openrouter" ||
+      capabilities?.providers.openrouter.enabled !== false,
+    selectedModel: model,
+  });
+  const dirty = provider !== agent.llmProvider || model !== agent.model;
+
+  return (
+    <div className="sm:col-span-2 grid gap-3">
+      <div>
+        <span className={sketchLabel}>AI model</span>
+        <div className="mt-1">
+          <ModelHierarchyPicker
+            value={model}
+            groups={modelGroups}
+            onChange={(next) => {
+              setModel(next);
+              setProvider(llmProviderFromModelId(next));
+              setError(null);
+            }}
+          />
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          className={sketchButton}
+          onClick={() => {
+            setSaving(true);
+            setError(null);
+            void updateAgentInference(agent.id, provider, model).then((result) => {
+              setSaving(false);
+              if (!result.ok) {
+                setError(result.error);
+                return;
+              }
+              onUpdated(result.agent);
+            });
+          }}
+        >
+          {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+          Save inference
+        </button>
+        {error ? <span className="text-[11px] text-black">{error}</span> : null}
+      </div>
+    </div>
+  );
 }
 
 export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) {
@@ -592,6 +690,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
           <h2 className={sketchLabel}>Runtime</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <DetailTile label="Runtime" value={agent.runtime} capitalize />
+            <DetailTile label="LLM provider" value={agent.llmProvider} capitalize />
             <DetailTile label="Model" value={agent.model} mono />
             {agent.runtime === "local" && agent.localInferenceMode ? (
               <DetailTile
@@ -602,6 +701,16 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                     : "Cloud AI APIs"
                 }
                 className="sm:col-span-2"
+              />
+            ) : null}
+            {agent.llmMode === "proxy" ? (
+              <AgentInferenceSettings
+                agent={agent}
+                onUpdated={(updated) =>
+                  setData((previous) =>
+                    previous ? { ...previous, agent: updated } : previous,
+                  )
+                }
               />
             ) : null}
             <label className="sm:col-span-2">

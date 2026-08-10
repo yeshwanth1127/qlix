@@ -37,33 +37,24 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
 
   const backHref = `${routePrefix}/teams`;
 
+  const quiet =
+    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] text-[color:var(--ink-soft)] transition-colors hover:bg-black/[0.05] hover:text-black";
+
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col bg-white">
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-black px-4">
-        <button
-          type="button"
-          onClick={() => router.push(backHref)}
-          className={`${sketchButton} gap-1.5 py-1`}
-        >
+    <div className="flex min-h-0 w-full flex-1 flex-col">
+      <div className="flex h-12 shrink-0 items-center px-6">
+        <button type="button" onClick={() => router.push(backHref)} className={quiet}>
           <ArrowLeft size={13} />
           Teams
         </button>
-
-        {team && (
-          <>
-            <span className="text-black/30">/</span>
-            <span className="truncate max-w-xs text-xs font-medium text-black/70">
-              {team.name}
-            </span>
-          </>
-        )}
 
         {!loading && (
           <button
             type="button"
             onClick={load}
-            className={`${sketchButton} ml-auto p-1`}
+            className={`${quiet} ml-auto`}
             title="Refresh"
+            aria-label="Refresh"
           >
             <RefreshCw size={13} />
           </button>
@@ -72,13 +63,13 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {loading && (
-          <div className="flex h-full items-center justify-center text-sm text-black/50">
+          <div className="flex h-full items-center justify-center text-[13px] text-[color:var(--ink-soft)]">
             Loading team…
           </div>
         )}
         {error && (
           <div className="flex h-full flex-col items-center justify-center gap-3">
-            <p className="text-sm text-black">{error}</p>
+            <p className="text-[13px] text-black">{error}</p>
             <button type="button" onClick={load} className={sketchButton}>
               Retry
             </button>

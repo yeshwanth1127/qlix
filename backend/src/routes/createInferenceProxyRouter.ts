@@ -8,10 +8,14 @@ import {
 } from '../llm/inferenceSchemas.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
 import {
-  openRouterChatCompletion,
-  OpenRouterConfigError,
-  OpenRouterRequestError,
-} from '../llm/openrouterClient.js';
+  chatCompletion,
+  chatCompletionStream,
+  InferenceConfigError,
+  InferenceProviderError,
+  LLM_APPLICATION_IDS,
+  parseLlmProvider,
+  type LlmProviderId,
+} from '../llm/inferenceRouter.js';
 import { cacheToolDefinitions, getCachedTools } from '../llm/toolCache.js';
 import {
   completionCacheKey,
@@ -43,17 +47,21 @@ function handleInferenceProxyError(
   tag: string,
 ): void {
   console.warn(
-    `[inference] stage=error tag=${tag} agentId=${agentId} latencyMs=${elapsed} error=${String((error as Error)?.message ?? error)}`,
+    `[inference] stage=error tag=${tag} provider=${
+      error instanceof InferenceConfigError || error instanceof InferenceProviderError
+        ? error.provider
+        : 'unknown'
+    } applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} latencyMs=${elapsed} error=${String((error as Error)?.message ?? error)}`,
   );
   if (error instanceof ModelPolicyError) {
     response.status(400).json({ error: { code: 'model_not_allowed', message: error.message } });
     return;
   }
-  if (error instanceof OpenRouterConfigError) {
+  if (error instanceof InferenceConfigError) {
     response.status(503).json({ error: { code: 'inference_not_configured', message: error.message } });
     return;
   }
-  if (error instanceof OpenRouterRequestError) {
+  if (error instanceof InferenceProviderError) {
     response.status(502).json({ error: { code: 'provider_error', message: error.message } });
     return;
   }
@@ -70,6 +78,8 @@ async function assertProxyAgent(agentId: string): Promise<{
   runtime: string;
   llmMode: string;
   llmModel: string;
+  llmProvider: LlmProviderId;
+  orgId: string | null;
   planAllowedTiers: string[];
 }> {
   const agent = await prisma.agent.findUnique({
@@ -79,6 +89,7 @@ async function assertProxyAgent(agentId: string): Promise<{
       runtime: true,
       llmMode: true,
       llmModel: true,
+      llmProvider: true,
       orgId: true,
       organization: { select: { plan: true } },
     },
@@ -98,15 +109,51 @@ async function assertProxyAgent(agentId: string): Promise<{
     runtime: agent.runtime,
     llmMode: agent.llmMode,
     llmModel: agent.llmModel,
+    llmProvider: parseLlmProvider(agent.llmProvider),
+    orgId: agent.orgId,
     planAllowedTiers,
   };
 }
 
+function logInferenceSuccess(input: {
+  agentId: string;
+  orgId: string | null;
+  provider: LlmProviderId;
+  model: string;
+  usage?: unknown;
+  latencyMs: number;
+  streaming: boolean;
+  cacheHit?: boolean;
+}): void {
+  const usage =
+    input.usage && typeof input.usage === 'object'
+      ? (input.usage as Record<string, unknown>)
+      : {};
+  console.log(
+    '[inference] %s',
+    JSON.stringify({
+      stage: 'success',
+      applicationId: LLM_APPLICATION_IDS.agentInference,
+      provider: input.provider,
+      model: input.model,
+      status: 200,
+      promptTokens: Number(usage.prompt_tokens) || 0,
+      completionTokens: Number(usage.completion_tokens) || 0,
+      totalTokens: Number(usage.total_tokens) || 0,
+      latencyMs: input.latencyMs,
+      streaming: input.streaming,
+      cacheHit: input.cacheHit ?? false,
+      agentId: input.agentId,
+      orgId: input.orgId,
+    }),
+  );
+}
+
 function resolveRoute(
-  agent: { planAllowedTiers: string[] },
+  agent: { planAllowedTiers: string[]; llmProvider: LlmProviderId },
   request: InferenceChatRequest,
 ): RouteDecision {
-  const requested = normalizeQlixInferenceModelId(request.model);
+  const requested = normalizeQlixInferenceModelId(request.model, agent.llmProvider);
   const decision = selectInferenceModel({
     requestedModel: requested,
     messages: request.messages as Array<{ role?: string; content?: unknown }>,
@@ -160,7 +207,7 @@ export function createInferenceProxyRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const agent = await assertProxyAgent(agentId);
 
-      assertModelAllowed(parsed.data.model);
+      assertModelAllowed(parsed.data.model, agent.llmProvider);
       if (isQlixAutoModelId(parsed.data.model)) {
         // Auto ids are allowed through policy; never forwarded raw to OpenRouter.
       }
@@ -193,15 +240,14 @@ export function createInferenceProxyRouter(): Router {
       if (decision.isAuto && isQlixAutoModelId(decision.routedModel)) {
         throw new ModelPolicyError('Auto routing failed to resolve a concrete model');
       }
-      assertModelAllowed(decision.routedModel);
+      assertModelAllowed(decision.routedModel, agent.llmProvider);
       const inferenceRequest = applyRouteToRequest(withTools, decision);
 
       console.log(
-        `[inference] route agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
+        `[inference] route provider=${agent.llmProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
       );
 
       if (parsed.data.stream === true) {
-        const { openRouterChatCompletionStream } = await import('../llm/openRouterStream.js');
         response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
         response.setHeader('Cache-Control', 'no-cache');
         response.setHeader('Connection', 'keep-alive');
@@ -210,16 +256,24 @@ export function createInferenceProxyRouter(): Router {
         response.setHeader('X-Qlix-Routing-Reason', decision.reason);
         response.flushHeaders?.();
 
-        const result = await openRouterChatCompletionStream(inferenceRequest, (delta) => {
-          if (delta.text) {
-            response.write(`event: delta\ndata: ${JSON.stringify({ text: delta.text })}\n\n`);
-          }
-          if (delta.finishReason) {
-            response.write(
-              `event: finish\ndata: ${JSON.stringify({ finish_reason: delta.finishReason })}\n\n`,
-            );
-          }
-        });
+        const result = await chatCompletionStream(
+          inferenceRequest,
+          (delta) => {
+            if (delta.text) {
+              response.write(`event: delta\ndata: ${JSON.stringify({ text: delta.text })}\n\n`);
+            }
+            if (delta.finishReason) {
+              response.write(
+                `event: finish\ndata: ${JSON.stringify({ finish_reason: delta.finishReason })}\n\n`,
+              );
+            }
+          },
+          {
+            provider: agent.llmProvider,
+            applicationId: LLM_APPLICATION_IDS.agentInference,
+            planAllowedTiers: agent.planAllowedTiers,
+          },
+        );
         response.write(
           `event: done\ndata: ${JSON.stringify({
             content: result.content,
@@ -229,6 +283,14 @@ export function createInferenceProxyRouter(): Router {
             billable_tier: decision.billableTier,
           })}\n\n`,
         );
+        logInferenceSuccess({
+          agentId,
+          orgId: agent.orgId,
+          provider: agent.llmProvider,
+          model: decision.routedModel,
+          latencyMs: Date.now() - t0,
+          streaming: true,
+        });
         response.end();
         return;
       }
@@ -255,6 +317,16 @@ export function createInferenceProxyRouter(): Router {
         if (cached) {
           cacheHit = true;
           console.log(`[inference] cache_hit agentId=${agentId} model=${inferenceRequest.model}`);
+          logInferenceSuccess({
+            agentId,
+            orgId: agent.orgId,
+            provider: agent.llmProvider,
+            model: decision.routedModel,
+            usage: cached.usage,
+            latencyMs: Date.now() - t0,
+            streaming: false,
+            cacheHit: true,
+          });
           response.json({
             ...cached,
             routed_model: decision.routedModel,
@@ -266,7 +338,11 @@ export function createInferenceProxyRouter(): Router {
           return;
         }
 
-        const result = await openRouterChatCompletion(inferenceRequest);
+        const result = await chatCompletion(inferenceRequest, {
+          provider: agent.llmProvider,
+          applicationId: LLM_APPLICATION_IDS.agentInference,
+          planAllowedTiers: agent.planAllowedTiers,
+        });
         const body = {
           content: result.content,
           tool_calls: result.toolCalls,
@@ -289,12 +365,34 @@ export function createInferenceProxyRouter(): Router {
             provider: result.provider ?? null,
           });
         }
+        logInferenceSuccess({
+          agentId,
+          orgId: agent.orgId,
+          provider: agent.llmProvider,
+          model: decision.routedModel,
+          usage: result.usage,
+          latencyMs: Date.now() - t0,
+          streaming: false,
+        });
         response.json(body);
         return;
       }
 
       void cacheHit;
-      const result = await openRouterChatCompletion(inferenceRequest);
+      const result = await chatCompletion(inferenceRequest, {
+        provider: agent.llmProvider,
+        applicationId: LLM_APPLICATION_IDS.agentInference,
+        planAllowedTiers: agent.planAllowedTiers,
+      });
+      logInferenceSuccess({
+        agentId,
+        orgId: agent.orgId,
+        provider: agent.llmProvider,
+        model: decision.routedModel,
+        usage: result.usage,
+        latencyMs: Date.now() - t0,
+        streaming: false,
+      });
       response.json({
         content: result.content,
         tool_calls: result.toolCalls,
@@ -343,8 +441,11 @@ export function createInferenceProxyRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const agent = await assertProxyAgent(agentId);
 
-      const canonicalModel = normalizeQlixInferenceModelId(parsed.data.model);
-      assertModelAllowed(canonicalModel);
+      const canonicalModel = normalizeQlixInferenceModelId(
+        parsed.data.model,
+        agent.llmProvider,
+      );
+      assertModelAllowed(canonicalModel, agent.llmProvider);
 
       const meta = parsed.data.metadata;
       const baseRequest: InferenceChatRequest = {
@@ -365,11 +466,23 @@ export function createInferenceProxyRouter(): Router {
       };
 
       const decision = resolveRoute(agent, baseRequest);
-      assertModelAllowed(decision.routedModel);
+      assertModelAllowed(decision.routedModel, agent.llmProvider);
       const inferenceRequest = applyRouteToRequest(baseRequest, decision);
 
-      const result = await openRouterChatCompletion(inferenceRequest, {
+      const result = await chatCompletion(inferenceRequest, {
+        provider: agent.llmProvider,
+        applicationId: LLM_APPLICATION_IDS.agentInference,
         timeoutMs: s3InferenceTimeoutMs(),
+        planAllowedTiers: agent.planAllowedTiers,
+      });
+      logInferenceSuccess({
+        agentId,
+        orgId: agent.orgId,
+        provider: agent.llmProvider,
+        model: decision.routedModel,
+        usage: result.usage,
+        latencyMs: Date.now() - t0,
+        streaming: false,
       });
 
       const message: Record<string, unknown> = { role: 'assistant', content: result.content || null };

@@ -1,6 +1,8 @@
 export { scoreComplexity, type ComplexityResult } from './complexity.js';
 export {
   AUTO_LADDER,
+  EXORA_AUTO_LADDER,
+  EXORA_AUTO_MODEL_IDS,
   QLIX_AUTO_MODEL_IDS,
   TIER_RANK,
   isQlixAutoModelId,

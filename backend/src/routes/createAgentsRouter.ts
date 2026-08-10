@@ -55,6 +55,13 @@ import {
   BrainQueryForbiddenError,
   BrainWrongOrgError,
 } from '../aiBrain/agentBrainAccess.js';
+import {
+  defaultLlmProvider,
+  InferenceConfigError,
+  InferenceProviderError,
+  isLlmProviderConfigured,
+  modelForProvider,
+} from '../llm/inferenceRouter.js';
 
 
 const createAgentSchema = z
@@ -66,6 +73,7 @@ const createAgentSchema = z
     runtime: z.enum(['cloud', 'local', 'hybrid']),
     model: z.string().trim().min(1).max(120),
     llmMode: z.enum(['direct', 'proxy']).default('proxy'),
+    llmProvider: z.enum(['exora', 'openrouter']).default(defaultLlmProvider()),
     orgId: z.string().uuid().nullable(),
     localInferenceMode: z.enum(['local_llm', 'cloud_api']).nullable(),
     /** Hybrid starter ZIP: include only the launcher for this OS (from the creating browser). */
@@ -94,6 +102,16 @@ const createAgentSchema = z
         path: ['localInferenceMode'],
       });
     }
+    if (
+      data.llmMode === 'proxy' &&
+      !data.model.toLowerCase().startsWith(`${data.llmProvider}/`)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `model must use the ${data.llmProvider}/ namespace`,
+        path: ['model'],
+      });
+    }
   });
 
 const deleteAgentBodySchema = z.object({
@@ -116,6 +134,18 @@ export function createAgentsRouter(): Router {
     if (!parsed.success) {
       response.status(400).json({
         error: { code: 'invalid_body', message: 'Invalid agent creation payload', issues: parsed.error.issues },
+      });
+      return;
+    }
+    if (
+      parsed.data.llmMode === 'proxy' &&
+      !isLlmProviderConfigured(parsed.data.llmProvider)
+    ) {
+      response.status(503).json({
+        error: {
+          code: 'inference_not_configured',
+          message: `${parsed.data.llmProvider} inference is not configured`,
+        },
       });
       return;
     }
@@ -272,6 +302,21 @@ export function createAgentsRouter(): Router {
       const plan = await parseAgentCreationPrompt(parsed.data.prompt, request.auth!.orgId, parsed.data.model);
       response.json({ plan });
     } catch (err) {
+      if (err instanceof InferenceConfigError) {
+        response.status(503).json({
+          error: { code: 'inference_not_configured', message: err.message },
+        });
+        return;
+      }
+      if (err instanceof InferenceProviderError) {
+        response.status(502).json({
+          error: {
+            code: 'inference_provider_failed',
+            message: `${err.provider} is temporarily unavailable; please try again`,
+          },
+        });
+        return;
+      }
       if (err instanceof NLParseError) {
         response.status(422).json({ error: { code: 'nl_parse_failed', message: err.message } });
         return;
@@ -527,12 +572,12 @@ export function createAgentsRouter(): Router {
         agent.runtime === 'hybrid'
           ? agent.hybridLastHeartbeatAt
           : agent.cloudLastHeartbeatAt;
-      const inferenceReady = !!process.env.OPENROUTER_API_KEY?.trim();
+      const inferenceReady = isLlmProviderConfigured(agent.llmProvider);
       const inferenceError =
         (agent.runtime === 'cloud' || agent.runtime === 'hybrid') &&
         agent.llmMode === 'proxy' &&
         !inferenceReady
-          ? 'Inference proxy is not configured: OPENROUTER_API_KEY is missing on backend.'
+          ? `Inference proxy is not configured for provider "${agent.llmProvider}".`
           : null;
 
       response.json({
@@ -825,6 +870,68 @@ export function createAgentsRouter(): Router {
     }
     const updated = await agentsRepo.updateDescription(agent.id, body.data.description);
     response.json({ agent: updated });
+  });
+
+  router.patch('/:id/inference', authenticateUser(true), async (request: Request, response: Response) => {
+    const body = z
+      .object({
+        llmProvider: z.enum(['exora', 'openrouter']),
+        model: z.string().trim().min(1).max(200),
+      })
+      .safeParse(request.body);
+    if (!body.success) {
+      response.status(400).json({
+        error: { code: 'validation_error', message: 'Invalid inference configuration' },
+      });
+      return;
+    }
+    if (!body.data.model.toLowerCase().startsWith(`${body.data.llmProvider}/`)) {
+      response.status(400).json({
+        error: {
+          code: 'model_provider_mismatch',
+          message: `model must use the ${body.data.llmProvider}/ namespace`,
+        },
+      });
+      return;
+    }
+    if (!isLlmProviderConfigured(body.data.llmProvider)) {
+      response.status(503).json({
+        error: {
+          code: 'inference_not_configured',
+          message: `${body.data.llmProvider} inference is not configured`,
+        },
+      });
+      return;
+    }
+    try {
+      const updated = await service.updateAgentInference(
+        request.auth!.userId,
+        request.auth!.orgId,
+        String(request.params.id),
+        {
+          llmProvider: body.data.llmProvider,
+          model: modelForProvider(body.data.model, body.data.llmProvider),
+        },
+      );
+      response.json({ agent: updated });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) {
+        response.status(404).json({ error: { code: 'not_found', message: err.message } });
+        return;
+      }
+      if (err instanceof AgentDeleteForbiddenError) {
+        response.status(403).json({ error: { code: 'forbidden', message: err.message } });
+        return;
+      }
+      if (err instanceof AgentScopeUpdateError) {
+        response.status(400).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('update inference error', err);
+      response.status(500).json({
+        error: { code: 'update_inference_failed', message: 'Failed to update inference settings' },
+      });
+    }
   });
 
   router.patch('/:id/tool-profile', authenticateUser(true), async (request: Request, response: Response) => {

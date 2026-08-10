@@ -1,4 +1,8 @@
 import type { ScopeDef } from './scopeCatalog.js';
+import {
+  renderNlPromptPacks,
+  type NlPromptPackId,
+} from './nlPromptPacks.js';
 
 const AGENT_REQUIRED = [
   'name',
@@ -12,58 +16,94 @@ const AGENT_REQUIRED = [
   'rationale',
 ];
 
-/** Agent property schema, with scope enums narrowed to the scopes available this request. */
-function agentPropertiesSchema(scopeIds: string[]): Record<string, unknown> {
+/** Short hints for the builder prompt — keep scope list compact. */
+const BUILDER_HINTS: Record<string, string> = {
+  'web.read': 'Browse pages / fetch URLs',
+  'web.research': 'Structured web/social research APIs',
+  'web.click': 'Click links/buttons',
+  'web.transaction': 'Submit forms / checkouts',
+  'system.file_read': 'Read local files',
+  'system.file_write': 'Write local files',
+  'system.gui_control': 'Desktop GUI / screen automation',
+  'finance.spend_50': 'Spend up to $50',
+  'finance.spend_100': 'Spend up to $100',
+  'brain.query': 'Query org AI brain',
+  'brain.knowledge_read': 'Read org knowledge docs',
+  'email.read': 'Read Gmail',
+  'email.send': 'Send Gmail',
+  'whatsapp.send': 'Send files to linked WhatsApp self-chat',
+  'whatsapp.read': 'Read WhatsApp chats/contacts',
+  'whatsapp.contact_send': 'Message WhatsApp contacts',
+  'social.read': 'Read Orbit social channels',
+  'social.publish': 'Publish/schedule Orbit posts',
+  'crm.read': 'Read CRM records',
+  'crm.write': 'Create/update CRM records',
+  'crm.delete': 'Delete CRM records',
+  'slack.read': 'Read Slack',
+  'slack.send': 'Write Slack',
+};
+
+function builderHint(scope: ScopeDef): string {
+  if (BUILDER_HINTS[scope.id]) return BUILDER_HINTS[scope.id];
+  // MCP / unknown: truncate catalog description.
+  const raw = scope.description.trim();
+  return raw.length > 72 ? `${raw.slice(0, 69)}…` : raw || scope.label;
+}
+
+/** Agent property schema. Scope ids are validated in sanitize — no large enums here. */
+function agentPropertiesSchema(): Record<string, unknown> {
   return {
-    name: { type: 'string', description: 'Short descriptive name, e.g. "Web Researcher"', maxLength: 120 },
+    name: { type: 'string', description: 'Short name, e.g. Web Researcher', maxLength: 120 },
     description: {
       type: 'string',
-      description: 'Task-specific system prompt for the agent. Be precise about what it does.',
+      description: 'Task-specific system prompt for the agent.',
       maxLength: 10000,
     },
     permissionScopes: {
       type: 'array',
-      description: 'Minimum set of permission scopes required. JIT-forced scopes must also appear in jitScopes.',
-      items: { type: 'string', enum: scopeIds },
+      description: 'Required scope ids from Available scopes. Include JIT-forced ids in jitScopes too.',
+      items: { type: 'string' },
     },
     jitScopes: {
       type: 'array',
-      description: 'Subset of permissionScopes requiring user approval on every invocation. Must include all JIT-forced scopes present in permissionScopes.',
-      items: { type: 'string', enum: scopeIds },
+      description: 'Subset of permissionScopes needing per-use approval. Must include all JIT-forced scopes granted.',
+      items: { type: 'string' },
     },
     runtime: {
       type: 'string',
       enum: ['cloud', 'hybrid', 'local'],
-      description: 'cloud = Qlix servers (default); hybrid = Qlix-hosted + local tool execution; local = SDK on user machine.',
+      description: 'cloud default; hybrid for local tools; local for on-device SDK.',
     },
-    model: { type: 'string', description: 'LLM model ID. For cloud/hybrid always use "openrouter/qlix/auto" unless the user names a specific pinned model.' },
+    model: {
+      type: 'string',
+      description: 'Use exora/exora-general for cloud/hybrid unless user names another model.',
+    },
     llmMode: {
       type: 'string',
       enum: ['proxy', 'direct'],
-      description: 'proxy for cloud/hybrid; direct or proxy for local.',
+      description: 'proxy for cloud/hybrid; proxy or direct for local.',
     },
     localInferenceMode: {
       anyOf: [{ type: 'string', enum: ['local_llm', 'cloud_api'] }, { type: 'null' }],
-      description: 'null for cloud/hybrid; "local_llm" or "cloud_api" for local runtime.',
+      description: 'null for cloud/hybrid; local_llm or cloud_api for local.',
     },
-    rationale: { type: 'string', description: 'Brief explanation of why these choices were made.' },
+    rationale: { type: 'string', description: 'Brief why for these choices.' },
   };
 }
 
-export function buildAgentToolSchema(scopes: ScopeDef[]): Record<string, unknown> {
-  const scopeIds = scopes.map((s) => s.id);
+export function buildAgentToolSchema(_scopes?: ScopeDef[]): Record<string, unknown> {
   return {
     type: 'function',
     function: {
       name: 'plan_single_agent',
-      description: "Plan a single Qlix agent. Call this when the user describes ONE agent's purpose.",
+      description: "Plan a single Qlix agent when the user describes ONE agent's purpose.",
       parameters: {
         type: 'object',
         properties: {
           rationale: { type: 'string', description: 'Why these permissions and runtime were chosen.' },
           agent: {
             type: 'object',
-            properties: agentPropertiesSchema(scopeIds),
+            properties: agentPropertiesSchema(),
             required: AGENT_REQUIRED,
             additionalProperties: false,
           },
@@ -75,14 +115,13 @@ export function buildAgentToolSchema(scopes: ScopeDef[]): Record<string, unknown
   };
 }
 
-export function buildTeamToolSchema(scopes: ScopeDef[]): Record<string, unknown> {
-  const scopeIds = scopes.map((s) => s.id);
-  const props = agentPropertiesSchema(scopeIds);
+export function buildTeamToolSchema(_scopes?: ScopeDef[]): Record<string, unknown> {
+  const props = agentPropertiesSchema();
   return {
     type: 'function',
     function: {
       name: 'plan_team',
-      description: 'Plan a supervisor + workers team. Call when the user describes multiple coordinating agents, a pipeline, or a team.',
+      description: 'Plan a supervisor + workers team for multiple coordinating agents or a pipeline.',
       parameters: {
         type: 'object',
         properties: {
@@ -94,14 +133,14 @@ export function buildTeamToolSchema(scopes: ScopeDef[]): Record<string, unknown>
               description: { type: 'string', maxLength: 10000, description: 'Team purpose.' },
               supervisor: {
                 type: 'object',
-                description: 'Orchestrator agent that delegates to workers and synthesizes results.',
+                description: 'Orchestrator that delegates and synthesizes.',
                 properties: props,
                 required: AGENT_REQUIRED,
                 additionalProperties: false,
               },
               workers: {
                 type: 'array',
-                description: 'Specialized worker agents.',
+                description: 'Specialized workers.',
                 items: {
                   type: 'object',
                   properties: {
@@ -109,7 +148,7 @@ export function buildTeamToolSchema(scopes: ScopeDef[]): Record<string, unknown>
                     role: {
                       type: 'string',
                       maxLength: 80,
-                      description: 'Worker role, e.g. researcher, writer, analyst.',
+                      description: 'Worker role, e.g. researcher.',
                     },
                     stageOrder: {
                       type: 'integer',
@@ -143,68 +182,39 @@ export function buildTeamToolSchema(scopes: ScopeDef[]): Record<string, unknown>
   };
 }
 
-export function buildSystemPrompt(scopes: ScopeDef[]): string {
+export function buildSystemPrompt(
+  scopes: ScopeDef[],
+  packs: readonly NlPromptPackId[] = [],
+): string {
   const scopeList = scopes
-    .map((s) => `  ${s.id} — ${s.description}${s.forceJit ? ' [JIT-forced]' : ''}`)
+    .map((s) => `  ${s.id} — ${builderHint(s)}${s.forceJit ? ' [JIT]' : ''}`)
     .join('\n');
   const forceJitList = scopes
     .filter((s) => s.forceJit)
     .map((s) => s.id)
     .join(', ');
 
-  return `You are an agent configuration expert for the Qlix AI agent platform.
-Call EXACTLY ONE of the provided tools — plan_single_agent or plan_team — based on the user description.
-
-## Which tool to call
-- plan_single_agent: user describes a single agent's purpose.
-- plan_team: user describes multiple coordinating agents, a pipeline, supervisor/workers, or a team.
+  const core = `You are a Qlix agent configuration expert.
+Call EXACTLY ONE tool: plan_single_agent (one agent) or plan_team (pipeline/team).
 
 ## Available scopes
 ${scopeList}
 
-## Runtime rules
-- cloud (default): runs on Qlix servers. Use for web research, browsing, cloud automation. llmMode must be "proxy", localInferenceMode must be null.
-- hybrid: Qlix-hosted brain, tools execute on the user's local machine. REQUIRED whenever the user mentions: local machine, my machine, my computer, desktop apps, GUI control, open apps, type/click on screen, local files, or screen automation. llmMode must be "proxy", localInferenceMode must be null.
-- local: SDK-only, entirely on user's machine. llmMode can be "proxy" or "direct". localInferenceMode must be "local_llm" (local model) or "cloud_api" (proxy through Qlix).
+## Runtime
+- cloud (default): Qlix servers. llmMode=proxy, localInferenceMode=null.
+- hybrid: Qlix brain + local tools. Required for local files, desktop/GUI, screen automation. llmMode=proxy, localInferenceMode=null.
+- local: on-device SDK. llmMode=proxy|direct; localInferenceMode=local_llm|cloud_api.
 
-## Scope combinations for common tasks
-Pick ALL scopes that apply — err toward completeness over minimalism:
-- Web research only (cloud): web.research
-- Competitor / competitive research (cloud): web.research (add brain.query if it should factor in internal company context). Use the curated research tools — NOT web.read browsing — to produce a cited SWOT / executive report. PDF report generation is built in on cloud, so do NOT add system.file_write / system.file_read for "make a PDF" — that would force hybrid. Keep runtime cloud; the report is delivered in chat, and as a PDF over WhatsApp when whatsapp.send is granted (email cannot attach files).
-- Web browsing + clicking (cloud): web.read + web.click
-- Web automation with form submission (cloud or hybrid): web.read + web.click + web.transaction
-- Desktop GUI automation on user's machine (hybrid): system.gui_control + web.read + web.click + web.transaction
-- Open apps, type, click, submit on local machine (hybrid): system.gui_control + web.read + web.click + web.transaction
-- Read local files (hybrid): system.file_read
-- Read + write local files (hybrid): system.file_read + system.file_write
-- Financial transactions: add finance.spend_50 (up to $50) or finance.spend_100 (up to $100)
-- Job applications / send resume to job boards or career pages (cloud): web.read + web.click + web.transaction + mcp.qlix-jobs.* (search_jobs, queue_applications, get_apply_brief, record_application_result, upsert_candidate_profile, stage_resume). Target Greenhouse / Lever / Ashby company career pages only — NOT LinkedIn Easy Apply or Indeed. Always put web.transaction in jitScopes so every submit needs user approval.
-- Job apply agent description should instruct: stage or upsert candidate profile + resume first, queue apply URLs or search ATS boards, get_apply_brief per application, browser fill + upload, pause for JIT before Submit, then record_application_result.
-- Google Business / Maps lead scraping (cloud): mcp.qlix-leads.gmb_search_leads + mcp.qlix-leads.get_campaign + mcp.qlix-leads.list_leads (+ mcp.qlix-leads.export_leads if CSV export is needed)
-- mcp.qlix-leads.list_leads returns contactable leads (verified website emails) by default — use includeAll=true to see every scraped business before enrichment
-- NEVER use web.read or web.click for Google Maps / GMB scraping — use mcp.qlix-leads.gmb_search_leads only for Maps
-- Lead website email enrichment (cloud): after gmb_search_leads, call list_leads with includeAll=true, then for EACH lead in needsBrowserEnrichment: browser_ab_open(website) → check /contact → update_lead_email OR record_lead_enrichment(no_email_on_site). Email domain must match website — never use Wix placeholders like info@mysite.com. Outreach is blocked until every website lead is browser-enriched.
-- Lead email outreach after enrichment: add email.send plus mcp.qlix-leads.start_outreach (start_outreach is JIT — include in jitScopes)
-- Lead gen pipeline team: supervisor orchestrates; finder worker scrapes GMB (mcp.qlix-leads.*), qualifier worker enriches websites (web.read + web.click + update_lead_email), outreach worker sends (email.send + start_outreach)
-- Zoho CRM / CRM automation (cloud): crm.read + crm.write + crm.delete — request ALL THREE whenever the agent creates, updates, deletes, converts, links, attaches files to, or notes on CRM records (Leads, Contacts, Deals, etc.). crm.write and crm.delete are JIT-forced and must appear in jitScopes when granted. Start with crm_list_modules / crm_describe_module before mutating records.
-- Slack (cloud): slack.read + slack.send — request BOTH whenever the agent reads channels/messages/lists OR posts messages, creates channels, opens DMs, or adds/updates Slack List task items. slack.send is JIT-forced (no separate slack.write scope). User must connect Slack under Connectors first; scopes can still be granted at build time.
+## Common combos
+- Web research: web.research. Browse: web.read+web.click. Forms: +web.transaction.
+- Request every scope the core task needs. Connector scopes OK before link. mcp.<server>.<tool> = MCP tools (bindings auto-created).
 
-## MCP scopes
-Scopes starting with mcp.<server>.<tool> are MCP server tools registered for this org. Request them like any other scope when the task needs that capability — bindings are created automatically at agent creation.
-
-## JIT scope rules
-JIT-forced scopes: ${forceJitList || '(none)'}
-- These MUST appear in BOTH permissionScopes AND jitScopes when requested.
-- Non-JIT scopes go ONLY in permissionScopes, never in jitScopes.
-- jitScopes must always be a subset of permissionScopes.
-
-## Scope selection rule
-Request every scope the agent's core task requires — incomplete permissions prevent the agent from working.
-Connector-gated scopes (e.g. email, WhatsApp) MAY be requested even if the connector isn't linked yet — the user links it in Connectors and the link is verified when the agent runs. Request such a scope only when the task explicitly involves that channel.
+## JIT
+Forced: ${forceJitList || '(none)'}
+Include those in BOTH permissionScopes and jitScopes. Non-JIT only in permissionScopes. jitScopes ⊆ permissionScopes.
 
 ## Defaults
-- model: "openrouter/qlix/auto"  (Qlix Auto — always use this for cloud/hybrid agents unless the user explicitly asks for a pinned model)
-- runtime: "cloud"
-- llmMode: "proxy"
-- localInferenceMode: null`;
+model=exora/exora-general (cloud/hybrid unless user pins another), runtime=cloud, llmMode=proxy, localInferenceMode=null`;
+
+  return `${core}${renderNlPromptPacks(packs)}`;
 }

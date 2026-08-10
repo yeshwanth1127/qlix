@@ -16,6 +16,7 @@ import {
   Sparkles,
   User,
   Users,
+  Wand2,
 } from "lucide-react";
 import {
   nlParsePrompt,
@@ -29,6 +30,7 @@ import {
   deleteAgent,
   confirmDownload,
   CLOUD_MODELS,
+  EXORA_MODELS,
   type CreateAgentResponse,
 } from "@/lib/agents-api";
 import { createTeam, setSupervisorAgent, addTeamMember } from "@/lib/teams-api";
@@ -75,7 +77,19 @@ type ChatItem =
   | { id: number; kind: "thinking"; text: string }
   | { id: number; kind: "info"; text: string }
   | { id: number; kind: "error"; text: string }
-  | { id: number; kind: "plan"; plan: AgentCreationPlan; consumed: boolean; guestNote: string | null }
+  | {
+      id: number;
+      kind: "plan";
+      plan: AgentCreationPlan;
+      consumed: boolean;
+      guestNote: string | null;
+      /** The prompt this design came from — replayed when the user redesigns. */
+      sourceText: string;
+      /** Change requests stacked on top of `sourceText`, oldest first. */
+      revisions: string[];
+      /** True once a redesign has produced a newer plan further down the thread. */
+      superseded: boolean;
+    }
   | { id: number; kind: "progress"; steps: CreationStep[] }
   | { id: number; kind: "done"; result: DoneResult };
 
@@ -90,17 +104,61 @@ const EXAMPLE_PROMPTS = [
   "A finance tracker that can spend up to $50 and reports transactions",
 ];
 
+/** One-tap starting points for a redesign; the user can edit before rebuilding. */
+const REDESIGN_HINTS = [
+  "Take a different approach",
+  "Split it into a team",
+  "Use fewer permissions",
+  "Keep everything on my computer",
+] as const;
+
+/** Nudge used when the user asks for a redesign without saying what to change. */
+const OPEN_REDESIGN_NOTE =
+  "Take a different approach — rethink the permissions, the runtime, and whether a team fits better.";
+
+/** Folds the original prompt and every change request into one builder prompt. */
+function composeDesignPrompt(base: string, revisions: readonly string[]): string {
+  const prompt =
+    revisions.length === 0
+      ? base
+      : `${base}\n\nRedesign that agent with these changes:\n${revisions.map((r) => `- ${r}`).join("\n")}`;
+  return prompt.slice(0, 5000);
+}
+
 /** Guests: cloud-only for web agents; hybrid when scopes need local tools (desktop/files). */
 const GUEST_MAX_AGENTS = 3;
+const DEFAULT_BUILDER_MODEL = "exora/exora-general";
+const BUILDER_MODELS = [
+  { id: DEFAULT_BUILDER_MODEL, label: "Exora General" },
+  { id: CLOUD_MODELS[0], label: "OpenRouter Auto" },
+] as const;
 
 function adaptSpecForGuest<T extends NLAgentSpec | NLWorkerSpec>(spec: T): T {
-  const model = CLOUD_MODELS.includes(spec.model as (typeof CLOUD_MODELS)[number])
+  const proxyModels = [...CLOUD_MODELS, ...EXORA_MODELS] as readonly string[];
+  const model = proxyModels.includes(spec.model)
     ? spec.model
-    : CLOUD_MODELS[0];
+    : DEFAULT_BUILDER_MODEL;
   if (scopesRequireHybrid(spec.permissionScopes)) {
     return { ...spec, runtime: "hybrid", model, llmMode: "proxy", localInferenceMode: null };
   }
   return { ...spec, runtime: "cloud", model, llmMode: "proxy", localInferenceMode: null };
+}
+
+function applyBuilderModel(
+  plan: AgentCreationPlan,
+  model: string,
+): AgentCreationPlan {
+  if (plan.type === "single") {
+    return { ...plan, agent: { ...plan.agent, model } };
+  }
+  return {
+    ...plan,
+    team: {
+      ...plan.team,
+      supervisor: { ...plan.team.supervisor, model },
+      workers: plan.team.workers.map((worker) => ({ ...worker, model })),
+    },
+  };
 }
 
 function adaptPlanForGuest(plan: AgentCreationPlan): { plan: AgentCreationPlan; note: string | null } {
@@ -142,6 +200,9 @@ function specToCreateBody(spec: NLAgentSpec | NLWorkerSpec, orgId: string | null
     runtime: spec.runtime,
     model: spec.model,
     llmMode: spec.llmMode,
+    llmProvider: spec.model.toLowerCase().startsWith("exora/")
+      ? "exora"
+      : "openrouter",
     localInferenceMode: spec.localInferenceMode,
     orgId,
     clientPlatform: detectHybridClientPlatform(),
@@ -337,10 +398,14 @@ export function ChatLanding({
   const [introDone, setIntroDone] = useState(isDashboard);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
+  const [builderModel, setBuilderModel] = useState(DEFAULT_BUILDER_MODEL);
   const [busy, setBusy] = useState(false);
   const [claimOpen, setClaimOpen] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [connectorGate, setConnectorGate] = useState<PendingConnectorGate | null>(null);
+  /** Plan item whose redesign composer is open, plus the change request being typed. */
+  const [redesignFor, setRedesignFor] = useState<number | null>(null);
+  const [redesignNote, setRedesignNote] = useState("");
   const idRef = useRef(0);
   const busyRef = useRef(false);
   const sessionRef = useRef<AuthSuccessResponse | null>(null);
@@ -412,6 +477,34 @@ export function ChatLanding({
     return res.data;
   };
 
+  /** Runs one design pass and drops the resulting plan card into the transcript. */
+  const runDesign = async (base: string, revisions: string[], thinkingText: string) => {
+    const thinkingId = push({ kind: "thinking", text: thinkingText });
+    const res = await nlParsePrompt(composeDesignPrompt(base, revisions), builderModel);
+    if (!res.ok) {
+      replace(thinkingId, { kind: "error", text: res.errorMessage });
+      return;
+    }
+
+    let plan = applyBuilderModel(res.plan, builderModel);
+    let guestNote: string | null = null;
+    const activeSession = isDashboard ? session : sessionRef.current;
+    if (activeSession?.user.isGuest) {
+      const adapted = adaptPlanForGuest(plan);
+      plan = adapted.plan;
+      guestNote = adapted.note;
+    }
+    replace(thinkingId, {
+      kind: "plan",
+      plan,
+      consumed: false,
+      guestNote,
+      sourceText: base,
+      revisions,
+      superseded: false,
+    });
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
     if (!text || busyRef.current) return;
@@ -430,22 +523,30 @@ export function ChatLanding({
       }
 
       void saveBuilderPrompt(text);
-      const thinkingId = push({ kind: "thinking", text: "Designing your agent…" });
-      const res = await nlParsePrompt(text, CLOUD_MODELS[0]);
-      if (!res.ok) {
-        replace(thinkingId, { kind: "error", text: res.errorMessage });
-        return;
-      }
+      await runDesign(text, [], "Designing your agent…");
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
 
-      let plan = res.plan;
-      let guestNote: string | null = null;
-      const activeSession = isDashboard ? session : sessionRef.current;
-      if (activeSession?.user.isGuest) {
-        const adapted = adaptPlanForGuest(plan);
-        plan = adapted.plan;
-        guestNote = adapted.note;
-      }
-      replace(thinkingId, { kind: "plan", plan, consumed: false, guestNote });
+  /** Sends the plan back through the builder with an extra change request. */
+  const requestRedesign = async (
+    planItemId: number,
+    base: string,
+    revisions: string[],
+    note: string,
+  ) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setRedesignFor(null);
+    setRedesignNote("");
+    try {
+      const trimmed = note.trim();
+      push({ kind: "user", text: trimmed || "Redesign it" });
+      patch(planItemId, { superseded: true });
+      await runDesign(base, [...revisions, trimmed || OPEN_REDESIGN_NOTE], "Redesigning your agent…");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -662,6 +763,22 @@ export function ChatLanding({
             input ? "min-h-[64px] sm:min-h-[28px]" : "min-h-[28px]",
           )}
         />
+        <label className="shrink-0">
+          <span className="sr-only">AI builder model</span>
+          <select
+            value={builderModel}
+            disabled={busy}
+            onChange={(event) => setBuilderModel(event.target.value)}
+            className="max-w-36 rounded-full border border-black/15 bg-white/80 px-2.5 py-1.5 text-[10px] font-medium text-[#26203a] outline-none hover:border-black/30 focus:border-black/40 disabled:opacity-50"
+            title="Model used to design and create agents"
+          >
+            {BUILDER_MODELS.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           disabled={!input.trim() || busy}
@@ -866,7 +983,12 @@ export function ChatLanding({
                         <Bot className="size-3.5 text-white" aria-hidden />
                       )}
                     </div>
-                    <div className="min-w-0 flex-1 space-y-3">
+                    <div
+                      className={cn(
+                        "min-w-0 flex-1 space-y-3",
+                        item.superseded && "opacity-50 motion-safe:transition-opacity",
+                      )}
+                    >
                       <p className="text-[13px] leading-relaxed text-black/65">
                         {plan.type === "team"
                           ? `Here's a team of ${1 + plan.team.workers.length} agents I'd build for that. Review or tweak anything below, then bring them to life.`
@@ -887,21 +1009,124 @@ export function ChatLanding({
                           }
                         />
                       </div>
-                      {!item.consumed && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void requestCreate(item.id, plan)}
-                          className={cn(
-                            "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-white",
-                            "bg-[#1c1830]",
-                            "hover:brightness-110 active:scale-[0.98] motion-safe:transition-[filter,transform]",
-                            "disabled:cursor-not-allowed disabled:opacity-50",
-                          )}
-                        >
-                          <Sparkles className="size-4" aria-hidden />
-                          Bring {plan.type === "team" ? "this team" : "it"} to life
-                        </button>
+                      {item.superseded ? (
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-black/40">
+                          Replaced by the design below
+                        </p>
+                      ) : (
+                        !item.consumed && (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void requestCreate(item.id, plan)}
+                                className={cn(
+                                  "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-white",
+                                  "bg-[#1c1830]",
+                                  "hover:brightness-110 active:scale-[0.98] motion-safe:transition-[filter,transform]",
+                                  "disabled:cursor-not-allowed disabled:opacity-50",
+                                )}
+                              >
+                                <Sparkles className="size-4" aria-hidden />
+                                Bring {plan.type === "team" ? "this team" : "it"} to life
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                aria-expanded={redesignFor === item.id}
+                                onClick={() => {
+                                  setRedesignNote("");
+                                  setRedesignFor((cur) => (cur === item.id ? null : item.id));
+                                }}
+                                className={cn(
+                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#1c1830]",
+                                  "bg-white/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
+                                  redesignFor === item.id
+                                    ? "border-[#1c1830]/45 bg-white"
+                                    : "border-black/15 hover:border-[#1c1830]/40 hover:bg-white",
+                                  "disabled:cursor-not-allowed disabled:opacity-50",
+                                )}
+                              >
+                                <Wand2 className="size-4" aria-hidden />
+                                Redesign
+                              </button>
+                            </div>
+
+                            {redesignFor === item.id && (
+                              <div className="qlix-msg-in rounded-2xl border border-black/12 bg-white/75 p-3 backdrop-blur-xl">
+                                <textarea
+                                  autoFocus
+                                  value={redesignNote}
+                                  rows={2}
+                                  maxLength={600}
+                                  disabled={busy}
+                                  onChange={(e) => setRedesignNote(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      void requestRedesign(
+                                        item.id,
+                                        item.sourceText,
+                                        item.revisions,
+                                        redesignNote,
+                                      );
+                                    }
+                                    if (e.key === "Escape") setRedesignFor(null);
+                                  }}
+                                  placeholder="What should change? Leave blank for a fresh take."
+                                  className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-[#26203a] outline-none placeholder:text-black/35 disabled:opacity-60"
+                                />
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                  {REDESIGN_HINTS.map((hint) => (
+                                    <button
+                                      key={hint}
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => setRedesignNote(hint)}
+                                      className="rounded-full border border-black/12 bg-white/70 px-2.5 py-1 text-[11px] text-black/60 motion-safe:transition-colors hover:border-black/30 hover:text-[#1c1830] disabled:opacity-50"
+                                    >
+                                      {hint}
+                                    </button>
+                                  ))}
+                                  <div className="ml-auto flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setRedesignFor(null)}
+                                      className="rounded-full px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.05em] text-black/45 hover:text-[#1c1830]"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() =>
+                                        void requestRedesign(
+                                          item.id,
+                                          item.sourceText,
+                                          item.revisions,
+                                          redesignNote,
+                                        )
+                                      }
+                                      className={cn(
+                                        "inline-flex items-center gap-1.5 rounded-full bg-[#1c1830] px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-white",
+                                        "hover:brightness-110 active:scale-[0.98] motion-safe:transition-[filter,transform]",
+                                        "disabled:cursor-not-allowed disabled:opacity-50",
+                                      )}
+                                    >
+                                      {busy ? (
+                                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                                      ) : (
+                                        <Wand2 className="size-3.5" aria-hidden />
+                                      )}
+                                      Rebuild
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )
                       )}
                     </div>
                   </div>

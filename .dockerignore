@@ -5,7 +5,6 @@ backend/node_modules/
 backend/dist/
 backend/.qlix-runners/
 qlix-mcp-service/node_modules/
-OpenJarvis/
 documents/
 .git/
 .cursor/

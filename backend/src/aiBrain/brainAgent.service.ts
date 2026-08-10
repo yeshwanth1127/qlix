@@ -8,6 +8,7 @@ import { generateKeypair } from '../agents/keypair.js';
 import { roleCan } from '../lib/orgPermissions.js';
 import { prisma } from '../lib/prisma.js';
 import { appendBrainActionLog } from './brainAudit.service.js';
+import { defaultLlmProvider, modelForProvider } from '../llm/inferenceRouter.js';
 
 export class BrainAgentForbiddenError extends Error {
   readonly code = 'forbidden_brain';
@@ -119,6 +120,7 @@ export class BrainAgentService {
     const { webauthnCredentialId } = await this.repo.assertDeviceVerified(userId);
 
     const name = 'exa';
+    const llmProvider = defaultLlmProvider();
     const agent = await this.repo.createAgent({
       userId,
       orgId,
@@ -127,8 +129,9 @@ export class BrainAgentService {
       publicKey,
       /** RAG runs on the Qlix API — no Docker cloud runner. */
       runtime: 'local',
-      model: DEFAULT_BRAIN_MODEL,
+      model: modelForProvider(DEFAULT_BRAIN_MODEL, llmProvider),
       llmMode: 'proxy',
+      llmProvider,
       localInferenceMode: 'cloud_api',
       permissionScopes: BRAIN_SCOPES,
       jitScopes,

@@ -3,7 +3,7 @@ import type { VerifiableCredentialDTO } from '../credentials/vc.types.js';
 import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { roleCan } from '../lib/orgPermissions.js';
 import { AgentsRepository, OrgMembershipError } from './agents.repository.js';
-import type { AgentDTO, CreateAgentInput } from './agents.types.js';
+import type { AgentDTO, CreateAgentInput, LlmProvider } from './agents.types.js';
 import { reconcileRuntimeWithScopes } from './scopeCatalog.js';
 import { generateDID } from './did.js';
 import { enforceJitRules } from './jit.js';
@@ -14,6 +14,10 @@ import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
 import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
 import { prisma } from '../lib/prisma.js';
 import type { PermissionScope } from './agents.types.js';
+import {
+  defaultLlmProvider,
+  modelForProvider,
+} from '../llm/inferenceRouter.js';
 
 export class AgentDeleteForbiddenError extends Error {
   readonly code = 'forbidden_delete';
@@ -74,6 +78,7 @@ export class AgentsService {
       normalizedInput.permissionScopes,
       normalizedInput.jitScopes,
     );
+    const llmProvider = normalizedInput.llmProvider ?? defaultLlmProvider();
 
     const did = generateDID();
     const { publicKey, privateKey } = await generateKeypair();
@@ -86,8 +91,12 @@ export class AgentsService {
       did,
       publicKey,
       runtime: normalizedInput.runtime,
-      model: normalizedInput.model,
+      model:
+        normalizedInput.llmMode === 'proxy'
+          ? modelForProvider(normalizedInput.model, llmProvider)
+          : normalizedInput.model,
       llmMode: normalizedInput.llmMode,
+      llmProvider,
       localInferenceMode: normalizedInput.localInferenceMode,
       permissionScopes: normalizedInput.permissionScopes,
       jitScopes,
@@ -223,6 +232,25 @@ export class AgentsService {
     const updated = await this.repo.findById(agentId);
     if (!updated) throw new AgentNotFoundError();
     return updated;
+  }
+
+  async updateAgentInference(
+    userId: string,
+    authOrgId: string | null,
+    agentId: string,
+    input: { llmProvider: LlmProvider; model: string },
+  ): Promise<AgentDTO> {
+    const agent = await this.repo.findById(agentId);
+    if (!agent) throw new AgentNotFoundError();
+    const ownsAgent =
+      agent.userId === userId || (agent.orgId != null && agent.orgId === authOrgId);
+    if (!ownsAgent) {
+      throw new AgentDeleteForbiddenError('Not allowed to edit this agent');
+    }
+    if (agent.llmMode !== 'proxy') {
+      throw new AgentScopeUpdateError('Provider selection is only available for proxy inference');
+    }
+    return this.repo.updateInferenceProvider(agentId, input.llmProvider, input.model);
   }
 
   /**

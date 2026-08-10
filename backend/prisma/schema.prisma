@@ -208,6 +208,8 @@ model Agent {
   /// Where LLM calls go: `direct` (local engine / OpenRouter) or `proxy` (through Qlix backend).
   /// Constraint enforced in service layer: runtime=cloud + llmMode=direct is invalid.
   llmMode            String  @default("proxy") @map("llm_mode")
+  /// Hosted inference provider used when `llmMode` is `proxy`: `exora` | `openrouter`.
+  llmProvider        String  @default("exora") @map("llm_provider")
   /// When `runtime` is `local`: `local_llm` vs `cloud_api`. Null when `runtime` is `cloud`.
   localInferenceMode String? @map("local_inference_mode")
 

@@ -100,6 +100,7 @@ export function AgentsListView({ routePrefix }: AgentsListViewProps) {
         model: agent.model,
         localInferenceMode: agent.localInferenceMode,
         llmMode: agent.llmMode,
+        llmProvider: agent.llmProvider,
         permissionScopes: agent.permissionScopes,
         jitScopes: agent.jitScopes,
         alwaysScopes: agent.alwaysScopes,

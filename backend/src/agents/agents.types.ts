@@ -41,6 +41,8 @@ export type LocalInferenceMode = 'local_llm' | 'cloud_api';
 /** Where LLM calls go: straight to local engine (`direct`) or via Qlix backend (`proxy`). */
 export type LlmMode = 'direct' | 'proxy';
 
+export type LlmProvider = 'exora' | 'openrouter';
+
 /** `standard` | `org_brain` — enforced uniquely per org in brain agent service. */
 export type AgentKind = 'standard' | 'org_brain';
 
@@ -55,6 +57,7 @@ export interface CreateAgentInput {
   localInferenceMode: LocalInferenceMode | null;
   /** `direct` = local engine / OpenRouter; `proxy` = Qlix backend. cloud+direct is rejected. */
   llmMode: LlmMode;
+  llmProvider?: LlmProvider;
   orgId: string | null;
 }
 
@@ -71,6 +74,7 @@ export interface AgentDTO {
   model: string;
   localInferenceMode: LocalInferenceMode | null;
   llmMode: LlmMode;
+  llmProvider: LlmProvider;
   permissionScopes: PermissionScope[];
   jitScopes: PermissionScope[];
   alwaysScopes: PermissionScope[];

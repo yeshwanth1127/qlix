@@ -104,6 +104,7 @@ export type LocalInferenceMode = "local_llm" | "cloud_api";
 
 /** Where LLM calls go: straight to local engine (`direct`) or via Qlix backend (`proxy`). */
 export type LlmMode = "direct" | "proxy";
+export type LlmProvider = "exora" | "openrouter";
 
 export type AgentKind = "standard" | "org_brain";
 
@@ -120,6 +121,7 @@ export interface AgentDTO {
   model: string;
   localInferenceMode: LocalInferenceMode | null;
   llmMode: LlmMode;
+  llmProvider: LlmProvider;
   permissionScopes: PermissionScope[];
   jitScopes: PermissionScope[];
   alwaysScopes: PermissionScope[];
@@ -163,6 +165,7 @@ export interface CreateAgentBody {
   runtime: AgentRuntime;
   model: string;
   llmMode: LlmMode;
+  llmProvider: LlmProvider;
   localInferenceMode: LocalInferenceMode | null;
   orgId: string | null;
   /** Hybrid only: OS launcher to bundle in the starter ZIP. */
@@ -214,6 +217,7 @@ export interface RuntimeStatusResponse {
  * Auto is first — Qlix routes ≤ billable tier (standard by default; economy on Spark/Ignition).
  */
 export const QLIX_AUTO_MODEL = "openrouter/qlix/auto" as const;
+export const EXORA_AUTO_MODEL = "exora/qlix/auto" as const;
 
 export const CLOUD_MODELS = [
   QLIX_AUTO_MODEL,
@@ -225,21 +229,150 @@ export const CLOUD_MODELS = [
   "openrouter/qwen/qwen-2.5-72b-instruct",
 ] as const;
 
+export const EXORA_MODELS = [
+  "exora/exora-general",
+  "exora/exora-coder",
+  EXORA_AUTO_MODEL,
+] as const;
+
 export const LOCAL_MODELS = ["qwen3:8b", "llama3.1:8b", "mistral:7b"] as const;
 
-export type OpenRouterCatalogEntry = {
+export type ModelCatalogEntry = {
   id: string;
   name: string;
   contextLength: number | null;
   qlixModelId: string;
 };
+export type OpenRouterCatalogEntry = ModelCatalogEntry;
 
-/** Match backend `normalizeQlixInferenceModelId` for proxy policy + OpenRouter request shape. */
-export function normalizeQlixInferenceModelId(raw: string): string {
+export type ModelSelectOption = {
+  id: string;
+  label: string;
+  /** Catalog display name (e.g. "Anthropic: Claude Sonnet 4.6"), when known. */
+  name?: string;
+  /** Catalog context window in tokens, when known. */
+  contextLength?: number | null;
+};
+
+export type ModelSelectGroup = {
+  label: string;
+  provider: LlmProvider;
+  options: ModelSelectOption[];
+};
+
+const EXORA_DISPLAY_ORDER = [
+  "exora/exora-general",
+  "exora/exora-coder",
+  EXORA_AUTO_MODEL,
+] as const;
+
+/** Infer provider from a canonical qlix model id. */
+export function llmProviderFromModelId(modelId: string): LlmProvider {
+  return modelId.toLowerCase().startsWith("exora/") ? "exora" : "openrouter";
+}
+
+export function formatModelOptionLabel(modelId: string): string {
+  const lower = modelId.toLowerCase();
+  if (lower.endsWith("/qlix/auto")) return "Auto (Qlix picks ≤ your plan)";
+  if (lower === "exora/exora-general" || lower === "exora-general") return "General";
+  if (lower === "exora/exora-coder" || lower === "exora-coder") return "Coder";
+  return modelId.replace(/^(openrouter|exora)\//i, "");
+}
+
+function sortExoraModelIds(ids: Iterable<string>): string[] {
+  const unique = [...new Set([...ids].map((id) => id.trim()).filter(Boolean))];
+  const preferred = EXORA_DISPLAY_ORDER.filter((id) =>
+    unique.some((u) => u.toLowerCase() === id.toLowerCase()),
+  );
+  const preferredSet = new Set(preferred.map((id) => id.toLowerCase()));
+  const rest = unique
+    .filter((id) => !preferredSet.has(id.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b));
+  return [...preferred, ...rest];
+}
+
+/**
+ * Build optgroups:
+ *   Exora → General, Coder, qlix/auto (+ any other Exora catalog models)
+ *   All models → OpenRouter catalog / curated list
+ */
+export function buildProxyModelGroups(input: {
+  exoraCatalog?: readonly ModelCatalogEntry[];
+  openrouterCatalog?: readonly ModelCatalogEntry[];
+  includeExora?: boolean;
+  includeOpenrouter?: boolean;
+  selectedModel?: string;
+}): ModelSelectGroup[] {
+  const includeExora = input.includeExora !== false;
+  const includeOpenrouter = input.includeOpenrouter !== false;
+  const groups: ModelSelectGroup[] = [];
+
+  /** Catalog metadata by canonical id, so the picker can show real names + context windows. */
+  const meta = new Map<string, ModelCatalogEntry>();
+  for (const entry of [...(input.exoraCatalog ?? []), ...(input.openrouterCatalog ?? [])]) {
+    meta.set(entry.qlixModelId.toLowerCase(), entry);
+  }
+  const toOption = (id: string): ModelSelectOption => {
+    const entry = meta.get(id.toLowerCase());
+    return {
+      id,
+      label: formatModelOptionLabel(id),
+      ...(entry?.name ? { name: entry.name } : {}),
+      ...(entry?.contextLength != null ? { contextLength: entry.contextLength } : {}),
+    };
+  };
+
+  if (includeExora) {
+    const fromCatalog = (input.exoraCatalog ?? []).map((e) => e.qlixModelId);
+    const ids = sortExoraModelIds([
+      ...EXORA_MODELS,
+      ...fromCatalog,
+      ...(input.selectedModel && llmProviderFromModelId(input.selectedModel) === "exora"
+        ? [input.selectedModel]
+        : []),
+    ]);
+    if (ids.length) {
+      groups.push({
+        label: "Exora",
+        provider: "exora",
+        options: ids.map(toOption),
+      });
+    }
+  }
+
+  if (includeOpenrouter) {
+    const curated = [...CLOUD_MODELS];
+    const fromCatalog = (input.openrouterCatalog ?? []).map((e) => e.qlixModelId);
+    const ids = [
+      ...new Set([
+        ...curated,
+        ...fromCatalog,
+        ...(input.selectedModel && llmProviderFromModelId(input.selectedModel) === "openrouter"
+          ? [input.selectedModel]
+          : []),
+      ]),
+    ];
+    if (ids.length) {
+      groups.push({
+        label: "All models",
+        provider: "openrouter",
+        options: ids.map(toOption),
+      });
+    }
+  }
+
+  return groups;
+}
+
+/** Match backend provider-aware model normalization. */
+export function normalizeQlixInferenceModelId(
+  raw: string,
+  provider: LlmProvider = "openrouter",
+): string {
   const t = raw.trim();
   if (!t) return t;
-  if (t.toLowerCase().startsWith("openrouter/")) return t;
-  return `openrouter/${t}`;
+  if (/^(openrouter|exora)\//i.test(t)) return t;
+  return `${provider}/${t}`;
 }
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -267,6 +400,36 @@ export async function fetchOpenRouterCatalog(): Promise<
   }
   const body = (await res.json()) as { models?: OpenRouterCatalogEntry[] };
   return { ok: true, models: body.models ?? [] };
+}
+
+export async function fetchModelCatalog(
+  provider: LlmProvider,
+): Promise<
+  { ok: true; models: ModelCatalogEntry[] } | { ok: false; errorMessage: string }
+> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/inference/models?provider=${encodeURIComponent(provider)}`,
+    { credentials: "include" },
+  );
+  if (!res.ok) {
+    const e = await asError(res, "Failed to load models");
+    return { ok: false, errorMessage: e.message };
+  }
+  const body = (await res.json()) as { models?: ModelCatalogEntry[] };
+  return { ok: true, models: body.models ?? [] };
+}
+
+export interface InferenceCapabilities {
+  defaultProvider: LlmProvider;
+  providers: Record<LlmProvider, { enabled: boolean }>;
+}
+
+export async function fetchInferenceCapabilities(): Promise<InferenceCapabilities | null> {
+  const res = await fetch(`${apiBase()}/api/v1/inference/capabilities`, {
+    credentials: "include",
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<InferenceCapabilities>;
 }
 
 export type CreateAgentResult =
@@ -509,6 +672,28 @@ export async function updateAgentDescription(
   if (!res.ok) {
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
     return { ok: false, error: err?.error?.message ?? "Failed to update description" };
+  }
+  const data = (await res.json()) as { agent: AgentDTO };
+  return { ok: true, agent: data.agent };
+}
+
+export async function updateAgentInference(
+  agentId: string,
+  llmProvider: LlmProvider,
+  model: string,
+): Promise<{ ok: true; agent: AgentDTO } | { ok: false; error: string }> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/inference`,
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llmProvider, model }),
+    },
+  );
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    return { ok: false, error: err?.error?.message ?? "Failed to update inference settings" };
   }
   const data = (await res.json()) as { agent: AgentDTO };
   return { ok: true, agent: data.agent };

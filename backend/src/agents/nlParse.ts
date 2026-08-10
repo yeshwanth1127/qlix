@@ -1,4 +1,8 @@
-import { openRouterChatCompletion } from '../llm/openrouterClient.js';
+import {
+  chatCompletion,
+  LLM_APPLICATION_IDS,
+  type LlmProviderId,
+} from '../llm/inferenceRouter.js';
 import { getPlanConfig } from '../billings/lib/subscriptionPlans.js';
 import { prisma } from '../lib/prisma.js';
 import { type PermissionScope } from './agents.types.js';
@@ -12,10 +16,17 @@ import {
   enrichJobApplyPlan,
   enrichCrmPlan,
 } from './nlPlanEnrichment.js';
+import { selectNlPromptPacks } from './nlPromptPacks.js';
 
-const DEFAULT_NL_PARSE_MODEL = 'openrouter/openai/gpt-4o-mini';
-/** Default runtime model for agents created via AI builder / templates. */
-const DEFAULT_AGENT_MODEL = 'openrouter/qlix/auto';
+const DEFAULT_BUILDER_MODEL = 'exora/exora-general';
+
+function defaultAgentModel(): string {
+  return DEFAULT_BUILDER_MODEL;
+}
+
+function providerForModel(model: string): LlmProviderId {
+  return model.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
+}
 
 async function planAllowedTiersForOrg(orgId: string | null): Promise<string[]> {
   if (!orgId) return getPlanConfig('free').allowedModelTiers;
@@ -71,12 +82,20 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
   }
 
   let model =
-    typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : DEFAULT_AGENT_MODEL;
-  // Cloud/hybrid agents default to Auto unless the planner already picked a qlix Auto id.
+    typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : defaultAgentModel();
+  // Cloud/hybrid: keep Exora general / qlix Auto / any already-namespaced model; else force default.
   if (runtime === 'cloud' || runtime === 'hybrid') {
     const lower = model.toLowerCase();
-    if (!lower.includes('qlix/auto')) {
-      model = DEFAULT_AGENT_MODEL;
+    const keep =
+      lower === 'exora/exora-general' ||
+      lower === 'exora-general' ||
+      lower.includes('qlix/auto') ||
+      lower.startsWith('exora/') ||
+      lower.startsWith('openrouter/');
+    if (!keep) {
+      model = defaultAgentModel();
+    } else if (lower === 'exora-general') {
+      model = DEFAULT_BUILDER_MODEL;
     }
   }
 
@@ -116,7 +135,8 @@ export async function parseAgentCreationPrompt(
   orgId: string | null,
   model?: string,
 ): Promise<AgentCreationPlan> {
-  const resolvedModel = model?.trim() || DEFAULT_NL_PARSE_MODEL;
+  const resolvedModel = model?.trim() || DEFAULT_BUILDER_MODEL;
+  const provider = providerForModel(resolvedModel);
   const planAllowedTiers = await planAllowedTiersForOrg(orgId);
 
   // Offer every scope enabled for this org (base + connector-gated), even if the
@@ -124,22 +144,30 @@ export async function parseAgentCreationPrompt(
   // Skills-page-disabled scopes are still excluded.
   const availableScopes: ScopeDef[] = await getBuildableScopes(orgId);
   const allowed = new Set<string>(availableScopes.map((s) => s.id));
+  const packs = selectNlPromptPacks(userPrompt);
 
-  const result = await openRouterChatCompletion(
-    {
-      model: resolvedModel,
-      messages: [
-        { role: 'system', content: buildSystemPrompt(availableScopes) },
-        { role: 'user', content: userPrompt.slice(0, 5000) },
-      ],
-      temperature: 0.1,
-      max_tokens: 2048,
-      stream: false,
-      tools: [buildAgentToolSchema(availableScopes), buildTeamToolSchema(availableScopes)],
-      tool_choice: 'required',
-    },
-    { timeoutMs: 45_000, retries: 1, planAllowedTiers },
-  );
+  const request = {
+    model: resolvedModel,
+    messages: [
+      { role: 'system' as const, content: buildSystemPrompt(availableScopes, packs) },
+      { role: 'user' as const, content: userPrompt.slice(0, 5000) },
+    ],
+    temperature: 0.1,
+    max_tokens: 2048,
+    stream: false,
+    tools: [buildAgentToolSchema(availableScopes), buildTeamToolSchema(availableScopes)],
+    tool_choice: 'required' as const,
+  };
+  const options = {
+    provider,
+    applicationId: LLM_APPLICATION_IDS.nlBuilder,
+    // Keep the builder's provider wait within one predictable 150-second window.
+    timeoutMs: 150_000,
+    retries: 0,
+    planAllowedTiers,
+  };
+
+  const result = await chatCompletion(request, options);
 
   if (!result.toolCalls?.length) {
     throw new NLParseError('Model did not call a planning tool');

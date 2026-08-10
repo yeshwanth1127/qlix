@@ -1,9 +1,15 @@
 import { prisma } from '../lib/prisma.js';
-import { openRouterChatCompletion } from '../llm/openrouterClient.js';
+import {
+  chatCompletion,
+  defaultLlmProvider,
+  defaultModelForProvider,
+  LLM_APPLICATION_IDS,
+} from '../llm/inferenceRouter.js';
 import { getRoleManifest } from '../employees/rolePacks.js';
 import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 
-const CLASSIFIER_MODEL = 'openrouter/openai/gpt-4o-mini';
+const CLASSIFIER_PROVIDER = defaultLlmProvider();
+const CLASSIFIER_MODEL = defaultModelForProvider(CLASSIFIER_PROVIDER);
 const HEARTBEAT_FRESH_MS = 20_000;
 const DESCRIPTION_PREVIEW = 300;
 
@@ -269,7 +275,7 @@ Teams:
 ${teamLines || '(none)'}`;
 
   try {
-    const result = await openRouterChatCompletion(
+    const result = await chatCompletion(
       {
         model: CLASSIFIER_MODEL,
         messages: [
@@ -282,7 +288,12 @@ ${teamLines || '(none)'}`;
         tools: [ROUTE_TOOL],
         tool_choice: { type: 'function', function: { name: 'route_whatsapp_message' } },
       },
-      { timeoutMs: 15_000, retries: 1 },
+      {
+        provider: CLASSIFIER_PROVIDER,
+        applicationId: LLM_APPLICATION_IDS.whatsappRouter,
+        timeoutMs: 15_000,
+        retries: 1,
+      },
     );
 
     const call = result.toolCalls?.[0];

@@ -1,10 +1,14 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { openRouterChatCompletion, openrouterEmbeddings } from '../llm/openrouterClient.js';
-import { normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import {
+  chatCompletion,
+  LLM_APPLICATION_IDS,
+  modelForProvider,
+  type LlmProviderId,
+} from '../llm/inferenceRouter.js';
+import { createEmbedding } from '../llm/providers/embeddingClient.js';
 import { appendBrainActionLog, type BrainAuditSurface } from './brainAudit.service.js';
 
-const EMBEDDING_MODEL = 'openai/text-embedding-3-small';
 const TOP_K = 5;
 /**
  * Chunks injected into an agent run's context, as opposed to answered in the console.
@@ -121,7 +125,7 @@ export class BrainQueryService {
 
     for (const chunk of chunks) {
       try {
-        const result = await openrouterEmbeddings(chunk.textContent, EMBEDDING_MODEL);
+        const result = await createEmbedding(chunk.textContent);
         await prisma.brainKnowledgeChunk.update({
           where: { id: chunk.id },
           data: { embeddingModel: result.model, embeddingVec: result.embedding },
@@ -228,7 +232,7 @@ export class BrainQueryService {
     /** When false, skip appendBrainActionLog (caller logs separately). */
     writeAudit?: boolean;
   }): Promise<{ answer: string; citations: BrainQueryCitation[]; contextBlock?: string }> {
-    const queryResult = await openrouterEmbeddings(input.question, EMBEDDING_MODEL);
+    const queryResult = await createEmbedding(input.question);
     const embeddingPromptTokens = Number(queryResult.usage?.prompt_tokens) || 0;
     const embeddingTotalTokens = Number(queryResult.usage?.total_tokens) || embeddingPromptTokens;
     const embeddingCost = Number(queryResult.usage?.total_cost ?? queryResult.usage?.cost) || 0;
@@ -280,7 +284,10 @@ export class BrainQueryService {
     const contextBlocks = this.buildContextBlocks(scored);
     const contextBlock = contextBlocks.join('\n\n---\n\n');
     const citations = this.toCitations(scored);
-    const model = normalizeQlixInferenceModelId(input.brainModel);
+    const provider: LlmProviderId = input.brainModel.toLowerCase().startsWith('exora/')
+      ? 'exora'
+      : 'openrouter';
+    const model = modelForProvider(input.brainModel, provider);
 
     if (input.contextOnly) {
       // Agent-run context: trim to the strongest few chunks. The full citation list is
@@ -333,16 +340,22 @@ export class BrainQueryService {
 
     const systemPrompt = [BRAIN_SYSTEM_PROMPT, '', 'Retrieved context:', contextBlock].join('\n');
 
-    const llmResult = await openRouterChatCompletion({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: input.question },
-      ],
-      temperature: 0.2,
-      max_tokens: 1024,
-      stream: false,
-    });
+    const llmResult = await chatCompletion(
+      {
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: input.question },
+        ],
+        temperature: 0.2,
+        max_tokens: 1024,
+        stream: false,
+      },
+      {
+        provider,
+        applicationId: LLM_APPLICATION_IDS.aiBrain,
+      },
+    );
 
     const completionPromptTokens = Number(llmResult.usage?.prompt_tokens) || 0;
     const completionTokens = Number(llmResult.usage?.completion_tokens) || 0;

@@ -6,11 +6,14 @@ import {
   ALL_PERMISSION_SCOPES,
   FORCE_JIT_SCOPES,
   CLOUD_MODELS,
+  EXORA_MODELS,
   LOCAL_MODELS,
+  buildProxyModelGroups,
   type PermissionScope,
   type AgentRuntime,
 } from "@/lib/agents-api";
 import { scopesRequireHybrid } from "@/lib/agent-runtime";
+import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import { SketchBox, sketchInput, sketchLabel } from "@/components/qlix/sketch";
 import { ScopeAddDropdown } from "./ScopeAddDropdown";
 
@@ -31,22 +34,29 @@ const RUNTIME_LABELS: Record<AgentRuntime, string> = {
   local: "Local — fully on your machine",
 };
 
-function modelsForRuntime(runtime: AgentRuntime): readonly string[] {
-  return runtime === "local" ? LOCAL_MODELS : CLOUD_MODELS;
+function modelsForRuntime(
+  runtime: AgentRuntime,
+  currentModel?: string,
+): readonly string[] {
+  if (runtime === "local") return LOCAL_MODELS;
+  const groups = buildProxyModelGroups({ selectedModel: currentModel });
+  return groups.flatMap((group) => group.options.map((option) => option.id));
 }
 
-function defaultModelForRuntime(runtime: AgentRuntime): string {
-  return modelsForRuntime(runtime)[0];
+function defaultModelForRuntime(runtime: AgentRuntime, currentModel?: string): string {
+  if (runtime === "local") return LOCAL_MODELS[0];
+  if (currentModel?.toLowerCase().startsWith("openrouter/")) return CLOUD_MODELS[0];
+  return EXORA_MODELS[0];
 }
 
 function applyRuntimeDefaults(
   spec: NLAgentSpec | NLWorkerSpec,
   runtime: AgentRuntime,
 ): Partial<NLAgentSpec> {
-  const availableModels = modelsForRuntime(runtime);
+  const availableModels = modelsForRuntime(runtime, spec.model);
   const model = availableModels.includes(spec.model as never)
     ? spec.model
-    : defaultModelForRuntime(runtime);
+    : defaultModelForRuntime(runtime, spec.model);
   if (runtime === "cloud" || runtime === "hybrid") {
     return { runtime, model, llmMode: "proxy", localInferenceMode: null };
   }
@@ -87,7 +97,11 @@ function reconcileSpecRuntime(spec: NLAgentSpec | NLWorkerSpec): Partial<NLAgent
 }
 
 function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
-  const availableModels = modelsForRuntime(spec.runtime);
+  const availableModels = modelsForRuntime(spec.runtime, spec.model);
+  const modelGroups =
+    spec.runtime === "local"
+      ? null
+      : buildProxyModelGroups({ selectedModel: spec.model });
 
   const patch = (fields: Partial<NLAgentSpec>) => {
     const next = { ...spec, ...fields } as NLAgentSpec | NLWorkerSpec;
@@ -154,17 +168,27 @@ function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
           </div>
           <div>
             <span className={`${sketchLabel} normal-case tracking-normal`}>Model</span>
-            <select
-              value={spec.model}
-              onChange={(e) => patch({ model: e.target.value })}
-              className={`${sketchInput} mt-1.5`}
-            >
-              {availableModels.map((m) => (
-                <option key={m} value={m} className="bg-white text-black">
-                  {m.replace("openrouter/", "")}
-                </option>
-              ))}
-            </select>
+            <div className="mt-1.5">
+              {modelGroups ? (
+                <ModelHierarchyPicker
+                  value={spec.model}
+                  groups={modelGroups}
+                  onChange={(next) => patch({ model: next })}
+                />
+              ) : (
+                <select
+                  value={spec.model}
+                  onChange={(e) => patch({ model: e.target.value })}
+                  className={sketchInput}
+                >
+                  {availableModels.map((m) => (
+                    <option key={m} value={m} className="bg-white text-black">
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
           </div>
         </div>
 

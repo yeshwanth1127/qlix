@@ -77,6 +77,17 @@ describe('Auto routing', () => {
     assert.equal(d.routedModel, 'openrouter/google/gemini-2.5-flash-lite');
   });
 
+  it('routes Exora Auto to the gateway alias without crossing providers', () => {
+    const d = selectInferenceModel({
+      requestedModel: 'exora/qlix/auto',
+      messages: [{ role: 'user', content: 'Summarize this request' }],
+      planAllowedTiers: ['economy', 'standard'],
+      routingEnabled: true,
+    });
+    assert.equal(d.isAuto, true);
+    assert.equal(d.routedModel, 'exora/exora-general');
+  });
+
   it('leaves pinned models unchanged', () => {
     const d = selectInferenceModel({
       requestedModel: 'openrouter/openai/gpt-4o',

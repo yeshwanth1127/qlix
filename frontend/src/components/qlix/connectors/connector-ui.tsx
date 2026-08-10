@@ -1,102 +1,155 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { CheckCircle2, AlertCircle, Info, Sparkles } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, Info, Sparkles } from "lucide-react";
 import { SketchBox } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
-import type { SketchTone } from "@/components/qlix/sketch/tokens";
 
-/* ── Animated connector card wrapper ─────────────────────────────────────── */
+/* ── Status dot ──────────────────────────────────────────────────────────── */
 
-interface ConnectorCardProps {
-  readonly children: ReactNode;
-  readonly className?: string;
-  readonly tone?: SketchTone;
-  readonly connected?: boolean;
-  readonly highlight?: boolean;
-  readonly staggerIndex?: number;
+export type ConnectorStatus = "connected" | "pending" | "idle" | "error";
+
+const STATUS_LABEL: Record<ConnectorStatus, string> = {
+  connected: "Connected",
+  pending: "Waiting",
+  idle: "Not connected",
+  error: "Needs attention",
+};
+
+/** Single ink dot — the only status ornament a row needs. */
+export function ConnectorStatusDot({
+  status,
+  label,
+}: {
+  readonly status: ConnectorStatus;
+  readonly label?: string;
+}) {
+  const text = label ?? STATUS_LABEL[status];
+  return (
+    <>
+      <span className={cn("connector-dot", `connector-dot--${status}`)} title={text} aria-hidden />
+      <span className="sr-only">{text}</span>
+    </>
+  );
 }
 
-export function ConnectorCard({
-  children,
-  className,
-  tone = "default",
-  connected = false,
-  highlight = false,
-  staggerIndex = 0,
-}: ConnectorCardProps) {
+/* ── Section heading ─────────────────────────────────────────────────────── */
+
+export function SectionHeading({
+  title,
+  hint,
+  right,
+}: {
+  readonly title: string;
+  readonly hint?: string;
+  readonly right?: ReactNode;
+}) {
   return (
-    <div
-      className={cn(
-        "connector-card-wrap",
-        connected && "connector-card-wrap--connected",
-        highlight && !connected && "connector-card-wrap--highlight",
-      )}
-      style={{ animationDelay: `${staggerIndex * 60}ms` }}
-    >
-      <SketchBox
-        tone={connected ? "green" : highlight ? "amber" : tone}
-        className={cn(
-          "connector-card-inner sketch-card-hover sketch-rise overflow-hidden",
-          className,
-        )}
-      >
-        {children}
-      </SketchBox>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="text-[11px] font-medium uppercase tracking-[0.16em] text-black">{title}</h2>
+        {hint ? <p className="connector-meta">{hint}</p> : null}
+      </div>
+      {right}
     </div>
   );
 }
 
-/* ── Status badge ────────────────────────────────────────────────────────── */
+/* ── Panel ───────────────────────────────────────────────────────────────── */
 
-type ConnectorStatus = "connected" | "pending" | "idle";
-
-interface ConnectorStatusBadgeProps {
-  readonly status: ConnectorStatus;
-  readonly label?: string;
+/** One glass surface that hosts a stack of connector rows. */
+export function ConnectorPanel({
+  children,
+  className,
+}: {
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return <SketchBox className={cn("connector-panel overflow-hidden", className)}>{children}</SketchBox>;
 }
 
-export function ConnectorStatusBadge({ status, label }: ConnectorStatusBadgeProps) {
-  const labels: Record<ConnectorStatus, string> = {
-    connected: "Connected",
-    pending: "Pending",
-    idle: "Not connected",
-  };
+/* ── Row ─────────────────────────────────────────────────────────────────── */
 
+interface ConnectorRowProps {
+  readonly id?: string;
+  readonly icon: ReactNode;
+  readonly name: string;
+  /** One short line: the account when linked, otherwise what it unlocks. */
+  readonly meta?: ReactNode;
+  readonly status?: ConnectorStatus;
+  readonly statusLabel?: string;
+  readonly action?: ReactNode;
+  readonly highlight?: boolean;
+  readonly expandable?: boolean;
+  readonly expanded?: boolean;
+  readonly onToggle?: () => void;
+  readonly children?: ReactNode;
+}
+
+export function ConnectorRow({
+  id,
+  icon,
+  name,
+  meta,
+  status,
+  statusLabel,
+  action,
+  highlight = false,
+  expandable = false,
+  expanded = false,
+  onToggle,
+  children,
+}: ConnectorRowProps) {
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <span
-        className={cn(
-          "connector-status-dot",
-          status === "connected" && "connector-status-dot--connected",
-          status === "pending" && "connector-status-dot--pending",
-          status === "idle" && "connector-status-dot--idle",
-        )}
-        aria-hidden
-      />
-      <span
-        className={cn(
-          "font-serif text-[10px] uppercase tracking-[0.14em]",
-          status === "connected" && "text-[color:var(--sketch-green,#15803d)]",
-          status === "pending" && "text-[#b45309]",
-          status === "idle" && "text-black/45",
-        )}
-      >
-        {label ?? labels[status]}
-      </span>
-    </span>
+    <div
+      id={id}
+      className={cn(
+        "connector-row",
+        highlight && "connector-row--highlight",
+        expanded && "connector-row--open",
+      )}
+    >
+      <div className="flex items-center gap-3.5 px-4 py-4 sm:gap-4 sm:px-5">
+        {icon}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-[14px] font-semibold tracking-[-0.005em] text-black">
+              {name}
+            </h3>
+            {status ? <ConnectorStatusDot status={status} label={statusLabel} /> : null}
+          </div>
+          {meta ? <p className="connector-meta mt-0.5 truncate">{meta}</p> : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {action}
+          {expandable ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-expanded={expanded}
+              aria-label={expanded ? `Hide ${name} settings` : `Show ${name} settings`}
+              className="connector-chevron"
+            >
+              <ChevronDown size={15} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {expandable ? (
+        <div className={cn("connector-detail", expanded && "connector-detail--open")}>
+          <div className="min-h-0 overflow-hidden">
+            <div className="connector-detail-inner px-4 pb-5 pt-4 sm:px-5">{children}</div>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
-/* ── Alert banners ───────────────────────────────────────────────────────── */
+/* ── Alerts ──────────────────────────────────────────────────────────────── */
 
 type ConnectorAlertVariant = "success" | "error" | "info" | "warning";
-
-interface ConnectorAlertProps {
-  readonly variant: ConnectorAlertVariant;
-  readonly children: ReactNode;
-  readonly className?: string;
-}
 
 const ALERT_ICONS = {
   success: CheckCircle2,
@@ -105,70 +158,50 @@ const ALERT_ICONS = {
   warning: Sparkles,
 } as const;
 
-const ALERT_TONES: Record<ConnectorAlertVariant, SketchTone> = {
-  success: "green",
-  error: "rose",
-  info: "blue",
-  warning: "amber",
-};
-
-export function ConnectorAlert({ variant, children, className }: ConnectorAlertProps) {
+export function ConnectorAlert({
+  variant,
+  children,
+  className,
+}: {
+  readonly variant: ConnectorAlertVariant;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
   const Icon = ALERT_ICONS[variant];
   return (
-    <SketchBox
-      tone={ALERT_TONES[variant]}
-      className={cn("sketch-rise flex items-start gap-2.5 px-3.5 py-2.5", className)}
-    >
-      <Icon size={15} className="mt-0.5 shrink-0 text-black/70" aria-hidden />
-      <p className="text-[13px] leading-relaxed text-black">{children}</p>
-    </SketchBox>
+    <div className={cn("connector-alert sketch-rise", `connector-alert--${variant}`, className)}>
+      <Icon size={14} className="connector-alert-icon mt-px shrink-0" aria-hidden />
+      <p className="text-[12.5px] leading-relaxed text-black">{children}</p>
+    </div>
   );
 }
 
-/* ── Stats strip ─────────────────────────────────────────────────────────── */
+/* ── Header summary ──────────────────────────────────────────────────────── */
 
-interface ConnectorsStatsStripProps {
-  readonly connectedCount: number;
-  readonly totalLive: number;
-  readonly catalogCount: number;
-  readonly loading?: boolean;
-}
-
-export function ConnectorsStatsStrip({
-  connectedCount,
-  totalLive,
-  catalogCount,
+/** Quiet level indicator replacing the old oversized stat tiles. */
+export function ConnectorsSummary({
+  connected,
+  total,
   loading = false,
-}: ConnectorsStatsStripProps) {
-  const stats = [
-    { value: loading ? "—" : connectedCount, label: "Connected", tone: "green" as SketchTone },
-    { value: loading ? "—" : totalLive, label: "Live now", tone: "purple" as SketchTone },
-    { value: catalogCount, label: "In catalog", tone: "blue" as SketchTone },
-  ];
-
+}: {
+  readonly connected: number;
+  readonly total: number;
+  readonly loading?: boolean;
+}) {
   return (
-    <div className="mb-6 grid grid-cols-3 gap-2 sm:gap-3">
-      {stats.map((s, i) => (
-        <div key={s.label} className="sketch-rise" style={{ animationDelay: `${i * 50}ms` }}>
-          <SketchBox
-            tone={s.tone}
-            className="sketch-card-hover flex flex-col items-center px-3 py-4 sm:px-4 sm:py-5"
-          >
+    <span className="connector-summary">
+      <span className="flex items-center gap-[3px]" aria-hidden>
+        {Array.from({ length: total }, (_, i) => (
           <span
-            className="text-[28px] font-light leading-none tabular-nums sm:text-[36px]"
-            style={{ WebkitTextStroke: "1px #0e0d12", color: "transparent" }}
-            aria-hidden
-          >
-            {s.value}
-          </span>
-          <span className="sr-only">{s.value}</span>
-          <span className="mt-2 text-[10px] font-medium uppercase tracking-[0.16em] text-black">
-            {s.label}
-          </span>
-        </SketchBox>
-        </div>
-      ))}
-    </div>
+            key={i}
+            className={cn("connector-summary-bar", !loading && i < connected && "is-on")}
+          />
+        ))}
+      </span>
+      <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-black">
+        {loading ? "Checking" : `${connected} of ${total} connected`}
+      </span>
+    </span>
   );
 }
 
@@ -194,19 +227,10 @@ export function ConnectorFilterChip({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={cn(
-        "connector-filter-chip rounded-full px-2.5 py-1 text-[11px] uppercase tracking-[0.08em]",
-        active && "connector-filter-chip--active",
-        !active && "text-black",
-        disabled && "opacity-40",
-      )}
+      className={cn("connector-chip", active && "connector-chip--active", disabled && "opacity-35")}
     >
       {label}
-      {count !== undefined ? (
-        <span className={cn("ml-1.5 tabular-nums", active ? "text-white/75" : "text-black/55")}>
-          {count}
-        </span>
-      ) : null}
+      {count !== undefined ? <span className="ml-1.5 tabular-nums opacity-55">{count}</span> : null}
     </button>
   );
 }

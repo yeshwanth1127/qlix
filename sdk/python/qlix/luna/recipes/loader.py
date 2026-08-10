@@ -87,10 +87,10 @@ class Recipe:
     # ------------------------------------------------------------------ #
 
     def to_builder_kwargs(self) -> Dict[str, Any]:
-        """Convert recipe fields to kwargs for SystemBuilder/Jarvis.
+        """Convert recipe fields to kwargs for SystemBuilder/Luna.
 
         Returns a dict with only the non-None fields, keyed to match
-        the SystemBuilder fluent API or Jarvis constructor parameters.
+        the SystemBuilder fluent API or Luna constructor parameters.
         """
         kwargs: Dict[str, Any] = {}
         if self.model is not None:

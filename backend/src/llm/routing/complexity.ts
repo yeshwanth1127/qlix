@@ -1,4 +1,4 @@
-/** Query complexity scoring — ported from OpenJarvis for Auto model selection. */
+/** Query complexity scoring — ported from Luna for Auto model selection. */
 
 const CODE_PATTERNS =
   /```|`[^`]+`|\bdef\s|\bclass\s|\bimport\s|\bfunction\s|\bconst\s|\bvar\s|\blet\s|\bif\s*\(|->|=>|\{\s*\}|\bfor\s+\w+\s+in\s|#include|System\.out/i;

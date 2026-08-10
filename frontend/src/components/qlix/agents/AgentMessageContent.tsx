@@ -18,6 +18,7 @@ import {
 } from "@/components/qlix/agents/agentToolActivity";
 import { sketchToneBg } from "@/components/qlix/sketch/tokens";
 import { cn } from "@/lib/utils/cn";
+import { safeModelOutputUrl } from "@/lib/safe-model-output";
 
 const MD_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 const BARE_URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"])/g;
@@ -158,17 +159,21 @@ export function parseAgentMessageBlocks(content: string): MessageBlock[] {
 function renderWithLinks(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let key = 0;
-  const link = (href: string, label: string) => (
-    <a
-      key={`${keyPrefix}-l${key++}`}
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="underline underline-offset-2 break-all hover:opacity-70"
-    >
-      {label}
-    </a>
-  );
+  const link = (href: string, label: string) => {
+    const safeHref = safeModelOutputUrl(href);
+    if (!safeHref) return label;
+    return (
+      <a
+        key={`${keyPrefix}-l${key++}`}
+        href={safeHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline underline-offset-2 break-all hover:opacity-70"
+      >
+        {label}
+      </a>
+    );
+  };
 
   const pushPlain = (segment: string) => {
     if (!segment) return;
@@ -272,7 +277,7 @@ function renderBoldItalic(text: string, keyPrefix: string): ReactNode[] {
         nodes.push(
           <a
             key={`${keyPrefix}-u${k++}`}
-            href={bm[1]}
+            href={safeModelOutputUrl(bm[1]) ?? undefined}
             target="_blank"
             rel="noopener noreferrer"
             className="underline underline-offset-2 break-all hover:opacity-70"

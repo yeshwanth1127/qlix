@@ -231,7 +231,7 @@ Authoritative templates:
 The following may appear in marketing copy or older docs but are **not** wired here:
 
 - **`qlix` Python CLI** (`pip install qlix`, `qlix init`) — instructions may appear in UI copy only.
-- **OpenJarvis** tree under `backend/OpenJarvis/` — separate runtime; **no** call from Express agent creation.
+- **Luna** engine bundled at `sdk/python/qlix/luna/` — separate runtime; **no** call from Express agent creation.
 - **Cloud worker** that executes agent workloads after registration.
 - **Rotate / suspend / delete** agent actions on detail page (if not built).
 - **Separate “public registry”** service — verification today is **`GET /api/v1/passport/:did`** + **`/.well-known/did.json`**.

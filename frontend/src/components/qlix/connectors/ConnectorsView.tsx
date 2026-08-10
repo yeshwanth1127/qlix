@@ -3,14 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Loader2, Share2 } from "lucide-react";
-import {
-  SketchPageHeader,
-  SketchSection,
-  sketchButton,
-  sketchButtonPrimary,
-  sketchInput,
-  sketchLabel,
-} from "@/components/qlix/sketch";
+import { SketchPageHeader, sketchLabel } from "@/components/qlix/sketch";
 import {
   disconnectGoogle,
   disconnectOrbit,
@@ -38,12 +31,7 @@ import {
   type OrbitChannelDTO,
   type WhatsAppLinkStatusDTO,
 } from "@/lib/connectors-api";
-import {
-  CONNECTOR_CATALOG_ENTRIES,
-  getCatalogEntry,
-  ZOHO_SUITE_CATALOG_IDS,
-} from "@/lib/connector-catalog";
-import { cn } from "@/lib/utils/cn";
+import { getCatalogEntry } from "@/lib/connector-catalog";
 import { listAgents } from "@/lib/agents-api";
 import { listTeams } from "@/lib/teams-api";
 import { WhatsAppQr } from "./WhatsAppQr";
@@ -51,9 +39,11 @@ import { ConnectorCatalogSection } from "./ConnectorCatalogSection";
 import { ConnectorLogo } from "./ConnectorLogo";
 import {
   ConnectorAlert,
-  ConnectorCard,
-  ConnectorStatusBadge,
-  ConnectorsStatsStrip,
+  ConnectorPanel,
+  ConnectorRow,
+  ConnectorsSummary,
+  SectionHeading,
+  type ConnectorStatus,
 } from "./connector-ui";
 import {
   jitScopeLabel,
@@ -77,7 +67,16 @@ function formatWhatsAppPhone(raw: string | null | undefined): string | null {
   return `+${digits}`;
 }
 
-const selectClass = `${sketchInput} mt-1`;
+const ORBIT_CONNECT_BUTTONS = [
+  "facebook",
+  "instagram",
+  "x",
+  "linkedin",
+  "youtube",
+  "tiktok",
+] as const;
+
+const selectClass = "connector-select";
 
 export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const searchParams = useSearchParams();
@@ -100,23 +99,17 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const [orbitChannels, setOrbitChannels] = useState<OrbitChannelDTO[]>([]);
   const [orbitChannelsLoading, setOrbitChannelsLoading] = useState(false);
   const [orbitSocialBusy, setOrbitSocialBusy] = useState<string | null>(null);
-
-  const ORBIT_CONNECT_BUTTONS = [
-    "facebook",
-    "instagram",
-    "x",
-    "linkedin",
-    "youtube",
-    "tiktok",
-  ] as const;
+  /** Accordion — at most one connector shows its settings at a time. */
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const googleLogo = getCatalogEntry("google")!.logo;
   const whatsappLogo = getCatalogEntry("whatsapp")!.logo;
   const slackLogo = getCatalogEntry("slack")!.logo;
+  const zohoLogo = getCatalogEntry("zoho")!.logo;
 
-  const zohoSuite = ZOHO_SUITE_CATALOG_IDS.map((id) => getCatalogEntry(id)).filter(
-    (entry): entry is NonNullable<typeof entry> => entry != null,
-  );
+  const toggleRow = useCallback((id: string) => {
+    setOpenRow((cur) => (cur === id ? null : id));
+  }, []);
 
   const refreshOrbitChannels = useCallback(async () => {
     setOrbitChannelsLoading(true);
@@ -219,6 +212,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const wa = data ? whatsappConnector(data.connectors) : undefined;
   const orbit = data ? orbitConnector(data.connectors) : undefined;
   const waConnected = wa?.status === "connected" || waStatus?.status === "connected";
+  const waPending = wa?.status === "pending_qr" || waStatus?.status === "pending_qr";
   const oauthError = searchParams.get("error");
 
   useEffect(() => {
@@ -239,6 +233,16 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [wa]);
+
+  /** Reveal the pairing code the moment linking starts — including a link that
+   *  was already pending when the page loaded. Adjusting state during render is
+   *  the supported way to react to a changed value without an effect. */
+  const [wasWaPending, setWasWaPending] = useState(false);
+  if (waPending !== wasWaPending) {
+    setWasWaPending(waPending);
+    if (waPending) setOpenRow("whatsapp");
+  }
+
   const oauthSuccess = searchParams.get("connected");
   const neededProviders = new Set(
     (searchParams.get("needed") ?? "")
@@ -251,8 +255,13 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const needsWhatsApp = neededProviders.has("whatsapp_baileys") && !waConnected;
   const needsOrbit = neededProviders.has("orbit") && !orbit;
 
-  const connectedCount = [connected, zoho, waConnected, orbit].filter(Boolean).length;
-  const totalLive = 4;
+  const connectedCount = [connected, waConnected, slack, zoho, orbit].filter(Boolean).length;
+  const totalLive = 5;
+
+  function rowStatus(isOn: boolean, isPending = false): ConnectorStatus {
+    if (isOn) return "connected";
+    return isPending ? "pending" : "idle";
+  }
 
   async function handleConnect() {
     setBusy(true);
@@ -360,6 +369,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       const status = await startWhatsAppLink();
       setWaStatus(status);
       setWaPolling(status.status === "pending_qr" && !status.qr ? true : status.status === "pending_qr");
+      setOpenRow("whatsapp");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to link WhatsApp");
@@ -388,6 +398,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     setError(null);
     try {
       await enableOrbit();
+      setOpenRow("orbit");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to enable social");
@@ -440,616 +451,424 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     }
   }
 
+  const waPhone = formatWhatsAppPhone(wa?.emailAddress ?? waStatus?.phone);
+  const alerts = [
+    oauthError ? <ConnectorAlert key="err" variant="error">Couldn&apos;t finish connecting: {oauthError}</ConnectorAlert> : null,
+    oauthSuccess === "google" ? (
+      <ConnectorAlert key="ok-google" variant="success">
+        Gmail connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    oauthSuccess === "zoho" ? (
+      <ConnectorAlert key="ok-zoho" variant="success">
+        Zoho CRM connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    oauthSuccess === "slack" ? (
+      <ConnectorAlert key="ok-slack" variant="success">
+        Slack connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    neededProviders.size > 0 && (needsGoogle || needsZoho || needsWhatsApp || needsOrbit) ? (
+      <ConnectorAlert key="needed" variant="warning">
+        Your new agent needs{" "}
+        {[
+          needsGoogle ? "Gmail" : null,
+          needsZoho ? "Zoho CRM" : null,
+          needsWhatsApp ? "WhatsApp" : null,
+          needsOrbit ? "Social" : null,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        .
+      </ConnectorAlert>
+    ) : null,
+    error ? <ConnectorAlert key="error" variant="error">{error}</ConnectorAlert> : null,
+  ].filter(Boolean);
+
   return (
     <div className="w-full max-w-none animate-qlix-fade-in">
-      <SketchPageHeader title="Connectors" />
-      <p className="-mt-4 mb-5 max-w-2xl text-[13px] leading-relaxed text-black/70">
-        Connect services for agent tools. Zoho CRM is live; Mail, Books, Desk, Inventory, and
-        Projects are listed below. Browse the platform catalog for more OAuth/API integrations.
-      </p>
-
-      <ConnectorsStatsStrip
-        connectedCount={connectedCount}
-        totalLive={totalLive}
-        catalogCount={CONNECTOR_CATALOG_ENTRIES.length}
-        loading={loading}
+      <SketchPageHeader
+        title="Connectors"
+        subtitle="Give your agents access to the apps you already use."
+        actions={
+          <ConnectorsSummary connected={connectedCount} total={totalLive} loading={loading} />
+        }
       />
 
-      <div className="mb-4 space-y-2">
-        {oauthError ? (
-          <ConnectorAlert variant="error">OAuth failed: {oauthError}</ConnectorAlert>
-        ) : null}
-        {oauthSuccess === "google" ? (
-          <ConnectorAlert variant="success">
-            Google account connected
-            {searchParams.get("email") ? ` (${searchParams.get("email")})` : ""}.
-          </ConnectorAlert>
-        ) : null}
-        {oauthSuccess === "zoho" ? (
-          <ConnectorAlert variant="success">
-            Zoho CRM connected
-            {searchParams.get("email") ? ` (${searchParams.get("email")})` : ""}.
-          </ConnectorAlert>
-        ) : null}
-        {oauthSuccess === "slack" ? (
-          <ConnectorAlert variant="success">
-            Slack connected
-            {searchParams.get("email") ? ` (${searchParams.get("email")})` : ""}. Agents with{" "}
-            <span className="font-medium">slack.read</span> /{" "}
-            <span className="font-medium">slack.send</span> will act as this Slack user.
-          </ConnectorAlert>
-        ) : null}
-        {neededProviders.size > 0 && (needsGoogle || needsZoho || needsWhatsApp || needsOrbit) ? (
-          <ConnectorAlert variant="warning">
-            Your new agent needs{" "}
-            {[
-              needsGoogle ? "Gmail" : null,
-              needsZoho ? "Zoho CRM" : null,
-              needsWhatsApp ? "WhatsApp" : null,
-              needsOrbit ? "Orbit" : null,
-            ]
-              .filter(Boolean)
-              .join(", ")}
-            . Connect below to unlock those tools.
-          </ConnectorAlert>
-        ) : null}
-        {error ? <ConnectorAlert variant="error">{error}</ConnectorAlert> : null}
-      </div>
+      {alerts.length > 0 ? <div className="mb-5 space-y-2">{alerts}</div> : null}
 
-      <SketchSection title="Google (Gmail)" id="connector-google">
-        <ConnectorCard
-          connected={Boolean(connected)}
+      <ConnectorPanel>
+        {/* Gmail */}
+        <ConnectorRow
+          id="connector-google"
+          icon={<ConnectorLogo name="Google" logo={googleLogo} size="md" />}
+          name="Gmail"
+          status={loading ? undefined : rowStatus(Boolean(connected))}
           highlight={needsGoogle}
-          staggerIndex={0}
-          className="p-5"
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : connected ? (
+              (connected.emailAddress ?? "Google account")
+            ) : (
+              "Read and send email"
+            )
+          }
+          action={
+            connected ? (
+              <QuietAction onClick={() => void handleDisconnect()} disabled={busy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleConnect()} disabled={busy || loading}>
+                Connect
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* WhatsApp */}
+        <ConnectorRow
+          id="connector-whatsapp"
+          icon={<ConnectorLogo name="WhatsApp" logo={whatsappLogo} size="md" />}
+          name="WhatsApp"
+          status={loading ? undefined : rowStatus(waConnected, waPending)}
+          statusLabel={waPending && !waConnected ? "Scan the code" : undefined}
+          highlight={needsWhatsApp}
+          expandable={waConnected || waPending}
+          expanded={openRow === "whatsapp"}
+          onToggle={() => toggleRow("whatsapp")}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : waConnected ? (
+              (waPhone ?? "Linked")
+            ) : waPending ? (
+              "Scan the code in WhatsApp › Linked devices"
+            ) : (
+              "Chat with your agents and approve actions"
+            )
+          }
+          action={
+            waConnected ? (
+              <QuietAction onClick={() => void handleWhatsAppDisconnect()} disabled={busy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleWhatsAppConnect()} disabled={busy || loading}>
+                {waPending ? "Restart" : "Link"}
+              </PrimaryAction>
+            )
+          }
         >
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <ConnectorLogo name="Google" logo={googleLogo} size="lg" />
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className={sketchLabel}>Gmail</h2>
-                  {!loading && connected ? (
-                    <ConnectorStatusBadge status="connected" />
-                  ) : !loading ? (
-                    <ConnectorStatusBadge status="idle" />
-                  ) : null}
+          {waPending && !waConnected ? (
+            <div className="flex flex-col items-center gap-3 py-1">
+              {waStatus?.qr ? (
+                <div className="connector-qr">
+                  <WhatsAppQr data={waStatus.qr} size={172} />
                 </div>
-                <p className="mt-1 text-[12px] text-black/60">
-                  Read and send email through agents. Required before granting email scopes.
+              ) : (
+                <div
+                  className="connector-qr connector-qr--empty"
+                  style={{ width: 172 + 26, height: 172 + 26 }}
+                >
+                  <Loader2 size={14} className="animate-spin" aria-hidden />
+                </div>
+              )}
+              <p className="connector-meta text-center">
+                WhatsApp › Settings › Linked devices › Link a device
+                {isOrgWorkspace ? " · one number per workspace" : ""}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className={sketchLabel}>Default team</span>
+                  <select
+                    value={defaultTeamId}
+                    onChange={(e) => setDefaultTeamId(e.target.value)}
+                    className={selectClass}
+                  >
+                    <option value="">None</option>
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className={sketchLabel}>Default agent</span>
+                  <select
+                    value={defaultAgentId}
+                    onChange={(e) => setDefaultAgentId(e.target.value)}
+                    className={selectClass}
+                  >
+                    <option value="">Choose automatically</option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="connector-meta">
+                  Message yourself on WhatsApp — plain text reaches an agent, <code>@Team:</code>{" "}
+                  reaches a team.
                 </p>
-                {loading ? (
-                  <p className="mt-2 flex items-center gap-1 text-[12px] text-black/50">
-                    <Loader2 size={12} className="animate-spin" /> Loading…
-                  </p>
-                ) : connected ? (
-                  <p className="mt-2 text-[12px] text-black/70">
-                    Connected as{" "}
-                    <span className="font-medium text-black">
-                      {connected.emailAddress ?? "Google account"}
-                    </span>
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[12px] text-black/50">Not connected</p>
-                )}
+                <QuietAction
+                  disabled={defaultsSaving || busy}
+                  onClick={() => {
+                    setDefaultsSaving(true);
+                    void patchWhatsAppDefaults({
+                      teamId: defaultTeamId || null,
+                      agentId: defaultAgentId || null,
+                    })
+                      .then(() => refresh())
+                      .catch((err) =>
+                        setError(err instanceof Error ? err.message : "Failed to save defaults"),
+                      )
+                      .finally(() => setDefaultsSaving(false));
+                  }}
+                >
+                  {defaultsSaving ? "Saving…" : "Save"}
+                </QuietAction>
               </div>
             </div>
-            <div className="shrink-0">
-              {connected ? (
-                <button
-                  type="button"
-                  onClick={() => void handleDisconnect()}
-                  disabled={busy}
-                  className={sketchButton}
-                >
-                  Disconnect
-                </button>
+          )}
+        </ConnectorRow>
+
+        {/* Slack */}
+        <ConnectorRow
+          id="connector-slack"
+          icon={<ConnectorLogo name="Slack" logo={slackLogo} size="md" />}
+          name="Slack"
+          status={loading ? undefined : rowStatus(Boolean(slack))}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : slack ? (
+              (slack.emailAddress ?? "Slack workspace")
+            ) : (
+              "Read channels and post messages"
+            )
+          }
+          action={
+            slack ? (
+              <QuietAction onClick={() => void handleSlackDisconnect()} disabled={slackBusy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleSlackConnect()} disabled={slackBusy}>
+                {slackBusy ? "Opening…" : "Connect"}
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* Zoho CRM */}
+        <ConnectorRow
+          id="connector-zoho"
+          icon={<ConnectorLogo name="Zoho" logo={zohoLogo} size="md" />}
+          name="Zoho CRM"
+          status={loading ? undefined : rowStatus(Boolean(zoho))}
+          highlight={needsZoho}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : zoho ? (
+              (zoho.emailAddress ?? "Zoho account")
+            ) : (
+              "Leads, contacts and deals"
+            )
+          }
+          action={
+            zoho ? (
+              <QuietAction onClick={() => void handleZohoDisconnect()} disabled={busy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleZohoConnect()} disabled={busy || loading}>
+                Connect
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* Social */}
+        <ConnectorRow
+          id="connector-orbit"
+          icon={
+            <span className="connector-glyph">
+              <Share2 size={19} />
+            </span>
+          }
+          name="Social"
+          status={loading ? undefined : rowStatus(Boolean(orbit))}
+          statusLabel={orbit ? "On" : undefined}
+          highlight={needsOrbit}
+          expandable={Boolean(orbit)}
+          expanded={openRow === "orbit"}
+          onToggle={() => toggleRow("orbit")}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : orbit ? (
+              orbitChannels.length > 0 ? (
+                `${orbitChannels.length} channel${orbitChannels.length === 1 ? "" : "s"} connected`
               ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleConnect()}
-                  disabled={busy || loading}
-                  className={sketchButtonPrimary}
-                >
-                  Connect Google
-                </button>
-              )}
+                "No channels yet"
+              )
+            ) : orbitPlatformConfigured === false ? (
+              "Not available on this workspace yet"
+            ) : (
+              "Post to Instagram, X, LinkedIn and more"
+            )
+          }
+          action={
+            orbit ? (
+              <QuietAction onClick={() => void handleOrbitDisconnect()} disabled={busy}>
+                Turn off
+              </QuietAction>
+            ) : (
+              <PrimaryAction
+                onClick={() => void handleOrbitEnable()}
+                disabled={orbitConnecting || busy || loading || orbitPlatformConfigured === false}
+              >
+                {orbitConnecting ? "Turning on…" : "Turn on"}
+              </PrimaryAction>
+            )
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <span className={sketchLabel}>Add a channel</span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {ORBIT_CONNECT_BUTTONS.map((id) => {
+                  const entry = getCatalogEntry(id);
+                  if (!entry) return null;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      disabled={busy || orbitSocialBusy !== null}
+                      onClick={() => void handleOrbitSocialConnect(id)}
+                      className="connector-channel-add"
+                    >
+                      <ConnectorLogo name={entry.name} logo={entry.logo} size="sm" />
+                      <span>{orbitSocialBusy === id ? "Opening…" : entry.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+
+            {orbitChannelsLoading && orbitChannels.length === 0 ? (
+              <p className="connector-meta flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" /> Loading channels…
+              </p>
+            ) : orbitChannels.length > 0 ? (
+              <ul className="connector-sublist">
+                {orbitChannels.map((ch) => (
+                  <li key={ch.id}>
+                    <div className="min-w-0">
+                      <p className="truncate text-[13px] text-black">{ch.name}</p>
+                      <p className="connector-meta truncate">
+                        {ch.profile ? `@${ch.profile}` : ch.identifier}
+                        {ch.disabled ? " · paused" : ""}
+                      </p>
+                    </div>
+                    <QuietAction
+                      disabled={busy}
+                      onClick={() => void handleOrbitChannelDisconnect(ch.id)}
+                    >
+                      Remove
+                    </QuietAction>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
-        </ConnectorCard>
-      </SketchSection>
+        </ConnectorRow>
+      </ConnectorPanel>
 
       {grants.length > 0 ? (
-        <SketchSection title="Session approvals" className="mt-4">
-          <ConnectorCard className="p-5" staggerIndex={1}>
-            <p className="mb-3 text-[12px] text-black/60">
-              Scopes you approved once for an ongoing agent conversation. They auto-approve
-              repeat actions (e.g. sending more email) until you revoke them here or they expire.
-            </p>
-            <ul className="space-y-2">
+        <section className="mt-8">
+          <SectionHeading title="Standing approvals" hint="Active until you revoke them." />
+          <ConnectorPanel>
+            <ul className="connector-sublist connector-sublist--panel">
               {grants.map((g) => (
-                <li
-                  key={g.id}
-                  className="flex items-center justify-between gap-3 border-t border-black/15 pt-2 first:border-t-0 first:pt-0"
-                >
-                  <div>
-                    <p className="text-[13px] text-black">
+                <li key={g.id}>
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] text-black">
                       {jitScopeLabel(g.scope)}
                       {g.agentName ? ` · ${g.agentName}` : ""}
                     </p>
-                    <p className="font-serif text-[11px] uppercase text-black/50">
-                      Approved for this conversation
-                      {g.expiresAt ? ` · expires ${new Date(g.expiresAt).toLocaleString()}` : ""}
+                    <p className="connector-meta truncate">
+                      {g.expiresAt
+                        ? `Expires ${new Date(g.expiresAt).toLocaleDateString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                          })}`
+                        : "This conversation"}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleRevokeGrant(g.id)}
+                  <QuietAction
                     disabled={Boolean(revoking[g.id])}
-                    className={`${sketchButton} shrink-0`}
+                    onClick={() => void handleRevokeGrant(g.id)}
                   >
                     {revoking[g.id] ? "Revoking…" : "Revoke"}
-                  </button>
+                  </QuietAction>
                 </li>
               ))}
             </ul>
-          </ConnectorCard>
-        </SketchSection>
+          </ConnectorPanel>
+        </section>
       ) : null}
 
-      <SketchSection title="WhatsApp (Qlix)" className="mt-4" id="connector-whatsapp">
-        <ConnectorCard
-          connected={waConnected}
-          highlight={needsWhatsApp}
-          staggerIndex={2}
-          className="p-5"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <ConnectorLogo name="WhatsApp" logo={whatsappLogo} size="lg" />
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className={sketchLabel}>WhatsApp</h2>
-                  {!loading && waConnected ? (
-                    <ConnectorStatusBadge status="connected" />
-                  ) : !loading && (wa?.status === "pending_qr" || waStatus?.status === "pending_qr") ? (
-                    <ConnectorStatusBadge status="pending" label="Scan QR" />
-                  ) : !loading ? (
-                    <ConnectorStatusBadge status="idle" />
-                  ) : null}
-                </div>
-                <p className="mt-1 text-[12px] text-black/60">
-                  Link your device for JIT approvals, agent commands, and run notifications.
-                  Message yourself on WhatsApp — just type naturally; Qlix picks the agent.
-                  {isOrgWorkspace ? " One number per organization workspace." : " Personal workspace link."}
-                </p>
-                {loading ? (
-                  <p className="mt-2 flex items-center gap-1 text-[12px] text-black/50">
-                    <Loader2 size={12} className="animate-spin" /> Loading…
-                  </p>
-                ) : waConnected ? (
-                  <p className="mt-2 text-[12px] text-black/70">
-                    Linked
-                    {formatWhatsAppPhone(wa?.emailAddress ?? waStatus?.phone)
-                      ? ` · ${formatWhatsAppPhone(wa?.emailAddress ?? waStatus?.phone)}`
-                      : ""}
-                  </p>
-                ) : wa?.status === "pending_qr" || waStatus?.status === "pending_qr" ? (
-                  <p className="mt-2 text-[12px] text-[#b45309]">
-                    Scan QR in WhatsApp → Linked devices
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[12px] text-black/50">Not connected</p>
-                )}
-                {waStatus?.qr ? (
-                  <div className="mt-3 inline-block overflow-hidden rounded-xl border border-black/15 bg-white p-3 shadow-[0_8px_24px_-12px_rgba(16,14,22,0.2)]">
-                    <WhatsAppQr data={waStatus.qr} size={180} />
-                  </div>
-                ) : wa?.status === "pending_qr" || waStatus?.status === "pending_qr" ? (
-                  <div
-                    className="mt-3 flex items-center justify-center rounded-xl border border-dashed border-black/20 bg-white/80 p-2 text-[11px] text-black/50"
-                    style={{ width: 180 + 24, height: 180 + 24 }}
-                  >
-                    <span className="flex items-center gap-1">
-                      <Loader2 size={12} className="animate-spin" aria-hidden />
-                      Generating QR…
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-            <div className="shrink-0">
-              {waConnected ? (
-                <button
-                  type="button"
-                  onClick={() => void handleWhatsAppDisconnect()}
-                  disabled={busy}
-                  className={sketchButton}
-                >
-                  Disconnect
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleWhatsAppConnect()}
-                  disabled={busy || loading}
-                  className={sketchButtonPrimary}
-                >
-                  Link WhatsApp
-                </button>
-              )}
-            </div>
-          </div>
-          {waConnected ? (
-            <div className="mt-4 space-y-3 border-t border-black/10 pt-4">
-              <p className="text-[12px] text-black/60">
-                Default team for @ commands in self-chat. Plain text routes to an agent automatically.
-              </p>
-              <label className="block">
-                <span className={sketchLabel}>Default team</span>
-                <select
-                  value={defaultTeamId}
-                  onChange={(e) => setDefaultTeamId(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">— None (use @TeamName: only) —</option>
-                  {teams.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className={sketchLabel}>WhatsApp default agent</span>
-                <select
-                  value={defaultAgentId}
-                  onChange={(e) => setDefaultAgentId(e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">— None (intent routing picks) —</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                disabled={defaultsSaving || busy}
-                onClick={() => {
-                  setDefaultsSaving(true);
-                  void patchWhatsAppDefaults({
-                    teamId: defaultTeamId || null,
-                    agentId: defaultAgentId || null,
-                  })
-                    .then(() => refresh())
-                    .catch((err) => setError(err instanceof Error ? err.message : "Failed to save defaults"))
-                    .finally(() => setDefaultsSaving(false));
-                }}
-                className={sketchButton}
-              >
-                {defaultsSaving ? "Saving…" : "Save WhatsApp defaults"}
-              </button>
-              <p className="font-mono text-[11px] text-black/40">
-                Plain text → agent · @TeamName: goal · !help · !status · !cancel
-              </p>
-            </div>
-          ) : null}
-        </ConnectorCard>
-      </SketchSection>
-
-      <SketchSection title="Slack" className="mt-4" id="connector-slack">
-        <ConnectorCard
-          connected={Boolean(slack)}
-          staggerIndex={3}
-          className="p-5"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <ConnectorLogo name="Slack" logo={slackLogo} size="lg" />
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className={sketchLabel}>Slack</h2>
-                  {slack ? (
-                    <ConnectorStatusBadge status="connected" />
-                  ) : (
-                    <ConnectorStatusBadge status="idle" />
-                  )}
-                </div>
-                <p className="mt-1 text-[12px] text-black/60">
-                  Connect with OAuth so agents read channels and post messages as the signed-in Slack
-                  user. Grant agents <span className="font-medium text-black">slack.read</span> and{" "}
-                  <span className="font-medium text-black">slack.send</span> scopes.
-                </p>
-                {slack ? (
-                  <p className="mt-2 text-[12px] text-black/70">
-                    Connected as{" "}
-                    <span className="font-medium text-black">
-                      {slack.emailAddress ?? "Slack workspace"}
-                    </span>
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[12px] text-black/50">Not connected</p>
-                )}
-              </div>
-            </div>
-            <div className="shrink-0">
-              {slack ? (
-                <button
-                  type="button"
-                  onClick={() => void handleSlackDisconnect()}
-                  disabled={slackBusy}
-                  className={sketchButton}
-                >
-                  Disconnect
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={slackBusy}
-                  className={sketchButtonPrimary}
-                  onClick={() => void handleSlackConnect()}
-                >
-                  {slackBusy ? "Connecting…" : "Connect Slack"}
-                </button>
-              )}
-            </div>
-          </div>
-        </ConnectorCard>
-      </SketchSection>
-
-      <SketchSection title="Zoho" id="connector-zoho" className="mt-4">
-        <p className="mb-3 max-w-2xl text-[13px] leading-relaxed text-black/70">
-          Connect Zoho apps for agent tools. CRM is live today; Mail, Books, Desk, Inventory, and
-          Projects are coming soon.
-        </p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {zohoSuite.map((entry, idx) => {
-            const isCrm = entry.id === "zoho";
-            const isLive = entry.availability === "live";
-            const highlight = isCrm && needsZoho;
-            return (
-              <ConnectorCard
-                key={entry.id}
-                connected={isCrm && Boolean(zoho)}
-                highlight={highlight}
-                staggerIndex={3 + idx}
-                className="p-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <ConnectorLogo name={entry.name} logo={entry.logo} size="md" />
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-[11px] font-medium uppercase tracking-[0.16em] text-black">
-                          {entry.name}
-                        </h2>
-                        {isCrm && !loading && zoho ? (
-                          <ConnectorStatusBadge status="connected" />
-                        ) : isCrm && !loading ? (
-                          <ConnectorStatusBadge status="idle" />
-                        ) : null}
-                        <span
-                          className={cn(
-                            "rounded-full px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em]",
-                            isLive
-                              ? "bg-[color:var(--sketch-green-soft)] text-[color:var(--sketch-green)]"
-                              : "bg-black/[0.04] text-black/45",
-                          )}
-                        >
-                          {isLive ? "Live" : "Coming soon"}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-[13px] leading-relaxed text-black">
-                        {entry.description}
-                      </p>
-                      {isCrm && loading ? (
-                        <p className="mt-2 flex items-center gap-1 text-[12px] text-black">
-                          <Loader2 size={12} className="animate-spin" /> Loading…
-                        </p>
-                      ) : isCrm && zoho ? (
-                        <p className="mt-2 text-[12px] text-black/70">
-                          Connected as{" "}
-                          <span className="font-medium text-black">
-                            {zoho.emailAddress ?? "Zoho account"}
-                          </span>
-                        </p>
-                      ) : isCrm ? (
-                        <p className="mt-2 text-[12px] text-black/50">Not connected</p>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="shrink-0">
-                    {isCrm && zoho ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleZohoDisconnect()}
-                        disabled={busy}
-                        className={sketchButton}
-                      >
-                        Disconnect
-                      </button>
-                    ) : isCrm ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleZohoConnect()}
-                        disabled={busy || loading}
-                        className={sketchButtonPrimary}
-                      >
-                        Connect
-                      </button>
-                    ) : (
-                      <button type="button" disabled className={`${sketchButton} opacity-50`}>
-                        Soon
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </ConnectorCard>
-            );
-          })}
-        </div>
-      </SketchSection>
-
       <ConnectorCatalogSection />
-
-      <SketchSection title="Social scheduling" className="mt-6" id="connector-orbit">
-        <ConnectorCard
-          connected={Boolean(orbit)}
-          highlight={needsOrbit}
-          staggerIndex={8}
-          className="p-5"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div className="inline-flex size-12 shrink-0 items-center justify-center rounded-xl border border-black/10 bg-gradient-to-br from-[color:var(--sketch-purple-soft)] to-white transition-transform duration-300 group-hover:scale-105">
-                <Share2 size={22} className="text-[color:var(--sketch-purple)]" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <h2 className={sketchLabel}>Orbit by Exora</h2>
-                  {!loading && orbit ? (
-                    <ConnectorStatusBadge status="connected" label="Enabled" />
-                  ) : !loading ? (
-                    <ConnectorStatusBadge status="idle" />
-                  ) : null}
-                </div>
-                <p className="mt-1 text-[12px] text-black/60">
-                  Enable social for this workspace, then connect Instagram, Facebook, X, LinkedIn,
-                  and more. Channels stay isolated per workspace. Agents use{" "}
-                  <code className="text-[11px]">social.read</code> /{" "}
-                  <code className="text-[11px]">social.publish</code>.
-                </p>
-                {loading ? (
-                  <p className="mt-2 flex items-center gap-1 text-[12px] text-black/50">
-                    <Loader2 size={12} className="animate-spin" /> Loading…
-                  </p>
-                ) : orbit ? (
-                  <p className="mt-2 text-[12px] text-black/70">
-                    Social enabled
-                    {orbit.emailAddress ? ` · ${orbit.emailAddress}` : ""}
-                  </p>
-                ) : orbitPlatformConfigured === false ? (
-                  <p className="mt-2 text-[12px] text-black/50">
-                    Social is not configured on this server yet (ops: set ORBIT_API_KEY).
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[12px] text-black/50">Not enabled</p>
-                )}
-              </div>
-            </div>
-            <div className="shrink-0">
-              {orbit ? (
-                <button
-                  type="button"
-                  onClick={() => void handleOrbitDisconnect()}
-                  disabled={busy}
-                  className={sketchButton}
-                >
-                  Disable social
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleOrbitEnable()}
-                  disabled={
-                    orbitConnecting ||
-                    busy ||
-                    loading ||
-                    orbitPlatformConfigured === false
-                  }
-                  className={sketchButtonPrimary}
-                >
-                  {orbitConnecting ? "Enabling…" : "Enable social"}
-                </button>
-              )}
-            </div>
-          </div>
-
-          {orbit ? (
-            <div className="mt-4 space-y-4 border-t border-black/10 pt-4">
-              <div>
-                <p className={sketchLabel}>Connect a channel</p>
-                <p className="mt-1 mb-3 text-[12px] text-black/60">
-                  Opens the platform login. You return to Qlix after approving — refresh channels if
-                  the list does not update immediately.
-                </p>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {ORBIT_CONNECT_BUTTONS.map((id) => {
-                    const entry = getCatalogEntry(id);
-                    if (!entry) return null;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        disabled={busy || orbitSocialBusy !== null}
-                        onClick={() => void handleOrbitSocialConnect(id)}
-                        className={`${sketchButton} sketch-card-hover !justify-start gap-2.5 !normal-case !tracking-normal`}
-                      >
-                        <ConnectorLogo name={entry.name} logo={entry.logo} size="sm" />
-                        <span className="text-[12px] font-medium">
-                          {orbitSocialBusy === id ? "Starting…" : entry.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className={sketchLabel}>Connected channels</p>
-                  <button
-                    type="button"
-                    className={sketchButton}
-                    disabled={orbitChannelsLoading || busy}
-                    onClick={() => void refreshOrbitChannels()}
-                  >
-                    {orbitChannelsLoading ? "Refreshing…" : "Refresh"}
-                  </button>
-                </div>
-                {orbitChannelsLoading && orbitChannels.length === 0 ? (
-                  <p className="flex items-center gap-1 text-[12px] text-black/50">
-                    <Loader2 size={12} className="animate-spin" /> Loading channels…
-                  </p>
-                ) : orbitChannels.length === 0 ? (
-                  <p className="text-[12px] text-black/50">
-                    No channels yet. Connect Instagram, Facebook, or X above.
-                  </p>
-                ) : (
-                  <ul className="space-y-2">
-                    {orbitChannels.map((ch) => (
-                      <li
-                        key={ch.id}
-                        className="flex items-center justify-between gap-3 border-t border-black/15 pt-2 first:border-t-0 first:pt-0"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-[13px] text-black">{ch.name}</p>
-                          <p className="font-serif text-[11px] uppercase text-black/50">
-                            {ch.identifier}
-                            {ch.profile ? ` · @${ch.profile}` : ""}
-                            {ch.disabled ? " · disabled" : ""}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className={`${sketchButton} shrink-0`}
-                          disabled={busy}
-                          onClick={() => void handleOrbitChannelDisconnect(ch.id)}
-                        >
-                          Disconnect
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </ConnectorCard>
-      </SketchSection>
     </div>
+  );
+}
+
+/* ── Small shared bits ───────────────────────────────────────────────────── */
+
+function LoadingMeta() {
+  return <span className="sketch-skeleton inline-block h-3 w-28 align-middle" />;
+}
+
+function PrimaryAction({
+  children,
+  onClick,
+  disabled,
+}: {
+  readonly children: React.ReactNode;
+  readonly onClick: () => void;
+  readonly disabled?: boolean;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className="connector-action connector-action--primary">
+      {children}
+    </button>
+  );
+}
+
+function QuietAction({
+  children,
+  onClick,
+  disabled,
+}: {
+  readonly children: React.ReactNode;
+  readonly onClick: () => void;
+  readonly disabled?: boolean;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className="connector-action connector-action--quiet">
+      {children}
+    </button>
   );
 }

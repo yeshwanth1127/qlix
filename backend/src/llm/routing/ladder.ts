@@ -22,6 +22,12 @@ export const QLIX_AUTO_MODEL_IDS = {
   standard: 'openrouter/qlix/auto-standard',
 } as const;
 
+export const EXORA_AUTO_MODEL_IDS = {
+  auto: 'exora/qlix/auto',
+  economy: 'exora/qlix/auto-economy',
+  standard: 'exora/qlix/auto-standard',
+} as const;
+
 /** Concrete OpenRouter ids (with openrouter/ prefix) available to Auto per tier. */
 export const AUTO_LADDER: ReadonlyArray<{
   tier: ModelTierKey;
@@ -40,6 +46,23 @@ export const AUTO_LADDER: ReadonlyArray<{
   },
 ];
 
+/**
+ * The Exora gateway currently exposes one stable public alias. Separate ladder
+ * slots preserve plan-tier routing semantics until more gateway aliases are published.
+ */
+export const EXORA_AUTO_LADDER: typeof AUTO_LADDER = [
+  {
+    tier: 'economy',
+    modelId: 'exora/exora-general',
+    openRouterId: 'exora-general',
+  },
+  {
+    tier: 'standard',
+    modelId: 'exora/exora-general',
+    openRouterId: 'exora-general',
+  },
+];
+
 const TIER_PREFIXES: ReadonlyArray<{ tier: ModelTierKey; prefixes: string[] }> = [
   {
     tier: 'economy',
@@ -53,6 +76,7 @@ const TIER_PREFIXES: ReadonlyArray<{ tier: ModelTierKey; prefixes: string[] }> =
       'openrouter/mistralai/mistral-7b',
       'openrouter/mistralai/mistral-small',
       'openrouter/qlix/auto-economy',
+      'exora/qlix/auto-economy',
     ],
   },
   {
@@ -64,6 +88,9 @@ const TIER_PREFIXES: ReadonlyArray<{ tier: ModelTierKey; prefixes: string[] }> =
       'openrouter/google/gemini-1.5-pro',
       'openrouter/qlix/auto',
       'openrouter/qlix/auto-standard',
+      'exora/exora-general',
+      'exora/qlix/auto',
+      'exora/qlix/auto-standard',
     ],
   },
   {
@@ -92,6 +119,9 @@ export function isQlixAutoModelId(model: string): boolean {
     n === QLIX_AUTO_MODEL_IDS.auto ||
     n === QLIX_AUTO_MODEL_IDS.economy ||
     n === QLIX_AUTO_MODEL_IDS.standard ||
+    n === EXORA_AUTO_MODEL_IDS.auto ||
+    n === EXORA_AUTO_MODEL_IDS.economy ||
+    n === EXORA_AUTO_MODEL_IDS.standard ||
     n === 'qlix/auto' ||
     n === 'openrouter/qlix/auto'
   );
@@ -152,7 +182,11 @@ export function resolveAutoBillableTier(params: {
   return minTier(agentCeiling, planMax);
 }
 
-export function modelsAllowedForAuto(billableTier: ModelTierKey): typeof AUTO_LADDER {
+export function modelsAllowedForAuto(
+  billableTier: ModelTierKey,
+  provider: 'exora' | 'openrouter' = 'openrouter',
+): typeof AUTO_LADDER {
   const maxRank = TIER_RANK[billableTier];
-  return AUTO_LADDER.filter((s) => TIER_RANK[s.tier] <= maxRank);
+  const ladder = provider === 'exora' ? EXORA_AUTO_LADDER : AUTO_LADDER;
+  return ladder.filter((s) => TIER_RANK[s.tier] <= maxRank);
 }

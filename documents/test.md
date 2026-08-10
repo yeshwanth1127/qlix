@@ -20,7 +20,7 @@ API + Prisma; apply migrations (including jit_token on approvals)
 QLIX_BACKEND_URL (or backend_url in JSON)
 Must point at that API (e.g. http://localhost:8080) — no trailing path
 Python SDK
-pip install -e sdk/python (+ OpenJarvis extras if you use start())
+pip install -e sdk/python (+ Luna extras if you use start())
 Phase 1 — Create an agent (API)
 Requirements
 
@@ -58,7 +58,7 @@ Use always_scopes = scopes that are not JIT (the backend splits JIT vs always in
 
 Save as e.g. %USERPROFILE%\.qlix\agents\test-agent\agent.json (folder agents\<name>\ matches await sdk.start("test-agent")).
 
-Phase 2 — Smoke-test actions only (no OpenJarvis)
+Phase 2 — Smoke-test actions only (no Luna)
 Install SDK, set backend_url, then:
 
 import asyncio
@@ -98,14 +98,14 @@ What to expect
 
 SDK: POST /api/v1/jit/request → jitRequestId, then polls until approved + jitToken, then /actions/start includes jitToken, then /actions/complete.
 Without auto-approve: poll stays pending until something sets approval (your future dashboard flow); then timeout after ~120s → JITTimeoutError in Python.
-Phase 4 — await sdk.start("test-agent") (full OpenJarvis)
-This imports the bundled engine and needs OpenJarvis’s runtime dependencies (click, httpx, openai, …), not only httpx + cryptography.
+Phase 4 — await sdk.start("test-agent") (full Luna)
+This imports the bundled engine and needs Luna’s runtime dependencies (click, httpx, openai, …), not only httpx + cryptography.
 
 What to expect
 
 IdentityError if ~/.qlix\agents\test-agent\agent.json is missing or invalid.
-After success: a JarvisSystem with tool_executor wrapped by QlixToolExecutor, so tool calls go through JIT + start + complete when they go through that executor.
-Engine/model errors if ~/.openjarvis config / Ollama / API keys aren’t set — that’s OpenJarvis config, not Qlix identity.
+After success: a LunaSystem with tool_executor wrapped by QlixToolExecutor, so tool calls go through JIT + start + complete when they go through that executor.
+Engine/model errors if ~/.luna config / Ollama / API keys aren’t set — that’s Luna config, not Qlix identity.
 Quick backend checks (optional)
 Check	How
 Agent exists
@@ -115,7 +115,7 @@ DB action_logs for your agent_id
 JIT row
 approvals linked to action_logs for JIT request; jit_token set when approved
 README drift
-sdk/python/README.md still says JIT endpoints are “WIP” and OpenJarvis bundling is manual — you’ve since added JIT routes, start(agent_name), and bundled qlix.openjarvis. Worth updating that file when you want docs to match reality.
+sdk/python/README.md still says JIT endpoints are “WIP” and Luna bundling is manual — you’ve since added JIT routes, start(agent_name), and bundled qlix.luna. Worth updating that file when you want docs to match reality.
 
 Short summary
-From “create agent” onward, you validate in order: (1) API create + step-up → (2) write ~/.qlix/agents/<name>/agent.json → (3) QlixSDK.run() for a scope you granted → (4) optional JIT with QLIX_JIT_AUTO_APPROVE → (5) optional await sdk.start(name) once OpenJarvis deps and runtime are configured. Expect typed Python errors for scope/signature/time, HTTP errors for backend rejection, and DB/ledger changes when calls succeed and (for org agents) billing applies.
+From “create agent” onward, you validate in order: (1) API create + step-up → (2) write ~/.qlix/agents/<name>/agent.json → (3) QlixSDK.run() for a scope you granted → (4) optional JIT with QLIX_JIT_AUTO_APPROVE → (5) optional await sdk.start(name) once Luna deps and runtime are configured. Expect typed Python errors for scope/signature/time, HTTP errors for backend rejection, and DB/ledger changes when calls succeed and (for org agents) billing applies.

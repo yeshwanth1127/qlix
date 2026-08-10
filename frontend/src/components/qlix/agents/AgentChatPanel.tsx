@@ -16,14 +16,14 @@ import {
   Sparkles,
   Trash2,
   UserRound,
-  ChevronDown,
   X,
 } from "lucide-react";
-import type { AgentDTO, AgentRuntime, ChatAttachmentDTO, OpenRouterCatalogEntry } from "@/lib/agents-api";
+import type { AgentDTO, AgentRuntime, ChatAttachmentDTO, ModelCatalogEntry } from "@/lib/agents-api";
 import {
+  buildProxyModelGroups,
   clearConversationMessages,
   fetchConversationMessages,
-  fetchOpenRouterCatalog,
+  fetchModelCatalog,
   getAgent,
   getRuntimeStatus,
   normalizeQlixInferenceModelId,
@@ -45,6 +45,7 @@ import {
 } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
 import { ActivityTimeline } from "@/components/qlix/agents/AgentRunActivity";
+import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import {
   type ActivityStep,
   getPendingJitStep,
@@ -55,6 +56,7 @@ import {
   type BrowserFrame,
 } from "@/components/qlix/agents/AgentBrowserLiveView";
 import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
+import { safeModelOutputUrl } from "@/lib/safe-model-output";
 
 function statusBadgeTone(status: string): SketchTone {
   const s = status.toLowerCase();
@@ -93,93 +95,6 @@ function SketchStatusBadge({ status }: { readonly status: string }) {
 /** Cloud and hybrid agents use dashboard chat + backend inference proxy. */
 function isHostedChatRuntime(runtime: AgentRuntime | undefined): boolean {
   return runtime === "cloud" || runtime === "hybrid";
-}
-
-function ModelPicker({
-  value,
-  options,
-  agentDefaultId,
-  disabled,
-  onChange,
-}: {
-  readonly value: string;
-  readonly options: OpenRouterCatalogEntry[];
-  readonly agentDefaultId: string;
-  readonly disabled?: boolean;
-  readonly onChange: (qlixModelId: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
-  const current =
-    options.find((m) => m.qlixModelId === value) ??
-    (value.trim()
-      ? ({ qlixModelId: value, name: value.replace(/^openrouter\//, "") } as OpenRouterCatalogEntry)
-      : null);
-
-  const label = current
-    ? agentDefaultId && current.qlixModelId.toLowerCase() === agentDefaultId.toLowerCase()
-      ? `${current.name} (default)`
-      : current.name
-    : "Select model";
-
-  return (
-    <div ref={rootRef} className="relative px-2 pb-1">
-      <button
-        type="button"
-        disabled={disabled || options.length === 0}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex max-w-full items-center gap-1 rounded-sm py-1 pr-1 text-left text-[10px] font-medium text-black/60 transition-colors hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <span className="truncate">{label}</span>
-        <ChevronDown
-          className={cn("size-3 shrink-0 text-black/40 transition-transform", open && "rotate-180")}
-          aria-hidden
-        />
-      </button>
-      {open && options.length > 0 ? (
-        <ul
-          role="listbox"
-          className="absolute bottom-full left-2 z-50 mb-1 max-h-52 w-[min(18rem,calc(100vw-4rem))] overflow-y-auto overscroll-contain border border-black bg-white py-1 shadow-[4px_4px_0_rgba(0,0,0,0.08)]"
-        >
-          {options.map((m) => {
-            const isDefault =
-              agentDefaultId.length > 0 &&
-              m.qlixModelId.toLowerCase() === agentDefaultId.toLowerCase();
-            const selected = m.qlixModelId === value;
-            return (
-              <li key={m.qlixModelId} role="option" aria-selected={selected}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(m.qlixModelId);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "block w-full truncate px-2.5 py-1.5 text-left text-[11px] text-black transition-colors hover:bg-black/5",
-                    selected && "bg-[var(--sketch-tint-purple)] font-medium",
-                  )}
-                >
-                  {isDefault ? `${m.name} (default)` : m.name}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </div>
-  );
 }
 
 type ChatMsg = {
@@ -266,17 +181,21 @@ const BARE_URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"])/g;
 function renderWithLinks(text: string): ReactNode {
   const nodes: ReactNode[] = [];
   let key = 0;
-  const link = (href: string, label: string) => (
-    <a
-      key={`k${key++}`}
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="underline underline-offset-2 break-all hover:opacity-70"
-    >
-      {label}
-    </a>
-  );
+  const link = (href: string, label: string) => {
+    const safeHref = safeModelOutputUrl(href);
+    if (!safeHref) return label;
+    return (
+      <a
+        key={`k${key++}`}
+        href={safeHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline underline-offset-2 break-all hover:opacity-70"
+      >
+        {label}
+      </a>
+    );
+  };
   const pushPlain = (segment: string) => {
     let li = 0;
     let bm: RegExpExecArray | null;
@@ -445,10 +364,10 @@ export function AgentChatPanel({
   /** Latest UI model choice — read in send() to avoid stale React state. */
   const selectedModelRef = useRef("");
 
-  const [catalogModels, setCatalogModels] = useState<OpenRouterCatalogEntry[]>([]);
+  const [exoraCatalog, setExoraCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [modelSearch, setModelSearch] = useState("");
   const [selectedQlixModelId, setSelectedQlixModelId] = useState("");
   const [useBrain, setUseBrain] = useState(false);
   const [browserFrames, setBrowserFrames] = useState<BrowserFrame[]>([]);
@@ -574,10 +493,10 @@ export function AgentChatPanel({
   }, [agent?.id, agent?.runtime]);
 
   useEffect(() => {
-    setCatalogModels([]);
+    setExoraCatalog([]);
+    setOpenrouterCatalog([]);
     setCatalogError(null);
     setCatalogLoading(false);
-    setModelSearch("");
     catalogSyncedRef.current = false;
     setSelectedQlixModelId("");
     selectedModelRef.current = "";
@@ -593,65 +512,54 @@ export function AgentChatPanel({
     let cancelled = false;
     setCatalogLoading(true);
     setCatalogError(null);
-    void fetchOpenRouterCatalog().then((r) => {
-      if (cancelled) return;
-      setCatalogLoading(false);
-      if (r.ok) {
-        setCatalogModels(r.models);
-        setCatalogError(null);
-      } else {
-        setCatalogError(r.errorMessage);
-        setSelectedQlixModelId(normalizeQlixInferenceModelId(agent.model));
-      }
-    });
+    void Promise.all([fetchModelCatalog("exora"), fetchModelCatalog("openrouter")]).then(
+      ([exoraResult, openrouterResult]) => {
+        if (cancelled) return;
+        setCatalogLoading(false);
+        setExoraCatalog(exoraResult.ok ? exoraResult.models : []);
+        setOpenrouterCatalog(openrouterResult.ok ? openrouterResult.models : []);
+        if (!exoraResult.ok && !openrouterResult.ok) {
+          setCatalogError(exoraResult.errorMessage || openrouterResult.errorMessage);
+          setSelectedQlixModelId(
+            normalizeQlixInferenceModelId(agent.model, agent.llmProvider),
+          );
+        } else {
+          setCatalogError(null);
+        }
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [agent?.id, agent?.runtime]);
+  }, [agent?.id, agent?.runtime, agent?.llmProvider]);
 
   useEffect(() => {
     if (!agent || !isHostedChatRuntime(agent.runtime)) return;
-    if (catalogModels.length === 0 || catalogSyncedRef.current) return;
+    if (catalogSyncedRef.current) return;
     catalogSyncedRef.current = true;
-    const want = normalizeQlixInferenceModelId(agent.model);
-    const exact = catalogModels.find((m) => m.qlixModelId.toLowerCase() === want.toLowerCase());
-    // Honor the agent's configured model. If it isn't found in the OpenRouter catalog,
-    // keep the agent's model rather than silently defaulting to catalogModels[0]
-    // (which would force an unrelated model like gpt-4o-mini on every run).
-    const next = exact?.qlixModelId ?? want;
-    setSelectedQlixModelId(next);
-    selectedModelRef.current = next;
-  }, [agent, catalogModels]);
+    const want = normalizeQlixInferenceModelId(agent.model, agent.llmProvider);
+    setSelectedQlixModelId(want);
+    selectedModelRef.current = want;
+  }, [agent, exoraCatalog, openrouterCatalog]);
 
   /** Canonical id of the model chosen when the agent was built (its configured default). */
   const agentDefaultModelId = useMemo(
-    () => (agent ? normalizeQlixInferenceModelId(agent.model) : ""),
-    [agent?.model],
+    () =>
+      agent
+        ? normalizeQlixInferenceModelId(agent.model, agent.llmProvider)
+        : "",
+    [agent?.model, agent?.llmProvider],
   );
 
-  const pickerModels = useMemo(() => {
-    const q = modelSearch.trim().toLowerCase();
-    let list =
-      q.length === 0
-        ? catalogModels
-        : catalogModels.filter(
-            (m) =>
-              m.name.toLowerCase().includes(q) ||
-              m.id.toLowerCase().includes(q) ||
-              m.qlixModelId.toLowerCase().includes(q),
-          );
-    const sel = selectedQlixModelId.trim();
-    if (sel && !list.some((m) => m.qlixModelId === sel)) {
-      // Always keep the selected model visible. Prefer the real catalog entry; if it
-      // isn't in the catalog at all, synthesize one so the native <select> shows the
-      // correct value instead of silently falling back to its first option.
-      const hit =
-        catalogModels.find((m) => m.qlixModelId === sel) ??
-        ({ id: sel, name: sel.replace(/^openrouter\//, ""), contextLength: null, qlixModelId: sel } as OpenRouterCatalogEntry);
-      list = [hit, ...list];
-    }
-    return list;
-  }, [catalogModels, modelSearch, selectedQlixModelId]);
+  const pickerGroups = useMemo(
+    () =>
+      buildProxyModelGroups({
+        exoraCatalog,
+        openrouterCatalog,
+        selectedModel: selectedQlixModelId || agentDefaultModelId,
+      }),
+    [agentDefaultModelId, exoraCatalog, openrouterCatalog, selectedQlixModelId],
+  );
 
   useEffect(() => {
     if (!agent || agent.agentKind === "org_brain") return;
@@ -1621,10 +1529,15 @@ export function AgentChatPanel({
                       Loading models…
                     </span>
                   ) : (
-                    <ModelPicker
+                    <ModelHierarchyPicker
                       value={selectedQlixModelId}
-                      options={pickerModels}
+                      groups={pickerGroups}
                       agentDefaultId={agentDefaultModelId}
+                      enabledProviders={
+                        new Set([agent?.llmProvider ?? "exora"] as Array<"exora" | "openrouter">)
+                      }
+                      size="compact"
+                      placement="above"
                       disabled={!conversationId || sending}
                       onChange={(v) => {
                         setSelectedQlixModelId(v);

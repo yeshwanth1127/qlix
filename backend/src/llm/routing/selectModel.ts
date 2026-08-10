@@ -55,6 +55,7 @@ export function selectInferenceModel(params: {
   routingEnabled: boolean;
 }): RouteDecision {
   const requested = params.requestedModel.trim();
+  const provider = requested.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
   const complexity = scoreComplexity(lastUserText(params.messages));
   const toolsPresent = hasTools(params.tools);
 
@@ -78,10 +79,10 @@ export function selectInferenceModel(params: {
     requestedModel: requested,
     planAllowedTiers: params.planAllowedTiers,
   });
-  const allowed = modelsAllowedForAuto(billableTier);
+  const allowed = modelsAllowedForAuto(billableTier, provider);
   if (allowed.length === 0) {
     // Should not happen; fall back to cheapest ladder entry within economy
-    const fallback = modelsAllowedForAuto('economy')[0]!;
+    const fallback = modelsAllowedForAuto('economy', provider)[0]!;
     return {
       requestedModel: requested,
       routedModel: fallback.modelId,

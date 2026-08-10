@@ -467,8 +467,7 @@ export class TeamsService {
       if (agent) agents.set(id, agent);
     }
 
-    const inferenceReady = !!process.env.OPENROUTER_API_KEY?.trim();
-    return buildTeamRunnersStatus(team, agents, inferenceReady);
+    return buildTeamRunnersStatus(team, agents);
   }
 
   async listRuns(teamId: string, orgId: string): Promise<TeamRunDTO[]> {

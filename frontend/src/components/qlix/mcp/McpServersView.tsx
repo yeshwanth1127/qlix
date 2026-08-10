@@ -6,7 +6,6 @@ import {
   KeyRound,
   Loader2,
   Pencil,
-  Plug,
   RefreshCw,
   Server,
   ShieldAlert,
@@ -14,7 +13,6 @@ import {
   ShieldOff,
   Trash2,
   Unplug,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 import { McpAddServer } from "@/components/qlix/mcp/McpAddServer";
@@ -31,19 +29,41 @@ import {
   type McpGovernance,
   type McpServerAgentDTO,
   type McpServerDTO,
+  type McpServerStatus,
   type McpServerToolDTO,
 } from "@/lib/mcp-api";
-import { SketchBox, SketchPageHeader, SketchRow, sketchButton, sketchLabel } from "@/components/qlix/sketch";
+import { sketchLabel } from "@/components/qlix/sketch";
+import {
+  ConnectorAlert,
+  ConnectorPanel,
+  ConnectorRow,
+  SectionHeading,
+  type ConnectorStatus,
+} from "@/components/qlix/connectors/connector-ui";
 
-function toolStatus(tool: McpServerToolDTO): { label: string; Icon: LucideIcon } {
+function toolStatus(tool: McpServerToolDTO): { label: string; Icon: LucideIcon; tone: string } {
   if (tool.defaultGovernance === "blocked") {
-    return { label: "Blocked", Icon: ShieldOff };
+    return { label: "Blocked", Icon: ShieldOff, tone: "connector-tag--danger" };
   }
   if (tool.needsReapproval) {
-    return { label: "Withheld", Icon: ShieldAlert };
+    return { label: "Withheld", Icon: ShieldAlert, tone: "connector-tag--warn" };
   }
-  return { label: "Approved", Icon: ShieldCheck };
+  return { label: "Approved", Icon: ShieldCheck, tone: "" };
 }
+
+const SERVER_STATUS: Record<McpServerStatus, ConnectorStatus> = {
+  connected: "connected",
+  error: "error",
+  revoked: "idle",
+  pending: "pending",
+};
+
+const SERVER_STATUS_LABEL: Record<McpServerStatus, string> = {
+  connected: "Connected",
+  error: "Needs attention",
+  revoked: "Disconnected",
+  pending: "Waiting",
+};
 
 function pretty(value: Record<string, unknown> | null): string | null {
   return value ? JSON.stringify(value, null, 2) : null;
@@ -58,6 +78,7 @@ export function McpServersView() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [openDiff, setOpenDiff] = useState<string | null>(null);
+  const [openServer, setOpenServer] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -162,233 +183,252 @@ export function McpServersView() {
   }
 
   return (
-    <div className="mt-10 max-w-2xl bg-white">
-      <SketchPageHeader
-        title="MCP Servers"
-        actions={
-          <button type="button" onClick={() => setShowForm((v) => !v)} className={sketchButton}>
-            {showForm ? "Cancel" : "Add MCP server"}
+    <section className="mt-12 w-full max-w-none">
+      <SectionHeading
+        title="MCP servers"
+        hint="Extra tool sets your agents can use."
+        right={
+          <button
+            type="button"
+            onClick={() => setShowForm((v) => !v)}
+            className="connector-action connector-action--quiet"
+          >
+            {showForm ? "Cancel" : "Add server"}
           </button>
         }
       />
-      <p className="mt-2 text-[13px] leading-relaxed text-black/70">
-        Connect any Model Context Protocol server to give agents its tools. Every call is scoped,
-        audited on the signed ledger, and gated by JIT approval — bind tools to an agent on its detail page.
-      </p>
 
-      {error && (
-        <SketchBox className="mt-4 px-3 py-2 text-[13px] text-black">{error}</SketchBox>
-      )}
+      {error ? (
+        <ConnectorAlert variant="error" className="mb-3">
+          {error}
+        </ConnectorAlert>
+      ) : null}
 
       {showForm && (
-        <McpAddServer
-          onDone={() => {
-            setShowForm(false);
-            void refresh();
-          }}
-          onCancel={() => setShowForm(false)}
-        />
+        <div className="mb-3">
+          <McpAddServer
+            onDone={() => {
+              setShowForm(false);
+              void refresh();
+            }}
+            onCancel={() => setShowForm(false)}
+          />
+        </div>
       )}
 
-      {loading ? (
-        <p className="mt-6 flex items-center gap-1 text-[12px] text-black/50">
-          <Loader2 size={12} className="animate-spin" /> Loading…
-        </p>
-      ) : servers.length === 0 ? (
-        <p className="mt-6 text-[12px] text-black/50">No MCP servers yet.</p>
-      ) : (
-        servers.map((server) => {
-          const boundAgents = agentsByServer[server.id] ?? [];
-          return (
-            <SketchBox key={server.id} className="mt-4 p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="border border-black p-2">
-                    <Plug size={20} className="text-black" />
-                  </div>
-                  <div>
-                    <h3 className="text-[13px] font-medium text-black">
-                      {server.name}{" "}
-                      <span className="text-[11px] text-black/50">
-                        ({server.transport} · mcp.{server.slug})
-                      </span>
-                    </h3>
-                    <p className="mt-1 text-[12px] text-black/60">
-                      {server.transport === "http" ? server.endpointUrl : server.command}
-                    </p>
-                    <p className="mt-1 font-serif text-[10px] uppercase tracking-widest text-black/50">
-                      {server.status}
-                      {server.lastError ? ` — ${server.lastError}` : ""}
-                    </p>
-                    {boundAgents.length > 0 && (
-                      <p className="mt-1 flex items-center gap-1 text-[11px] text-black/50">
-                        <Users size={11} /> Used by {boundAgents.map((a) => a.agentName).join(", ")}
-                      </p>
-                    )}
+      <ConnectorPanel>
+        {loading ? (
+          <p className="connector-meta flex items-center gap-2 px-5 py-6">
+            <Loader2 size={13} className="animate-spin" /> Loading…
+          </p>
+        ) : servers.length === 0 ? (
+          <p className="connector-meta px-5 py-6">
+            No servers yet — add one to give your agents extra tools.
+          </p>
+        ) : (
+          servers.map((server) => {
+            const boundAgents = agentsByServer[server.id] ?? [];
+            const tools = server.tools ?? [];
+            const withheld = tools.filter((t) => t.needsReapproval).length;
+            const open = openServer === server.id;
+            const address = server.endpointUrl ?? server.command ?? "";
+
+            return (
+              <ConnectorRow
+                key={server.id}
+                icon={
+                  <span className="connector-glyph">
+                    <Server size={18} />
+                  </span>
+                }
+                name={server.name}
+                status={SERVER_STATUS[server.status]}
+                statusLabel={SERVER_STATUS_LABEL[server.status]}
+                expandable
+                expanded={open}
+                onToggle={() => setOpenServer(open ? null : server.id)}
+                meta={
+                  <>
+                    {tools.length} tool{tools.length === 1 ? "" : "s"}
+                    {withheld > 0 ? ` · ${withheld} withheld` : ""}
+                    {boundAgents.length > 0
+                      ? ` · used by ${boundAgents.map((a) => a.agentName).join(", ")}`
+                      : ""}
+                  </>
+                }
+              >
+                <div className="space-y-4">
+                  {address ? <p className="connector-code font-mono">{address}</p> : null}
+                  {server.lastError ? (
+                    <p className="text-[12px] text-[color:var(--sketch-red)]">{server.lastError}</p>
+                  ) : null}
+
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {server.authType === "oauth" && (
-                      <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-black/60">
-                        <KeyRound size={11} />
-                        {server.oauthConnected ? "OAuth connected" : "OAuth not connected"}
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleReconnect(server.id)}
+                        disabled={busyId === server.id}
+                        className="connector-action connector-action--quiet"
+                      >
+                        <KeyRound size={12} />
+                        {server.oauthConnected ? "Reconnect" : "Connect account"}
+                      </button>
                     )}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {server.authType === "oauth" && (
+                    {server.authType === "oauth" && server.oauthConnected && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDisconnect(server.id)}
+                        disabled={busyId === server.id}
+                        className="connector-action connector-action--quiet"
+                      >
+                        <Unplug size={12} />
+                        Disconnect
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => void handleReconnect(server.id)}
+                      onClick={() => void handleDiscover(server.id)}
                       disabled={busyId === server.id}
-                      title={server.oauthConnected ? "Reconnect account" : "Connect account"}
-                      className={`${sketchButton} p-1.5 disabled:opacity-40`}
+                      className="connector-action connector-action--quiet"
                     >
-                      <KeyRound size={14} />
+                      {busyId === server.id ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={12} />
+                      )}
+                      Refresh tools
                     </button>
-                  )}
-                  {server.authType === "oauth" && server.oauthConnected && (
                     <button
                       type="button"
-                      onClick={() => void handleDisconnect(server.id)}
-                      disabled={busyId === server.id}
-                      title="Disconnect account"
-                      className={`${sketchButton} p-1.5 disabled:opacity-40`}
+                      onClick={() => setEditingId((id) => (id === server.id ? null : server.id))}
+                      className="connector-action connector-action--quiet"
                     >
-                      <Unplug size={14} />
+                      <Pencil size={12} />
+                      Edit
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setEditingId((id) => (id === server.id ? null : server.id))}
-                    title="Edit server"
-                    className={`${sketchButton} p-1.5`}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDiscover(server.id)}
-                    disabled={busyId === server.id}
-                    title="Re-discover tools"
-                    className={`${sketchButton} p-1.5 disabled:opacity-40`}
-                  >
-                    {busyId === server.id ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <RefreshCw size={14} />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete(server.id)}
-                    disabled={busyId === server.id}
-                    title="Delete server"
-                    className={`${sketchButton} p-1.5 disabled:opacity-40`}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-
-              {editingId === server.id && (
-                <McpEditServer
-                  server={server}
-                  onSaved={() => {
-                    setEditingId(null);
-                    void refresh();
-                  }}
-                  onCancel={() => setEditingId(null)}
-                />
-              )}
-
-              {server.tools && server.tools.length > 0 && (
-                <div className="mt-4 border-t border-black pt-3">
-                  <p className={sketchLabel}>Tools ({server.tools.length})</p>
-                  <div className="mt-2 space-y-1.5">
-                    {server.tools.map((tool) => {
-                      const status = toolStatus(tool);
-                      const key = `${server.id}:${tool.name}`;
-                      const open = openDiff === key;
-                      const affected = boundAgents.filter(
-                        (a) => a.allowedTools.includes("*") || a.allowedTools.includes(tool.name),
-                      );
-                      return (
-                        <SketchBox key={tool.id} className="overflow-hidden">
-                          <div className="flex items-center justify-between gap-3 p-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-[12px] text-black">
-                                {tool.name}{" "}
-                                <span className="text-[11px] text-black/50">· {tool.riskLevel}</span>
-                              </p>
-                              {tool.description && (
-                                <p className="truncate text-[11px] text-black/50">{tool.description}</p>
-                              )}
-                            </div>
-                            <div className="flex shrink-0 items-center gap-2">
-                              <span className="inline-flex items-center gap-1 border border-black px-1.5 py-0.5 text-[10px] text-black">
-                                <status.Icon size={11} /> {status.label}
-                              </span>
-                              {tool.needsReapproval && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => setOpenDiff(open ? null : key)}
-                                    className={`${sketchButton} gap-0.5 py-1 text-[11px]`}
-                                  >
-                                    <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
-                                    diff
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleApprove(server.id, tool.name)}
-                                    className={`${sketchButton} py-1 text-[11px]`}
-                                  >
-                                    Re-approve
-                                  </button>
-                                </>
-                              )}
-                              <select
-                                value={tool.defaultGovernance}
-                                onChange={(e) =>
-                                  void handleGovernance(server.id, tool.name, e.target.value as McpGovernance)
-                                }
-                                className="border border-black bg-white px-2 py-1 text-[11px] text-black"
-                              >
-                                <option value="auto">auto</option>
-                                <option value="jit">jit</option>
-                                <option value="blocked">blocked</option>
-                              </select>
-                            </div>
-                          </div>
-
-                          {open && tool.needsReapproval && (
-                            <div className="border-t border-black p-2">
-                              <p className="text-[11px] text-black/70">
-                                Withheld from agents: this tool&apos;s definition changed after it was approved.
-                              </p>
-                              <DiffRow label="Description" before={tool.approvedDescription} after={tool.description} />
-                              <DiffRow
-                                label="Input schema"
-                                before={pretty(tool.approvedInputSchema)}
-                                after={pretty(tool.inputSchema)}
-                              />
-                              {affected.length > 0 && (
-                                <p className="mt-2 text-[11px] text-black/50">
-                                  Affects: {affected.map((a) => a.agentName).join(", ")}
-                                </p>
-                              )}
-                            </div>
-                          )}
-                        </SketchBox>
-                      );
-                    })}
+                    <button
+                      type="button"
+                      onClick={() => void handleDelete(server.id)}
+                      disabled={busyId === server.id}
+                      className="connector-action connector-action--quiet ml-auto"
+                    >
+                      <Trash2 size={12} />
+                      Remove
+                    </button>
                   </div>
+
+                  {editingId === server.id && (
+                    <McpEditServer
+                      server={server}
+                      onSaved={() => {
+                        setEditingId(null);
+                        void refresh();
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  )}
+
+                  {tools.length > 0 && (
+                    <div>
+                      <p className={sketchLabel}>Tools</p>
+                      <ul className="connector-sublist connector-sublist--stack mt-1">
+                        {tools.map((tool) => {
+                          const status = toolStatus(tool);
+                          const key = `${server.id}:${tool.name}`;
+                          const diffOpen = openDiff === key;
+                          const affected = boundAgents.filter(
+                            (a) => a.allowedTools.includes("*") || a.allowedTools.includes(tool.name),
+                          );
+                          return (
+                            <li key={tool.id}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-[13px] text-black">{tool.name}</p>
+                                  {tool.description ? (
+                                    <p className="connector-meta truncate">{tool.description}</p>
+                                  ) : null}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <span className={`connector-tag ${status.tone}`}>
+                                    <status.Icon size={10} /> {status.label}
+                                  </span>
+                                  {tool.needsReapproval && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => setOpenDiff(diffOpen ? null : key)}
+                                        className="connector-action connector-action--quiet"
+                                      >
+                                        <ChevronDown
+                                          size={12}
+                                          className={`transition-transform ${diffOpen ? "rotate-180" : ""}`}
+                                        />
+                                        Changes
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleApprove(server.id, tool.name)}
+                                        className="connector-action connector-action--quiet"
+                                      >
+                                        Re-approve
+                                      </button>
+                                    </>
+                                  )}
+                                  <select
+                                    value={tool.defaultGovernance}
+                                    onChange={(e) =>
+                                      void handleGovernance(
+                                        server.id,
+                                        tool.name,
+                                        e.target.value as McpGovernance,
+                                      )
+                                    }
+                                    aria-label={`Approval rule for ${tool.name}`}
+                                    className="connector-select connector-select--inline"
+                                  >
+                                    <option value="auto">Always allow</option>
+                                    <option value="jit">Ask me</option>
+                                    <option value="blocked">Never</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              {diffOpen && tool.needsReapproval && (
+                                <div className="mt-2">
+                                  <p className="connector-meta">
+                                    Held back from agents — this tool changed after you approved it.
+                                  </p>
+                                  <DiffRow
+                                    label="Description"
+                                    before={tool.approvedDescription}
+                                    after={tool.description}
+                                  />
+                                  <DiffRow
+                                    label="Inputs"
+                                    before={pretty(tool.approvedInputSchema)}
+                                    after={pretty(tool.inputSchema)}
+                                  />
+                                  {affected.length > 0 && (
+                                    <p className="connector-meta mt-2">
+                                      Affects {affected.map((a) => a.agentName).join(", ")}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-              )}
-            </SketchBox>
-          );
-        })
-      )}
-    </div>
+              </ConnectorRow>
+            );
+          })
+        )}
+      </ConnectorPanel>
+    </section>
   );
 }
 
@@ -405,12 +445,8 @@ function DiffRow({
   return (
     <div className="mt-2">
       <p className={`${sketchLabel} text-[10px]`}>{label}</p>
-      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap border border-black bg-white px-2 py-1 text-[10px] text-black/70">
-        − {before ?? "(none)"}
-      </pre>
-      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap border border-black bg-white px-2 py-1 text-[10px] text-black">
-        + {after ?? "(none)"}
-      </pre>
+      <pre className="connector-code mt-1 font-mono">− {before ?? "(none)"}</pre>
+      <pre className="connector-code connector-code--after mt-1 font-mono">+ {after ?? "(none)"}</pre>
     </div>
   );
 }

@@ -126,9 +126,9 @@ class Luna:
 
     Usage::
 
-        from qlix.luna import Jarvis
+        from qlix.luna import Luna
 
-        with Jarvis() as j:
+        with Luna() as j:
             response = j.ask("Hello, what can you do?")
             print(response)
 
@@ -136,7 +136,7 @@ class Luna:
         import asyncio
 
         async def main():
-            j = Jarvis()
+            j = Luna()
             async for token in j.ask_stream("Tell me a joke"):
                 print(token, end="", flush=True)
             j.close()
@@ -144,7 +144,7 @@ class Luna:
         asyncio.run(main())
 
         # Or without context manager:
-        j = Jarvis()
+        j = Luna()
         response = j.ask("Hello")
         j.close()
     """
@@ -620,7 +620,7 @@ class Luna:
             self._audit_logger = None
         self._engine = None
 
-    def __enter__(self) -> Jarvis:
+    def __enter__(self) -> Luna:
         return self
 
     def __exit__(self, *exc: Any) -> None:

@@ -1,7 +1,14 @@
 import type { Agent as PrismaAgent, Prisma } from '@prisma/client';
 import { DeviceVerificationService } from '../deviceVerification/deviceVerification.js';
 import { prisma } from '../lib/prisma.js';
-import type { AgentDTO, AgentRuntime, LocalInferenceMode, LlmMode, PermissionScope } from './agents.types.js';
+import type {
+  AgentDTO,
+  AgentRuntime,
+  LocalInferenceMode,
+  LlmMode,
+  LlmProvider,
+  PermissionScope,
+} from './agents.types.js';
 import type { ToolProfile } from './toolProfiles.js';
 
 export class OrgMembershipError extends Error {
@@ -21,6 +28,7 @@ export interface CreateAgentDbInput {
   runtime: AgentRuntime;
   model: string;
   llmMode: LlmMode;
+  llmProvider: LlmProvider;
   localInferenceMode: LocalInferenceMode | null;
   permissionScopes: PermissionScope[];
   jitScopes: PermissionScope[];
@@ -50,6 +58,7 @@ export function toAgentDTO(agent: PrismaAgent): AgentDTO {
     runtime: agent.runtime as AgentRuntime,
     model: agent.llmModel,
     llmMode: agent.llmMode as LlmMode,
+    llmProvider: agent.llmProvider as LlmProvider,
     localInferenceMode: (agent.localInferenceMode as LocalInferenceMode | null) ?? null,
     permissionScopes: agent.permissionScopes as PermissionScope[],
     jitScopes: agent.jitScopes as PermissionScope[],
@@ -107,6 +116,7 @@ export class AgentsRepository {
         runtime: input.runtime,
         llmModel: input.model,
         llmMode: input.llmMode,
+        llmProvider: input.llmProvider,
         localInferenceMode: input.localInferenceMode,
         permissionScopes: input.permissionScopes,
         jitScopes: input.jitScopes,
@@ -257,6 +267,18 @@ export class AgentsRepository {
     const updated = await prisma.agent.update({
       where: { id: agentId },
       data: { description },
+    });
+    return toAgentDTO(updated);
+  }
+
+  async updateInferenceProvider(
+    agentId: string,
+    llmProvider: LlmProvider,
+    model: string,
+  ): Promise<AgentDTO> {
+    const updated = await prisma.agent.update({
+      where: { id: agentId },
+      data: { llmProvider, llmModel: model },
     });
     return toAgentDTO(updated);
   }

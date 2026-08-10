@@ -1,23 +1,30 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Cloud, Cpu, Download, Fingerprint, Laptop, Loader2, X } from "lucide-react";
 import {
   ALL_PERMISSION_SCOPES,
   CLOUD_MODELS,
+  EXORA_MODELS,
   FORCE_JIT_SCOPES,
   LOCAL_MODELS,
   PERMISSION_SCOPE_LABELS,
+  buildProxyModelGroups,
+  llmProviderFromModelId,
   type AgentRuntime,
   type AgentDTO,
   type CreateAgentResponse,
   type LocalInferenceMode,
   type LlmMode,
+  type LlmProvider,
+  type ModelCatalogEntry,
   type PermissionScope,
   type ScopeCatalogEntry,
   confirmDownload,
   createAgent,
+  fetchInferenceCapabilities,
+  fetchModelCatalog,
   fetchScopeCatalog,
   getRuntimeStatus,
   restartCloudRunner,
@@ -30,6 +37,7 @@ import {
   type CreateAgentFlowStep,
 } from "@/components/qlix/agents/CreateAgentStepProgress";
 import { HybridRunnerSetupPopup } from "@/components/qlix/agents/HybridRunnerSetupPopup";
+import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import { cn } from "@/lib/utils/cn";
 import { SketchBox, sketchButton, sketchInput, sketchLabel } from "@/components/qlix/sketch";
 
@@ -54,6 +62,7 @@ interface FormState {
   localInferenceMode: LocalInferenceMode | null;
   /** direct = local engine; proxy = Qlix backend. Cloud always forces proxy. */
   llmMode: LlmMode;
+  llmProvider: LlmProvider;
   model: string;
 }
 
@@ -65,7 +74,8 @@ const INITIAL_FORM: FormState = {
   runtime: "cloud",
   localInferenceMode: null,
   llmMode: "proxy",
-  model: CLOUD_MODELS[0],
+  llmProvider: "exora",
+  model: EXORA_MODELS[0],
 };
 
 // React Bits Stepper slide transition — entering content slides in from the
@@ -100,6 +110,9 @@ export function CreateAgentModal({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<CreateAgentResponse | null>(null);
+  const updateForm = useCallback((patch: Partial<FormState>) => {
+    setForm((current) => ({ ...current, ...patch }));
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -136,6 +149,7 @@ export function CreateAgentModal({
         model: form.model,
         llmMode:
           form.runtime === "cloud" || form.runtime === "hybrid" ? "proxy" : form.llmMode,
+        llmProvider: form.llmProvider,
         localInferenceMode:
           form.runtime === "local"
             ? (form.localInferenceMode as LocalInferenceMode)
@@ -220,7 +234,7 @@ export function CreateAgentModal({
               description={form.description}
               scopes={form.permissionScopes}
               orgId={orgId}
-              onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+              onChange={updateForm}
             />
           ) : null}
 
@@ -236,6 +250,7 @@ export function CreateAgentModal({
             <Step3
               runtime={form.runtime}
               llmMode={form.llmMode}
+              llmProvider={form.llmProvider}
               localInferenceMode={form.localInferenceMode}
               model={form.model}
               cloudOnly={cloudOnly}
@@ -494,6 +509,7 @@ function Step2({
 function Step3({
   runtime,
   llmMode,
+  llmProvider,
   localInferenceMode,
   model,
   cloudOnly,
@@ -501,15 +517,72 @@ function Step3({
 }: {
   readonly runtime: AgentRuntime;
   readonly llmMode: LlmMode;
+  readonly llmProvider: LlmProvider;
   readonly localInferenceMode: LocalInferenceMode | null;
   readonly model: string;
   readonly cloudOnly?: boolean;
   readonly onChange: (patch: Partial<FormState>) => void;
 }) {
-  const modelOptions: readonly string[] =
-    runtime === "cloud" || runtime === "hybrid" || llmMode === "proxy"
-      ? CLOUD_MODELS
-      : LOCAL_MODELS;
+  const proxyInference =
+    runtime === "cloud" || runtime === "hybrid" || llmMode === "proxy";
+  const [capabilities, setCapabilities] = useState<Awaited<
+    ReturnType<typeof fetchInferenceCapabilities>
+  >>(null);
+  const [exoraCatalog, setExoraCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
+
+  useEffect(() => {
+    if (!proxyInference) return;
+    let cancelled = false;
+    void fetchInferenceCapabilities().then((result) => {
+      if (cancelled || !result) return;
+      setCapabilities(result);
+      if (!result.providers[llmProvider].enabled) {
+        const fallback = result.providers[result.defaultProvider].enabled
+          ? result.defaultProvider
+          : result.providers.exora.enabled
+            ? "exora"
+            : "openrouter";
+        onChange({
+          llmProvider: fallback,
+          model: fallback === "exora" ? EXORA_MODELS[0] : CLOUD_MODELS[0],
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [proxyInference, llmProvider, onChange]);
+
+  useEffect(() => {
+    if (!proxyInference) {
+      setExoraCatalog([]);
+      setOpenrouterCatalog([]);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([fetchModelCatalog("exora"), fetchModelCatalog("openrouter")]).then(
+      ([exoraResult, openrouterResult]) => {
+        if (cancelled) return;
+        setExoraCatalog(exoraResult.ok ? exoraResult.models : []);
+        setOpenrouterCatalog(openrouterResult.ok ? openrouterResult.models : []);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [proxyInference]);
+
+  const modelGroups = useMemo(() => {
+    if (!proxyInference) return [];
+    return buildProxyModelGroups({
+      exoraCatalog,
+      openrouterCatalog,
+      includeExora: capabilities?.providers.exora.enabled !== false,
+      includeOpenrouter: capabilities?.providers.openrouter.enabled !== false,
+      selectedModel: model,
+    });
+  }, [capabilities, exoraCatalog, openrouterCatalog, model, proxyInference]);
 
   return (
     <div className="space-y-4">
@@ -534,7 +607,8 @@ function Step3({
                 runtime: "cloud",
                 llmMode: "proxy",
                 localInferenceMode: null,
-                model: CLOUD_MODELS[0],
+                llmProvider: "exora",
+                model: EXORA_MODELS[0],
               })
             }
           />
@@ -548,7 +622,8 @@ function Step3({
                 runtime: "hybrid",
                 llmMode: "proxy",
                 localInferenceMode: null,
-                model: CLOUD_MODELS[0],
+                llmProvider: "exora",
+                model: EXORA_MODELS[0],
               })
             }
           />
@@ -617,9 +692,8 @@ function Step3({
                 onChange({
                   llmMode: "proxy",
                   localInferenceMode: "cloud_api",
-                  model: CLOUD_MODELS.includes(model as (typeof CLOUD_MODELS)[number])
-                    ? model
-                    : CLOUD_MODELS[0],
+                  llmProvider: "exora",
+                  model: EXORA_MODELS[0],
                 })
               }
             />
@@ -627,29 +701,44 @@ function Step3({
         </div>
       ) : null}
 
-      <label className="block">
+      <div className="block">
         <span className="text-[12px] font-medium text-[--text-secondary]">AI Model</span>
-        <select
-          value={model}
-          onChange={(e) => onChange({ model: e.target.value })}
-          className="mt-1.5 w-full rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--accent]"
-        >
-          {modelOptions.map((m) => (
-            <option key={m} value={m} className="bg-white text-black">
-              {m === "openrouter/qlix/auto"
-                ? "Auto (Qlix picks ≤ your plan)"
-                : m.replace("openrouter/", "")}
-            </option>
-          ))}
-        </select>
+        {proxyInference ? (
+          <div className="mt-1.5">
+            <ModelHierarchyPicker
+              value={model}
+              groups={modelGroups}
+              onChange={(next) =>
+                onChange({
+                  model: next,
+                  llmProvider: llmProviderFromModelId(next),
+                })
+              }
+            />
+          </div>
+        ) : (
+          <select
+            value={model}
+            onChange={(e) => onChange({ model: e.target.value })}
+            className="mt-1.5 w-full rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--accent]"
+          >
+            {LOCAL_MODELS.map((m) => (
+              <option key={m} value={m} className="bg-white text-black">
+                {m}
+              </option>
+            ))}
+          </select>
+        )}
         <p className="mt-1 text-[11px] text-[--text-tertiary]">
           {runtime === "cloud" || runtime === "hybrid"
-            ? model === "openrouter/qlix/auto"
+            ? model.endsWith("/qlix/auto")
               ? "Auto routes to the cheapest capable model within your billable tier. Price stays fixed."
-              : "Pinned model — used for all LLM calls (routed through Qlix)."
+              : llmProvider === "exora"
+                ? "Exora model — routed through llm.exora.solutions."
+                : "OpenRouter model — routed through Qlix."
             : "Override with your local model if needed."}
         </p>
-      </label>
+      </div>
     </div>
   );
 }

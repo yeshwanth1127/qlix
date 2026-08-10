@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { FORCE_JIT_SCOPES } from './jit.js';
-import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
+import {
+  buildAgentToolSchema,
+  buildTeamToolSchema,
+  buildSystemPrompt,
+} from './nlCapabilities.js';
+import { selectNlPromptPacks } from './nlPromptPacks.js';
 import { ALL_PERMISSION_SCOPES } from './agents.types.js';
 import { SCOPE_CATALOG, SCOPE_CATALOG_BY_ID, getEffectiveScopes } from './scopeCatalog.js';
 
@@ -28,9 +33,7 @@ describe('getEffectiveScopes (no org / no connectors)', () => {
   it('marks base scopes available and connector scopes unavailable', async () => {
     const scopes = await getEffectiveScopes(null);
     const byId = Object.fromEntries(scopes.map((s) => [s.id, s]));
-    // Base scope: always available.
     assert.equal(byId['web.read'].available, true);
-    // Connector-gated scopes: not connected → unavailable.
     assert.equal(byId['email.send'].available, false);
     assert.equal(byId['email.send'].connected, false);
     assert.equal(byId['whatsapp.send'].available, false);
@@ -54,18 +57,11 @@ describe('buildAgentToolSchema', () => {
     assert.equal(tool.function.name, 'plan_single_agent');
   });
 
-  it('permissionScopes enum reflects the passed scopes', () => {
+  it('permissionScopes items are plain strings without large enums', () => {
     const tool = buildAgentToolSchema(SCOPE_CATALOG) as any;
-    const scopeEnum = tool.function.parameters.properties.agent.properties.permissionScopes.items.enum;
-    assert.deepEqual(scopeEnum, SCOPE_CATALOG.map((s) => s.id));
-  });
-
-  it('only lists available scopes when given a narrowed set', () => {
-    const narrowed = SCOPE_CATALOG.filter((s) => !s.requiresConnector);
-    const tool = buildAgentToolSchema(narrowed) as any;
-    const scopeEnum: string[] = tool.function.parameters.properties.agent.properties.permissionScopes.items.enum;
-    assert.ok(!scopeEnum.includes('email.send'));
-    assert.ok(!scopeEnum.includes('whatsapp.send'));
+    const items = tool.function.parameters.properties.agent.properties.permissionScopes.items;
+    assert.equal(items.type, 'string');
+    assert.equal(items.enum, undefined);
   });
 
   it('runtime enum has all three values', () => {
@@ -77,7 +73,16 @@ describe('buildAgentToolSchema', () => {
   it('required fields include all agent properties', () => {
     const tool = buildAgentToolSchema(SCOPE_CATALOG) as any;
     const required: string[] = tool.function.parameters.properties.agent.required;
-    for (const field of ['name', 'description', 'permissionScopes', 'jitScopes', 'runtime', 'model', 'llmMode', 'localInferenceMode']) {
+    for (const field of [
+      'name',
+      'description',
+      'permissionScopes',
+      'jitScopes',
+      'runtime',
+      'model',
+      'llmMode',
+      'localInferenceMode',
+    ]) {
       assert.ok(required.includes(field), `missing required field: ${field}`);
     }
   });
@@ -91,15 +96,41 @@ describe('buildTeamToolSchema', () => {
 
   it('workers items include role and stageOrder', () => {
     const tool = buildTeamToolSchema(SCOPE_CATALOG) as any;
-    const workerRequired: string[] = tool.function.parameters.properties.team.properties.workers.items.required;
+    const workerRequired: string[] =
+      tool.function.parameters.properties.team.properties.workers.items.required;
     assert.ok(workerRequired.includes('role'));
     assert.ok(workerRequired.includes('stageOrder'));
   });
 
   it('config has all three retry policies', () => {
     const tool = buildTeamToolSchema(SCOPE_CATALOG) as any;
-    const retryEnum = tool.function.parameters.properties.team.properties.config.properties.retryPolicy.enum;
+    const retryEnum =
+      tool.function.parameters.properties.team.properties.config.properties.retryPolicy.enum;
     assert.deepEqual(retryEnum, ['none', 'once', 'twice']);
+  });
+});
+
+describe('selectNlPromptPacks', () => {
+  it('returns empty packs for a generic prompt', () => {
+    assert.deepEqual(selectNlPromptPacks('Build a helpful research assistant'), []);
+  });
+
+  it('selects local pack for file control', () => {
+    assert.deepEqual(selectNlPromptPacks('create a hybrid agent for local file control'), [
+      'local',
+    ]);
+  });
+
+  it('selects leads pack for Google Maps', () => {
+    assert.ok(selectNlPromptPacks('scrape google maps for leads').includes('leads'));
+  });
+
+  it('selects jobs pack for ATS apply', () => {
+    assert.ok(selectNlPromptPacks('apply to jobs on Greenhouse with my resume').includes('jobs'));
+  });
+
+  it('selects crm pack for Zoho', () => {
+    assert.ok(selectNlPromptPacks('agent to manage my zoho crm').includes('crm'));
   });
 });
 
@@ -119,20 +150,37 @@ describe('buildSystemPrompt', () => {
     assert.ok(!prompt.includes('  whatsapp.send —'));
   });
 
-  it('marks JIT scopes with [JIT-forced]', () => {
+  it('marks JIT scopes with [JIT]', () => {
     const prompt = buildSystemPrompt(SCOPE_CATALOG);
-    assert.ok(prompt.includes('[JIT-forced]'));
+    assert.ok(prompt.includes('[JIT]'));
   });
 
-  it('documents MCP lead generation scopes', () => {
+  it('omits specialty recipes without packs', () => {
     const prompt = buildSystemPrompt(SCOPE_CATALOG);
-    assert.ok(prompt.includes('mcp.qlix-leads.gmb_search_leads'));
-    assert.ok(prompt.includes('MCP scopes'));
+    assert.ok(!prompt.includes('Greenhouse'));
+    assert.ok(!prompt.includes('gmb_search_leads'));
+    assert.ok(prompt.includes('mcp.<server>.<tool>'));
   });
 
-  it('documents job apply capability', () => {
-    const prompt = buildSystemPrompt(SCOPE_CATALOG);
+  it('includes lead pack recipes when selected', () => {
+    const prompt = buildSystemPrompt(SCOPE_CATALOG, ['leads']);
+    assert.ok(prompt.includes('gmb_search_leads'));
+  });
+
+  it('includes job pack recipes when selected', () => {
+    const prompt = buildSystemPrompt(SCOPE_CATALOG, ['jobs']);
     assert.ok(prompt.includes('mcp.qlix-jobs'));
     assert.ok(prompt.includes('Greenhouse'));
+  });
+
+  it('stays under character budget without packs', () => {
+    const prompt = buildSystemPrompt(SCOPE_CATALOG);
+    const single = JSON.stringify(buildAgentToolSchema(SCOPE_CATALOG));
+    const team = JSON.stringify(buildTeamToolSchema(SCOPE_CATALOG));
+    const total = prompt.length + single.length + team.length;
+    assert.ok(
+      total < 8_000,
+      `expected core+tools < 8000 chars, got ${total} (prompt=${prompt.length} tools=${single.length + team.length})`,
+    );
   });
 });

@@ -47,7 +47,7 @@
     
     from qlix import QlixSDK
     sdk = QlixSDK()           # loads ~/.qlix/agent.json automatically
-    await sdk.start("ira")    # boots OpenJarvis with identity attached</div>
+    await sdk.start("ira")    # boots Luna with identity attached</div>
         </div>
     
         <div class="section-label" style="margin-top:1rem">Layers inside the package</div>
@@ -75,12 +75,12 @@
           <div class="card">
             <div class="badge badge-purple">Layer 5 — core</div>
             <div class="card-title">sdk.py — QlixSDK + qlix.run()</div>
-            <div class="card-sub">The main class. Holds identity + signer + http + jit. Exposes qlix.run(action_type, payload, execute_fn). This is the only function OpenJarvis ever calls. Everything else is internal.</div>
+            <div class="card-sub">The main class. Holds identity + signer + http + jit. Exposes qlix.run(action_type, payload, execute_fn). This is the only function Luna ever calls. Everything else is internal.</div>
           </div>
           <div class="card">
             <div class="badge badge-gray">Layer 6 — bundled</div>
-            <div class="card-title">openjarvis/ (subfolder)</div>
-            <div class="card-sub">OpenJarvis lives here as a bundled subfolder. Not a separate pip dependency. One change: every BaseTool.run() is wrapped with qlix.run(). OpenJarvis itself is otherwise unmodified.</div>
+            <div class="card-title">luna/ (subfolder)</div>
+            <div class="card-sub">Luna lives here as a bundled subfolder. Not a separate pip dependency. One change: every BaseTool.run() is wrapped with qlix.run(). Luna itself is otherwise unmodified.</div>
           </div>
         </div>
     
@@ -94,7 +94,7 @@
       jit.py               ← JIT approval polling
       sdk.py               ← QlixSDK class + qlix.run()
       exceptions.py        ← typed errors (JITDenied, DeviceNotVerified…)
-      openjarvis/          ← bundled execution engine
+      luna/          ← bundled execution engine
         orchestrator.py
         tool_registry.py
         memory.py
@@ -114,7 +114,7 @@
       <div class="panel" id="panel-flow">
         <div class="section-label">Normal action (non-JIT scope)</div>
         <div class="card">
-          <div class="flow-row"><div class="flow-box" style="background:#EEEDFE;color:#3C3489">User prompt</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">OpenJarvis orchestrator</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">tool.run()</div></div>
+          <div class="flow-row"><div class="flow-box" style="background:#EEEDFE;color:#3C3489">User prompt</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">Luna orchestrator</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EEEDFE;color:#3C3489">tool.run()</div></div>
           <div class="flow-row"><div class="flow-box" style="background:#EF9F27;color:#412402">qlix.run() intercepts</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">sign payload</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">POST /actions/start</div></div>
           <div class="flow-row"><div class="flow-box" style="background:#E1F5EE;color:#085041">tool executes</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">result returned</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#EF9F27;color:#412402">POST /actions/complete</div></div>
           <div class="flow-row"><div class="flow-box" style="background:#E1F5EE;color:#085041">backend verifies sig</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">debit wallet</div><div class="flow-arrow">→</div><div class="flow-box" style="background:#E1F5EE;color:#085041">write audit log</div></div>

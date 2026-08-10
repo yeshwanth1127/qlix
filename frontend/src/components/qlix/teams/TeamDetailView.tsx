@@ -1,8 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowDown, ArrowUp, Clock, Play, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, UserPlus, Users, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpRight,
+  Check,
+  Copy,
+  MessageCircle,
+  Play,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   addTeamMember,
   deleteTeam,
@@ -23,13 +36,7 @@ import {
 } from "@/lib/teams-api";
 import { listAgents, restartCloudRunner, type AgentDTO, type PermissionScope } from "@/lib/agents-api";
 import { cn } from "@/lib/utils/cn";
-import {
-  SketchBox,
-  SketchRow,
-  sketchButton,
-  sketchInput,
-  sketchLabel,
-} from "@/components/qlix/sketch";
+import { SketchBox, sketchButton, sketchButtonPrimary } from "@/components/qlix/sketch";
 import { CreateAgentModal } from "@/components/qlix/agents/CreateAgentModal";
 import { DelegatedScopePicker } from "@/components/qlix/teams/DelegatedScopePicker";
 import { TeamRunView } from "./TeamRunView";
@@ -45,53 +52,234 @@ interface TeamDetailViewProps {
 type ActiveTab = "build" | "run" | "history";
 
 type AgentCreatePurpose = "supervisor" | "worker";
-type AddMode = "create" | "existing";
 
-function runnerStatusLabel(entry: TeamRunnerStatusEntry | undefined): string {
-  if (!entry) return "Unknown";
-  if (entry.ready) return "Online";
-  if (entry.provisioningStatus === "provisioning") return "Starting up";
-  if (entry.provisioningStatus === "failed") return "Failed to start";
-  return "Offline";
+/** Muted ink — `text-black/NN` is force-inked inside the console, so hierarchy
+ *  has to come from the ink variables. */
+const INK_SOFT = "text-[color:var(--ink-soft)]";
+const INK_FAINT = "text-[color:var(--ink-faint)]";
+const HAIRLINE = "border-[color:var(--ink-border)]";
+
+/** Quiet borderless control used for section actions. */
+const quietButton =
+  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] text-[color:var(--ink-soft)] transition-colors hover:bg-black/[0.05] hover:text-black disabled:pointer-events-none disabled:opacity-40";
+
+type Presence = "online" | "starting" | "attention" | "offline" | "unknown";
+
+function presenceOf(entry: TeamRunnerStatusEntry | undefined): Presence {
+  if (!entry) return "unknown";
+  if (entry.ready) return "online";
+  if (entry.inferenceError) return "attention";
+  if (entry.provisioningStatus === "provisioning") return "starting";
+  if (entry.provisioningStatus === "failed") return "attention";
+  return "offline";
 }
 
-function RunnerRow({
-  entry,
-  agentsHrefPrefix,
-  onRestart,
-  restarting,
+const PRESENCE_LABEL: Record<Presence, string> = {
+  online: "Online",
+  starting: "Getting ready",
+  attention: "Needs attention",
+  offline: "Offline",
+  unknown: "Checking…",
+};
+
+const PRESENCE_DOT: Record<Presence, string> = {
+  online: "bg-[color:var(--sketch-green)]",
+  starting: "bg-[color:var(--warning)] animate-pulse",
+  attention: "bg-[color:var(--sketch-red)]",
+  offline: "bg-[color:var(--ink-faint)]",
+  unknown: "bg-[color:var(--ink-faint)]",
+};
+
+function shortDid(did: string): string {
+  if (did.length <= 18) return did;
+  return `${did.slice(0, 8)}…${did.slice(-6)}`;
+}
+
+function IconAction({
+  icon: Icon,
+  label,
+  onClick,
+  busy = false,
+  spin = false,
+  disabled = false,
+  danger = false,
 }: {
-  readonly entry: TeamRunnerStatusEntry | undefined;
-  readonly agentsHrefPrefix: string;
-  readonly onRestart: () => void;
-  readonly restarting: boolean;
+  readonly icon: ComponentType<{ size?: number; className?: string }>;
+  readonly label: string;
+  readonly onClick: () => void;
+  readonly busy?: boolean;
+  /** Spin the icon while busy — only meaningful for the refresh glyph. */
+  readonly spin?: boolean;
+  readonly disabled?: boolean;
+  readonly danger?: boolean;
 }) {
-  if (!entry) {
-    return <p className="mt-2 text-[11px] text-black/50">Loading status…</p>;
-  }
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
-      <span className="font-serif uppercase tracking-widest text-black/60">{runnerStatusLabel(entry)}</span>
-      {entry.inferenceError && (
-        <span className="text-black">{entry.inferenceError}</span>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "grid size-7 shrink-0 place-items-center rounded-full transition-colors",
+        INK_FAINT,
+        "hover:bg-black/[0.06] hover:text-black disabled:pointer-events-none disabled:opacity-30",
+        danger && "hover:bg-[color:var(--sketch-red-soft)] hover:text-[color:var(--sketch-red)]",
       )}
-      <button
-        type="button"
-        onClick={onRestart}
-        disabled={restarting}
-        className={`${sketchButton} gap-1 py-0.5`}
-        title="Restart this agent to pick up the latest updates"
-      >
-        <RefreshCw size={11} className={restarting ? "animate-spin" : ""} />
-        {restarting ? "Restarting…" : "Restart"}
-      </button>
-      <Link
-        href={`${agentsHrefPrefix}/agents/${entry.agentId}`}
-        className="underline underline-offset-2 text-black/50 hover:text-black"
-      >
-        Agent detail →
-      </Link>
+    >
+      <Icon size={13} className={busy && spin ? "animate-spin" : undefined} />
+    </button>
+  );
+}
+
+/** One agent in the team — name, presence, and actions that surface on hover. */
+function AgentRow({
+  name,
+  stage,
+  meta,
+  entry,
+  agentHref,
+  restarting,
+  onRestart,
+  onDelete,
+  deleting = false,
+  onMove,
+  canMoveUp = false,
+  canMoveDown = false,
+  onToggleScopes,
+  scopesOpen = false,
+  children,
+}: {
+  readonly name: string;
+  readonly stage?: number | null;
+  readonly meta?: ReactNode;
+  readonly entry: TeamRunnerStatusEntry | undefined;
+  readonly agentHref: string;
+  readonly restarting: boolean;
+  readonly onRestart: () => void;
+  readonly onDelete: () => void;
+  readonly deleting?: boolean;
+  readonly onMove?: (direction: "up" | "down") => void;
+  readonly canMoveUp?: boolean;
+  readonly canMoveDown?: boolean;
+  readonly onToggleScopes?: () => void;
+  readonly scopesOpen?: boolean;
+  readonly children?: ReactNode;
+}) {
+  const presence = presenceOf(entry);
+
+  return (
+    <div className="group px-5 py-4 transition-colors hover:bg-white/55">
+      <div className="flex items-center gap-4">
+        <span
+          className={cn(
+            "grid size-7 shrink-0 place-items-center rounded-full border font-mono text-[11px] tabular-nums",
+            HAIRLINE,
+            INK_SOFT,
+          )}
+        >
+          {stage != null ? (
+            stage
+          ) : (
+            <span className="size-1.5 rounded-full bg-[color:var(--ink-faint)]" aria-hidden />
+          )}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-medium text-black">{name}</p>
+          <p className={cn("mt-1 flex flex-wrap items-center gap-x-2.5 text-[11.5px]", INK_SOFT)}>
+            <span
+              className="inline-flex items-center gap-1.5"
+              title={entry?.inferenceError ?? undefined}
+            >
+              <span className={cn("size-1.5 rounded-full", PRESENCE_DOT[presence])} aria-hidden />
+              {PRESENCE_LABEL[presence]}
+            </span>
+            {meta}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          {onMove && (
+            <>
+              <IconAction
+                icon={ArrowUp}
+                label="Move earlier"
+                onClick={() => onMove("up")}
+                disabled={!canMoveUp}
+              />
+              <IconAction
+                icon={ArrowDown}
+                label="Move later"
+                onClick={() => onMove("down")}
+                disabled={!canMoveDown}
+              />
+            </>
+          )}
+          {onToggleScopes && (
+            <IconAction
+              icon={SlidersHorizontal}
+              label={scopesOpen ? "Close permissions" : "Permissions"}
+              onClick={onToggleScopes}
+            />
+          )}
+          <IconAction
+            icon={RefreshCw}
+            label="Restart agent"
+            onClick={onRestart}
+            busy={restarting}
+            spin
+          />
+          <Link
+            href={agentHref}
+            title="Open agent"
+            aria-label="Open agent"
+            className={cn(
+              "grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/[0.06] hover:text-black",
+              INK_FAINT,
+            )}
+          >
+            <ArrowUpRight size={13} />
+          </Link>
+          <IconAction
+            icon={Trash2}
+            label="Delete agent"
+            onClick={onDelete}
+            busy={deleting}
+            danger
+          />
+        </div>
+      </div>
+
+      {children}
     </div>
+  );
+}
+
+function Section({
+  title,
+  count,
+  action,
+  children,
+}: {
+  readonly title: string;
+  readonly count?: number;
+  readonly action?: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-end justify-between gap-4 px-1">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-black">
+          {title}
+          {count != null && count > 0 && (
+            <span className={cn("ml-2 font-mono tracking-normal", INK_FAINT)}>{count}</span>
+          )}
+        </h3>
+        {action}
+      </div>
+      <SketchBox className="overflow-hidden">{children}</SketchBox>
+    </section>
   );
 }
 
@@ -118,10 +306,12 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   const [reorderingId, setReorderingId] = useState<string | null>(null);
   const [togglingAutoSequence, setTogglingAutoSequence] = useState(false);
   const [savingMemberScopes, setSavingMemberScopes] = useState(false);
+  const [copied, setCopied] = useState<"did" | "trigger" | null>(null);
 
   const workerCount = team.members?.length ?? 0;
   const allReady = runnersStatus?.allReady ?? false;
   const canRun = allReady;
+  const autoSequence = Boolean(team.config.autoSequence);
 
   const runnerByAgentId = useCallback(
     (agentId: string) => runnersStatus?.runners.find((r) => r.agentId === agentId),
@@ -149,13 +339,23 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
     void listTeamRuns(team.id).then(setHistoryRuns).catch(() => {});
   }, [tab, team.id]);
 
+  async function copyToClipboard(value: string, key: "did" | "trigger") {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1600);
+    } catch {
+      // clipboard unavailable — nothing to do
+    }
+  }
+
   async function handleRestartRunner(agentId: string) {
     setRestartingId(agentId);
     try {
       await restartCloudRunner(agentId);
       await pollRunners();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to restart agent");
+      setActionError(err instanceof Error ? err.message : "Failed to restart agent");
     } finally {
       setRestartingId(null);
     }
@@ -335,9 +535,8 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
     }
   }
 
-
   async function handleMoveMember(member: TeamMemberDTO, direction: "up" | "down") {
-    if (reorderingId || team.config.autoSequence) return;
+    if (reorderingId || autoSequence) return;
     const ordered = [...(team.members ?? [])].sort(
       (a, b) => (a.stageOrder ?? 0) - (b.stageOrder ?? 0) || a.addedAt.localeCompare(b.addedAt),
     );
@@ -378,74 +577,108 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   }
 
   const tabs: { id: ActiveTab; label: string; disabled?: boolean }[] = [
-    { id: "build", label: "Build" },
+    { id: "build", label: "Team" },
     { id: "run", label: "Run", disabled: !canRun },
     { id: "history", label: "History" },
   ];
 
   const isRunTab = tab === "run" && canRun;
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
-      <div
-        className={cn(
-          "flex shrink-0 items-center justify-between border-b border-black px-6",
-          isRunTab ? "py-2" : "py-4",
-        )}
-      >
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="truncate text-base font-semibold text-black">{team.name}</h2>
-            <span className="shrink-0 font-serif text-[10px] uppercase tracking-widest text-black/50">
-              {team.status === "draft" ? "Draft — needs supervisor" : team.status}
-            </span>
-          </div>
-          {!isRunTab && team.description && (
-            <p className="mt-0.5 text-xs text-black/60">{team.description}</p>
-          )}
-          {!isRunTab && <p className="mt-1 font-mono text-xs text-black/40">{team.did}</p>}
-          {!isRunTab && (
-            <SketchBox className="mt-2 max-w-xl px-3 py-2">
-              <p className={`${sketchLabel} text-[10px]`}>WhatsApp (self-chat)</p>
-              <p className="mt-1 break-all font-mono text-[11px] text-black/70">
-                @{team.name}: &lt;goal&gt; or @{team.name} &lt;goal&gt;
-              </p>
-              <p className="mt-1 text-[10px] text-black/50">
-                Teams run only with @. @ &lt;goal&gt; uses the default team from Connectors. Mid-run: @ more guidance · !status · !cancel
-              </p>
-            </SketchBox>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={handleDelete}
-          disabled={deleting}
-          className={`${sketchButton} shrink-0 gap-1.5 disabled:opacity-40`}
-        >
-          <Trash2 size={13} />
-          Delete
-        </button>
-      </div>
+  const headerPresence: Presence = !team.supervisorAgentId
+    ? "offline"
+    : allReady
+      ? "online"
+      : runnersStatus
+        ? "starting"
+        : "unknown";
+  const headerStatus = !team.supervisorAgentId
+    ? "Draft"
+    : allReady
+      ? "Ready"
+      : runnersStatus
+        ? "Getting ready"
+        : "Checking…";
 
-      <div className="flex shrink-0 border-b border-black px-6">
+  const orderedMembers = [...(team.members ?? [])].sort(
+    (a, b) => (a.stageOrder ?? 0) - (b.stageOrder ?? 0) || a.addedAt.localeCompare(b.addedAt),
+  );
+
+  const trigger = `@${team.name}: `;
+
+  const readinessLine = !team.supervisorAgent
+    ? "Add a supervisor to get started."
+    : workerCount === 0
+      ? "Add at least one agent for the supervisor to work with."
+      : "Getting your agents ready…";
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <header className={cn("shrink-0 px-8", isRunTab ? "pt-4 pb-3" : "pt-7 pb-6")}>
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0">
+            <h2 className="truncate text-[21px] font-semibold tracking-[-0.02em] text-black">
+              {team.name}
+            </h2>
+            {!isRunTab && team.description && (
+              <p className={cn("mt-2 max-w-xl text-[13px] leading-relaxed", INK_SOFT)}>
+                {team.description}
+              </p>
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            {!isRunTab && (
+              <button
+                type="button"
+                onClick={() => void copyToClipboard(team.did, "did")}
+                title={`${team.did} — click to copy`}
+                className={cn(quietButton, "font-mono")}
+              >
+                {copied === "did" ? <Check size={11} /> : <Copy size={11} />}
+                {shortDid(team.did)}
+              </button>
+            )}
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border bg-white/55 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]",
+                HAIRLINE,
+                INK_SOFT,
+              )}
+            >
+              <span className={cn("size-1.5 rounded-full", PRESENCE_DOT[headerPresence])} aria-hidden />
+              {headerStatus}
+            </span>
+            <IconAction
+              icon={Trash2}
+              label="Delete team"
+              onClick={() => void handleDelete()}
+              busy={deleting}
+              danger
+            />
+          </div>
+        </div>
+      </header>
+
+      <div className={cn("flex shrink-0 items-center gap-7 border-b px-8", HAIRLINE)}>
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => !t.disabled && setTab(t.id)}
             disabled={t.disabled}
+            title={t.disabled ? "Available once every agent is online" : undefined}
             className={cn(
-              "mr-4 py-2 font-serif text-[11px] uppercase tracking-widest transition-colors",
+              "relative py-3 text-[11px] font-medium uppercase tracking-[0.16em] transition-colors",
               t.disabled
-                ? "cursor-not-allowed text-black/25"
+                ? cn("cursor-not-allowed", INK_FAINT)
                 : tab === t.id
-                  ? "border-b-2 border-black text-black"
-                  : "text-black/50 hover:text-black",
+                  ? "text-black"
+                  : cn(INK_SOFT, "hover:text-black"),
             )}
           >
             {t.label}
-            {t.id === "run" && !canRun && (
-              <span className="ml-1 normal-case tracking-normal text-black/30">(not ready yet)</span>
+            {tab === t.id && (
+              <span className="absolute inset-x-0 -bottom-px h-px bg-black" aria-hidden />
             )}
           </button>
         ))}
@@ -458,260 +691,204 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
         )}
       >
         {tab === "build" && (
-          <div className="px-6 py-5 space-y-6">
+          <div className="mx-auto w-full max-w-3xl space-y-9 px-8 py-9">
             {actionError && (
-              <SketchBox className="px-3 py-2 text-xs text-black">{actionError}</SketchBox>
+              <p className="rounded-2xl bg-[color:var(--sketch-red-soft)] px-4 py-2.5 text-[12px] text-[color:var(--sketch-red)]">
+                {actionError}
+              </p>
             )}
 
-            <div>
-              <div className="mb-3 flex items-center gap-2">
-                <ShieldCheck size={14} className="text-black" />
-                <span className={`${sketchLabel} normal-case`}>Supervisor Agent</span>
-                <span className="text-xs text-black/50">(required, cloud)</span>
-              </div>
-
+            <Section
+              title="Supervisor"
+              action={
+                team.supervisorAgent && (
+                  <button type="button" onClick={openCreateSupervisor} className={quietButton}>
+                    Replace
+                  </button>
+                )
+              }
+            >
               {team.supervisorAgent ? (
-                <SketchBox className="px-4 py-3">
-                  <p className="text-sm font-medium text-black">{team.supervisorAgent.name}</p>
-                  <p className="mt-0.5 font-mono text-xs text-black/50">{team.supervisorAgent.did}</p>
-                  <RunnerRow
-                    entry={runnerByAgentId(team.supervisorAgent.id)}
-                    agentsHrefPrefix={routePrefix}
-                    onRestart={() => handleRestartRunner(team.supervisorAgent!.id)}
-                    restarting={restartingId === team.supervisorAgent.id}
-                  />
-                  <div className="mt-2 flex items-center gap-3">
-                    <button type="button" onClick={openCreateSupervisor} className={sketchButton}>
-                      Replace supervisor
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDeleteSupervisor}
-                      className={`${sketchButton} gap-1`}
-                      title="Permanently deletes this agent"
-                    >
-                      <Trash2 size={13} />
-                      Delete
-                    </button>
-                  </div>
-                </SketchBox>
+                <AgentRow
+                  name={team.supervisorAgent.name}
+                  entry={runnerByAgentId(team.supervisorAgent.id)}
+                  agentHref={`${routePrefix}/agents/${team.supervisorAgent.id}`}
+                  restarting={restartingId === team.supervisorAgent.id}
+                  onRestart={() => void handleRestartRunner(team.supervisorAgent!.id)}
+                  onDelete={() => void handleDeleteSupervisor()}
+                  meta={<span className={INK_FAINT}>Plans the work and delegates</span>}
+                />
               ) : (
-                <SketchBox className="flex flex-col items-center gap-3 border-dashed px-4 py-5">
-                  <p className="text-center text-xs text-black/50">
-                    The supervisor agent runs in the cloud. It decomposes goals, delegates to workers, and synthesizes results.
+                <div className="flex flex-col items-center gap-4 px-6 py-9 text-center">
+                  <p className={cn("max-w-sm text-[13px] leading-relaxed", INK_SOFT)}>
+                    A supervisor breaks the goal into steps, hands them to your agents, and pulls the
+                    results together.
                   </p>
                   <div className="flex items-center gap-2">
-                    <button type="button" onClick={openCreateSupervisor} className={`${sketchButton} gap-1.5`}>
-                      <ShieldCheck size={13} />
-                      Create New
+                    <button type="button" onClick={openCreateSupervisor} className={sketchButton}>
+                      New agent
                     </button>
                     <button
                       type="button"
                       onClick={() => void openExistingPicker("supervisor")}
-                      className={`${sketchButton} gap-1.5`}
+                      className={quietButton}
                     >
-                      <Plus size={13} />
-                      Use Existing Agent
+                      Use existing
                     </button>
                   </div>
-                </SketchBox>
-              )}
-            </div>
-
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Users size={14} className="text-black/60" />
-                  <span className={`${sketchLabel} normal-case`}>
-                    Worker Agents
-                    {workerCount > 0 && <span className="ml-1.5 text-black/50">({workerCount})</span>}
-                  </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={openCreateWorker} className={`${sketchButton} gap-1`}>
-                    <UserPlus size={12} />
-                    Create New
+              )}
+            </Section>
+
+            <Section
+              title="Agents"
+              count={workerCount}
+              action={
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={autoSequence}
+                    onClick={() => void handleToggleAutoSequence(!autoSequence)}
+                    disabled={togglingAutoSequence}
+                    title={
+                      autoSequence
+                        ? "The supervisor picks the order for every run. Turn off to run agents top to bottom."
+                        : "Agents run top to bottom. Turn on to let the supervisor pick the order each run."
+                    }
+                    className={quietButton}
+                  >
+                    <span
+                      className={cn(
+                        "relative h-[14px] w-[26px] rounded-full transition-colors",
+                        autoSequence ? "bg-black" : "bg-black/15",
+                      )}
+                      aria-hidden
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-[2px] size-[10px] rounded-full bg-white transition-all",
+                          autoSequence ? "left-[14px]" : "left-[2px]",
+                        )}
+                      />
+                    </span>
+                    Auto order
+                  </button>
+                  <span className={cn("select-none", INK_FAINT)}>·</span>
+                  <button type="button" onClick={openCreateWorker} className={quietButton}>
+                    New agent
                   </button>
                   <button
                     type="button"
                     onClick={() => void openExistingPicker("worker")}
-                    className={`${sketchButton} gap-1`}
+                    className={quietButton}
                   >
-                    <Plus size={12} />
-                    Use Existing
+                    Use existing
                   </button>
                 </div>
-              </div>
-
-              <SketchBox className="mb-3 flex items-start gap-3 px-3 py-2">
-                <Sparkles size={14} className="mt-0.5 shrink-0 text-black/60" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs font-medium text-black">Pipeline order</p>
-                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-black/60">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(team.config.autoSequence)}
-                        onChange={(e) => void handleToggleAutoSequence(e.target.checked)}
-                        disabled={togglingAutoSequence}
-                        className="size-3.5 accent-black"
-                      />
-                      Auto-sequence (supervisor decides on every run)
-                    </label>
-                  </div>
-                  <p className="mt-1 text-[11px] text-black/50">
-                    {team.config.autoSequence
-                      ? "Supervisor LLM picks the order on every run from each agent's description. Stage numbers below are ignored."
-                      : "Workers run strictly in the order shown below. Add agents in any order — use the arrows to set the sequence."}
-                  </p>
-                </div>
-              </SketchBox>
-
-              {team.members && team.members.length > 0 ? (
-                <div className="space-y-2">
-                  {[...team.members]
-                    .sort(
-                      (a, b) =>
-                        (a.stageOrder ?? 0) - (b.stageOrder ?? 0) ||
-                        a.addedAt.localeCompare(b.addedAt),
-                    )
-                    .map((m, idx, arr) => (
-                    <SketchRow key={m.id} className="flex items-start gap-3 border-black">
-                      <div
-                        className={cn(
-                          "flex shrink-0 flex-col items-center gap-0.5 pt-0.5",
-                          team.config.autoSequence && "opacity-30",
-                        )}
-                        title={
-                          team.config.autoSequence
-                            ? "Auto-sequence is on — stage order is ignored"
-                            : "Pipeline stage"
+              }
+            >
+              {orderedMembers.length > 0 ? (
+                <div className="divide-y divide-black/10">
+                  {orderedMembers.map((m, idx, arr) => (
+                    <AgentRow
+                      key={m.id}
+                      name={m.agent?.name ?? m.agentId}
+                      stage={autoSequence ? null : idx + 1}
+                      entry={runnerByAgentId(m.agentId)}
+                      agentHref={`${routePrefix}/agents/${m.agentId}`}
+                      restarting={restartingId === m.agentId}
+                      onRestart={() => void handleRestartRunner(m.agentId)}
+                      onDelete={() => void handleDeleteWorker(m)}
+                      deleting={removingId === m.agentId}
+                      onMove={
+                        autoSequence ? undefined : (dir) => void handleMoveMember(m, dir)
+                      }
+                      canMoveUp={idx > 0 && reorderingId === null}
+                      canMoveDown={idx < arr.length - 1 && reorderingId === null}
+                      onToggleScopes={() => {
+                        if (editingMemberId === m.id) {
+                          setEditingMemberId(null);
+                          return;
                         }
-                      >
-                        <button
-                          type="button"
-                          onClick={() => void handleMoveMember(m, "up")}
-                          disabled={
-                            team.config.autoSequence || idx === 0 || reorderingId !== null
-                          }
-                          className="rounded p-0.5 text-black/50 hover:text-black disabled:opacity-25"
-                          aria-label="Move stage up"
-                        >
-                          <ArrowUp size={11} />
-                        </button>
-                        <span className="border border-black px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-black">
-                          {idx + 1}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleMoveMember(m, "down")}
-                          disabled={
-                            team.config.autoSequence ||
-                            idx === arr.length - 1 ||
-                            reorderingId !== null
-                          }
-                          className="rounded p-0.5 text-black/50 hover:text-black disabled:opacity-25"
-                          aria-label="Move stage down"
-                        >
-                          <ArrowDown size={11} />
-                        </button>
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-black">{m.agent?.name ?? m.agentId}</p>
-                        <p className="mt-0.5 text-xs text-black/50">
-                          Role: <span className="text-black/70">{m.role}</span>
-                          {m.delegatedScopes.length > 0 && (
-                            <span className="ml-2 text-black/40">
-                              · {m.delegatedScopes.join(", ")}
-                            </span>
-                          )}
-                        </p>
-                        {editingMemberId === m.id ? (
-                          <div className="mt-2 space-y-2">
-                            <DelegatedScopePicker
-                              availableScopes={m.agent?.permissionScopes ?? []}
-                              selected={editScopes}
-                              onChange={setEditScopes}
+                        setEditingMemberId(m.id);
+                        setEditScopes(m.delegatedScopes);
+                      }}
+                      scopesOpen={editingMemberId === m.id}
+                      meta={
+                        m.delegatedScopes.length > 0 ? (
+                          <span className={INK_FAINT}>
+                            {m.delegatedScopes.length} permission
+                            {m.delegatedScopes.length === 1 ? "" : "s"}
+                          </span>
+                        ) : undefined
+                      }
+                    >
+                      {editingMemberId === m.id && (
+                        <div className="mt-4 space-y-3 pl-11">
+                          <DelegatedScopePicker
+                            availableScopes={m.agent?.permissionScopes ?? []}
+                            selected={editScopes}
+                            onChange={setEditScopes}
+                            disabled={savingMemberScopes}
+                          />
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void saveMemberScopes(m)}
                               disabled={savingMemberScopes}
-                            />
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => void saveMemberScopes(m)}
-                                disabled={savingMemberScopes}
-                                className={sketchButton}
-                              >
-                                Save scopes
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingMemberId(null)}
-                                className={sketchButton}
-                              >
-                                Cancel
-                              </button>
-                            </div>
+                              className={sketchButton}
+                            >
+                              {savingMemberScopes ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMemberId(null)}
+                              className={quietButton}
+                            >
+                              Cancel
+                            </button>
                           </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingMemberId(m.id);
-                              setEditScopes(m.delegatedScopes);
-                            }}
-                            className={`${sketchButton} mt-1 py-0.5 normal-case tracking-normal`}
-                          >
-                            Edit delegated scopes
-                          </button>
-                        )}
-                        <RunnerRow
-                          entry={runnerByAgentId(m.agentId)}
-                          agentsHrefPrefix={routePrefix}
-                          onRestart={() => handleRestartRunner(m.agentId)}
-                          restarting={restartingId === m.agentId}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteWorker(m)}
-                        disabled={removingId === m.agentId}
-                        className={`${sketchButton} gap-1 disabled:opacity-40`}
-                        title="Permanently deletes this agent"
-                      >
-                        <Trash2 size={13} />
-                        Delete
-                      </button>
-                    </SketchRow>
+                        </div>
+                      )}
+                    </AgentRow>
                   ))}
                 </div>
               ) : (
-                <p className="py-2 text-xs text-black/50">
-                  No worker agents yet. Each worker runs on its own in the cloud.
+                <p className={cn("px-6 py-9 text-center text-[13px]", INK_SOFT)}>
+                  No agents yet — add the ones this team should work with.
                 </p>
               )}
-            </div>
+            </Section>
 
-            {allReady ? (
-              <SketchBox className="flex items-center gap-2 px-4 py-3">
-                <Play size={13} className="shrink-0 text-black" />
-                <p className="text-xs text-black/70">
-                  All agents are online. Switch to the <strong>Run</strong> tab to start a task.
-                </p>
-              </SketchBox>
-            ) : (
-              <SketchBox className="flex items-center gap-2 px-4 py-3">
-                <Clock size={13} className="shrink-0 text-black" />
-                <p className="text-xs text-black/70">
-                  Waiting for agents to come online: you need a supervisor and at least one worker.
-                </p>
-              </SketchBox>
-            )}
+            <div className={cn("flex flex-wrap items-center justify-between gap-3 border-t pt-6", HAIRLINE)}>
+              <button
+                type="button"
+                onClick={() => void copyToClipboard(trigger, "trigger")}
+                title="Send this in your WhatsApp self-chat to start the team. While it runs: @ to add guidance, !status, !cancel."
+                className={quietButton}
+              >
+                {copied === "trigger" ? <Check size={11} /> : <MessageCircle size={11} />}
+                <span className="font-mono">@{team.name}: your goal</span>
+              </button>
+
+              {canRun ? (
+                <button
+                  type="button"
+                  onClick={() => setTab("run")}
+                  className={cn(sketchButtonPrimary, "gap-1.5")}
+                >
+                  <Play size={12} />
+                  Start a run
+                </button>
+              ) : (
+                <p className={cn("text-[12px]", INK_SOFT)}>{readinessLine}</p>
+              )}
+            </div>
           </div>
         )}
 
-        {tab === "run" && canRun && (
-          <TeamRunView team={team} onRunStarted={() => {}} />
-        )}
+        {tab === "run" && canRun && <TeamRunView team={team} onRunStarted={() => {}} />}
 
         {tab === "history" && (
           <TeamRunHistoryView
@@ -792,79 +969,74 @@ function ExistingAgentPicker({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 p-4">
-      <div className="relative w-full max-w-md border-2 border-black bg-white">
-        <div className="flex items-center justify-between border-b border-black px-5 py-4">
-          <div>
-            <h2 className={sketchLabel}>
-              Use existing agent as {purpose}
-            </h2>
-            <p className="mt-0.5 text-xs text-black/50">
-              Only cloud agents not already in this team are shown.
-            </p>
-          </div>
-          <button type="button" onClick={onClose} className="text-black/40 hover:text-black">
-            <X size={16} />
-          </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/10 p-4 backdrop-blur-sm">
+      <SketchBox className="relative w-full max-w-md overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-6 pt-6">
+          <h2 className="text-[11px] font-medium uppercase tracking-[0.16em] text-black">
+            {purpose === "supervisor" ? "Choose a supervisor" : "Add an agent"}
+          </h2>
+          <IconAction icon={X} label="Close" onClick={onClose} />
         </div>
 
-        <div className="px-5 pb-1 pt-3">
-          <div className="flex items-center gap-2 border border-black px-3 py-1.5">
-            <Search size={13} className="shrink-0 text-black/40" />
+        <div className="px-6 pt-4">
+          <div className={cn("flex items-center gap-2 rounded-full border bg-white/60 px-3.5 py-2", HAIRLINE)}>
+            <Search size={13} className={cn("shrink-0", INK_FAINT)} />
             <input
               type="text"
               value={search}
               onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="Search agents…"
-              className="flex-1 bg-transparent text-xs text-black outline-none placeholder:text-black/30"
+              placeholder="Search"
+              className="flex-1 bg-transparent text-[13px] text-black outline-none"
               autoFocus
             />
           </div>
         </div>
 
-        <div className="max-h-72 space-y-1 overflow-auto px-5 py-2">
+        <div className="max-h-72 overflow-auto px-3 py-3">
           {loading ? (
-            <p className="py-4 text-center text-xs text-black/50">Loading agents…</p>
+            <p className={cn("py-8 text-center text-[13px]", INK_SOFT)}>Loading…</p>
           ) : filtered.length === 0 ? (
-            <p className="py-4 text-center text-xs text-black/50">
+            <p className={cn("px-3 py-8 text-center text-[13px] leading-relaxed", INK_SOFT)}>
               {agents.length === 0
-                ? "No eligible cloud agents found. Create one on the Agents page first."
-                : "No agents match your search."}
+                ? "No agents available yet. Create one from the Agents page first."
+                : "Nothing matches your search."}
             </p>
           ) : (
             filtered.map((agent) => (
-              <SketchRow
+              <button
                 key={agent.id}
-                className="flex items-center justify-between border-black"
+                type="button"
+                onClick={() => (purpose === "worker" ? onSelectWorker(agent) : onAdd(agent))}
+                disabled={addingId === agent.id}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-black/[0.04] disabled:opacity-50",
+                  pendingWorkerAgent?.id === agent.id && "bg-black/[0.05]",
+                )}
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-black">{agent.name}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13.5px] font-medium text-black">{agent.name}</p>
                   {agent.description && (
-                    <p className="mt-0.5 truncate text-xs text-black/50">{agent.description}</p>
+                    <p className={cn("mt-0.5 truncate text-[11.5px]", INK_SOFT)}>
+                      {agent.description}
+                    </p>
                   )}
-                  <p className="mt-0.5 truncate font-mono text-xs text-black/40">
-                    {agent.cloudProvisioningStatus ?? agent.status}
-                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    purpose === "worker" ? onSelectWorker(agent) : onAdd(agent)
-                  }
-                  disabled={addingId === agent.id}
-                  className={`${sketchButton} ml-3 shrink-0 disabled:opacity-50`}
-                >
-                  {addingId === agent.id ? "Adding…" : purpose === "worker" ? "Select" : "Add"}
-                </button>
-              </SketchRow>
+                {pendingWorkerAgent?.id === agent.id ? (
+                  <Check size={13} className="shrink-0 text-black" />
+                ) : (
+                  <span className={cn("shrink-0 text-[11px]", INK_FAINT)}>
+                    {addingId === agent.id ? "Adding…" : purpose === "worker" ? "Select" : "Add"}
+                  </span>
+                )}
+              </button>
             ))
           )}
         </div>
 
         {purpose === "worker" && pendingWorkerAgent && (
-          <div className="space-y-2 border-t border-black px-5 py-3">
-            <p className="text-xs text-black/60">
-              Delegated scopes for <strong className="text-black">{pendingWorkerAgent.name}</strong>
+          <div className={cn("space-y-3 border-t px-6 py-5", HAIRLINE)}>
+            <p className={cn("text-[11px] uppercase tracking-[0.16em]", INK_SOFT)}>
+              What {pendingWorkerAgent.name} may use
             </p>
             <DelegatedScopePicker
               availableScopes={pendingWorkerAgent.permissionScopes ?? []}
@@ -875,19 +1047,13 @@ function ExistingAgentPicker({
               type="button"
               onClick={() => onAdd(pendingWorkerAgent)}
               disabled={addingId === pendingWorkerAgent.id}
-              className={`${sketchButton} disabled:opacity-50`}
+              className={sketchButtonPrimary}
             >
-              Add worker with selected scopes
+              {addingId === pendingWorkerAgent.id ? "Adding…" : "Add to team"}
             </button>
           </div>
         )}
-
-        <div className="flex justify-end border-t border-black px-5 py-3">
-          <button type="button" onClick={onClose} className={sketchButton}>
-            Cancel
-          </button>
-        </div>
-      </div>
+      </SketchBox>
     </div>
   );
 }

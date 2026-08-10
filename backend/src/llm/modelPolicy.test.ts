@@ -20,4 +20,18 @@ describe('normalizeQlixInferenceModelId', () => {
       'openrouter/openai/gpt-4o-mini',
     );
   });
+
+  it('normalizes bare Exora aliases with the selected provider', () => {
+    assert.equal(
+      normalizeQlixInferenceModelId('exora-general', 'exora'),
+      'exora/exora-general',
+    );
+  });
+
+  it('leaves canonical Exora ids unchanged', () => {
+    assert.equal(
+      normalizeQlixInferenceModelId('exora/exora-general', 'exora'),
+      'exora/exora-general',
+    );
+  });
 });

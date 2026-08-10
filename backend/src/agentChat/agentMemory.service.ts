@@ -1,6 +1,11 @@
 import { prisma } from '../lib/prisma.js';
-import { openRouterChatCompletion } from '../llm/openrouterClient.js';
-import { normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import {
+  chatCompletion,
+  defaultLlmProvider,
+  defaultModelForProvider,
+  LLM_APPLICATION_IDS,
+  type LlmProviderId,
+} from '../llm/inferenceRouter.js';
 import { loadSlackFocus } from '../connectors/slackFocus.service.js';
 
 // Stage 1 "foundation" memory. Four kinds delivered through one text block:
@@ -28,7 +33,12 @@ const MAX_BLOCK_CHARS = Math.max(
 );
 
 /** Cheap model for the after-run extraction; override via env if desired. */
-const MEMORY_MODEL = process.env.QLIX_MEMORY_MODEL?.trim() || 'openrouter/openai/gpt-4o-mini';
+const MEMORY_MODEL =
+  process.env.QLIX_MEMORY_MODEL?.trim() || defaultModelForProvider(defaultLlmProvider());
+
+function memoryProvider(): LlmProviderId {
+  return MEMORY_MODEL.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
+}
 
 function clip(value: string, max: number): string {
   const text = value.trim();
@@ -196,9 +206,9 @@ export async function updateConversationSummary(conversationId: string): Promise
 
   let summary: string;
   try {
-    const llm = await openRouterChatCompletion(
+    const llm = await chatCompletion(
       {
-        model: normalizeQlixInferenceModelId(MEMORY_MODEL),
+        model: MEMORY_MODEL,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -207,7 +217,12 @@ export async function updateConversationSummary(conversationId: string): Promise
         max_tokens: 700,
         stream: false,
       },
-      { timeoutMs: 20_000, retries: 1 },
+      {
+        provider: memoryProvider(),
+        applicationId: LLM_APPLICATION_IDS.agentMemory,
+        timeoutMs: 20_000,
+        retries: 1,
+      },
     );
     summary = clip(llm.content, MAX_SUMMARY_CHARS);
   } catch (err) {
@@ -319,9 +334,9 @@ export async function extractAndStoreMemories(input: {
 
   let parsed: ExtractionResult;
   try {
-    const llm = await openRouterChatCompletion(
+    const llm = await chatCompletion(
       {
-        model: normalizeQlixInferenceModelId(MEMORY_MODEL),
+        model: MEMORY_MODEL,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -330,7 +345,12 @@ export async function extractAndStoreMemories(input: {
         max_tokens: 500,
         stream: false,
       },
-      { timeoutMs: 20_000, retries: 1 },
+      {
+        provider: memoryProvider(),
+        applicationId: LLM_APPLICATION_IDS.agentMemory,
+        timeoutMs: 20_000,
+        retries: 1,
+      },
     );
     parsed = JSON.parse(stripJsonFence(llm.content)) as ExtractionResult;
   } catch (err) {
