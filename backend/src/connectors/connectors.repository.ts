@@ -57,7 +57,23 @@ export class ConnectorsRepository {
     userId: string;
     tokens: StoredOAuthTokens;
   }): Promise<ConnectorAccountDTO> {
-    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.tokens));
+    const existing = await this.loadTokens(params.orgId, 'google');
+    const merged: StoredOAuthTokens = existing
+      ? {
+          accessToken: params.tokens.accessToken,
+          // Incremental Google connects often omit refresh_token — keep the prior one.
+          refreshToken: params.tokens.refreshToken || existing.refreshToken,
+          expiresAtMs: params.tokens.expiresAtMs,
+          scopes: [...new Set([...existing.scopes, ...params.tokens.scopes])],
+          emailAddress: params.tokens.emailAddress ?? existing.emailAddress,
+        }
+      : params.tokens;
+
+    if (!merged.refreshToken) {
+      throw new Error('Google connector requires a refresh token; reconnect Gmail first');
+    }
+
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(merged));
     const row = await prisma.connectorAccount.upsert({
       where: { orgId_provider: { orgId: params.orgId, provider: 'google' } },
       create: {
@@ -65,21 +81,42 @@ export class ConnectorsRepository {
         userId: params.userId,
         provider: 'google',
         status: 'connected',
-        scopes: params.tokens.scopes,
-        emailAddress: params.tokens.emailAddress,
+        scopes: merged.scopes,
+        emailAddress: merged.emailAddress,
         tokenEnc,
-        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+        tokenExpiresAt: merged.expiresAtMs ? new Date(merged.expiresAtMs) : null,
       },
       update: {
         userId: params.userId,
         status: 'connected',
-        scopes: params.tokens.scopes,
-        emailAddress: params.tokens.emailAddress,
+        scopes: merged.scopes,
+        emailAddress: merged.emailAddress,
         tokenEnc,
-        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+        tokenExpiresAt: merged.expiresAtMs ? new Date(merged.expiresAtMs) : null,
       },
     });
     return toDto(row);
+  }
+
+  /** Drop OAuth scopes for one Google service; delete the account if none remain. */
+  async removeGoogleServiceScopes(params: {
+    orgId: string;
+    scopes: string[];
+  }): Promise<'updated' | 'deleted'> {
+    const existing = await this.loadTokens(params.orgId, 'google');
+    if (!existing) return 'deleted';
+
+    const next: StoredOAuthTokens = { ...existing, scopes: params.scopes };
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(next));
+    await prisma.connectorAccount.update({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'google' } },
+      data: {
+        scopes: next.scopes,
+        tokenEnc,
+        status: 'connected',
+      },
+    });
+    return 'updated';
   }
 
   async upsertZoho(params: {
@@ -127,6 +164,68 @@ export class ConnectorsRepository {
         orgId: params.orgId,
         userId: params.userId,
         provider: 'slack',
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+      update: {
+        userId: params.userId,
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+    });
+    return toDto(row);
+  }
+
+  async upsertDiscord(params: {
+    orgId: string;
+    userId: string;
+    tokens: StoredOAuthTokens;
+  }): Promise<ConnectorAccountDTO> {
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.tokens));
+    const display = params.tokens.emailAddress ?? 'Discord account';
+    const row = await prisma.connectorAccount.upsert({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'discord' } },
+      create: {
+        orgId: params.orgId,
+        userId: params.userId,
+        provider: 'discord',
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+      update: {
+        userId: params.userId,
+        status: 'connected',
+        scopes: params.tokens.scopes,
+        emailAddress: display,
+        tokenEnc,
+        tokenExpiresAt: params.tokens.expiresAtMs ? new Date(params.tokens.expiresAtMs) : null,
+      },
+    });
+    return toDto(row);
+  }
+
+  async upsertGitHub(params: {
+    orgId: string;
+    userId: string;
+    tokens: StoredOAuthTokens;
+  }): Promise<ConnectorAccountDTO> {
+    const tokenEnc = encryptForAgentSecrets(JSON.stringify(params.tokens));
+    const display = params.tokens.emailAddress ?? 'GitHub account';
+    const row = await prisma.connectorAccount.upsert({
+      where: { orgId_provider: { orgId: params.orgId, provider: 'github' } },
+      create: {
+        orgId: params.orgId,
+        userId: params.userId,
+        provider: 'github',
         status: 'connected',
         scopes: params.tokens.scopes,
         emailAddress: display,

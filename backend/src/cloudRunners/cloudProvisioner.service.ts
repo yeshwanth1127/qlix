@@ -42,6 +42,24 @@ function safeProvisioningErrorMessage(input: unknown): string {
   return raw.length > 2000 ? `${raw.slice(0, 2000)}…(truncated)` : raw;
 }
 
+/** Forward Cloudflare Browser Run creds into runners for browser failover (not primary). */
+function cloudflareBrowserEnvFromHost(): Record<string, string> {
+  const env: Record<string, string> = {};
+  const keys = [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'CLOUDFLARE_API_TOKEN',
+    'CF_ACCOUNT_ID',
+    'CF_API_TOKEN',
+    'QLIX_BROWSER_CF_FAILOVER',
+    'QLIX_BROWSER_CF_KEEP_ALIVE_MS',
+  ] as const;
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
 /** Fail provisioning if the runner image is missing core research CLIs (Exa/mcporter). */
 async function verifyRunnerResearchStack(
   orchestrator: RunnerOrchestrator,
@@ -269,6 +287,7 @@ export class CloudProvisionerService {
         QLIX_ADK_MODULE: '/run/adk/adk_agent.py',
         QLIX_ADK_CLASS: params.adkClassName,
         ...researchEnv,
+        ...cloudflareBrowserEnvFromHost(),
       },
       mounts,
       cmd: ['python', '-m', 'qlix.cloud_runner'],

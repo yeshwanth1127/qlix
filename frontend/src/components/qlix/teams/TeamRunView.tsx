@@ -59,21 +59,19 @@ import {
 import { cn } from "@/lib/utils/cn";
 import { SketchBox } from "@/components/qlix/sketch";
 import { LeadReviewCard } from "@/components/qlix/teams/LeadReviewCard";
+import {
+  TeamRunGraph,
+  type AgentState as GraphAgentState,
+  type AgentStatus as GraphAgentStatus,
+} from "@/components/qlix/teams/TeamRunGraph";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type AgentState = "idle" | "thinking" | "tool_active" | "completed" | "failed";
+/** Agent state shape lives with the graph so both views render the same contract. */
+type AgentState = GraphAgentState;
+type AgentStatus = GraphAgentStatus;
 
-interface AgentStatus {
-  agentId: string;
-  name: string;
-  role: "supervisor" | "worker";
-  state: AgentState;
-  currentAction?: string;
-  currentTool?: string;
-  toolCount: number;
-  tasksDone: number;
-}
+type RunViewMode = "chat" | "graph";
 
 type ProcessedEvent =
   | { kind: "run_started"; eventId: string; timestampMs: number }
@@ -630,6 +628,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [leadReviewCampaignId, setLeadReviewCampaignId] = useState<string | null>(null);
   const [leadReviewApproved, setLeadReviewApproved] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const [viewMode, setViewMode] = useState<RunViewMode>("chat");
+  const showChat = viewMode === "chat";
 
   // Browser frames: agentId → frames[]
   const [browserFrames, setBrowserFrames] = useState<Record<string, BrowserFrame[]>>({});
@@ -1515,6 +1515,29 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             Agents
           </button>
 
+          <div
+            className={cn("inline-flex items-center gap-0.5 rounded-full border p-0.5", HAIRLINE)}
+            role="group"
+            aria-label="Run view"
+          >
+            {(["chat", "graph"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                aria-pressed={viewMode === mode}
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 text-[11px] capitalize transition-colors",
+                  viewMode === mode
+                    ? "bg-black text-white"
+                    : cn(INK_SOFT, "hover:bg-black/[0.05] hover:text-black"),
+                )}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+
           {statusLabel && (
             <span className={cn("inline-flex items-center gap-1.5 text-[11px]", INK_SOFT)}>
               <span className={cn("size-1.5 rounded-full", statusDot)} aria-hidden />
@@ -1557,7 +1580,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4"
         >
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-            {!hasConversation && (
+            {viewMode === "graph" && (
+              <TeamRunGraph team={team} agentStates={agentStates} goal={goalText} />
+            )}
+
+            {showChat && !hasConversation && (
               <div className="flex flex-col items-center gap-2 py-20 text-center">
                 <p className="text-[15px] font-medium text-black">
                   What should {team.name} work on?
@@ -1569,9 +1596,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               </div>
             )}
 
-            {goalText && <UserMessage text={goalText} />}
+            {showChat && goalText && <UserMessage text={goalText} />}
 
-            {chatItems.map((item) => {
+            {showChat && chatItems.map((item) => {
               switch (item.kind) {
                 case "plan":
                   return (
@@ -1659,7 +1686,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               }
             })}
 
-            {isRunning && (
+            {showChat && isRunning && (
               <TypingIndicator
                 name={agentNameById(activeAgentId)}
                 role={agentRoleById(activeAgentId)}

@@ -9,6 +9,8 @@ import {
   isJobApplyPrompt,
   enrichCrmPlan,
   isCrmPrompt,
+  enrichSchedulePlan,
+  isSchedulePrompt,
 } from './nlPlanEnrichment.js';
 import type { AgentCreationPlan, NLAgentSpec } from './nlTypes.js';
 
@@ -243,5 +245,37 @@ describe('enrichJobApplyPlan', () => {
     );
     assert.ok(out.agent.jitScopes.includes('crm.write'));
     assert.ok(out.agent.jitScopes.includes('crm.delete'));
+  });
+});
+
+describe('enrichSchedulePlan', () => {
+  const SCHEDULE_ALLOWED = new Set([
+    'web.read',
+    'mcp.qlix-schedule.schedule_create',
+    'mcp.qlix-schedule.schedule_list',
+    'mcp.qlix-schedule.schedule_get',
+    'mcp.qlix-schedule.schedule_update',
+    'mcp.qlix-schedule.schedule_cancel',
+  ]);
+
+  it('detects schedule prompts', () => {
+    assert.equal(isSchedulePrompt('create an agent that runs a daily digest every morning'), true);
+    assert.equal(isSchedulePrompt('schedule a recurring task for weekdays'), true);
+    assert.equal(isSchedulePrompt('scrape google maps leads'), false);
+  });
+
+  it('wires qlix-schedule MCP scopes', () => {
+    const plan = singleAgentPlan('Daily reporter', ['web.read']);
+    const out = enrichSchedulePlan(
+      'Build an agent that runs a daily digest every morning',
+      plan,
+      SCHEDULE_ALLOWED,
+    );
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(out.agent.permissionScopes.includes('mcp.qlix-schedule.schedule_create'));
+    assert.match(out.agent.description, /## Schedule method/);
   });
 });

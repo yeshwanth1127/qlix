@@ -29,6 +29,8 @@ export interface LeadReviewCheckpoint {
     role: string;
     goal: string;
     delegatedScopes: PermissionScope[];
+    /** Absent on checkpoints written before stage grouping existed. */
+    stageOrder?: number;
   }>;
   timestampMs: number;
 }
@@ -49,10 +51,10 @@ const ENRICH_SCOPES = new Set<PermissionScope>([
 ]);
 const OUTREACH_SCOPES = new Set<PermissionScope>(['email.send', 'mcp.qlix-leads.start_outreach']);
 
-export function memberLeadGenStage(
-  member: TeamMemberDTO,
-): 'scrape' | 'enrich' | 'outreach' | null {
-  const scopes = member.delegatedScopes ?? [];
+export type LeadGenStage = 'scrape' | 'enrich' | 'outreach';
+
+/** Classify one agent's scope set into a lead-gen pipeline stage. */
+export function leadGenStageForScopes(scopes: PermissionScope[]): LeadGenStage | null {
   if (scopes.includes(GMB_SCOPE)) return 'scrape';
   // Outreach agents often share list_leads with enrichers — check outreach scopes first.
   if (scopes.some((s) => OUTREACH_SCOPES.has(s))) return 'outreach';
@@ -60,10 +62,25 @@ export function memberLeadGenStage(
   return null;
 }
 
-/** True when the team looks like scrape → enrich → outreach. */
-export function isLeadGenPipelineTeam(members: TeamMemberDTO[]): boolean {
-  const stages = members.map(memberLeadGenStage).filter(Boolean);
+export function memberLeadGenStage(member: TeamMemberDTO): LeadGenStage | null {
+  return leadGenStageForScopes(member.delegatedScopes ?? []);
+}
+
+/** True when a set of agent scope lists looks like scrape → enrich → outreach. */
+export function isLeadGenScopeShape(scopeSets: PermissionScope[][]): boolean {
+  const stages = scopeSets.map(leadGenStageForScopes).filter(Boolean);
   return stages.includes('scrape') && stages.includes('enrich');
+}
+
+/**
+ * True when the team looks like scrape → enrich → outreach.
+ *
+ * Only used to resolve a playbook for teams created before `config.playbook`
+ * existed — see `resolveTeamPlaybook`. Never call this on every run: the result
+ * changes when members are rewired, which is exactly the bug it used to cause.
+ */
+export function isLeadGenPipelineTeam(members: TeamMemberDTO[]): boolean {
+  return isLeadGenScopeShape(members.map((m) => m.delegatedScopes ?? []));
 }
 
 export function parseLeadGenRequest(goal: string): ParsedLeadGenRequest {

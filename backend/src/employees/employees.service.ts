@@ -100,7 +100,7 @@ export class EmployeesService {
         userId: input.userId,
         orgId: agentOrgId,
         agentId: agentResult.agent.id,
-        scopes: preflight.resolvedScopes,
+        scopes: agentResult.agent.permissionScopes,
       });
 
       const engagement = await this.repo.createEngagement({

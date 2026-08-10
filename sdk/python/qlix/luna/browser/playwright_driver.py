@@ -1,7 +1,8 @@
-"""Playwright-backed browser driver (local dev fallback)."""
+"""Playwright-backed browser driver (local dev fallback + remote CDP)."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -12,10 +13,17 @@ logger = logging.getLogger("qlix.luna.browser.playwright")
 class PlaywrightDriver:
     """Manages a shared Playwright browser session (lazy init)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        cdp_url: str | None = None,
+        cdp_headers: dict[str, str] | None = None,
+    ) -> None:
         self._playwright = None
         self._browser = None
         self._page = None
+        self._cdp_url = (cdp_url or "").strip() or None
+        self._cdp_headers = dict(cdp_headers) if cdp_headers else None
 
         headless_raw = os.environ.get("LUNA_BROWSER_HEADLESS", "").strip().lower()
         if headless_raw in ("0", "false", "no", "off"):
@@ -25,8 +33,33 @@ class PlaywrightDriver:
         else:
             self._headless = True
 
+    def _resolve_cdp_from_env(self) -> tuple[str | None, dict[str, str] | None]:
+        if self._cdp_url:
+            return self._cdp_url, self._cdp_headers
+        url = os.environ.get("QLIX_BROWSER_CDP_URL", "").strip()
+        if not url:
+            return None, None
+        headers: dict[str, str] | None = None
+        raw_headers = os.environ.get("QLIX_BROWSER_CDP_HEADERS_JSON", "").strip()
+        if raw_headers:
+            try:
+                parsed = json.loads(raw_headers)
+                if isinstance(parsed, dict):
+                    headers = {str(k): str(v) for k, v in parsed.items()}
+            except json.JSONDecodeError:
+                logger.warning("playwright: invalid QLIX_BROWSER_CDP_HEADERS_JSON")
+        return url, headers
+
     def _launch_playwright_browser(self, pw) -> Any:
         chromium = pw.chromium
+        cdp_url, cdp_headers = self._resolve_cdp_from_env()
+        if cdp_url:
+            connect_kwargs: dict[str, Any] = {}
+            if cdp_headers:
+                connect_kwargs["headers"] = cdp_headers
+            logger.info("playwright: connect_over_cdp url=%s headers=%s", cdp_url, bool(cdp_headers))
+            return chromium.connect_over_cdp(cdp_url, **connect_kwargs)
+
         launch_kwargs: dict[str, Any] = {"headless": self._headless}
         executable = os.environ.get("LUNA_PLAYWRIGHT_EXECUTABLE", "").strip()
         channel = os.environ.get("LUNA_PLAYWRIGHT_CHANNEL", "").strip().lower()
@@ -62,6 +95,18 @@ class PlaywrightDriver:
 
         self._playwright = sync_playwright().start()
         self._browser = self._launch_playwright_browser(self._playwright)
+        # Remote CDP sessions often already have a default context/page.
+        try:
+            contexts = list(getattr(self._browser, "contexts", []) or [])
+            if contexts:
+                pages = list(getattr(contexts[0], "pages", []) or [])
+                if pages:
+                    self._page = pages[0]
+                    return
+                self._page = contexts[0].new_page()
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("playwright: reuse remote context failed: %s", exc)
         self._page = self._browser.new_page()
 
     @property

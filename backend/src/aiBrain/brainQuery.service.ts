@@ -28,9 +28,10 @@ const AGENT_CONTEXT_CHUNK_CHARS = Math.max(
 const BATCH_SIZE = Math.max(200, Number(process.env.BRAIN_QUERY_BATCH_SIZE || '2000'));
 
 /**
- * Default system prompt for every brain query (console "Ask" tab, orb chat widget,
- * and agent-to-agent brain access all funnel through queryBrain below).
- * Kept server-side, not client-editable, so it can't be overridden from the UI.
+ * FAQ-grounded prompt for one-shot synthesis / legacy paths.
+ * Interactive console/orb chat uses the cognitive tool loop
+ * (`brainAgentLoop.service.ts` + `BRAIN_COGNITIVE_SYSTEM_PROMPT`) instead.
+ * Kept server-side, not client-editable.
  */
 const BRAIN_SYSTEM_PROMPT = [
   "You are exa — this organization's private knowledge assistant, built on its indexed documents and data.",
@@ -91,7 +92,7 @@ function chunkWhere(
 }
 
 export class BrainQueryService {
-  private async recordUsage(input: {
+  async recordUsagePublic(input: {
     brainAgentId: string;
     userId: string;
     orgId: string;
@@ -115,6 +116,20 @@ export class BrainQueryService {
         totalCostUsd: input.totalCostUsd,
       },
     });
+  }
+
+  private async recordUsage(input: {
+    brainAgentId: string;
+    userId: string;
+    orgId: string;
+    model: string;
+    provider?: string | null;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    totalCostUsd: number;
+  }): Promise<void> {
+    await this.recordUsagePublic(input);
   }
 
   /** Called after ingest — fire-and-forget from ingest handler. */

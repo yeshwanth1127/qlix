@@ -1,20 +1,73 @@
 /** User-facing steps when Gmail is required but not linked. */
-export const GMAIL_CONNECT_INSTRUCTIONS = `Gmail is not connected for this workspace. The user must connect it before you can send or read email.
+export const GMAIL_CONNECT_INSTRUCTIONS = `Gmail is not connected for this workspace. The user must connect it before you can send, draft, or read email.
 
 Tell the user clearly — do not retry sending until they connect:
 
 1. Open **Connectors** in the Qlix sidebar (plug icon).
-2. Under **Google (Gmail)**, click **Connect Google**.
-3. Sign in with the Google account they want to send from and approve access.
-4. Return to this chat and ask you to send again.
+2. Open the **Google** card.
+3. Next to **Gmail**, click **Connect**.
+4. Sign in with the Google account they want to send from and approve access.
+5. Return to this chat and ask you to send again.
 
 Connectors URL path: /individual/connectors or /organization/connectors (same page in their workspace).`;
 
 export const GMAIL_CONNECT_SHORT =
-  'Connect Gmail first: sidebar → Connectors → Google (Gmail) → Connect Google, then retry.';
+  'Connect Gmail first: sidebar → Connectors → Google → Gmail → Connect, then retry.';
 
 export function gmailConnectorNotConnectedMessage(): string {
   return `Google Gmail is not connected for this workspace. ${GMAIL_CONNECT_SHORT}`;
+}
+
+/** Drafts need gmail.compose — tokens connected before that scope was added must re-auth. */
+export const GMAIL_RECONNECT_FOR_DRAFT_INSTRUCTIONS = `Gmail is connected but missing draft permission (gmail.compose).
+
+Tell the user clearly:
+
+1. Open **Connectors** in the Qlix sidebar.
+2. Open the **Google** card → next to **Gmail**, disconnect, then click **Connect** again.
+3. Approve the updated permissions (including compose/drafts).
+4. Return here and ask you to create the draft again.`;
+
+export const GMAIL_RECONNECT_FOR_DRAFT_SHORT =
+  'Reconnect Gmail for drafts: sidebar → Connectors → Google → Gmail → disconnect → Connect, then retry.';
+
+export function gmailComposeScopeMissingMessage(): string {
+  return `Gmail draft permission is missing. ${GMAIL_RECONNECT_FOR_DRAFT_SHORT}`;
+}
+
+function googleServiceConnectInstructions(serviceLabel: string): string {
+  return `${serviceLabel} is not connected for this workspace. The user must connect it before these tools work.
+
+Tell the user clearly:
+
+1. Open **Connectors** in the Qlix sidebar (plug icon).
+2. Open the **Google** card.
+3. Next to **${serviceLabel}**, click **Connect**.
+4. Sign in and approve access.
+5. Return to this chat and retry.
+
+Connectors path: /individual/connectors or /organization/connectors.`;
+}
+
+export const DRIVE_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Drive');
+export const DRIVE_CONNECT_SHORT =
+  'Connect Drive first: sidebar → Connectors → Google → Drive → Connect, then retry.';
+export function driveConnectorNotConnectedMessage(): string {
+  return `Google Drive is not connected for this workspace. ${DRIVE_CONNECT_SHORT}`;
+}
+
+export const CALENDAR_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Calendar');
+export const CALENDAR_CONNECT_SHORT =
+  'Connect Calendar first: sidebar → Connectors → Google → Calendar → Connect, then retry.';
+export function calendarConnectorNotConnectedMessage(): string {
+  return `Google Calendar is not connected for this workspace. ${CALENDAR_CONNECT_SHORT}`;
+}
+
+export const MEET_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('GMeet');
+export const MEET_CONNECT_SHORT =
+  'Connect GMeet first: sidebar → Connectors → Google → GMeet → Connect, then retry.';
+export function meetConnectorNotConnectedMessage(): string {
+  return `Google Meet is not connected for this workspace. ${MEET_CONNECT_SHORT}`;
 }
 
 /** User-facing steps when Orbit is required but not linked. */

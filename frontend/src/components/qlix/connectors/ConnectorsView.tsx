@@ -6,8 +6,11 @@ import { Loader2, Share2 } from "lucide-react";
 import { SketchPageHeader, sketchLabel } from "@/components/qlix/sketch";
 import {
   disconnectGoogle,
+  disconnectGoogleService,
   disconnectOrbit,
   disconnectOrbitChannel,
+  disconnectDiscord,
+  disconnectGitHub,
   disconnectSlack,
   disconnectWhatsApp,
   disconnectZoho,
@@ -19,7 +22,11 @@ import {
   listOrbitChannels,
   orbitConnector,
   patchWhatsAppDefaults,
+  discordConnector,
+  githubConnector,
   slackConnector,
+  startDiscordOAuth,
+  startGitHubOAuth,
   startGoogleOAuth,
   startOrbitSocialOAuth,
   startSlackOAuth,
@@ -32,6 +39,12 @@ import {
   type WhatsAppLinkStatusDTO,
 } from "@/lib/connectors-api";
 import { getCatalogEntry } from "@/lib/connector-catalog";
+import {
+  GOOGLE_SERVICES,
+  connectedGoogleServiceCount,
+  googleServiceConnected,
+  type GoogleServiceId,
+} from "@/lib/google-services";
 import { listAgents } from "@/lib/agents-api";
 import { listTeams } from "@/lib/teams-api";
 import { WhatsAppQr } from "./WhatsAppQr";
@@ -41,6 +54,7 @@ import {
   ConnectorAlert,
   ConnectorPanel,
   ConnectorRow,
+  ConnectorStatusDot,
   ConnectorsSummary,
   SectionHeading,
   type ConnectorStatus,
@@ -92,6 +106,8 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const [defaultAgentId, setDefaultAgentId] = useState("");
   const [defaultsSaving, setDefaultsSaving] = useState(false);
   const [slackBusy, setSlackBusy] = useState(false);
+  const [discordBusy, setDiscordBusy] = useState(false);
+  const [githubBusy, setGithubBusy] = useState(false);
   const [grants, setGrants] = useState<ConversationGrantDTO[]>([]);
   const [revoking, setRevoking] = useState<Record<string, boolean>>({});
   const [orbitConnecting, setOrbitConnecting] = useState(false);
@@ -99,12 +115,15 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const [orbitChannels, setOrbitChannels] = useState<OrbitChannelDTO[]>([]);
   const [orbitChannelsLoading, setOrbitChannelsLoading] = useState(false);
   const [orbitSocialBusy, setOrbitSocialBusy] = useState<string | null>(null);
-  /** Accordion — at most one connector shows its settings at a time. */
-  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [googleBusy, setGoogleBusy] = useState<string | null>(null);
+  /** Accordion — at most one connector shows its settings at a time. Google open by default so services are visible. */
+  const [openRow, setOpenRow] = useState<string | null>("google");
 
   const googleLogo = getCatalogEntry("google")!.logo;
   const whatsappLogo = getCatalogEntry("whatsapp")!.logo;
   const slackLogo = getCatalogEntry("slack")!.logo;
+  const discordLogo = getCatalogEntry("discord")!.logo;
+  const githubLogo = getCatalogEntry("github")!.logo;
   const zohoLogo = getCatalogEntry("zoho")!.logo;
 
   const toggleRow = useCallback((id: string) => {
@@ -209,6 +228,8 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const connected = data ? googleConnector(data.connectors) : undefined;
   const zoho = data ? zohoConnector(data.connectors) : undefined;
   const slack = data ? slackConnector(data.connectors) : undefined;
+  const discord = data ? discordConnector(data.connectors) : undefined;
+  const github = data ? githubConnector(data.connectors) : undefined;
   const wa = data ? whatsappConnector(data.connectors) : undefined;
   const orbit = data ? orbitConnector(data.connectors) : undefined;
   const waConnected = wa?.status === "connected" || waStatus?.status === "connected";
@@ -250,24 +271,38 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       .map((s) => s.trim())
       .filter(Boolean),
   );
-  const needsGoogle = neededProviders.has("google") && !connected;
+
+  // Open the Google card when returning from OAuth or when an agent needs Google.
+  useEffect(() => {
+    if (oauthSuccess === "google" || neededProviders.has("google")) {
+      setOpenRow("google");
+    }
+    // Only react to the URL flags, not the Set identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional URL-driven open
+  }, [oauthSuccess, searchParams]);
+  const googleScopes = connected?.scopes ?? [];
+  const googleServiceCount = connectedGoogleServiceCount(googleScopes);
+  const anyGoogleService = googleServiceCount > 0;
+  const needsGoogle = neededProviders.has("google") && !anyGoogleService;
   const needsZoho = neededProviders.has("zoho") && !zoho;
   const needsWhatsApp = neededProviders.has("whatsapp_baileys") && !waConnected;
   const needsOrbit = neededProviders.has("orbit") && !orbit;
 
-  const connectedCount = [connected, waConnected, slack, zoho, orbit].filter(Boolean).length;
-  const totalLive = 5;
+  const connectedCount = [anyGoogleService, waConnected, slack, discord, github, zoho, orbit].filter(
+    Boolean,
+  ).length;
+  const totalLive = 7;
 
   function rowStatus(isOn: boolean, isPending = false): ConnectorStatus {
     if (isOn) return "connected";
     return isPending ? "pending" : "idle";
   }
 
-  async function handleConnect() {
-    setBusy(true);
+  async function handleGoogleServiceConnect(service: GoogleServiceId) {
+    setGoogleBusy(service);
     setError(null);
     try {
-      const { url } = await startGoogleOAuth();
+      const { url } = await startGoogleOAuth(service);
       // Only ever hand the browser off to Google's real OAuth endpoint. Guards against an open
       // redirect if the API response is tampered with (compromised proxy / MITM).
       const parsed = new URL(url);
@@ -278,7 +313,20 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       window.location.assign(parsed.toString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start OAuth");
-      setBusy(false);
+      setGoogleBusy(null);
+    }
+  }
+
+  async function handleGoogleServiceDisconnect(service: GoogleServiceId) {
+    setGoogleBusy(service);
+    setError(null);
+    try {
+      await disconnectGoogleService(service);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Google service");
+    } finally {
+      setGoogleBusy(null);
     }
   }
 
@@ -346,6 +394,64 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       setError(err instanceof Error ? err.message : "Failed to disconnect Slack");
     } finally {
       setSlackBusy(false);
+    }
+  }
+
+  async function handleDiscordConnect() {
+    setDiscordBusy(true);
+    setError(null);
+    try {
+      const { url } = await startDiscordOAuth();
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" || parsed.hostname !== "discord.com") {
+        throw new Error("Unexpected OAuth redirect target");
+      }
+      window.location.assign(parsed.toString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start Discord OAuth");
+      setDiscordBusy(false);
+    }
+  }
+
+  async function handleDiscordDisconnect() {
+    setDiscordBusy(true);
+    setError(null);
+    try {
+      await disconnectDiscord();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Discord");
+    } finally {
+      setDiscordBusy(false);
+    }
+  }
+
+  async function handleGitHubConnect() {
+    setGithubBusy(true);
+    setError(null);
+    try {
+      const { url } = await startGitHubOAuth();
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+        throw new Error("Unexpected OAuth redirect target");
+      }
+      window.location.assign(parsed.toString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start GitHub OAuth");
+      setGithubBusy(false);
+    }
+  }
+
+  async function handleGitHubDisconnect() {
+    setGithubBusy(true);
+    setError(null);
+    try {
+      await disconnectGitHub();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect GitHub");
+    } finally {
+      setGithubBusy(false);
     }
   }
 
@@ -456,7 +562,12 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     oauthError ? <ConnectorAlert key="err" variant="error">Couldn&apos;t finish connecting: {oauthError}</ConnectorAlert> : null,
     oauthSuccess === "google" ? (
       <ConnectorAlert key="ok-google" variant="success">
-        Gmail connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+        {(() => {
+          const svc = searchParams.get("service");
+          const label =
+            GOOGLE_SERVICES.find((s) => s.id === svc)?.label ?? "Google";
+          return `${label} connected${searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.`;
+        })()}
       </ConnectorAlert>
     ) : null,
     oauthSuccess === "zoho" ? (
@@ -469,11 +580,21 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
         Slack connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
       </ConnectorAlert>
     ) : null,
+    oauthSuccess === "discord" ? (
+      <ConnectorAlert key="ok-discord" variant="success">
+        Discord connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    oauthSuccess === "github" ? (
+      <ConnectorAlert key="ok-github" variant="success">
+        GitHub connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
     neededProviders.size > 0 && (needsGoogle || needsZoho || needsWhatsApp || needsOrbit) ? (
       <ConnectorAlert key="needed" variant="warning">
         Your new agent needs{" "}
         {[
-          needsGoogle ? "Gmail" : null,
+          needsGoogle ? "Google" : null,
           needsZoho ? "Zoho CRM" : null,
           needsWhatsApp ? "WhatsApp" : null,
           needsOrbit ? "Social" : null,
@@ -499,34 +620,85 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       {alerts.length > 0 ? <div className="mb-5 space-y-2">{alerts}</div> : null}
 
       <ConnectorPanel>
-        {/* Gmail */}
+        {/* Google — one card, each product connects on its own */}
         <ConnectorRow
           id="connector-google"
           icon={<ConnectorLogo name="Google" logo={googleLogo} size="md" />}
-          name="Gmail"
-          status={loading ? undefined : rowStatus(Boolean(connected))}
+          name="Google"
+          status={loading ? undefined : rowStatus(anyGoogleService)}
+          statusLabel={
+            anyGoogleService
+              ? `${googleServiceCount} of ${GOOGLE_SERVICES.length}`
+              : undefined
+          }
           highlight={needsGoogle}
+          expandable
+          expanded={openRow === "google"}
+          onToggle={() => toggleRow("google")}
           meta={
             loading ? (
               <LoadingMeta />
-            ) : connected ? (
-              (connected.emailAddress ?? "Google account")
+            ) : anyGoogleService ? (
+              connected?.emailAddress
+                ? `${connected.emailAddress} · ${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"}`
+                : `${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"} connected`
             ) : (
-              "Read and send email"
+              "Gmail, Drive, Calendar, GMeet, YouTube"
             )
           }
           action={
-            connected ? (
-              <QuietAction onClick={() => void handleDisconnect()} disabled={busy}>
-                Disconnect
+            anyGoogleService ? (
+              <QuietAction onClick={() => void handleDisconnect()} disabled={busy || googleBusy !== null}>
+                Disconnect all
               </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleConnect()} disabled={busy || loading}>
-                Connect
-              </PrimaryAction>
-            )
+            ) : null
           }
-        />
+        >
+          <ul className="connector-sublist">
+            {GOOGLE_SERVICES.map((svc) => {
+              const on = googleServiceConnected(svc.id, googleScopes);
+              const logo =
+                svc.id === "youtube"
+                  ? getCatalogEntry("youtube")?.logo
+                  : googleLogo;
+              const busySvc = googleBusy === svc.id;
+              return (
+                <li key={svc.id}>
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    {logo ? (
+                      <ConnectorLogo name={svc.label} logo={logo} size="sm" />
+                    ) : null}
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1.5 truncate text-[13px] text-black">
+                        {svc.label}
+                        <ConnectorStatusDot
+                          status={on ? "connected" : "idle"}
+                          label={on ? "Connected" : "Not connected"}
+                        />
+                      </p>
+                      <p className="connector-meta truncate">{svc.description}</p>
+                    </div>
+                  </div>
+                  {on ? (
+                    <QuietAction
+                      disabled={busy || busySvc}
+                      onClick={() => void handleGoogleServiceDisconnect(svc.id)}
+                    >
+                      {busySvc ? "…" : "Disconnect"}
+                    </QuietAction>
+                  ) : (
+                    <PrimaryAction
+                      disabled={busy || loading || googleBusy !== null}
+                      onClick={() => void handleGoogleServiceConnect(svc.id)}
+                    >
+                      {busySvc ? "Opening…" : "Connect"}
+                    </PrimaryAction>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </ConnectorRow>
 
         {/* WhatsApp */}
         <ConnectorRow
@@ -665,6 +837,62 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
             ) : (
               <PrimaryAction onClick={() => void handleSlackConnect()} disabled={slackBusy}>
                 {slackBusy ? "Opening…" : "Connect"}
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* Discord */}
+        <ConnectorRow
+          id="connector-discord"
+          icon={<ConnectorLogo name="Discord" logo={discordLogo} size="md" />}
+          name="Discord"
+          status={loading ? undefined : rowStatus(Boolean(discord))}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : discord ? (
+              (discord.emailAddress ?? "Discord account")
+            ) : (
+              "Identity, email, and guilds"
+            )
+          }
+          action={
+            discord ? (
+              <QuietAction onClick={() => void handleDiscordDisconnect()} disabled={discordBusy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleDiscordConnect()} disabled={discordBusy}>
+                {discordBusy ? "Opening…" : "Connect"}
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* GitHub */}
+        <ConnectorRow
+          id="connector-github"
+          icon={<ConnectorLogo name="GitHub" logo={githubLogo} size="md" />}
+          name="GitHub"
+          status={loading ? undefined : rowStatus(Boolean(github))}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : github ? (
+              (github.emailAddress ?? "GitHub account")
+            ) : (
+              "Repos, issues, and pull requests"
+            )
+          }
+          action={
+            github ? (
+              <QuietAction onClick={() => void handleGitHubDisconnect()} disabled={githubBusy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleGitHubConnect()} disabled={githubBusy}>
+                {githubBusy ? "Opening…" : "Connect"}
               </PrimaryAction>
             )
           }

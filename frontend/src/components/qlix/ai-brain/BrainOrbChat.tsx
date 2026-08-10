@@ -1,35 +1,161 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
-import { Loader2, MessageSquarePlus, PanelLeft, SendHorizonal, Sparkles, Trash2, X } from "lucide-react";
+import {
+  Check,
+  Loader2,
+  MessageSquarePlus,
+  PanelLeft,
+  SendHorizonal,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import Orb from "./Orb";
 import {
+  confirmAiBrainProposal,
   createAiBrainConversation,
   deleteAiBrainConversation,
   getAiBrainConversationMessages,
   getAiBrainConversations,
+  getAiBrainProposal,
   queryAiBrain,
+  rejectAiBrainProposal,
   type AiBrainConversationRow,
+  type AiBrainProposal,
   type AiBrainQueryCitation,
 } from "@/lib/ai-brain-api";
 import { sketchButton } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
+import { useSession } from "@/components/qlix/session-context";
+import { consoleRoutePrefix } from "@/lib/workspace";
 
 /**
- * Shown to the user as the brain's opening line. The model-facing system prompt
- * (identity, "answer only from retrieved context", citation rules) lives server-side
- * in backend/src/aiBrain/brainQuery.service.ts so it can't be bypassed from the client.
+ * Shown to the user as the brain's opening line. Cognitive system prompt lives
+ * server-side in backend/src/aiBrain/brainTools.ts / brainAgentLoop.service.ts.
  */
 const GREETING =
-  "Hi, I'm exa. Ask me anything about your company's knowledge base — I'll answer from what's been indexed here and cite my sources.";
+  "Hi, I'm exa — your org's cognitive control plane. Ask about your knowledge, what agents you need, or ask me to propose a personal assistant. I'll draft plans; you confirm before anything is created.";
 
 interface ChatTurn {
   readonly id: string;
   readonly role: "user" | "brain";
   readonly content: string;
   readonly citations?: readonly AiBrainQueryCitation[];
+  readonly proposal?: AiBrainProposal | null;
   readonly error?: boolean;
+}
+
+function ProposalCard({
+  proposal: initial,
+  routePrefix,
+  onUpdated,
+}: {
+  readonly proposal: AiBrainProposal;
+  readonly routePrefix: string;
+  readonly onUpdated: (next: AiBrainProposal) => void;
+}) {
+  const [proposal, setProposal] = useState(initial);
+  const [busy, setBusy] = useState<"confirm" | "reject" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setProposal(initial);
+  }, [initial]);
+
+  const confirm = async () => {
+    setBusy("confirm");
+    setError(null);
+    const res = await confirmAiBrainProposal(proposal.id);
+    setBusy(null);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    setProposal(res.proposal);
+    onUpdated(res.proposal);
+  };
+
+  const reject = async () => {
+    setBusy("reject");
+    setError(null);
+    const res = await rejectAiBrainProposal(proposal.id);
+    setBusy(null);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    setProposal(res.proposal);
+    onUpdated(res.proposal);
+  };
+
+  const pending = proposal.status === "pending";
+  const confirmed = proposal.status === "confirmed";
+
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-black/20 bg-black/[0.02] p-2.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="font-serif text-[10px] uppercase tracking-[0.12em] text-black/50">
+          {proposal.kind === "team" ? `Team plan${proposal.teamName ? `: ${proposal.teamName}` : ""}` : "Agent plan"}
+        </p>
+        <span className="font-mono text-[9px] uppercase tracking-wider text-black/40">{proposal.status}</span>
+      </div>
+      {proposal.rationale ? (
+        <p className="text-[11px] leading-snug text-black/65">{proposal.rationale}</p>
+      ) : null}
+      <ul className="space-y-1.5">
+        {proposal.agents.map((agent) => (
+          <li key={`${agent.name}-${agent.runtime}`} className="border border-black/10 bg-white px-2 py-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[11.5px] font-medium text-black">{agent.name}</span>
+              <span className="font-mono text-[9px] text-black/40">{agent.runtime}</span>
+            </div>
+            {agent.role ? (
+              <p className="text-[10px] text-black/45">Role: {agent.role}</p>
+            ) : null}
+            <p className="mt-0.5 line-clamp-2 text-[10.5px] text-black/55">{agent.description || agent.rationale}</p>
+            <p className="mt-1 font-mono text-[9px] leading-relaxed text-black/40">
+              {agent.permissionScopes.slice(0, 8).join(" · ")}
+              {agent.permissionScopes.length > 8 ? " …" : ""}
+            </p>
+          </li>
+        ))}
+      </ul>
+      {error ? <p className="text-[10.5px] text-red-700/80">{error}</p> : null}
+      {pending ? (
+        <div className="flex flex-wrap gap-2 pt-0.5">
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => void confirm()}
+            className={cn(sketchButton, "px-2.5 py-1 text-[11px]")}
+          >
+            {busy === "confirm" ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <Check className="size-3" aria-hidden />}
+            Confirm create
+          </button>
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => void reject()}
+            className="inline-flex items-center gap-1 border border-black/20 px-2.5 py-1 text-[11px] text-black/60 hover:border-black hover:text-black"
+          >
+            {busy === "reject" ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <X className="size-3" aria-hidden />}
+            Reject
+          </button>
+        </div>
+      ) : null}
+      {confirmed && proposal.primaryAgentId ? (
+        <Link
+          href={`${routePrefix}/agents/${proposal.primaryAgentId}/chat`}
+          className={cn(sketchButton, "inline-flex px-2.5 py-1 text-[11px]")}
+        >
+          Open assistant
+        </Link>
+      ) : null}
+    </div>
+  );
 }
 
 function SourcesPopover({ citations }: { readonly citations: readonly AiBrainQueryCitation[] }) {
@@ -128,6 +254,11 @@ export function BrainOrbChat({
     },
     [onOpenChange, openProp, uncontrolledOpen],
   );
+  const { session } = useSession();
+  const routePrefix = consoleRoutePrefix(
+    session?.user.workspaceKind ?? session?.organization.workspaceKind ?? "individual",
+  );
+
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -167,16 +298,27 @@ export function BrainOrbChat({
     if (conversationsWithLocalStateRef.current.has(conversationId)) return;
     let cancelled = false;
     queueMicrotask(() => setHistoryLoading(true));
-    void getAiBrainConversationMessages(conversationId).then((res) => {
+    void getAiBrainConversationMessages(conversationId).then(async (res) => {
       if (cancelled) return;
       setHistoryLoading(false);
       if (!res.ok) return;
-      setTurns(res.messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        citations: message.citations,
-      })));
+      const next: ChatTurn[] = [];
+      for (const message of res.messages) {
+        let proposal: AiBrainProposal | null = null;
+        if (message.proposalId) {
+          const propRes = await getAiBrainProposal(message.proposalId);
+          if (propRes.ok) proposal = propRes.proposal;
+        }
+        if (cancelled) return;
+        next.push({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          citations: message.citations,
+          proposal,
+        });
+      }
+      if (!cancelled) setTurns(next);
     });
     return () => { cancelled = true; };
   }, [conversationId, open]);
@@ -244,7 +386,13 @@ export function BrainOrbChat({
     }
     setTurns((prev) => [
       ...prev,
-      { id: newId(), role: "brain", content: res.data.answer, citations: res.data.citations },
+      {
+        id: newId(),
+        role: "brain",
+        content: res.data.answer,
+        citations: res.data.citations,
+        proposal: res.data.proposal,
+      },
     ]);
     const now = new Date().toISOString();
     setConversations((current) => current.map((conversation) =>
@@ -287,7 +435,7 @@ export function BrainOrbChat({
                 </div>
                 <div className="flex flex-col leading-tight">
                   <span className="font-serif text-[11px] uppercase tracking-widest text-black">exa</span>
-                  <span className="text-[10px] text-black/50">Answers from your knowledge base</span>
+                  <span className="text-[10px] text-black/50">Knowledge · recommend · propose agents</span>
                 </div>
               </div>
               <div className="flex items-center gap-1">
@@ -365,13 +513,24 @@ export function BrainOrbChat({
                     {turn.citations && turn.citations.length > 0 ? (
                       <SourcesPopover citations={turn.citations} />
                     ) : null}
+                    {turn.proposal ? (
+                      <ProposalCard
+                        proposal={turn.proposal}
+                        routePrefix={routePrefix}
+                        onUpdated={(next) => {
+                          setTurns((prev) =>
+                            prev.map((t) => (t.id === turn.id ? { ...t, proposal: next } : t)),
+                          );
+                        }}
+                      />
+                    ) : null}
                   </div>
                 </div>
               ))}
               {sending ? (
                 <div className="flex items-center gap-2 text-[11px] text-black/40">
                   <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  Searching your knowledge base…
+                  Thinking with your knowledge and capabilities…
                 </div>
               ) : null}
             </div>
@@ -388,7 +547,7 @@ export function BrainOrbChat({
                       void send();
                     }
                   }}
-                  placeholder="Ask your brain…"
+                  placeholder="Ask exa — knowledge, agents, assistants…"
                   rows={2}
                   className="box-border min-h-12 min-w-0 flex-1 resize-none overflow-y-auto border border-black bg-white px-3 py-2 text-[13px] leading-5 text-black outline-none placeholder:text-black/40 focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
                 />

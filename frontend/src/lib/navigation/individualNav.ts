@@ -4,7 +4,9 @@ import {
   BookOpen,
   Bot,
   Brain,
+  CalendarClock,
   CreditCard,
+  FileText,
   Fingerprint,
   Hammer,
   KeyRound,
@@ -12,6 +14,7 @@ import {
   PlayCircle,
   ScrollText,
   Settings,
+  Shield,
   ShieldCheck,
   Plug,
   Target,
@@ -19,6 +22,7 @@ import {
   UsersRound,
   Wallet,
   Wand2,
+  Workflow,
 } from "lucide-react";
 
 export interface ConsoleNavItem {
@@ -33,7 +37,9 @@ const PRIMARY_NAV_SUFFIXES = [
   "/overview",
   "/agents",
   "/active-runs",
+  "/schedules",
   "/teams",
+  "/visual-builder",
   "/ai-brain",
   "/knowledge",
   "/passports",
@@ -69,7 +75,9 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
     { href: `${routePrefix}/active-runs`, label: "Active runs", icon: PlayCircle },
+    { href: `${routePrefix}/schedules`, label: "Schedules", icon: CalendarClock },
     { href: `${routePrefix}/teams`, label: "Teams", icon: UsersRound },
+    { href: `${routePrefix}/visual-builder`, label: "Visual Builder", icon: Workflow },
     { href: `${routePrefix}/ai-brain`, label: "exa (ai brain)", icon: Brain },
     { href: `${routePrefix}/knowledge`, label: "Knowledge", icon: BookOpen },
     { href: `${routePrefix}/passports`, label: "Passports", icon: Fingerprint },
@@ -95,10 +103,13 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     label: "Subscriptions",
     icon: CreditCard,
   };
+  const legalItems: ConsoleNavItem[] = [
+    { href: "/privacy", label: "Privacy", icon: Shield },
+    { href: "/terms", label: "Terms", icon: FileText },
+  ];
   if (routePrefix === "/organization") {
     return [
       ...core,
-      { href: `${routePrefix}/schedules`, label: "Schedules", icon: PlayCircle },
       { href: `${routePrefix}/compliance`, label: "Compliance", icon: ShieldCheck },
       usageItem,
       subscriptionsItem,
@@ -107,6 +118,7 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
         : [{ href: `${routePrefix}/billing`, label: "Billing", icon: CreditCard }]),
       { href: `${routePrefix}/members`, label: "Members", icon: Users },
       settingsItem,
+      ...legalItems,
     ];
   }
   return [
@@ -115,6 +127,7 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     ...(billingExempt ? [] : [{ href: `${routePrefix}/wallet`, label: "Wallet", icon: Wallet }]),
     usageItem,
     settingsItem,
+    ...legalItems,
   ];
 }
 

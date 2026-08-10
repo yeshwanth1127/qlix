@@ -1,0 +1,126 @@
+/**
+ * React Flow theming for the ink & glass console.
+ *
+ * React Flow ships an opinionated blue-on-white look. Every rule here exists to strip
+ * that back to the console's hairline-ink language: nodes render their own chrome, so
+ * the wrapper must contribute no border, background, shadow, or radius of its own.
+ */
+
+.qlix-builder .react-flow__node {
+  border: none;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: inherit;
+  color: inherit;
+  width: auto;
+}
+
+/* The node components draw their own selected state, so suppress the default ring. */
+.qlix-builder .react-flow__node.selected,
+.qlix-builder .react-flow__node:focus,
+.qlix-builder .react-flow__node:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.qlix-builder .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 1px solid var(--ink-border);
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+.qlix-builder .react-flow__handle:hover,
+.qlix-builder .react-flow__handle.connectingfrom,
+.qlix-builder .react-flow__handle.connectingto {
+  background: var(--sketch-purple);
+  border-color: var(--sketch-purple);
+  transform: scale(1.35);
+}
+
+/**
+ * The tools port. Square and dashed so it never reads as part of the left-to-right work
+ * flow — capability wiring is a different kind of relationship, and the port should say so
+ * before a user tries to drag from it.
+ */
+.qlix-builder .react-flow__handle.qlix-tool-port {
+  border-radius: 3px;
+  border-style: dashed;
+  width: 10px;
+  height: 10px;
+}
+
+.qlix-builder .react-flow__handle.qlix-tool-port:hover,
+.qlix-builder .react-flow__handle.qlix-tool-port.connectingto {
+  border-style: solid;
+}
+
+/* An invalid target during a drag should look refused, not merely unhighlighted. */
+.qlix-builder .react-flow__handle.connectionindicator:not(.valid) {
+  opacity: 0.35;
+}
+
+.qlix-builder .react-flow__edge-path {
+  stroke: var(--ink-border);
+  stroke-width: 1.5;
+}
+
+.qlix-builder .react-flow__edge.selected .react-flow__edge-path,
+.qlix-builder .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--sketch-purple);
+}
+
+.qlix-builder .react-flow__connectionline .react-flow__connection-path {
+  stroke: var(--sketch-purple);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+/* Controls: square glass buttons instead of the stock white pill stack. */
+.qlix-builder .react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--ink-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.7);
+  backdrop-filter: blur(8px);
+}
+
+.qlix-builder .react-flow__controls-button {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--ink-border);
+  width: 26px;
+  height: 26px;
+  color: #000;
+}
+
+.qlix-builder .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.qlix-builder .react-flow__controls-button:hover {
+  background: rgb(0 0 0 / 0.05);
+}
+
+.qlix-builder .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 11px;
+  max-height: 11px;
+}
+
+.qlix-builder .react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+}
+
+.qlix-builder .react-flow__attribution a {
+  color: var(--ink-faint);
+}

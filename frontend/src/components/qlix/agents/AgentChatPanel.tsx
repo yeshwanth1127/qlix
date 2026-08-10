@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Paperclip,
   SendHorizonal,
+  ShieldAlert,
   ShieldCheck,
   Square,
   Sparkles,
@@ -23,11 +24,13 @@ import {
   buildProxyModelGroups,
   clearConversationMessages,
   fetchConversationMessages,
+  fetchInferenceCapabilities,
   fetchModelCatalog,
   getAgent,
   getRuntimeStatus,
   normalizeQlixInferenceModelId,
   type ConversationMessageDTO,
+  type InferenceCapabilities,
 } from "@/lib/agents-api";
 import { decideJit, listPendingJit, type PendingJitDTO } from "@/lib/jit-api";
 import { useSession } from "@/components/qlix/session-context";
@@ -44,7 +47,7 @@ import {
   type SketchTone,
 } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
-import { ActivityTimeline } from "@/components/qlix/agents/AgentRunActivity";
+import { ActivityTimeline, LiveToolBar } from "@/components/qlix/agents/AgentRunActivity";
 import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import {
   type ActivityStep,
@@ -299,6 +302,9 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
 
   const sessionScoped =
     latest.scope === "email.send" ||
+    latest.scope === "drive.write" ||
+    latest.scope === "calendar.write" ||
+    latest.scope === "meet.manage" ||
     latest.scope === "social.publish" ||
     latest.scope === "crm.write" ||
     latest.scope === "crm.delete" ||
@@ -368,6 +374,9 @@ export function AgentChatPanel({
   const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [inferenceCapabilities, setInferenceCapabilities] = useState<InferenceCapabilities | null>(
+    null,
+  );
   const [selectedQlixModelId, setSelectedQlixModelId] = useState("");
   const [useBrain, setUseBrain] = useState(false);
   const [browserFrames, setBrowserFrames] = useState<BrowserFrame[]>([]);
@@ -512,22 +521,25 @@ export function AgentChatPanel({
     let cancelled = false;
     setCatalogLoading(true);
     setCatalogError(null);
-    void Promise.all([fetchModelCatalog("exora"), fetchModelCatalog("openrouter")]).then(
-      ([exoraResult, openrouterResult]) => {
-        if (cancelled) return;
-        setCatalogLoading(false);
-        setExoraCatalog(exoraResult.ok ? exoraResult.models : []);
-        setOpenrouterCatalog(openrouterResult.ok ? openrouterResult.models : []);
-        if (!exoraResult.ok && !openrouterResult.ok) {
-          setCatalogError(exoraResult.errorMessage || openrouterResult.errorMessage);
-          setSelectedQlixModelId(
-            normalizeQlixInferenceModelId(agent.model, agent.llmProvider),
-          );
-        } else {
-          setCatalogError(null);
-        }
-      },
-    );
+    void Promise.all([
+      fetchModelCatalog("exora"),
+      fetchModelCatalog("openrouter"),
+      fetchInferenceCapabilities(),
+    ]).then(([exoraResult, openrouterResult, capabilities]) => {
+      if (cancelled) return;
+      setCatalogLoading(false);
+      setExoraCatalog(exoraResult.ok ? exoraResult.models : []);
+      setOpenrouterCatalog(openrouterResult.ok ? openrouterResult.models : []);
+      setInferenceCapabilities(capabilities);
+      if (!exoraResult.ok && !openrouterResult.ok) {
+        setCatalogError(exoraResult.errorMessage || openrouterResult.errorMessage);
+        setSelectedQlixModelId(
+          normalizeQlixInferenceModelId(agent.model, agent.llmProvider),
+        );
+      } else {
+        setCatalogError(null);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -556,10 +568,30 @@ export function AgentChatPanel({
       buildProxyModelGroups({
         exoraCatalog,
         openrouterCatalog,
+        includeExora:
+          !agent ||
+          agent.llmProvider === "exora" ||
+          inferenceCapabilities?.providers.exora.enabled !== false,
+        includeOpenrouter:
+          !agent ||
+          agent.llmProvider === "openrouter" ||
+          inferenceCapabilities?.providers.openrouter.enabled !== false,
         selectedModel: selectedQlixModelId || agentDefaultModelId,
       }),
-    [agentDefaultModelId, exoraCatalog, openrouterCatalog, selectedQlixModelId],
+    [
+      agent,
+      agentDefaultModelId,
+      exoraCatalog,
+      inferenceCapabilities,
+      openrouterCatalog,
+      selectedQlixModelId,
+    ],
   );
+
+  const onChatModelChange = (next: string) => {
+    setSelectedQlixModelId(next);
+    selectedModelRef.current = next;
+  };
 
   useEffect(() => {
     if (!agent || agent.agentKind === "org_brain") return;
@@ -1103,13 +1135,32 @@ export function AgentChatPanel({
                 >
                   {agent.runtime}
                 </span>
-                {activeModelLabel ? (
+                {isHostedChatRuntime(agent.runtime) ? (
+                  <div className="hidden min-w-0 max-w-[min(260px,40vw)] shrink sm:block">
+                    {catalogLoading ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] text-black/40">
+                        <Loader2 className="size-3 animate-spin" aria-hidden />
+                        Models…
+                      </span>
+                    ) : (
+                      <ModelHierarchyPicker
+                        value={selectedQlixModelId}
+                        groups={pickerGroups}
+                        agentDefaultId={agentDefaultModelId}
+                        size="compact"
+                        placement="below"
+                        disabled={!conversationId || sending}
+                        onChange={onChatModelChange}
+                      />
+                    )}
+                  </div>
+                ) : activeModelLabel ? (
                   <span
                     className={cn(
                       "hidden max-w-[180px] shrink items-center gap-1 rounded-full border border-black/8 px-2 py-0.5 sm:inline-flex",
                       sketchToneBg.purple,
                     )}
-                    title={`Default: ${agent.model}`}
+                    title={`Model: ${agent.model}`}
                   >
                     <Sparkles className="size-2.5 shrink-0 text-black/40" aria-hidden />
                     <span className="truncate font-mono text-[10px] text-black/60">
@@ -1156,7 +1207,31 @@ export function AgentChatPanel({
           </div>
         ) : null}
 
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1">
+          {agent?.runtime === "hybrid" && runnerStatus === "offline" ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4"
+              role="status"
+            >
+              <div
+                className={cn(
+                  "pointer-events-auto flex max-w-sm flex-col items-center gap-2 border border-amber-600/30 px-5 py-4 text-center shadow-[0_12px_40px_-24px_rgba(16,14,22,0.45)]",
+                  sketchToneBg.amber,
+                )}
+              >
+                <ShieldAlert className="size-5 text-amber-800" aria-hidden />
+                <p className="text-[13px] font-medium leading-snug text-amber-950/90">
+                  Agent is offline — download or start the local Qlix agent.
+                </p>
+                <Link
+                  href={`${backHref}/${encodeURIComponent(agentId)}`}
+                  className="text-[11px] font-semibold uppercase tracking-[0.06em] text-amber-950 underline decoration-amber-800/40 underline-offset-2 hover:decoration-amber-900"
+                >
+                  Open agent page
+                </Link>
+              </div>
+            </div>
+          ) : null}
           <div
             ref={scrollRef}
             className={cn(
@@ -1246,12 +1321,19 @@ export function AgentChatPanel({
                       )}
                     >
                       {m.role === "agent" && m.activity && m.activity.length > 0 ? (
-                        <ActivityTimeline
-                          steps={m.activity}
-                          running={thisStreaming}
-                          defaultOpen={thisStreaming}
-                          className="mb-3"
-                        />
+                        <>
+                          {thisStreaming ? (
+                            <div className="mb-2">
+                              <LiveToolBar steps={m.activity} />
+                            </div>
+                          ) : null}
+                          <ActivityTimeline
+                            steps={m.activity}
+                            running={thisStreaming}
+                            defaultOpen={thisStreaming}
+                            className="mb-3"
+                          />
+                        </>
                       ) : null}
                       {jitPendingStep ? (
                         <div
@@ -1299,6 +1381,9 @@ export function AgentChatPanel({
                                   ) : null}
                                   Approve
                                   {jitPendingStep.jitScope === "email.send" ||
+                                  jitPendingStep.jitScope === "drive.write" ||
+                                  jitPendingStep.jitScope === "calendar.write" ||
+                                  jitPendingStep.jitScope === "meet.manage" ||
                                   jitPendingStep.jitScope === "social.publish" ||
                                   jitPendingStep.jitScope === "crm.write" ||
                                   jitPendingStep.jitScope === "crm.delete" ||
@@ -1415,6 +1500,9 @@ export function AgentChatPanel({
                         ) : null}
                         Approve
                         {stickyJitPending.jitScope === "email.send" ||
+                        stickyJitPending.jitScope === "drive.write" ||
+                        stickyJitPending.jitScope === "calendar.write" ||
+                        stickyJitPending.jitScope === "meet.manage" ||
                         stickyJitPending.jitScope === "social.publish" ||
                         stickyJitPending.jitScope === "crm.write" ||
                         stickyJitPending.jitScope === "crm.delete" ||
@@ -1523,28 +1611,27 @@ export function AgentChatPanel({
                   )}
                 />
                 {isHostedChatRuntime(agent?.runtime) ? (
-                  catalogLoading ? (
-                    <span className="inline-flex items-center gap-1 px-3 pb-1 text-[10px] text-black/40">
-                      <Loader2 className="size-3 animate-spin" aria-hidden />
-                      Loading models…
+                  <div className="flex flex-col gap-0.5 px-3 pb-1 sm:hidden">
+                    <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-black/40">
+                      Model
                     </span>
-                  ) : (
-                    <ModelHierarchyPicker
-                      value={selectedQlixModelId}
-                      groups={pickerGroups}
-                      agentDefaultId={agentDefaultModelId}
-                      enabledProviders={
-                        new Set([agent?.llmProvider ?? "exora"] as Array<"exora" | "openrouter">)
-                      }
-                      size="compact"
-                      placement="above"
-                      disabled={!conversationId || sending}
-                      onChange={(v) => {
-                        setSelectedQlixModelId(v);
-                        selectedModelRef.current = v;
-                      }}
-                    />
-                  )
+                    {catalogLoading ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-black/40">
+                        <Loader2 className="size-3 animate-spin" aria-hidden />
+                        Loading models…
+                      </span>
+                    ) : (
+                      <ModelHierarchyPicker
+                        value={selectedQlixModelId}
+                        groups={pickerGroups}
+                        agentDefaultId={agentDefaultModelId}
+                        size="compact"
+                        placement="above"
+                        disabled={!conversationId || sending}
+                        onChange={onChatModelChange}
+                      />
+                    )}
+                  </div>
                 ) : null}
               </div>
               {sending ? (

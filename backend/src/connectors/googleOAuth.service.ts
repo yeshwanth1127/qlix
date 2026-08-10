@@ -2,18 +2,34 @@ import jwt from 'jsonwebtoken';
 import { loadJwtSecret } from '../middleware/authenticateUser.js';
 import { encryptForAgentSecrets } from '../cloudRunners/agentSecrets.js';
 import type { StoredOAuthTokens } from './connectors.types.js';
+import {
+  GOOGLE_IDENTITY_SCOPES,
+  type GoogleServiceId,
+  isGoogleServiceId,
+  oauthScopesForGoogleService,
+} from './googleServices.js';
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 
+/** @deprecated Prefer per-service scopes via `oauthScopesForGoogleService`. Kept for compose checks. */
 export const GOOGLE_EMAIL_SCOPES = [
-  'openid',
-  'email',
-  'profile',
+  ...GOOGLE_IDENTITY_SCOPES,
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.compose',
 ];
+
+/** True when the stored Google token can create Gmail drafts. */
+export function googleTokenCanComposeDrafts(scopes: readonly string[]): boolean {
+  return scopes.some(
+    (s) =>
+      s === 'https://www.googleapis.com/auth/gmail.compose' ||
+      s === 'https://www.googleapis.com/auth/gmail.modify' ||
+      s === 'https://www.googleapis.com/auth/gmail',
+  );
+}
 
 export class GoogleOAuthNotConfiguredError extends Error {
   readonly code = 'google_oauth_not_configured';
@@ -31,34 +47,52 @@ function googleClientConfig(): { clientId: string; clientSecret: string; redirec
   return { clientId, clientSecret, redirectUri };
 }
 
-export function mintGoogleOAuthState(userId: string, orgId: string): string {
+export function mintGoogleOAuthState(
+  userId: string,
+  orgId: string,
+  service: GoogleServiceId,
+): string {
   const secret = loadJwtSecret();
-  return jwt.sign({ sub: userId, orgId, qlixOAuth: 'google_connector' }, secret, {
-    expiresIn: 600,
-    issuer: 'qlix-backend',
-    algorithm: 'HS256',
-  });
+  return jwt.sign(
+    { sub: userId, orgId, service, qlixOAuth: 'google_connector' },
+    secret,
+    {
+      expiresIn: 600,
+      issuer: 'qlix-backend',
+      algorithm: 'HS256',
+    },
+  );
 }
 
-export function verifyGoogleOAuthState(state: string): { userId: string; orgId: string } {
+export function verifyGoogleOAuthState(state: string): {
+  userId: string;
+  orgId: string;
+  service: GoogleServiceId;
+} {
   const secret = loadJwtSecret();
   const decoded = jwt.verify(state, secret, { issuer: 'qlix-backend', algorithms: ['HS256'] });
   if (typeof decoded !== 'object' || decoded === null) throw new Error('Invalid OAuth state');
   const record = decoded as Record<string, unknown>;
   if (record.qlixOAuth !== 'google_connector') throw new Error('Invalid OAuth state purpose');
-  if (typeof record.sub !== 'string' || typeof record.orgId !== 'string') throw new Error('Invalid OAuth state claims');
-  return { userId: record.sub, orgId: record.orgId };
+  if (typeof record.sub !== 'string' || typeof record.orgId !== 'string') {
+    throw new Error('Invalid OAuth state claims');
+  }
+  // Default legacy states (no service claim) to gmail.
+  const service = isGoogleServiceId(record.service) ? record.service : 'gmail';
+  return { userId: record.sub, orgId: record.orgId, service };
 }
 
-export function buildGoogleAuthUrl(state: string): string {
+export function buildGoogleAuthUrl(state: string, service: GoogleServiceId): string {
   const { clientId, redirectUri } = googleClientConfig();
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: GOOGLE_EMAIL_SCOPES.join(' '),
+    scope: oauthScopesForGoogleService(service).join(' '),
     access_type: 'offline',
     prompt: 'consent',
+    // Keep previously granted Google scopes on the new token when adding a service.
+    include_granted_scopes: 'true',
     state,
   });
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;
@@ -96,9 +130,11 @@ export async function exchangeGoogleCode(code: string): Promise<StoredOAuthToken
 
   const accessToken = String(tokenResp.access_token ?? '');
   const refreshToken = String(tokenResp.refresh_token ?? '');
-  if (!accessToken || !refreshToken) {
-    throw new Error('Google token exchange did not return access/refresh tokens');
+  if (!accessToken) {
+    throw new Error('Google token exchange did not return an access token');
   }
+  // Refresh token is only returned on first consent / prompt=consent; later
+  // incremental connects may omit it — caller merges with the existing token.
   const expiresIn = Number(tokenResp.expires_in ?? 3600);
   const expiresAtMs = Date.now() + expiresIn * 1000;
   const scopeRaw = String(tokenResp.scope ?? '');

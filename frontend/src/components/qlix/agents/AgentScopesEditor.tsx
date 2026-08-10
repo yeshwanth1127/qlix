@@ -27,6 +27,7 @@ export function AgentScopesEditor({ agent, orgId, onUpdated }: AgentScopesEditor
   const [jitSelected, setJitSelected] = useState<string[]>(agent.jitScopes);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +68,7 @@ export function AgentScopesEditor({ agent, orgId, onUpdated }: AgentScopesEditor
     setSelected([...agent.permissionScopes]);
     setJitSelected([...agent.jitScopes]);
     setError(null);
+    setRefreshNotice(null);
     setEditing(true);
   };
 
@@ -115,24 +117,36 @@ export function AgentScopesEditor({ agent, orgId, onUpdated }: AgentScopesEditor
       return;
     }
     onUpdated(res.agent);
+    if (res.runnerRefresh === "restarting") {
+      setRefreshNotice("Cloud runner is restarting so new scopes take effect.");
+    } else if (res.runnerRefresh === "hybrid_reissue_recommended") {
+      setRefreshNotice(
+        "Scopes saved. If a newly added tool still doesn't appear, re-download the hybrid starter pack.",
+      );
+    } else {
+      setRefreshNotice(null);
+    }
     setEditing(false);
   };
 
   if (!editing) {
     return (
-      <button
-        type="button"
-        onClick={startEdit}
-        className={`${sketchButton} mt-2 gap-1.5`}
-        disabled={catalogLoading}
-      >
-        {catalogLoading ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-        ) : (
-          <Plus className="size-3.5" aria-hidden />
-        )}
-        Add or remove scopes
-      </button>
+      <div className="mt-2 space-y-1.5">
+        <button
+          type="button"
+          onClick={startEdit}
+          className={`${sketchButton} gap-1.5`}
+          disabled={catalogLoading}
+        >
+          {catalogLoading ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <Plus className="size-3.5" aria-hidden />
+          )}
+          Add or remove scopes
+        </button>
+        {refreshNotice ? <p className="text-[11px] text-black/55">{refreshNotice}</p> : null}
+      </div>
     );
   }
 

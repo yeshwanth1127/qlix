@@ -12,7 +12,10 @@ export type BrainActionType =
   | 'brain.knowledge_delete'
   | 'brain.policy_check'
   | 'brain.query'
-  | 'brain.model_update';
+  | 'brain.model_update'
+  | 'brain.propose_plan'
+  | 'brain.confirm_plan'
+  | 'brain.reject_plan';
 
 /** Where the operator action originated (for attribution). */
 export type BrainAuditSurface = 'console' | 'agent_chat' | 'agent_tool';

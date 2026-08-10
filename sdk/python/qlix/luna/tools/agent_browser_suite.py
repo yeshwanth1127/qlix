@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from qlix.luna.browser.agent_browser_cli import (
-    AGENT_BROWSER_TOOL_DEFS,
-    run_agent_browser_tool,
-)
+from qlix.browser_failover import run_agent_browser_tool_with_failover
+from qlix.luna.browser.agent_browser_cli import AGENT_BROWSER_TOOL_DEFS
 from qlix.luna.core.registry import ToolRegistry
 from qlix.luna.core.types import ToolResult
 from qlix.luna.tools._stubs import BaseTool, ToolSpec
@@ -33,7 +31,7 @@ def _make_agent_browser_tool_class(defn: Any) -> type[BaseTool]:
             )
 
         def execute(self, **params: Any) -> ToolResult:
-            ok, content = run_agent_browser_tool(_tid, params)
+            ok, content = run_agent_browser_tool_with_failover(_tid, params)
             return ToolResult(tool_name=_tid, content=content, success=ok)
 
     _AgentBrowserTool.__name__ = f"_{_tid}"

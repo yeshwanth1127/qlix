@@ -5,6 +5,7 @@
 import type { PermissionScope } from './agents.types.js';
 import { scopesRequireHybrid } from './scopeCatalog.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
+import { DEFAULT_SCHEDULE_SCOPES } from './defaultAgentScopes.js';
 
 const LEAD_GEN_INTENT =
   /\b(google\s*maps|gmb|google\s*business(?:\s*profile)?|business\s*profile|local\s+business(?:es)?|scrape\s+leads?|lead\s+gen|lead\s+generation|find\s+leads?|leads?\s+with\s+emails?|outreach\s+to\s+leads?|search\s+(?:their\s+)?website(?:s)?\s+for\s+emails?|browser\s+enrichment|enrich\s+leads?)\b/i;
@@ -401,5 +402,68 @@ export function enrichCrmPlan(
     ...plan,
     team: { ...plan.team, supervisor, workers },
     rationale: `${plan.rationale} CRM enrichment: full CRM scopes wired across the team.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Schedule enrichment — recurring / delayed agent work via qlix-schedule MCP
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_INTENT =
+  /\b(cron|schedule(?:d)?\s+(?:task|job|event|run|reminder)|recurring\s+(?:task|job|run)|every\s+(?:day|morning|evening|hour|weekday)|daily\s+(?:digest|report|summary|run)|remind\s+me\s+(?:to|at|every)|run\s+(?:this|it)\s+(?:later|daily|weekly|every)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+(?:every|daily|each))\b/i;
+
+const SCHEDULE_SCOPES: readonly string[] = DEFAULT_SCHEDULE_SCOPES;
+
+const SCHEDULE_METHOD_MARKER = '## Schedule method';
+
+const SCHEDULE_METHOD = `
+
+${SCHEDULE_METHOD_MARKER}
+Use qlix-schedule MCP tools to manage timed work:
+1. schedule_create with scheduleType cron|once|interval + prompt (what to do when due).
+2. Cron is 5-field UTC (e.g. \`0 9 * * 1-5\` weekdays 09:00 UTC). onceAt is ISO-8601. intervalSeconds ≥ 60.
+3. schedule_list / schedule_get to inspect; schedule_update to pause/resume; schedule_cancel to stop.
+4. When a scheduled event fires you receive the prompt as a normal run — execute it, then done.`;
+
+export function isSchedulePrompt(prompt: string): boolean {
+  return SCHEDULE_INTENT.test(prompt);
+}
+
+function appendScheduleMethod(description: string): string {
+  if (description.includes(SCHEDULE_METHOD_MARKER)) return description;
+  return `${description}${SCHEDULE_METHOD}`.slice(0, 10000);
+}
+
+function enrichScheduleAgent(spec: NLAgentSpec, allowed: Set<string>): NLAgentSpec {
+  const withScopes = mergeScopes(spec, SCHEDULE_SCOPES, [], allowed, false);
+  return {
+    ...withScopes,
+    description: appendScheduleMethod(withScopes.description),
+  };
+}
+
+export function enrichSchedulePlan(
+  userPrompt: string,
+  plan: AgentCreationPlan,
+  allowed: Set<string>,
+): AgentCreationPlan {
+  if (!isSchedulePrompt(userPrompt)) return plan;
+  const hasSchedule = [...allowed].some((s) => s.startsWith('mcp.qlix-schedule.'));
+  if (!hasSchedule) return plan;
+
+  if (plan.type === 'single') {
+    return {
+      ...plan,
+      agent: enrichScheduleAgent(plan.agent, allowed),
+      rationale: `${plan.rationale} Schedule enrichment: qlix-schedule MCP for cron/once/interval events.`,
+    };
+  }
+
+  const supervisor = enrichScheduleAgent(plan.team.supervisor, allowed);
+  const workers = plan.team.workers.map((w) => enrichScheduleAgent(w, allowed) as NLWorkerSpec);
+  return {
+    ...plan,
+    team: { ...plan.team, supervisor, workers },
+    rationale: `${plan.rationale} Schedule enrichment: qlix-schedule tools wired for timed agent runs.`,
   };
 }

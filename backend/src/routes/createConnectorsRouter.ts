@@ -16,6 +16,11 @@ import {
   verifyGoogleOAuthState,
 } from '../connectors/googleOAuth.service.js';
 import {
+  anyGoogleServiceConnected,
+  isGoogleServiceId,
+  removeGoogleServiceScopes,
+} from '../connectors/googleServices.js';
+import {
   buildZohoAuthUrl,
   exchangeZohoCode,
   mintZohoOAuthState,
@@ -31,6 +36,22 @@ import {
   SlackOAuthNotConfiguredError,
   verifySlackOAuthState,
 } from '../connectors/slackOAuth.service.js';
+import {
+  buildDiscordAuthUrl,
+  DiscordOAuthNotConfiguredError,
+  exchangeDiscordCode,
+  mintDiscordOAuthState,
+  revokeDiscordToken,
+  verifyDiscordOAuthState,
+} from '../connectors/discordOAuth.service.js';
+import {
+  buildGitHubAuthUrl,
+  exchangeGitHubCode,
+  GitHubOAuthNotConfiguredError,
+  mintGitHubOAuthState,
+  revokeGitHubToken,
+  verifyGitHubOAuthState,
+} from '../connectors/githubOAuth.service.js';
 import { clearCachedModules } from '../connectors/crm/crmModuleCache.js';
 import type { ConnectorAccountDTO, N8nIntegrationDTO } from '../connectors/connectors.types.js';
 import {
@@ -108,10 +129,13 @@ export function createConnectorsRouter(): Router {
         response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
         return;
       }
+      const body = (request.body ?? {}) as { service?: unknown };
+      // Default to gmail for older clients that omit service.
+      const service = isGoogleServiceId(body.service) ? body.service : 'gmail';
       const auth = request.auth!;
-      const state = mintGoogleOAuthState(auth.userId, auth.orgId);
-      const url = buildGoogleAuthUrl(state);
-      response.json({ url });
+      const state = mintGoogleOAuthState(auth.userId, auth.orgId, service);
+      const url = buildGoogleAuthUrl(state, service);
+      response.json({ url, service });
     } catch (err) {
       if (err instanceof GoogleOAuthNotConfiguredError) {
         response.status(503).json({ error: { code: err.code, message: err.message } });
@@ -137,7 +161,7 @@ export function createConnectorsRouter(): Router {
     }
 
     try {
-      const { userId, orgId } = verifyGoogleOAuthState(state);
+      const { userId, orgId, service } = verifyGoogleOAuthState(state);
       const tokens = await exchangeGoogleCode(code);
       const connector: ConnectorAccountDTO = await repo.upsertGoogle({ orgId, userId, tokens });
 
@@ -147,7 +171,9 @@ export function createConnectorsRouter(): Router {
       });
       const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
       response.redirect(
-        frontendRedirect(`${prefix}/connectors?connected=google&email=${encodeURIComponent(connector.emailAddress ?? '')}`),
+        frontendRedirect(
+          `${prefix}/connectors?connected=google&service=${encodeURIComponent(service)}&email=${encodeURIComponent(connector.emailAddress ?? '')}`,
+        ),
       );
     } catch (err) {
       console.error('[connectors] google/callback', err);
@@ -295,6 +321,152 @@ export function createConnectorsRouter(): Router {
     } catch (err) {
       console.error('[connectors] slack/delete', err);
       response.status(500).json({ error: { code: 'connector_delete_failed', message: 'Failed to disconnect Slack' } });
+    }
+  });
+
+  router.post('/discord/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintDiscordOAuthState(auth.userId, auth.orgId);
+      const url = buildDiscordAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof DiscordOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] discord/start', err);
+      response.status(500).json({ error: { code: 'oauth_start_failed', message: 'Failed to start Discord OAuth' } });
+    }
+  });
+
+  router.get('/discord/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifyDiscordOAuthState(state);
+      const tokens = await exchangeDiscordCode(code);
+      const connector: ConnectorAccountDTO = await repo.upsertDiscord({ orgId, userId, tokens });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(
+          `${prefix}/connectors?connected=discord&email=${encodeURIComponent(connector.emailAddress ?? '')}`,
+        ),
+      );
+    } catch (err) {
+      console.error('[connectors] discord/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/discord', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'discord');
+      if (tokens?.accessToken) await revokeDiscordToken(tokens.accessToken);
+      await repo.delete(request.auth!.orgId, 'discord');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] discord/delete', err);
+      response.status(500).json({
+        error: { code: 'connector_delete_failed', message: 'Failed to disconnect Discord' },
+      });
+    }
+  });
+
+  router.post('/github/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintGitHubOAuthState(auth.userId, auth.orgId);
+      const url = buildGitHubAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof GitHubOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] github/start', err);
+      response.status(500).json({ error: { code: 'oauth_start_failed', message: 'Failed to start GitHub OAuth' } });
+    }
+  });
+
+  router.get('/github/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifyGitHubOAuthState(state);
+      const tokens = await exchangeGitHubCode(code);
+      const connector: ConnectorAccountDTO = await repo.upsertGitHub({ orgId, userId, tokens });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(
+          `${prefix}/connectors?connected=github&email=${encodeURIComponent(connector.emailAddress ?? '')}`,
+        ),
+      );
+    } catch (err) {
+      console.error('[connectors] github/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/github', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'github');
+      if (tokens?.accessToken) await revokeGitHubToken(tokens.accessToken);
+      await repo.delete(request.auth!.orgId, 'github');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] github/delete', err);
+      response.status(500).json({
+        error: { code: 'connector_delete_failed', message: 'Failed to disconnect GitHub' },
+      });
     }
   });
 
@@ -550,6 +722,45 @@ export function createConnectorsRouter(): Router {
       });
     }
   });
+
+  router.delete(
+    '/google/services/:service',
+    authenticateUser(true),
+    async (request: Request, response: Response) => {
+      try {
+        if (!(await canManageConnectors(request))) {
+          response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+          return;
+        }
+        const serviceParam = request.params.service;
+        if (!isGoogleServiceId(serviceParam)) {
+          response.status(400).json({
+            error: { code: 'invalid_service', message: 'Unknown Google service' },
+          });
+          return;
+        }
+        const orgId = request.auth!.orgId;
+        const tokens = await repo.loadTokens(orgId, 'google');
+        if (!tokens) {
+          response.status(204).send();
+          return;
+        }
+        const nextScopes = removeGoogleServiceScopes(serviceParam, tokens.scopes);
+        if (!anyGoogleServiceConnected(nextScopes)) {
+          if (tokens.refreshToken) await revokeGoogleToken(tokens.refreshToken);
+          await repo.delete(orgId, 'google');
+        } else {
+          await repo.removeGoogleServiceScopes({ orgId, scopes: nextScopes });
+        }
+        response.status(204).send();
+      } catch (err) {
+        console.error('[connectors] google/services/delete', err);
+        response.status(500).json({
+          error: { code: 'connector_delete_failed', message: 'Failed to disconnect Google service' },
+        });
+      }
+    },
+  );
 
   router.delete('/google', authenticateUser(true), async (request: Request, response: Response) => {
     try {

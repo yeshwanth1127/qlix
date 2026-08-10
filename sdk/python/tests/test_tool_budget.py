@@ -17,6 +17,7 @@ from qlix.tool_budget import (
     DELEGATION_TOOLS,
     META_TOOLS,
     NO_OP_TOOLS,
+    SUBAGENT_TOOLS,
     apply_tool_budget,
     budget_report,
 )
@@ -102,6 +103,13 @@ def test_delegation_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not (DELEGATION_TOOLS & _names(apply_tool_budget(tools, tool_profile="full")))
     monkeypatch.setenv("QLIX_ENABLE_DELEGATION", "1")
     assert DELEGATION_TOOLS <= _names(apply_tool_budget(tools, tool_profile="full"))
+
+
+def test_subagents_are_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    tools = [_tool(n) for n in SUBAGENT_TOOLS] + [_tool("x")]
+    assert not (SUBAGENT_TOOLS & _names(apply_tool_budget(tools, tool_profile="full")))
+    monkeypatch.setenv("QLIX_ENABLE_SUBAGENTS", "1")
+    assert SUBAGENT_TOOLS <= _names(apply_tool_budget(tools, tool_profile="full"))
 
 
 # --- 3. usage tiers ---------------------------------------------------------------

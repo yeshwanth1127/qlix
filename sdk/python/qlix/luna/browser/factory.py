@@ -69,6 +69,17 @@ def get_browser_driver() -> BrowserDriver:
     return _driver
 
 
+def set_browser_driver(driver: BrowserDriver) -> None:
+    """Replace the process-wide browser driver (used by Cloudflare failover)."""
+    global _driver
+    if _driver is not None and _driver is not driver:
+        try:
+            _driver.close()
+        except Exception:
+            pass
+    _driver = driver
+
+
 def reset_browser_driver() -> None:
     global _driver
     if _driver is not None:

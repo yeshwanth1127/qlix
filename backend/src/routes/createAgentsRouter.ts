@@ -62,7 +62,63 @@ import {
   isLlmProviderConfigured,
   modelForProvider,
 } from '../llm/inferenceRouter.js';
+import { prisma } from '../lib/prisma.js';
+import type { AgentDTO } from '../agents/agents.types.js';
 
+/**
+ * After scope edits, refresh the cloud runner so baked-in agent.json picks up new tools.
+ * Team members use applyTeamContext so they stay on the team Docker network.
+ */
+async function scheduleRunnerRefreshForScopeChange(params: {
+  agent: AgentDTO;
+  backendUrl: string;
+  cloudProvisioner: CloudProvisionerService;
+  agentsRepo: AgentsRepository;
+}): Promise<'restarting' | 'hybrid_reissue_recommended' | null> {
+  const { agent, backendUrl, cloudProvisioner, agentsRepo } = params;
+  if (agent.runtime === 'hybrid') return 'hybrid_reissue_recommended';
+  if (agent.runtime !== 'cloud') return null;
+  if (!(await agentsRepo.hasCloudRunnerSecrets(agent.id))) return null;
+
+  const [supervised, membership] = await Promise.all([
+    prisma.team.findFirst({
+      where: { supervisorAgentId: agent.id },
+      select: { id: true, name: true },
+      orderBy: { updatedAt: 'desc' },
+    }),
+    prisma.teamMember.findFirst({
+      where: { agentId: agent.id },
+      select: { team: { select: { id: true, name: true } } },
+      orderBy: { addedAt: 'desc' },
+    }),
+  ]);
+
+  await agentsRepo.updateCloudFields(agent.id, {
+    cloudProvisioningStatus: 'provisioning',
+    cloudProvisioningError: null,
+  });
+
+  if (supervised) {
+    cloudProvisioner.scheduleApplyTeamContext({
+      agentId: agent.id,
+      teamId: supervised.id,
+      teamName: supervised.name,
+      role: 'supervisor',
+      backendUrl,
+    });
+  } else if (membership) {
+    cloudProvisioner.scheduleApplyTeamContext({
+      agentId: agent.id,
+      teamId: membership.team.id,
+      teamName: membership.team.name,
+      role: 'worker',
+      backendUrl,
+    });
+  } else {
+    cloudProvisioner.scheduleRestartCloudRunner({ agentId: agent.id, backendUrl });
+  }
+  return 'restarting';
+}
 
 const createAgentSchema = z
   .object({
@@ -189,7 +245,7 @@ export function createAgentsRouter(): Router {
         userId: request.auth!.userId,
         orgId: createInput.orgId,
         agentId: result.agent.id,
-        scopes: createInput.permissionScopes,
+        scopes: result.agent.permissionScopes,
       });
       console.log('[createAgent] stored runtime=%s id=%s', result.agent.runtime, result.agent.id);
       const backendUrl =
@@ -829,7 +885,17 @@ export function createAgentsRouter(): Router {
         agentId: agent.id,
         permissionScopes: body.data.permissionScopes,
       });
-      response.json({ agent: updated });
+      const backendUrl = resolveDockerBackendUrl(request);
+      const runnerRefresh = await scheduleRunnerRefreshForScopeChange({
+        agent: updated,
+        backendUrl,
+        cloudProvisioner,
+        agentsRepo,
+      });
+      // Re-read so clients see cloudProvisioningStatus=provisioning when a restart was queued.
+      const agentOut =
+        runnerRefresh === 'restarting' ? ((await agentsRepo.findById(updated.id)) ?? updated) : updated;
+      response.json({ agent: agentOut, runnerRefresh });
     } catch (err) {
       if (err instanceof AgentNotFoundError) {
         response.status(404).json({ error: { code: 'not_found', message: err.message } });

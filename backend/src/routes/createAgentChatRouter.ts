@@ -44,13 +44,41 @@ import {
 } from '../aiBrain/agentBrainAccess.js';
 import {
   ConnectorNotConfiguredError,
+  EmailComposeScopeMissingError,
   EmailScopeDeniedError,
   EmailToolError,
   executeEmailRead,
   executeEmailSend,
   N8nNotConfiguredError,
 } from '../connectors/emailTool.service.js';
-import { GMAIL_CONNECT_INSTRUCTIONS } from '../connectors/connectorUserMessages.js';
+import {
+  CALENDAR_CONNECT_INSTRUCTIONS,
+  DRIVE_CONNECT_INSTRUCTIONS,
+  GMAIL_CONNECT_INSTRUCTIONS,
+  GMAIL_RECONNECT_FOR_DRAFT_INSTRUCTIONS,
+  MEET_CONNECT_INSTRUCTIONS,
+} from '../connectors/connectorUserMessages.js';
+import {
+  executeDriveRead,
+  executeDriveWrite,
+  GoogleConnectorNotConfiguredError as DriveConnectorNotConfiguredError,
+  GoogleScopeDeniedError as DriveScopeDeniedError,
+  GoogleToolError as DriveToolError,
+} from '../connectors/driveTool.service.js';
+import {
+  executeCalendarRead,
+  executeCalendarWrite,
+  GoogleConnectorNotConfiguredError as CalendarConnectorNotConfiguredError,
+  GoogleScopeDeniedError as CalendarScopeDeniedError,
+  GoogleToolError as CalendarToolError,
+} from '../connectors/calendarTool.service.js';
+import {
+  executeMeetManage,
+  GoogleConnectorNotConfiguredError as MeetConnectorNotConfiguredError,
+  GoogleScopeDeniedError as MeetScopeDeniedError,
+  GoogleToolError as MeetToolError,
+} from '../connectors/meetTool.service.js';
+import { GoogleConnectorNotConfiguredError } from '../connectors/googleToolContext.js';
 import {
   executeSocialAnalytics,
   executeSocialChannels,
@@ -203,21 +231,160 @@ const emailReadBody = z.object({
   query: z.string().trim().max(500).optional(),
   maxResults: z.number().int().min(1).max(25).optional(),
   messageId: z.string().trim().max(120).nullable().optional(),
+  includeAttachments: z.boolean().optional(),
 });
 
-const emailSendBody = z.object({
-  runId: z.string().trim().min(1).max(80).optional(),
-  to: z.array(z.string().email().max(320)).min(1).max(20),
-  subject: z.string().trim().min(1).max(500),
-  bodyText: z.string().trim().min(1).max(50_000),
-  replyToMessageId: z.string().trim().max(120).nullable().optional(),
-  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
-  metadata: z
+/** Pull a bare address from `"Name <a@b.com>"` / comma lists / `{ email }` objects. */
+function coerceEmailRecipients(raw: unknown): string[] {
+  const push = (out: string[], value: unknown) => {
+    if (value == null) return;
+    if (typeof value === 'string') {
+      for (const part of value.split(/[,;]+/)) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const angled = trimmed.match(/<([^<>@\s]+@[^<>@\s]+)>/);
+        out.push((angled?.[1] ?? trimmed).trim());
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) push(out, item);
+      return;
+    }
+    if (typeof value === 'object' && value !== null && 'email' in value) {
+      push(out, (value as { email?: unknown }).email);
+    }
+  };
+  const out: string[] = [];
+  push(out, raw);
+  return out.filter(Boolean).slice(0, 20);
+}
+
+const emailSendBody = z.preprocess(
+  (raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+    const o = { ...(raw as Record<string, unknown>) };
+    if (typeof o.mode === 'string') o.mode = o.mode.trim().toLowerCase();
+    if (o.bodyText == null) {
+      if (o.body != null) o.bodyText = o.body;
+      else if (o.text != null) o.bodyText = o.text;
+      else if (o.message != null) o.bodyText = o.message;
+      else if (o.content != null) o.bodyText = o.content;
+    }
+    if (typeof o.bodyText !== 'string' && o.bodyText != null) {
+      o.bodyText = String(o.bodyText);
+    }
+    if (typeof o.subject !== 'string' && o.subject != null) {
+      o.subject = String(o.subject);
+    }
+    o.to = coerceEmailRecipients(o.to);
+    if (typeof o.maxResults === 'string' && o.maxResults.trim()) {
+      const n = Number(o.maxResults);
+      if (Number.isFinite(n)) o.maxResults = Math.trunc(n);
+    }
+    return o;
+  },
+  z
     .object({
-      campaignId: z.string().trim().min(1).max(80).optional(),
-      leadId: z.string().trim().min(1).max(80).optional(),
+      runId: z.string().trim().min(1).max(80).optional(),
+      mode: z.enum(['send', 'draft', 'list_drafts', 'delete_draft']).optional().default('send'),
+      to: z.array(z.string().email().max(320)).max(20).default([]),
+      subject: z.string().trim().max(500).default(''),
+      bodyText: z.string().trim().max(50_000).default(''),
+      draftId: z.string().trim().min(1).max(120).nullable().optional(),
+      maxResults: z.number().int().min(1).max(25).optional(),
+      replyToMessageId: z.string().trim().max(120).nullable().optional(),
+      jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+      metadata: z
+        .object({
+          campaignId: z.string().trim().min(1).max(80).optional(),
+          leadId: z.string().trim().min(1).max(80).optional(),
+        })
+        .optional(),
     })
-    .optional(),
+    .superRefine((data, ctx) => {
+      if (data.mode === 'send' && data.to.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'to is required when mode is send',
+          path: ['to'],
+        });
+      }
+      if ((data.mode === 'send' || data.mode === 'draft') && !data.subject.trim()) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'subject is required when mode is send or draft',
+          path: ['subject'],
+        });
+      }
+      if ((data.mode === 'send' || data.mode === 'draft') && !data.bodyText.trim()) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'bodyText is required when mode is send or draft',
+          path: ['bodyText'],
+        });
+      }
+      if (data.mode === 'delete_draft' && !data.draftId?.trim()) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'draftId is required when mode is delete_draft',
+          path: ['draftId'],
+        });
+      }
+    }),
+);
+
+const driveReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['list', 'get', 'get_content']),
+  query: z.string().trim().max(500).optional(),
+  fileId: z.string().trim().max(200).optional(),
+  pageSize: z.number().int().min(1).max(50).optional(),
+  pageToken: z.string().trim().max(500).nullable().optional(),
+});
+
+const driveWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'update', 'delete']),
+  fileId: z.string().trim().max(200).optional(),
+  name: z.string().trim().max(500).optional(),
+  contentText: z.string().max(200_000).optional(),
+  mimeType: z.string().trim().max(200).optional(),
+  parentId: z.string().trim().max(200).nullable().optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const calendarReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['list', 'get']),
+  eventId: z.string().trim().max(200).optional(),
+  calendarId: z.string().trim().max(200).optional(),
+  timeMin: z.string().trim().max(80).optional(),
+  timeMax: z.string().trim().max(80).optional(),
+  query: z.string().trim().max(500).optional(),
+  maxResults: z.number().int().min(1).max(50).optional(),
+});
+
+const calendarWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'update', 'delete']),
+  eventId: z.string().trim().max(200).optional(),
+  calendarId: z.string().trim().max(200).optional(),
+  summary: z.string().trim().max(500).optional(),
+  description: z.string().trim().max(10_000).optional(),
+  location: z.string().trim().max(500).optional(),
+  start: z.string().trim().max(80).optional(),
+  end: z.string().trim().max(80).optional(),
+  attendees: z.array(z.string().email().max(320)).max(50).optional(),
+  createMeetLink: z.boolean().optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const meetManageBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'get', 'end']),
+  name: z.string().trim().max(200).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
 });
 
 const whatsappListContactsBody = z.object({
@@ -1291,7 +1458,15 @@ export function createAgentChatRouter(): Router {
       const [agentRow, waConnector, memoryBlock, mcpServers] = await Promise.all([
         prisma.agent.findUnique({
           where: { id: agentId },
-          select: { description: true, orgId: true, llmModel: true, toolProfile: true, permissionScopes: true },
+          select: {
+            description: true,
+            orgId: true,
+            llmModel: true,
+            toolProfile: true,
+            permissionScopes: true,
+            jitScopes: true,
+            alwaysScopes: true,
+          },
         }),
         prisma.connectorAccount.findFirst({
           where: { whatsappDefaultAgentId: agentId },
@@ -1363,7 +1538,10 @@ export function createAgentChatRouter(): Router {
           memoryBlock: memoryBlock ?? null,
           mcpServers: mcpServersFiltered,
           toolProfile: agentRow?.toolProfile ?? 'full',
+          // Live scopes so runners pick up post-create scope edits without a restart.
           permissionScopes: agentRow?.permissionScopes ?? [],
+          jitScopes: agentRow?.jitScopes ?? [],
+          alwaysScopes: agentRow?.alwaysScopes ?? [],
         },
       });
     } catch (e: any) {
@@ -1372,6 +1550,8 @@ export function createAgentChatRouter(): Router {
   });
 
   // Runner: lightweight child run (Hermes-style delegate_task) without a Team.
+  // Prefer spawn_subagents / await_subagents (nested in-process) for joinable fan-out.
+  // This endpoint remains for fire-and-forget same-agent child runs only.
   router.post('/:agentId/runs/delegate', async (request: Request, response: Response) => {
     const schema = z.object({
       prompt: z.string().trim().min(1).max(8000),
@@ -1442,6 +1622,161 @@ export function createAgentChatRouter(): Router {
       }
       console.error('[delegate]', e);
       response.status(500).json({ error: { code: 'delegate_failed', message: 'Failed to delegate' } });
+    }
+  });
+
+  // Runner-only: register logical sub-agent invocations under an active parent run (V1 nested).
+  router.post('/:agentId/runs/:runId/subagents', async (request: Request, response: Response) => {
+    const schema = z.object({
+      tasks: z
+        .array(
+          z.object({
+            prompt: z.string().trim().min(1).max(8000),
+            skills: z.array(z.string().trim().min(1)).max(50).optional(),
+            name: z.string().trim().min(1).max(120).optional().nullable(),
+          }),
+        )
+        .min(1)
+        .max(32),
+      depth: z.number().int().min(1).max(4).optional(),
+      maxParallel: z.number().int().min(1).max(16).optional(),
+    });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'tasks required' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    const runId = String(request.params.runId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const { SubAgentService, subAgentMaxParallel } = await import('../agents/subAgent.service.js');
+      const svc = new SubAgentService();
+      const { invocations, maxParallel } = await svc.createInvocations({
+        agentId,
+        parentRunId: runId,
+        tasks: parsed.data.tasks.map((t) => ({
+          prompt: t.prompt,
+          skills: t.skills,
+          name: t.name,
+        })),
+        depth: parsed.data.depth,
+      });
+      response.status(201).json({
+        invocations,
+        maxParallel: parsed.data.maxParallel
+          ? Math.min(parsed.data.maxParallel, maxParallel)
+          : maxParallel,
+      });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      const code = e?.code as string | undefined;
+      if (
+        code === 'parent_run_not_found' ||
+        code === 'parent_run_not_active' ||
+        code === 'subagent_cap_exceeded' ||
+        code === 'subagent_depth_exceeded'
+      ) {
+        response.status(code === 'parent_run_not_found' ? 404 : 409).json({
+          error: { code, message: e.message },
+        });
+        return;
+      }
+      console.error('[subagents.create]', e);
+      response.status(500).json({ error: { code: 'subagent_create_failed', message: 'Failed to spawn sub-agents' } });
+    }
+  });
+
+  router.get('/:agentId/runs/:runId/subagents', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    const runId = String(request.params.runId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const { SubAgentService } = await import('../agents/subAgent.service.js');
+      const invocations = await new SubAgentService().listForParentRun(agentId, runId);
+      response.json({ invocations });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e?.code === 'parent_run_not_found' || e?.code === 'parent_run_not_active') {
+        response.status(e.code === 'parent_run_not_found' ? 404 : 409).json({
+          error: { code: e.code, message: e.message },
+        });
+        return;
+      }
+      console.error('[subagents.list]', e);
+      response.status(500).json({ error: { code: 'subagent_list_failed', message: 'Failed to list sub-agents' } });
+    }
+  });
+
+  router.patch('/:agentId/subagents/:invocationId', async (request: Request, response: Response) => {
+    const schema = z.object({
+      status: z.enum(['running', 'completed', 'failed', 'canceled']),
+      result: z.unknown().optional(),
+      errorMessage: z.string().max(4000).optional().nullable(),
+    });
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'status required' } });
+      return;
+    }
+    const agentId = String(request.params.agentId);
+    const invocationId = String(request.params.invocationId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const { SubAgentService } = await import('../agents/subAgent.service.js');
+      const svc = new SubAgentService();
+      if (parsed.data.status === 'running') {
+        const invocation = await svc.markRunning(invocationId, agentId);
+        response.json({ invocation });
+        return;
+      }
+      const invocation = await svc.completeInvocation({
+        invocationId,
+        agentId,
+        status: parsed.data.status,
+        result: parsed.data.result,
+        errorMessage: parsed.data.errorMessage,
+      });
+      response.json({ invocation });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e?.code === 'not_found') {
+        response.status(404).json({ error: { code: 'not_found', message: e.message } });
+        return;
+      }
+      console.error('[subagents.patch]', e);
+      response.status(500).json({ error: { code: 'subagent_update_failed', message: 'Failed to update sub-agent' } });
+    }
+  });
+
+  router.get('/:agentId/subagents/:invocationId', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    const invocationId = String(request.params.invocationId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const { SubAgentService } = await import('../agents/subAgent.service.js');
+      const invocation = await new SubAgentService().getInvocation(agentId, invocationId);
+      response.json({ invocation });
+    } catch (e: any) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e?.code === 'not_found') {
+        response.status(404).json({ error: { code: 'not_found', message: e.message } });
+        return;
+      }
+      console.error('[subagents.get]', e);
+      response.status(500).json({ error: { code: 'subagent_get_failed', message: 'Failed to get sub-agent' } });
     }
   });
 
@@ -2069,7 +2404,19 @@ export function createAgentChatRouter(): Router {
       await assertRunnerAuth(agentId, request);
       const parsed = emailSendBody.safeParse(request.body ?? {});
       if (!parsed.success) {
-        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid email send payload' } });
+        const issueSummary = parsed.error.issues
+          .slice(0, 6)
+          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+          .join('; ');
+        response.status(400).json({
+          error: {
+            code: 'invalid_body',
+            message: issueSummary
+              ? `Invalid email send payload (${issueSummary})`
+              : 'Invalid email send payload',
+            issues: parsed.error.issues,
+          },
+        });
         return;
       }
       const result = await executeEmailSend({
@@ -2103,10 +2450,178 @@ export function createAgentChatRouter(): Router {
         });
         return;
       }
+      if (err instanceof EmailComposeScopeMissingError) {
+        response.status(409).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            connectInstructions: GMAIL_RECONNECT_FOR_DRAFT_INSTRUCTIONS,
+          },
+        });
+        return;
+      }
       console.error('email/send', err);
       response.status(500).json({
         error: { code: 'email_send_failed', message: err instanceof EmailToolError ? err.message : 'Email send failed' },
       });
+    }
+  });
+
+  const respondGoogleToolError = (
+    response: Response,
+    err: unknown,
+    failedCode: string,
+    connectInstructions: string,
+  ): boolean => {
+    if (err instanceof RunnerUnauthorizedError) {
+      response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+      return true;
+    }
+    if (
+      err instanceof DriveScopeDeniedError ||
+      err instanceof CalendarScopeDeniedError ||
+      err instanceof MeetScopeDeniedError
+    ) {
+      response.status(403).json({ error: { code: err.code, message: err.message } });
+      return true;
+    }
+    if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
+      response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+      return true;
+    }
+    if (
+      err instanceof GoogleConnectorNotConfiguredError ||
+      err instanceof DriveConnectorNotConfiguredError ||
+      err instanceof CalendarConnectorNotConfiguredError ||
+      err instanceof MeetConnectorNotConfiguredError
+    ) {
+      response.status(409).json({
+        error: {
+          code: (err as Error & { code: string }).code,
+          message: err.message,
+          connectInstructions,
+        },
+      });
+      return true;
+    }
+    if (
+      err instanceof DriveToolError ||
+      err instanceof CalendarToolError ||
+      err instanceof MeetToolError
+    ) {
+      response.status(500).json({ error: { code: failedCode, message: err.message } });
+      return true;
+    }
+    return false;
+  };
+
+  router.post('/:agentId/tools/drive/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = driveReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid drive read payload' } });
+        return;
+      }
+      const result = await executeDriveRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'drive_read_failed', DRIVE_CONNECT_INSTRUCTIONS)) return;
+      console.error('drive/read', err);
+      response.status(500).json({ error: { code: 'drive_read_failed', message: 'Drive read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/drive/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = driveWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid drive write payload' } });
+        return;
+      }
+      const result = await executeDriveWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'drive_write_failed', DRIVE_CONNECT_INSTRUCTIONS)) return;
+      console.error('drive/write', err);
+      response.status(500).json({ error: { code: 'drive_write_failed', message: 'Drive write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/calendar/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = calendarReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid calendar read payload' } });
+        return;
+      }
+      const result = await executeCalendarRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'calendar_read_failed', CALENDAR_CONNECT_INSTRUCTIONS)) return;
+      console.error('calendar/read', err);
+      response.status(500).json({ error: { code: 'calendar_read_failed', message: 'Calendar read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/calendar/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = calendarWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid calendar write payload' } });
+        return;
+      }
+      const result = await executeCalendarWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'calendar_write_failed', CALENDAR_CONNECT_INSTRUCTIONS)) return;
+      console.error('calendar/write', err);
+      response.status(500).json({ error: { code: 'calendar_write_failed', message: 'Calendar write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/meet/manage', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = meetManageBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid meet manage payload' } });
+        return;
+      }
+      const result = await executeMeetManage({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'meet_manage_failed', MEET_CONNECT_INSTRUCTIONS)) return;
+      console.error('meet/manage', err);
+      response.status(500).json({ error: { code: 'meet_manage_failed', message: 'Meet manage failed' } });
     }
   });
 

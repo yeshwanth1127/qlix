@@ -13,6 +13,13 @@ const CRM_SCOPES = new Set(["crm.read", "crm.write", "crm.delete"]);
 const SCOPE_REQUIRES_CONNECTOR: Readonly<Partial<Record<string, ConnectorProvider>>> = {
   "email.read": "google",
   "email.send": "google",
+  "drive.read": "google",
+  "drive.write": "google",
+  "calendar.read": "google",
+  "calendar.write": "google",
+  "meet.manage": "google",
+  "youtube.read": "google",
+  "youtube.publish": "google",
   "whatsapp.send": "whatsapp_baileys",
   "whatsapp.read": "whatsapp_baileys",
   "whatsapp.contact_send": "whatsapp_baileys",
@@ -28,8 +35,8 @@ export interface RequiredConnectorInfo {
 
 const CONNECTOR_INFO: Readonly<Record<ConnectorProvider, Omit<RequiredConnectorInfo, "provider">>> = {
   google: {
-    name: "Gmail",
-    description: "Read and send email through your Google account",
+    name: "Google",
+    description: "Gmail, Drive, Calendar, Meet, and YouTube through your Google account",
   },
   whatsapp_baileys: {
     name: "WhatsApp",
@@ -46,6 +53,14 @@ const CONNECTOR_INFO: Readonly<Record<ConnectorProvider, Omit<RequiredConnectorI
   slack: {
     name: "Slack",
     description: "Receive and reply to Slack messages via the workspace bot",
+  },
+  discord: {
+    name: "Discord",
+    description: "Connect your Discord account for identity and guild access",
+  },
+  github: {
+    name: "GitHub",
+    description: "Repos, issues, and pull requests via your GitHub account",
   },
   telegram: {
     name: "Telegram",

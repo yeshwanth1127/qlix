@@ -1,6 +1,7 @@
 import { AgentsService, type CreateAgentResult } from './agents.service.js';
 import { AgentsRepository } from './agents.repository.js';
 import { TeamsService } from '../teams/teams.service.js';
+import { detectPlaybookFromScopeSets } from '../teams/teamPlaybook.js';
 import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { encryptForAgentSecrets, AgentSecretsKeyMissingError } from '../cloudRunners/agentSecrets.js';
 import { generateHybridRunnerToken } from '../agentChat/runnerAuth.js';
@@ -99,6 +100,9 @@ export class NLCreationService {
           humanInLoopTriggers: ['web.transaction', 'finance.spend_50', 'finance.spend_100'],
           pipelineMode: true,
           autoSequence: false,
+          // Pinned at creation so the stage goals a team runs never change under it when
+          // members or delegated scopes are later edited.
+          playbook: detectPlaybookFromScopeSets(plan.team.workers.map((w) => w.permissionScopes)),
         },
       },
       backendUrl,
@@ -131,11 +135,12 @@ export class NLCreationService {
 
     const { agent, privateKey } = agentResult;
 
+    // Prefer persisted scopes (includes always-on defaults merged in createAgent).
     await wireAgentMcpFromScopes({
       userId,
       orgId,
       agentId: agent.id,
-      scopes: spec.permissionScopes,
+      scopes: agent.permissionScopes,
     });
 
     const backendUrl =

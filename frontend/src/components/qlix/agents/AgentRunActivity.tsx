@@ -2,11 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Sparkles, Users } from "lucide-react";
 import {
   type ActivityStep,
+  getActiveSubagentsFromSteps,
   getActiveToolsFromSteps,
   getPendingJitStep,
+  hasActiveSubagents,
   toolCategoryIcon,
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
@@ -38,8 +40,10 @@ export function ActivityTimeline({
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const jitPending = getPendingJitStep(steps);
-  // Keep the feed open while approval is outstanding so the wait state isn't buried.
-  const keepOpen = running || Boolean(jitPending);
+  const activeSubagents = getActiveSubagentsFromSteps(steps);
+  const activeSubIds = new Set(activeSubagents.map((s) => s.invocationId));
+  // Keep the feed open while approval is outstanding or a sub-agent is still working.
+  const keepOpen = running || Boolean(jitPending) || activeSubagents.length > 0;
 
   const [collapsed, setCollapsed] = useState(!keepOpen && !defaultOpen);
   const prevKeepOpen = useRef(keepOpen);
@@ -87,27 +91,33 @@ export function ActivityTimeline({
       <span
         className={cn(
           "pointer-events-none absolute bottom-0 left-0 top-0 w-px overflow-hidden transition-colors duration-500",
-          running ? "bg-[--accent]/25" : "bg-[--border-subtle]/60",
+          running || activeSubagents.length > 0 ? "bg-[--accent]/25" : "bg-[--border-subtle]/60",
         )}
         aria-hidden
       >
-        {running && !reduceMotion ? (
+        {(running || activeSubagents.length > 0) && !reduceMotion ? (
           <span className="qlix-think-line-travel absolute left-0 h-7 w-px" />
         ) : null}
       </span>
 
       <AnimatePresence initial={false}>
         {steps.map((s, i) => {
-          const active = running && i === lastStepIdx;
+          const isLiveSubagent =
+            s.kind === "subagent_running" &&
+            Boolean(s.subagentInvocationId) &&
+            activeSubIds.has(s.subagentInvocationId!);
+          const active = (running && i === lastStepIdx) || isLiveSubagent;
           const isError = s.tone === "error";
           const isJitPending = s.kind === "jit_pending" && Boolean(jitPending) && s.id === jitPending?.id;
           const Icon = isError
             ? AlertTriangle
             : isJitPending
               ? ShieldCheck
-              : s.category
-                ? toolCategoryIcon(s.category)
-                : Sparkles;
+              : s.kind === "subagent_running" || s.kind === "subagent_done" || s.category === "subagent"
+                ? Users
+                : s.category
+                  ? toolCategoryIcon(s.category)
+                  : Sparkles;
 
           return (
             <motion.div
@@ -123,13 +133,13 @@ export function ActivityTimeline({
                   ? "opacity-80 text-red-400/90"
                   : isJitPending
                     ? "rounded-md bg-amber-500/15 px-1.5 py-1 -ml-1.5 opacity-100 font-medium text-amber-950"
-                    : active
+                    : isLiveSubagent || active
                       ? "opacity-100 text-[--text-primary]"
                       : "opacity-40 text-[--text-secondary]",
               )}
             >
               <span className="flex size-3.5 shrink-0 translate-y-px items-center justify-center">
-                {active && running && !isJitPending && !reduceMotion ? (
+                {(active || isLiveSubagent) && (running || isLiveSubagent) && !isJitPending && !reduceMotion ? (
                   <span className="relative flex size-2 items-center justify-center" aria-hidden>
                     <span className="qlix-orb-ping absolute inline-flex size-2 rounded-full bg-[--accent]/60" />
                     <span className="qlix-orb-core relative inline-flex size-[7px] rounded-full bg-[--accent]" />
@@ -140,7 +150,15 @@ export function ActivityTimeline({
               </span>
               <span className="flex min-w-0 flex-1 flex-col leading-snug">
                 <span>
-                  <span className={cn(active && running && !isJitPending && !reduceMotion && "qlix-text-shimmer")}>
+                  <span
+                    className={cn(
+                      (active || isLiveSubagent) &&
+                        (running || isLiveSubagent) &&
+                        !isJitPending &&
+                        !reduceMotion &&
+                        "qlix-text-shimmer",
+                    )}
+                  >
                     {s.label}
                   </span>
                   {s.detail && s.detail !== s.toolId ? (
@@ -188,7 +206,8 @@ export function ActivityTimeline({
 export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
   const active = getActiveToolsFromSteps(steps);
   const jitPending = getPendingJitStep(steps);
-  if (active.length === 0 && !jitPending) return null;
+  const subagents = getActiveSubagentsFromSteps(steps);
+  if (active.length === 0 && !jitPending && subagents.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
       {jitPending ? (
@@ -204,6 +223,28 @@ export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
               <span className="mt-0.5 block text-[10px] opacity-90">{jitPending.detail}</span>
             ) : null}
           </div>
+        </div>
+      ) : null}
+      {subagents.length > 0 ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-[--accent]/30 bg-[--accent]/10 px-3 py-2"
+        >
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-[--accent]" aria-hidden />
+          <Users className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
+          <span className="text-[11px] font-medium text-[--text-primary]">
+            {subagents.length === 1 ? "Sub-agent running" : `${subagents.length} sub-agents running`}
+          </span>
+          {subagents.map((s) => (
+            <span
+              key={s.invocationId}
+              className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-full bg-black/20 px-2 py-0.5 text-[10px] font-medium text-[--text-primary] ring-1 ring-[--border-subtle]"
+              title={s.detail}
+            >
+              <span className="truncate">{s.label}</span>
+            </span>
+          ))}
         </div>
       ) : null}
       {active.length > 0 ? (
@@ -229,3 +270,5 @@ export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
     </div>
   );
 }
+
+export { hasActiveSubagents };

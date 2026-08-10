@@ -16,6 +16,7 @@ import {
 import type {
   AddTeamMemberInput,
   CreateTeamInput,
+  ReorderTeamMembersInput,
   TeamDTO,
   TeamMemberDTO,
   TeamRunDTO,
@@ -375,12 +376,18 @@ export class TeamsService {
     orgId: string,
     userId: string,
     userRole: string,
-    memberIds: string[],
+    input: ReorderTeamMembersInput,
   ): Promise<TeamDTO> {
     const team = await this.repo.findByIdAndOrg(teamId, orgId);
     if (!team) throw new TeamNotFoundError();
     this.assertCanManageTeam(team.createdByUserId, userId, userRole);
-    return this.repo.reorderMembers(teamId, memberIds);
+    // `memberIds` is the flat form: every member gets its own stage, so nothing runs
+    // concurrently. `stages` is the grouped form and wins when both are supplied.
+    const stages = input.stages ?? (input.memberIds ?? []).map((id) => [id]);
+    if (stages.length === 0) {
+      throw new Error('reorderMembers: memberIds or stages is required');
+    }
+    return this.repo.reorderMembers(teamId, stages);
   }
 
   async updateConfig(

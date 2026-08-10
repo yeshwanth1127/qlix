@@ -1,4 +1,12 @@
-export type ConnectorProvider = 'google' | 'whatsapp_baileys' | 'orbit' | 'zoho' | 'slack' | 'telegram';
+export type ConnectorProvider =
+  | 'google'
+  | 'whatsapp_baileys'
+  | 'orbit'
+  | 'zoho'
+  | 'slack'
+  | 'discord'
+  | 'github'
+  | 'telegram';
 
 /** Orbit (Postiz) Public API credentials stored encrypted in tokenEnc. */
 export interface StoredOrbitCredentials {
@@ -69,19 +77,23 @@ export interface EmailReadInput {
   query?: string;
   maxResults?: number;
   messageId?: string | null;
+  /** When false, skip downloading/extracting attachments (metadata still omitted). Default true. */
+  includeAttachments?: boolean;
 }
 
-export interface EmailSendInput {
-  to: string[];
-  subject: string;
-  bodyText: string;
-  replyToMessageId?: string | null;
-  jitToken?: string | null;
-  metadata?: {
-    campaignId?: string;
-    leadId?: string;
-  };
-}
+export type EmailAttachmentProcessed = {
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Sandbox download URL (same store as agent-generated files / chat uploads). */
+  url: string;
+  /** Text extracted for the LLM (PDF/DOCX/XLSX/CSV/text/…). */
+  extractedText?: string;
+  textPreview?: string;
+  /** Present when download/extract failed but metadata was known. */
+  error?: string;
+};
 
 export interface EmailReadResult {
   messages: Array<{
@@ -93,11 +105,55 @@ export interface EmailReadResult {
     snippet: string;
     bodyText: string;
     receivedAt: string;
+    attachments?: EmailAttachmentProcessed[];
   }>;
+}
+
+export type EmailSendMode = 'send' | 'draft' | 'list_drafts' | 'delete_draft';
+
+export interface EmailSendInput {
+  to: string[];
+  subject: string;
+  bodyText: string;
+  /**
+   * `send` delivers immediately;
+   * `draft` saves to Gmail Drafts (no JIT);
+   * `list_drafts` lists Gmail drafts;
+   * `delete_draft` deletes a draft by `draftId` (no JIT).
+   */
+  mode?: EmailSendMode;
+  /** Required for mode=delete_draft (Gmail draft resource id, not message id). */
+  draftId?: string | null;
+  maxResults?: number;
+  replyToMessageId?: string | null;
+  jitToken?: string | null;
+  metadata?: {
+    campaignId?: string;
+    leadId?: string;
+  };
 }
 
 export interface EmailSendResult {
   messageId: string;
   threadId: string;
   status: string;
+  /** Present when mode=draft or delete_draft. */
+  draftId?: string;
+  mode?: EmailSendMode;
+  /** Connected Gmail mailbox where the draft/send was performed. */
+  mailboxEmail?: string;
+  /**
+   * Short instruction for the model/UI — e.g. drafts live in this mailbox's Drafts,
+   * not in the To: recipient's inbox, and were not delivered.
+   */
+  note?: string;
+  /** Present when mode=list_drafts. */
+  drafts?: Array<{
+    draftId: string;
+    messageId: string;
+    threadId: string;
+    to: string[];
+    subject: string;
+    snippet: string;
+  }>;
 }

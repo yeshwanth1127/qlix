@@ -112,6 +112,33 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
       "Auto-registered on deploy. AI Builder grants mcp.qlix-jobs.* when the user asks for a resume/job-apply agent. Pair with web.read + web.click + web.transaction.",
   },
   {
+    id: "qlix-schedule",
+    name: "Qlix Schedule",
+    category: "Data",
+    blurb: "Cron / once / interval events that enqueue agent runs (first-party).",
+    icon: "postgres",
+    accent: "text-amber-400",
+    transport: "http",
+    auth: "token",
+    endpointUrl:
+      typeof process !== "undefined"
+        ? process.env.NEXT_PUBLIC_QLIX_MCP_SCHEDULE_URL ??
+          "http://localhost:3940/mcp-schedule"
+        : "http://localhost:3940/mcp-schedule",
+    secretFields: [
+      {
+        key: "Authorization",
+        label: "Service secret",
+        kind: "header",
+        prefix: "Bearer ",
+        placeholder: "Same as QLIX_INTERNAL_SERVICE_SECRET",
+        required: true,
+      },
+    ],
+    reviewNote:
+      "Auto-registered on deploy. Grant mcp.qlix-schedule.* so agents (or AI Brain) can create/list/cancel timed events.",
+  },
+  {
     id: "github",
     name: "GitHub",
     category: "Dev",

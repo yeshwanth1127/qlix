@@ -33,6 +33,8 @@ export function AppChrome({ children }: { children: React.ReactNode }) {
   const isFullHeightPage =
     /\/teams(\/|$)/.test(pathname) ||
     /\/agent-builder(\/|$)/.test(pathname) ||
+    // The canvas fills whatever box it is given, so it needs a real height to sit in.
+    /\/visual-builder(\/|$)/.test(pathname) ||
     /\/chat(\/|$)/.test(pathname) ||
     /\/ai-employees\/[^/]+\/hire(\/|$)/.test(pathname);
   const isAgentBuilder = /\/agent-builder(\/|$)/.test(pathname);

@@ -36,11 +36,20 @@ export type TeamRunEventType =
   | "user_injection"
   | "lead_review_required";
 
+/** Deterministic stage-goal playbook, pinned on the team at creation. */
+export type TeamPlaybook = "lead_gen" | "none";
+
 export interface TeamConfig {
   maxParallelWorkers: number;
   subtaskTimeoutMs: number;
   retryPolicy: "none" | "once" | "twice";
   humanInLoopTriggers: string[];
+  /**
+   * Which stage goals this team's workers receive. Stored rather than inferred, so
+   * editing members can't silently change how the pipeline behaves. Absent on teams
+   * created before the field existed, until their next run backfills it.
+   */
+  playbook?: TeamPlaybook;
   pipelineMode?: boolean;
   /**
    * When true, the supervisor LLM decides the worker order on every run based on each

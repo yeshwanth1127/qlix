@@ -22,8 +22,31 @@ import {
   AI_BRAIN_DEFAULT_SCOPE_L3_L5,
 } from '../aiBrain/productScope.js';
 import { BrainQueryService } from '../aiBrain/brainQuery.service.js';
+import { BrainAgentLoopService } from '../aiBrain/brainAgentLoop.service.js';
+import {
+  BrainProposalError,
+  BrainProposalService,
+} from '../aiBrain/brainProposal.service.js';
 import { extractTextFromUpload } from '../aiBrain/brainExtractText.js';
 import { normalizeQlixInferenceModelId, assertModelAllowed, ModelPolicyError } from '../llm/modelPolicy.js';
+import { resolveHybridStarterPlatform } from '../agents/hybridStarterPack.js';
+
+function unwrapBrainMessageCitations(citations: Prisma.JsonValue | null): {
+  citations: unknown[];
+  proposalId: string | null;
+} {
+  if (Array.isArray(citations)) {
+    return { citations, proposalId: null };
+  }
+  if (citations && typeof citations === 'object') {
+    const obj = citations as { citations?: unknown; proposalId?: unknown };
+    return {
+      citations: Array.isArray(obj.citations) ? obj.citations : [],
+      proposalId: typeof obj.proposalId === 'string' ? obj.proposalId : null,
+    };
+  }
+  return { citations: [], proposalId: null };
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -44,6 +67,8 @@ export function createAiBrainRouter(): Router {
   const brainAgents = new BrainAgentService();
   const knowledge = new BrainKnowledgeService();
   const queryService = new BrainQueryService();
+  const agentLoop = new BrainAgentLoopService(queryService);
+  const proposals = new BrainProposalService();
 
   router.get('/status', async (request: Request, response: Response) => {
     try {
@@ -612,15 +637,103 @@ export function createAiBrainRouter(): Router {
         select: { id: true, role: true, content: true, citations: true, createdAt: true },
       });
       response.json({
-        messages: messages.map((message) => ({
-          ...message,
-          citations: Array.isArray(message.citations) ? message.citations : [],
-          createdAt: message.createdAt.toISOString(),
-        })),
+        messages: messages.map((message) => {
+          const unwrapped = unwrapBrainMessageCitations(message.citations);
+          return {
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            citations: unwrapped.citations,
+            proposalId: unwrapped.proposalId,
+            createdAt: message.createdAt.toISOString(),
+          };
+        }),
       });
     } catch (err) {
       console.error('ai-brain/conversations/messages:get', err);
       response.status(500).json({ error: { code: 'messages_failed', message: 'Failed to load chat messages' } });
+    }
+  });
+
+  router.get('/proposals/:proposalId', async (request: Request, response: Response) => {
+    try {
+      const dto = await proposals.getProposal(request.auth!.orgId, String(request.params.proposalId));
+      if (!dto) {
+        response.status(404).json({ error: { code: 'not_found', message: 'Proposal not found' } });
+        return;
+      }
+      response.json({ proposal: dto });
+    } catch (err) {
+      console.error('ai-brain/proposals:get', err);
+      response.status(500).json({ error: { code: 'proposal_get_failed', message: 'Failed to load proposal' } });
+    }
+  });
+
+  router.post('/proposals/:proposalId/confirm', async (request: Request, response: Response) => {
+    try {
+      const orgId = request.auth!.orgId;
+      const userId = request.auth!.userId;
+      const brain = await brainAgents.getOrgBrainAgent(orgId);
+      if (!brain) {
+        response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
+        return;
+      }
+      const bodySchema = z.object({
+        clientPlatform: z.enum(['windows', 'macos', 'linux']).optional(),
+      });
+      const parsed = bodySchema.safeParse(request.body ?? {});
+      const clientPlatform = resolveHybridStarterPlatform(
+        parsed.success ? parsed.data.clientPlatform : undefined,
+        request.headers['user-agent'],
+      );
+      const dto = await proposals.confirmProposal({
+        orgId,
+        userId,
+        proposalId: String(request.params.proposalId),
+        brainAgentId: brain.id,
+        request,
+        clientPlatform,
+      });
+      response.json({ proposal: dto });
+    } catch (err: unknown) {
+      if (err instanceof BrainProposalError) {
+        const status =
+          err.code === 'not_found' ? 404
+          : err.code === 'not_pending' ? 409
+          : err.code === 'create_failed' ? 502
+          : 400;
+        response.status(status).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('ai-brain/proposals:confirm', err);
+      response.status(500).json({ error: { code: 'confirm_failed', message: 'Failed to confirm proposal' } });
+    }
+  });
+
+  router.post('/proposals/:proposalId/reject', async (request: Request, response: Response) => {
+    try {
+      const orgId = request.auth!.orgId;
+      const userId = request.auth!.userId;
+      const brain = await brainAgents.getOrgBrainAgent(orgId);
+      if (!brain) {
+        response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
+        return;
+      }
+      const dto = await proposals.rejectProposal({
+        orgId,
+        userId,
+        proposalId: String(request.params.proposalId),
+        brainAgentId: brain.id,
+      });
+      response.json({ proposal: dto });
+    } catch (err: unknown) {
+      if (err instanceof BrainProposalError) {
+        const status = err.code === 'not_found' ? 404 : err.code === 'not_pending' ? 409 : 400;
+        response.status(status).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('ai-brain/proposals:reject', err);
+      response.status(500).json({ error: { code: 'reject_failed', message: 'Failed to reject proposal' } });
     }
   });
 
@@ -679,7 +792,7 @@ export function createAiBrainRouter(): Router {
       }
 
       let conversation: { id: string; title: string } | null = null;
-      let questionForModel = parsed.data.question;
+      let history: { role: string; content: string }[] = [];
       if (parsed.data.conversationId) {
         conversation = await prisma.brainConversation.findFirst({
           where: {
@@ -697,40 +810,40 @@ export function createAiBrainRouter(): Router {
         const recent = await prisma.brainConversationMessage.findMany({
           where: { conversationId: conversation.id },
           orderBy: { createdAt: 'desc' },
-          take: 8,
+          take: 12,
           select: { role: true, content: true },
         });
-        if (recent.length > 0) {
-          const transcript = recent
-            .reverse()
-            .map((message) => `${message.role === 'user' ? 'User' : 'exa'}: ${message.content}`)
-            .join('\n');
-          questionForModel = `Conversation so far:\n${transcript}\nUser: ${parsed.data.question}\n\nAnswer the latest question. Use the conversation only to resolve follow-up references.`;
-        }
+        history = recent.reverse();
         await prisma.brainConversationMessage.create({
           data: { conversationId: conversation.id, role: 'user', content: parsed.data.question },
         });
       }
 
-      const result = await queryService.queryBrain({
+      const result = await agentLoop.run({
         userId,
         orgId,
         brainAgentId: brain.id,
         brainModel,
-        question: questionForModel,
+        question: parsed.data.question,
+        conversationId: conversation?.id ?? null,
+        history,
       });
 
       if (conversation) {
         const nextTitle = conversation.title === 'New chat'
           ? parsed.data.question.replace(/\s+/g, ' ').slice(0, 72)
           : conversation.title;
+        const citationPayload = {
+          citations: result.citations,
+          ...(result.proposal ? { proposalId: result.proposal.id } : {}),
+        };
         await prisma.$transaction([
           prisma.brainConversationMessage.create({
             data: {
               conversationId: conversation.id,
               role: 'brain',
               content: result.answer,
-              citations: result.citations as unknown as Prisma.InputJsonValue,
+              citations: citationPayload as unknown as Prisma.InputJsonValue,
             },
           }),
           prisma.brainConversation.update({
@@ -740,8 +853,16 @@ export function createAiBrainRouter(): Router {
         ]);
       }
 
-      response.json(result);
+      response.json({
+        answer: result.answer,
+        citations: result.citations,
+        proposal: result.proposal,
+      });
     } catch (err: unknown) {
+      if (err instanceof BrainProposalError) {
+        response.status(400).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
       console.error('ai-brain/query', err);
       const message =
         err instanceof Error && err.message.trim().length > 0 && err.message.length < 240

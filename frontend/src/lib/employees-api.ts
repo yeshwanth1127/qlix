@@ -19,7 +19,15 @@ export type EmployeeRoleSlug =
   | "customer-support"
   | "hr-manager";
 
-export type ConnectorProvider = "google" | "whatsapp_baileys" | "orbit" | "zoho";
+export type ConnectorProvider =
+  | "google"
+  | "whatsapp_baileys"
+  | "orbit"
+  | "zoho"
+  | "slack"
+  | "discord"
+  | "github"
+  | "telegram";
 
 export interface PlatformSuggestion {
   platformId: string;
@@ -170,10 +178,14 @@ export async function getEmployeeEngagement(id: string): Promise<EmployeeEngagem
 }
 
 const CONNECTOR_LABELS: Record<ConnectorProvider, string> = {
-  google: "Gmail",
+  google: "Google",
   zoho: "Zoho CRM",
   whatsapp_baileys: "WhatsApp",
   orbit: "Orbit",
+  slack: "Slack",
+  discord: "Discord",
+  github: "GitHub",
+  telegram: "Telegram",
 };
 
 export function connectorLabel(provider: ConnectorProvider): string {

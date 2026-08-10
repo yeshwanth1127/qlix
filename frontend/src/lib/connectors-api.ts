@@ -6,7 +6,15 @@ function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultBase).replace(/\/$/, "");
 }
 
-export type ConnectorProvider = "google" | "whatsapp_baileys" | "orbit" | "zoho" | "slack" | "telegram";
+export type ConnectorProvider =
+  | "google"
+  | "whatsapp_baileys"
+  | "orbit"
+  | "zoho"
+  | "slack"
+  | "discord"
+  | "github"
+  | "telegram";
 
 export type ConnectorStatus = "connected" | "revoked" | "error" | "pending_qr";
 
@@ -59,17 +67,21 @@ export async function listConnectors(): Promise<ConnectorsListResponse> {
   return data as ConnectorsListResponse;
 }
 
-export async function startGoogleOAuth(): Promise<{ url: string }> {
+export async function startGoogleOAuth(
+  service: "gmail" | "drive" | "calendar" | "meet" | "youtube" = "gmail",
+): Promise<{ url: string; service: string }> {
   const response = await fetch(`${apiBase()}/api/v1/connectors/google/start`, {
     method: "POST",
     credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ service }),
   });
-  const data = await parseJson<{ url: string }>(response);
+  const data = await parseJson<{ url: string; service: string }>(response);
   if (!response.ok) {
     const err = data as ApiErrorBody;
     throw new Error(err.error?.message ?? "Failed to start Google OAuth");
   }
-  return data as { url: string };
+  return data as { url: string; service: string };
 }
 
 export async function startZohoOAuth(): Promise<{ url: string }> {
@@ -93,6 +105,24 @@ export async function disconnectGoogle(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     const data = await parseJson<ApiErrorBody>(response);
     throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Google");
+  }
+}
+
+export async function disconnectGoogleService(
+  service: "gmail" | "drive" | "calendar" | "meet" | "youtube",
+): Promise<void> {
+  const response = await fetch(
+    `${apiBase()}/api/v1/connectors/google/services/${encodeURIComponent(service)}`,
+    {
+      method: "DELETE",
+      credentials: "include",
+    },
+  );
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error(
+      (data as ApiErrorBody).error?.message ?? "Failed to disconnect Google service",
+    );
   }
 }
 
@@ -128,6 +158,54 @@ export async function disconnectSlack(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     const data = await parseJson<ApiErrorBody>(response);
     throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Slack");
+  }
+}
+
+export async function startDiscordOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/discord/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start Discord OAuth");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectDiscord(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/discord`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Discord");
+  }
+}
+
+export async function startGitHubOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/github/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start GitHub OAuth");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectGitHub(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/github`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect GitHub");
   }
 }
 
@@ -171,6 +249,8 @@ export const CONNECTOR_DISPLAY_NAMES: Record<ConnectorProvider, string> = {
   whatsapp_baileys: "WhatsApp",
   orbit: "Orbit Social",
   slack: "Slack",
+  discord: "Discord",
+  github: "GitHub",
   telegram: "Telegram",
 };
 
@@ -180,6 +260,8 @@ export const CONNECTOR_CATALOG_IDS: Record<ConnectorProvider, string> = {
   zoho: "zoho",
   orbit: "facebook",
   slack: "slack",
+  discord: "discord",
+  github: "github",
   telegram: "telegram",
 };
 
@@ -211,6 +293,15 @@ export function listLiveConnectors(connectors: ConnectorAccountDTO[]): LiveConne
 
   const orbit = orbitConnector(connectors);
   if (orbit) push("orbit", orbit);
+
+  const slack = slackConnector(connectors);
+  if (slack) push("slack", slack);
+
+  const discord = discordConnector(connectors);
+  if (discord) push("discord", discord);
+
+  const github = githubConnector(connectors);
+  if (github) push("github", github);
 
   return items;
 }
@@ -366,6 +457,14 @@ export async function disconnectWhatsApp(): Promise<void> {
 
 export function slackConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "slack" && c.status === "connected");
+}
+
+export function discordConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "discord" && c.status === "connected");
+}
+
+export function githubConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "github" && c.status === "connected");
 }
 
 export async function connectSlackBot(input: {

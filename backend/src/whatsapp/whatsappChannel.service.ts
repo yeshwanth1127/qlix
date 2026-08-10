@@ -11,11 +11,11 @@ import { ConnectorsRepository } from '../connectors/connectors.repository.js';
 import { goalRequestsWhatsAppDelivery } from './whatsappDeliveryIntent.js';
 import {
   buildDisambiguationOptions,
-  buildWhatsAppIntentRoster,
   classifyWhatsAppIntent,
   formatDisambiguationMenu,
   parseDisambiguationSelection,
   routeHintForConfidence,
+  type IntentRosterAgent,
   type IntentRouteDecision,
 } from './whatsappIntentRouter.js';
 import {
@@ -184,17 +184,6 @@ async function resolveDefaultAgent(
   });
 }
 
-async function listRoutableAgents(connector: ConnectorAccountDTO) {
-  return prisma.agent.findMany({
-    where: {
-      ...agentScopeWhere(connector),
-      agentKind: { not: 'org_brain' },
-    },
-    select: { id: true, name: true, runtime: true },
-    orderBy: { createdAt: 'asc' },
-  });
-}
-
 async function ensureConversation(
   agentId: string,
   userId: string,
@@ -328,27 +317,36 @@ async function fallbackAgentRoute(
   connector: ConnectorAccountDTO,
   prompt: string,
   brainFlag: boolean,
+  rosterAgents: IntentRosterAgent[],
 ): Promise<{ reply: string }> {
   const defaultAgent = await resolveDefaultAgent(connector);
   if (defaultAgent) {
     return enqueueWhatsAppAgentRun(connector, defaultAgent, prompt, brainFlag);
   }
 
-  const routable = await listRoutableAgents(connector);
-  if (routable.length === 0) {
+  if (rosterAgents.length === 0) {
     throw new Error('No agents registered for WhatsApp (org brain cannot be triggered from chat)');
   }
-  if (routable.length === 1) {
-    return enqueueWhatsAppAgentRun(connector, routable[0]!, prompt, brainFlag);
+  if (rosterAgents.length === 1) {
+    return enqueueWhatsAppAgentRun(
+      connector,
+      { id: rosterAgents[0]!.id, name: rosterAgents[0]!.name },
+      prompt,
+      brainFlag,
+    );
   }
 
-  const hybridAgents = routable.filter((a) => a.runtime === 'hybrid');
+  const hybridAgents = rosterAgents.filter((a) => a.runtime === 'hybrid');
   if (hybridAgents.length === 1) {
-    return enqueueWhatsAppAgentRun(connector, hybridAgents[0]!, prompt, brainFlag);
+    return enqueueWhatsAppAgentRun(
+      connector,
+      { id: hybridAgents[0]!.id, name: hybridAgents[0]!.name },
+      prompt,
+      brainFlag,
+    );
   }
 
-  const { agents } = await buildWhatsAppIntentRoster(connector);
-  const options = buildDisambiguationOptions(agents);
+  const options = buildDisambiguationOptions(rosterAgents);
   await savePendingRoute(connector.id, { prompt, brainFlag, options });
   return { reply: formatDisambiguationMenu(options) };
 }
@@ -358,7 +356,7 @@ async function routePlainTextMessage(
   prompt: string,
   brainFlag: boolean,
 ): Promise<{ reply: string }> {
-  const decision = await classifyWhatsAppIntent(connector, prompt);
+  const { decision, agents } = await classifyWhatsAppIntent(connector, prompt);
 
   if (decision && decision.confidence >= LOW_CONFIDENCE_THRESHOLD) {
     return routeByIntentDecision(connector, prompt, brainFlag, decision);
@@ -371,7 +369,7 @@ async function routePlainTextMessage(
     }
   }
 
-  return fallbackAgentRoute(connector, prompt, brainFlag);
+  return fallbackAgentRoute(connector, prompt, brainFlag, agents);
 }
 
 async function tryResolvePendingDisambiguation(

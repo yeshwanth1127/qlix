@@ -229,3 +229,71 @@ export async function jobsRecordResult(orgId, applicationId, body) {
   if (!res.ok) throw new Error(data?.error?.message || `Record result failed (${res.status})`);
   return data;
 }
+
+// ─── Scheduled events ─────────────────────────────────────────────────────────
+
+export async function getScheduleAgentContext(agentId) {
+  const res = await fetch(
+    `${QLIX_URL}/api/v1/internal/schedules/agent/${encodeURIComponent(agentId)}/context`,
+    { headers: headers() },
+  );
+  if (!res.ok) throw new Error(`Agent context failed (${res.status})`);
+  return parseJson(res);
+}
+
+export async function schedulesCreate(agentId, body) {
+  const res = await fetch(`${QLIX_URL}/api/v1/internal/schedules`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ agentId, ...body }),
+  });
+  const data = await parseJson(res);
+  if (!res.ok) throw new Error(data?.error?.message || `Create schedule failed (${res.status})`);
+  return data;
+}
+
+export async function schedulesList(agentId, opts = {}) {
+  const q = new URLSearchParams({ agentId });
+  if (opts.status) q.set('status', String(opts.status));
+  if (opts.includeCancelled) q.set('includeCancelled', '1');
+  const res = await fetch(`${QLIX_URL}/api/v1/internal/schedules?${q}`, { headers: headers() });
+  const data = await parseJson(res);
+  if (!res.ok) throw new Error(data?.error?.message || `List schedules failed (${res.status})`);
+  return data;
+}
+
+export async function schedulesGet(agentId, scheduleId) {
+  const q = new URLSearchParams({ agentId });
+  const res = await fetch(
+    `${QLIX_URL}/api/v1/internal/schedules/${encodeURIComponent(scheduleId)}?${q}`,
+    { headers: headers() },
+  );
+  const data = await parseJson(res);
+  if (!res.ok) throw new Error(data?.error?.message || `Get schedule failed (${res.status})`);
+  return data;
+}
+
+export async function schedulesUpdate(agentId, scheduleId, body) {
+  const res = await fetch(`${QLIX_URL}/api/v1/internal/schedules/${encodeURIComponent(scheduleId)}`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify({ agentId, ...body }),
+  });
+  const data = await parseJson(res);
+  if (!res.ok) throw new Error(data?.error?.message || `Update schedule failed (${res.status})`);
+  return data;
+}
+
+export async function schedulesCancel(agentId, scheduleId) {
+  const res = await fetch(
+    `${QLIX_URL}/api/v1/internal/schedules/${encodeURIComponent(scheduleId)}/cancel`,
+    {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ agentId }),
+    },
+  );
+  const data = await parseJson(res);
+  if (!res.ok) throw new Error(data?.error?.message || `Cancel schedule failed (${res.status})`);
+  return data;
+}

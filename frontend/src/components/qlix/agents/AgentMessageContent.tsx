@@ -418,17 +418,20 @@ export function AgentMessageContent({
   if (!showSuccessFrame) return body;
 
   return (
-    <div
-      className={cn(
-        "rounded-sm border border-emerald-600/15 px-3 py-2.5 shadow-[inset_3px_0_0_rgba(16,185,129,0.35)]",
-        sketchToneBg.green,
-      )}
-    >
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-emerald-800/70">
-        <CheckCircle2 className="size-3.5" aria-hidden />
-        Result
+    <div className="relative overflow-hidden rounded-2xl border border-emerald-900/10 bg-gradient-to-br from-emerald-50/95 via-white/70 to-white/40 px-4 py-3.5 shadow-[0_1px_2px_rgba(6,95,70,0.06),0_16px_32px_-22px_rgba(16,185,129,0.45),inset_0_1px_0_rgba(255,255,255,0.6)]">
+      <div
+        className="pointer-events-none absolute -right-6 -top-10 size-28 rounded-full bg-emerald-400/10 blur-2xl"
+        aria-hidden
+      />
+      <div className="mb-2.5 flex items-center gap-2 border-b border-emerald-900/8 pb-2.5">
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-[0_1px_5px_rgba(16,185,129,0.55)]">
+          <CheckCircle2 className="size-3" aria-hidden />
+        </span>
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-emerald-800">
+          Result
+        </span>
       </div>
-      {body}
+      <div className="relative">{body}</div>
     </div>
   );
 }

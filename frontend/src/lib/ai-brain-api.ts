@@ -265,9 +265,35 @@ export interface AiBrainQueryCitation {
   readonly excerpt: string;
 }
 
+export interface AiBrainProposalAgent {
+  readonly name: string;
+  readonly description: string;
+  readonly permissionScopes: readonly string[];
+  readonly jitScopes: readonly string[];
+  readonly runtime: string;
+  readonly model: string;
+  readonly rationale: string;
+  readonly role?: string;
+}
+
+export interface AiBrainProposal {
+  readonly id: string;
+  readonly status: string;
+  readonly rationale: string;
+  readonly kind: "single" | "team";
+  readonly agents: readonly AiBrainProposalAgent[];
+  readonly teamName?: string;
+  readonly primaryAgentId: string | null;
+  readonly createdAgentIds: readonly string[];
+  readonly teamId: string | null;
+  readonly createdAt: string;
+  readonly resolvedAt: string | null;
+}
+
 export interface AiBrainQueryResponse {
   readonly answer: string;
   readonly citations: readonly AiBrainQueryCitation[];
+  readonly proposal: AiBrainProposal | null;
 }
 
 export interface AiBrainConversationRow {
@@ -283,6 +309,7 @@ export interface AiBrainConversationMessage {
   readonly role: "user" | "brain";
   readonly content: string;
   readonly citations: readonly AiBrainQueryCitation[];
+  readonly proposalId: string | null;
   readonly createdAt: string;
 }
 
@@ -329,7 +356,14 @@ export async function getAiBrainConversationMessages(conversationId: string): Pr
     error?: { message?: string };
   } | null;
   if (!res.ok) return { ok: false, message: json?.error?.message ?? "Failed to load chat" };
-  return { ok: true, messages: json?.messages ?? [] };
+  return {
+    ok: true,
+    messages: (json?.messages ?? []).map((message) => ({
+      ...message,
+      proposalId: message.proposalId ?? null,
+      citations: message.citations ?? [],
+    })),
+  };
 }
 
 export async function deleteAiBrainConversation(conversationId: string): Promise<{ ok: boolean; message?: string }> {
@@ -355,12 +389,84 @@ export async function queryAiBrain(
       ...(conversationId ? { conversationId } : {}),
     }),
   });
-  const json = (await res.json().catch(() => null)) as { answer?: string; citations?: AiBrainQueryCitation[]; error?: { message?: string } } | null;
+  const json = (await res.json().catch(() => null)) as {
+    answer?: string;
+    citations?: AiBrainQueryCitation[];
+    proposal?: AiBrainProposal | null;
+    error?: { message?: string };
+  } | null;
   if (!res.ok) {
     return { ok: false, message: json?.error?.message ?? "Query failed" };
   }
   if (!json?.answer) return { ok: false, message: "Invalid response" };
-  return { ok: true, data: { answer: json.answer, citations: json.citations ?? [] } };
+  return {
+    ok: true,
+    data: {
+      answer: json.answer,
+      citations: json.citations ?? [],
+      proposal: json.proposal ?? null,
+    },
+  };
+}
+
+export async function getAiBrainProposal(
+  proposalId: string,
+): Promise<{ ok: true; proposal: AiBrainProposal } | { ok: false; message: string }> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/proposals/${encodeURIComponent(proposalId)}`, {
+    credentials: "include",
+  });
+  const json = (await res.json().catch(() => null)) as {
+    proposal?: AiBrainProposal;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.proposal) {
+    return { ok: false, message: json?.error?.message ?? "Failed to load proposal" };
+  }
+  return { ok: true, proposal: json.proposal };
+}
+
+export async function confirmAiBrainProposal(
+  proposalId: string,
+): Promise<{ ok: true; proposal: AiBrainProposal } | { ok: false; message: string }> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/ai-brain/proposals/${encodeURIComponent(proposalId)}/confirm`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  const json = (await res.json().catch(() => null)) as {
+    proposal?: AiBrainProposal;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.proposal) {
+    return { ok: false, message: json?.error?.message ?? "Failed to confirm proposal" };
+  }
+  return { ok: true, proposal: json.proposal };
+}
+
+export async function rejectAiBrainProposal(
+  proposalId: string,
+): Promise<{ ok: true; proposal: AiBrainProposal } | { ok: false; message: string }> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/ai-brain/proposals/${encodeURIComponent(proposalId)}/reject`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  const json = (await res.json().catch(() => null)) as {
+    proposal?: AiBrainProposal;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.proposal) {
+    return { ok: false, message: json?.error?.message ?? "Failed to reject proposal" };
+  }
+  return { ok: true, proposal: json.proposal };
 }
 
 export async function updateAiBrainModel(

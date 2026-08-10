@@ -540,13 +540,13 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
 
                 <p className="mt-6 text-center text-[11px] uppercase leading-relaxed tracking-wider text-black/40">
                   By signing up, you agree to our{" "}
-                  <a className="text-[#1c1830]/70 transition-all hover:underline" href="#">
+                  <Link className="text-[#1c1830]/70 transition-all hover:underline" href="/terms">
                     Terms
-                  </a>{" "}
+                  </Link>{" "}
                   and{" "}
-                  <a className="text-[#1c1830]/70 transition-all hover:underline" href="#">
+                  <Link className="text-[#1c1830]/70 transition-all hover:underline" href="/privacy">
                     Privacy Policy
-                  </a>
+                  </Link>
                   .
                 </p>
               </>
@@ -559,8 +559,8 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
           <div className="flex flex-wrap items-center justify-between gap-4 text-[11px] uppercase tracking-widest text-black/40">
             <span>© {new Date().getFullYear()} Qlix</span>
             <div className="flex gap-6">
-              <a href="#" className="transition-colors hover:text-black/70">Privacy</a>
-              <a href="#" className="transition-colors hover:text-black/70">Terms</a>
+              <Link href="/privacy" className="transition-colors hover:text-black/70">Privacy</Link>
+              <Link href="/terms" className="transition-colors hover:text-black/70">Terms</Link>
               <a href="#" className="transition-colors hover:text-black/70">Status</a>
             </div>
           </div>

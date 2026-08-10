@@ -54,7 +54,10 @@ THINK_TOOL = "think"
 # --------------------------------------------------------------------------------------
 
 META_TOOLS: frozenset[str] = frozenset({"find_tools", "call_tool"})
+# Legacy fire-and-forget same-agent child run (deadlocks if awaited).
 DELEGATION_TOOLS: frozenset[str] = frozenset({"delegate_task"})
+# Nested in-process sub-agents (list-native spawn/await).
+SUBAGENT_TOOLS: frozenset[str] = frozenset({"spawn_subagents", "await_subagents"})
 
 #: Below this many callable tools the whole catalog already fits in the schema, so
 #: find_tools/call_tool can only add cost.
@@ -140,9 +143,13 @@ def apply_tool_budget(
     if not catalog_is_large and _flag("QLIX_GATE_META_TOOLS", True):
         drop |= META_TOOLS
 
-    # Sub-agent delegation is a deliberate capability, not a default.
+    # Sub-agent tools are opt-in. Legacy delegate_task stays behind QLIX_ENABLE_DELEGATION
+    # for fire-and-forget; prefer QLIX_ENABLE_SUBAGENTS for joinable nested fan-out.
     if not _flag("QLIX_ENABLE_DELEGATION", False):
         drop |= DELEGATION_TOOLS
+
+    if not _flag("QLIX_ENABLE_SUBAGENTS", False):
+        drop |= SUBAGENT_TOOLS
 
     if profile == "lean":
         drop |= ADMIN_TOOLS

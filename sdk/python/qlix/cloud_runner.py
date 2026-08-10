@@ -222,7 +222,7 @@ def _build_tool_executor_map(
         )
 
         if use_agent_browser:
-            from .luna.browser.agent_browser_cli import run_agent_browser_tool
+            from .browser_failover import run_agent_browser_tool_with_failover
 
             scopes = _effective_granted_scopes(identity)
 
@@ -231,7 +231,9 @@ def _build_tool_executor_map(
                     params = json.loads(args_json) if args_json.strip() else {}
                     if not isinstance(params, dict):
                         params = {}
-                    ok, content = run_agent_browser_tool(name, params, granted_scopes=scps)
+                    ok, content = run_agent_browser_tool_with_failover(
+                        name, params, granted_scopes=scps
+                    )
                     return ("" if ok else "[failed] ") + content
 
                 return _execute
@@ -325,7 +327,8 @@ def _build_run_guidance(
             parts.append(
                 "The user asked to find emails on lead websites, but this agent is missing "
                 "the web.read and web.click scopes. Tell them to open the agent → "
-                "'Add or remove scopes' → enable web.read and web.click, then retry."
+                "'Add or remove scopes' → enable web.read and web.click, wait for the "
+                "cloud runner to refresh (or restart it), then retry."
             )
         else:
             parts.append(lead_enrichment_run_guidance())
@@ -450,6 +453,26 @@ async def _run_backend_proxy_inference(
         from .sdk import QlixSDK
 
         mcp_sdk = QlixSDK(identity=identity, http=http)
+
+    from .subagents import SubAgentRunContext
+
+    subagent_context = SubAgentRunContext(
+        agent_id=agent_id,
+        parent_run_id=run_id,
+        identity=identity,
+        http=http,
+        headers=headers,
+        model=model,
+        backend_url=backend_url,
+        runner_token=runner_token,
+        runner_runtime="cloud",
+        tool_profile=tool_profile,
+        mcp_servers=mcp_servers,
+        qlix_sdk=mcp_sdk,
+        depth=0,
+        agent_description=agent_description,
+    )
+
     tool_executors = router.build_executor_map(
         plan,
         agent_id=agent_id,
@@ -458,6 +481,7 @@ async def _run_backend_proxy_inference(
         runner_token=runner_token,
         qlix_sdk=mcp_sdk,
         mcp_servers=mcp_servers,
+        subagent_context=subagent_context,
     )
 
     tools_json = json.dumps(tools, sort_keys=True)
@@ -516,6 +540,7 @@ async def _run_backend_proxy_inference(
         log=default_log("cloud_runner"),
         system_prompt=system_prompt,
         live_view_enabled=live_view_enabled,
+        subagent_context=subagent_context,
     )
 
 
@@ -567,6 +592,13 @@ async def _poll_and_execute_loop() -> None:
                 _log("browser_engine_info_error", error=str(info_exc))
         except Exception as exc:
             _log("agent_browser_warmup_error", error=str(exc))
+            try:
+                from qlix.browser_failover import activate_cloudflare_failover
+
+                if activate_cloudflare_failover(reason=f"warmup: {exc}"):
+                    _log("browser_failover_cloudflare", reason="warmup_failed")
+            except Exception as failover_exc:  # noqa: BLE001
+                _log("browser_failover_warmup_error", error=str(failover_exc)[:200])
     try:
         from qlix.cloud_research_runtime import configure_research_sources
 
@@ -706,16 +738,23 @@ async def _poll_and_execute_loop() -> None:
                 )
                 from dataclasses import replace as dc_replace
 
+                from .runner_common import identity_with_live_scopes
                 from .tool_profiles import filter_scopes_by_tool_profile
 
                 tool_profile = str(run.get("toolProfile") or run.get("tool_profile") or "full")
+                # Prefer live DB scopes from poll over boot-time agent.json (scope edits).
+                live_identity = identity_with_live_scopes(identity, run if isinstance(run, dict) else None)
                 scoped_identity = dc_replace(
-                    identity,
+                    live_identity,
                     permission_scopes=tuple(
-                        filter_scopes_by_tool_profile(list(identity.permission_scopes), tool_profile)
+                        filter_scopes_by_tool_profile(
+                            list(live_identity.permission_scopes), tool_profile
+                        )
                     ),
                     always_scopes=tuple(
-                        filter_scopes_by_tool_profile(list(identity.always_scopes), tool_profile)
+                        filter_scopes_by_tool_profile(
+                            list(live_identity.always_scopes), tool_profile
+                        )
                     ),
                 )
                 seq, content, duration_ms, turns, tool_calls, proxy_usage, _executed_tools = (

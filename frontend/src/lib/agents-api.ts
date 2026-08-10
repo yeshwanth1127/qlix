@@ -20,6 +20,13 @@ export type PermissionScope =
   | "brain.knowledge_read"
   | "email.read"
   | "email.send"
+  | "drive.read"
+  | "drive.write"
+  | "calendar.read"
+  | "calendar.write"
+  | "meet.manage"
+  | "youtube.read"
+  | "youtube.publish"
   | "whatsapp.send"
   | "whatsapp.read"
   | "whatsapp.contact_send"
@@ -29,7 +36,9 @@ export type PermissionScope =
   | "crm.write"
   | "crm.delete"
   | "slack.read"
-  | "slack.send";
+  | "slack.send"
+  /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
+  | `mcp.${string}`;
 
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "web.read",
@@ -45,6 +54,13 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "brain.knowledge_read",
   "email.read",
   "email.send",
+  "drive.read",
+  "drive.write",
+  "calendar.read",
+  "calendar.write",
+  "meet.manage",
+  "youtube.read",
+  "youtube.publish",
   "whatsapp.send",
   "whatsapp.read",
   "whatsapp.contact_send",
@@ -64,6 +80,10 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   "finance.spend_50",
   "finance.spend_100",
   "email.send",
+  "drive.write",
+  "calendar.write",
+  "meet.manage",
+  "youtube.publish",
   "social.publish",
   "crm.write",
   "crm.delete",
@@ -84,7 +104,14 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "brain.query": "Query company AI brain",
   "brain.knowledge_read": "Read org knowledge indexed for the brain",
   "email.read": "Read connected Gmail inbox",
-  "email.send": "Send email via connected Gmail",
+  "email.send": "Send or draft email via connected Gmail",
+  "drive.read": "Read Google Drive",
+  "drive.write": "Write to Google Drive",
+  "calendar.read": "Read Google Calendar",
+  "calendar.write": "Write to Google Calendar",
+  "meet.manage": "Google Meet",
+  "youtube.read": "Read YouTube",
+  "youtube.publish": "Publish to YouTube",
   "whatsapp.send": "Send files to your linked WhatsApp",
   "whatsapp.read": "Read WhatsApp contact chats",
   "whatsapp.contact_send": "Message WhatsApp contacts",
@@ -343,7 +370,7 @@ export function buildProxyModelGroups(input: {
   if (includeOpenrouter) {
     const curated = [...CLOUD_MODELS];
     const fromCatalog = (input.openrouterCatalog ?? []).map((e) => e.qlixModelId);
-    const ids = [
+    const unique = [
       ...new Set([
         ...curated,
         ...fromCatalog,
@@ -352,6 +379,12 @@ export function buildProxyModelGroups(input: {
           : []),
       ]),
     ];
+    // Keep OpenRouter Auto first, then the rest.
+    const autoId = QLIX_AUTO_MODEL;
+    const rest = unique.filter((id) => id.toLowerCase() !== autoId.toLowerCase());
+    const ids = unique.some((id) => id.toLowerCase() === autoId.toLowerCase())
+      ? [autoId, ...rest]
+      : unique;
     if (ids.length) {
       groups.push({
         label: "All models",
@@ -704,6 +737,10 @@ export interface ScopeCatalogEntry {
   label: string;
   description: string;
   forceJit: boolean;
+  /** False when a connector still has to be linked before the scope does anything. */
+  available?: boolean;
+  /** Connector the scope depends on, e.g. `google` for Gmail-backed scopes. */
+  requiresConnector?: string;
 }
 
 export async function fetchScopeCatalog(orgId: string | null): Promise<ScopeCatalogEntry[] | null> {
@@ -715,11 +752,16 @@ export async function fetchScopeCatalog(orgId: string | null): Promise<ScopeCata
   return data.scopes ?? [];
 }
 
+export type ScopeRunnerRefresh = "restarting" | "hybrid_reissue_recommended" | null;
+
 export async function updateAgentScopes(
   agentId: string,
   permissionScopes: string[],
   jitScopes?: string[],
-): Promise<{ ok: true; agent: AgentDTO } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; agent: AgentDTO; runnerRefresh: ScopeRunnerRefresh }
+  | { ok: false; error: string }
+> {
   const res = await fetch(`${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/scopes`, {
     method: "PATCH",
     credentials: "include",
@@ -730,8 +772,8 @@ export async function updateAgentScopes(
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
     return { ok: false, error: err?.error?.message ?? "Failed to update scopes" };
   }
-  const data = (await res.json()) as { agent: AgentDTO };
-  return { ok: true, agent: data.agent };
+  const data = (await res.json()) as { agent: AgentDTO; runnerRefresh?: ScopeRunnerRefresh };
+  return { ok: true, agent: data.agent, runnerRefresh: data.runnerRefresh ?? null };
 }
 
 export async function deleteAllAgents(): Promise<{ ok: boolean; deleted?: number; errorMessage?: string }> {

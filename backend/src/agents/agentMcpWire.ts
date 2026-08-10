@@ -3,6 +3,7 @@
  */
 import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
 import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
+import { ensureQlixScheduleMcpForOrg } from '../schedules/ensureQlixScheduleMcp.js';
 import { mcpService } from '../mcp/mcp.service.js';
 import { isMcpScope } from '../mcp/mcpScopeCatalog.js';
 import { prisma } from '../lib/prisma.js';
@@ -35,6 +36,9 @@ export async function wireAgentMcpFromScopes(input: {
   }
   if (scopes.some((s) => s.startsWith('mcp.qlix-jobs.'))) {
     await ensureQlixJobsMcpForOrg(orgId, userId);
+  }
+  if (scopes.some((s) => s.startsWith('mcp.qlix-schedule.'))) {
+    await ensureQlixScheduleMcpForOrg(orgId, userId);
   }
 
   await mcpService.applyMcpBindingsFromScopes(agentId, orgId, scopes);

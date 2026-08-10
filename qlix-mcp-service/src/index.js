@@ -3,6 +3,7 @@ import express from 'express';
 import { createMcpRouter } from './mcpHttp.js';
 import { TOOL_CATALOG, executeTool } from './tools.js';
 import { JOBS_TOOL_CATALOG, executeJobsTool } from './jobsTools.js';
+import { SCHEDULE_TOOL_CATALOG, executeScheduleTool } from './scheduleTools.js';
 import { createScrapeRouter } from './scrapeRouter.js';
 import { createSandboxRouter } from './sandboxRouter.js';
 import { requireServiceSecret } from './serviceAuth.js';
@@ -48,6 +49,13 @@ async function main() {
     execute: executeJobsTool,
   });
   app.post('/mcp-jobs', requireServiceSecret, jobsMcp);
+
+  const scheduleMcp = createMcpRouter({
+    name: 'qlix-schedule',
+    tools: SCHEDULE_TOOL_CATALOG,
+    execute: executeScheduleTool,
+  });
+  app.post('/mcp-schedule', requireServiceSecret, scheduleMcp);
 
   app.use('/scrape', createScrapeRouter());
   app.use('/sandbox', createSandboxRouter());

@@ -48,11 +48,29 @@ function normalizeMcpEndpointUrl(rawUrl: string): string {
 
 /** First-party qlix-mcp endpoints configured for this deployment (co-located on loopback). */
 function trustedQlixMcpEndpoints(): Set<string> {
-  const candidates = [
+  const fromEnv = [
     process.env.QLIX_MCP_URL?.trim(),
     process.env.QLIX_MCP_LEADS_URL?.trim(),
+    process.env.QLIX_MCP_JOBS_URL?.trim(),
+    process.env.QLIX_MCP_SCHEDULE_URL?.trim(),
+  ].filter((u): u is string => Boolean(u));
+
+  const derivedFromBase = process.env.QLIX_MCP_URL?.trim()
+    ? [
+        process.env.QLIX_MCP_URL.trim().replace(/\/mcp\/?$/, '/mcp-jobs'),
+        process.env.QLIX_MCP_URL.trim().replace(/\/mcp\/?$/, '/mcp-schedule'),
+      ]
+    : [];
+
+  const candidates = [
+    ...fromEnv,
+    ...derivedFromBase,
     'http://127.0.0.1:3940/mcp',
     'http://localhost:3940/mcp',
+    'http://127.0.0.1:3940/mcp-jobs',
+    'http://localhost:3940/mcp-jobs',
+    'http://127.0.0.1:3940/mcp-schedule',
+    'http://localhost:3940/mcp-schedule',
   ].filter((u): u is string => Boolean(u));
   return new Set(candidates.map(normalizeMcpEndpointUrl));
 }

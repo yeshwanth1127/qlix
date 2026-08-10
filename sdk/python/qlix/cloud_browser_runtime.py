@@ -289,6 +289,12 @@ def goal_requests_live_view(text: str) -> bool:
     return any(kw in lower for kw in _LIVE_VIEW_KEYWORDS)
 
 
+def live_browser_view_enabled() -> bool:
+    """Return True when browser screenshot frames should be captured for the UI."""
+    raw = os.environ.get("QLIX_BROWSER_LIVE_VIEW", "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
 def is_browser_tool(tool_name: str) -> bool:
     return should_capture_browser_frame(tool_name)
 
@@ -494,9 +500,9 @@ def execute_browser_tool_sync(tool_name: str, arguments_json: str, identity: Age
         if _use_agent_browser_suite() and (
             tool_name.startswith("browser_ab_") or tool_name == "browser_exec"
         ):
-            from qlix.luna.browser.agent_browser_cli import run_agent_browser_tool
+            from qlix.browser_failover import run_agent_browser_tool_with_failover
 
-            ok, content = run_agent_browser_tool(
+            ok, content = run_agent_browser_tool_with_failover(
                 tool_name,
                 params,
                 granted_scopes=_effective_granted_scopes(identity),

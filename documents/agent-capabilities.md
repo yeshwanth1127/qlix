@@ -39,6 +39,13 @@ Scopes are not free-form. Each builtin scope maps to real tools in the SDK. Orgs
 | `brain.knowledge_read` | Read org knowledge | Read indexed knowledge base | No | — | cloud, hybrid |
 | `email.read` | Read Gmail | Read connected inbox | No | Google | cloud, hybrid |
 | `email.send` | Send email | Send via Gmail | **Yes** | Google | cloud, hybrid |
+| `drive.read` | Read Google Drive | List / read Drive files | No | Google | cloud, hybrid |
+| `drive.write` | Write to Google Drive | Create / update Drive files | **Yes** | Google | cloud, hybrid |
+| `calendar.read` | Read Google Calendar | List / read calendar events | No | Google | cloud, hybrid |
+| `calendar.write` | Write to Google Calendar | Create / update calendar events | **Yes** | Google | cloud, hybrid |
+| `meet.manage` | Google Meet | Create / manage Meet links | **Yes** | Google | cloud, hybrid |
+| `youtube.read` | Read YouTube | Search / read YouTube via Google | No | Google | cloud, hybrid |
+| `youtube.publish` | Publish to YouTube | Upload / update YouTube videos | **Yes** | Google | cloud, hybrid |
 | `whatsapp.send` | Send files to linked WhatsApp | File to self-chat | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.read` | Read WhatsApp chats | List contacts + read 1:1 messages | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.contact_send` | Message WhatsApp contacts | Text a contact/phone (user must ask) | Yes | WhatsApp (Baileys) | cloud, hybrid |
@@ -198,6 +205,11 @@ Org brain agents are also provisioned with `brain.knowledge_read` for indexed do
 |------|---------|
 | `think` | Internal reasoning step (no external side effect) |
 | `done` | Signal that the task is complete |
+| `spawn_subagents` | Parent-only: spawn N nested sub-agents (opt-in `QLIX_ENABLE_SUBAGENTS`) |
+| `await_subagents` | Wait for spawned sub-agent results |
+| `delegate_task` | Legacy fire-and-forget child run (opt-in `QLIX_ENABLE_DELEGATION`; prefer sub-agents) |
+
+See [sub-agents.md](./sub-agents.md) for V1 nested execution and V2 identity promotion.
 
 ---
 
@@ -239,7 +251,23 @@ Granted as normal agent scopes (`mcp.qlix-jobs.*`) via AI Builder or the agent s
 
 Typical flow (AI Builder: “create an agent that applies to jobs with my resume”): stage_resume → upsert profile → queue_applications → get_apply_brief → `browser_ab_*` fill + upload → record awaiting_jit → **JIT `web.transaction`** → submit → record submitted.
 
-### 4.3 Catalog integrations (operator-registered)
+### 4.3 First-party — Qlix Schedule (cron / once / interval)
+
+**Server:** `qlix-schedule` · Endpoint `/mcp-schedule` · Persists `ScheduledEvent` rows; backend ticks every ~1 minute and enqueues the prompt as an agent run.
+
+**Always-on:** every standard agent is granted `brain.query` and all `mcp.qlix-schedule.*` tools at create/update (and backfilled on boot), regardless of other scopes or NL intent. AI Brain (exa) schedules jobs **on itself by default** via in-process `schedule_create` / `schedule_list` / `schedule_cancel`; it only targets another agent when the user explicitly names that agent.
+
+| Tool | Purpose | Constraints |
+|------|---------|-------------|
+| `schedule_create` | Create cron / once / interval event | Agents may only target themselves; cron is 5-field UTC |
+| `schedule_list` | List schedules for the agent | |
+| `schedule_get` | Get one schedule by id | |
+| `schedule_update` | Pause / resume / edit prompt or timing | |
+| `schedule_cancel` | Soft-cancel (never fires again) | Destructive |
+
+Console API: `GET/POST /api/v1/schedules` (user auth). Internal: `/api/v1/internal/schedules` (service secret).
+
+### 4.4 Catalog integrations (operator-registered)
 
 Templates in the MCP catalog (tools vary by server; scopes are generated per tool):
 
@@ -247,6 +275,7 @@ Templates in the MCP catalog (tools vary by server; scopes are generated per too
 |----|----------|-----------------|
 | `qlix-leads` | Data | Lead scrape & outreach (above) |
 | `qlix-jobs` | Data | Job Apply Copilot (above) |
+| `qlix-schedule` | Automation | Cron / once / interval agent runs (above) |
 | `github` | Dev | Issues, PRs, code & repo search |
 | `google-workspace` | Productivity | Gmail, Calendar, Drive, Docs, Sheets (via Workspace MCP) |
 | `slack` | Comms | Read channels / post as bot (hybrid stdio) |
@@ -284,11 +313,12 @@ Supporting agent APIs (non-exhaustive): run poll / events / complete, email & Wh
 | `whatsapp.send` | `whatsapp_send` (+ `luna_local_send_whatsapp_document` with file scopes) |
 | `social.read` | Orbit channels / posts / analytics (via Connectors → Orbit) |
 | `social.publish` | Orbit create/schedule post (JIT; via Connectors → Orbit) |
-| `brain.query` | `brain_query` |
+| `brain.query` | `brain_query` (always-on for every standard agent) |
 | `brain.knowledge_read` | Org knowledge access (brain agent) |
 | `finance.spend_*` | Spend authorization (JIT) |
 | `mcp.qlix-leads.*` | Lead tools in §4.1 |
 | `mcp.qlix-jobs.*` | Job apply tools in §4.2 |
+| `mcp.qlix-schedule.*` | Schedule tools in §4.3 |
 | `mcp.<slug>.*` | Tools from that MCP server |
 | *(always)* | `think`, `done` |
 

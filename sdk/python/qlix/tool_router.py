@@ -17,7 +17,25 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
     "files": ("system.file_read", "system.file_write"),
     "code": ("system.file_read",),
     "gui": ("system.gui_control",),
-    "comms": ("email.read", "email.send", "whatsapp.send", "whatsapp.read", "whatsapp.contact_send", "crm.read", "crm.write", "crm.delete", "slack.read", "slack.send"),
+    "comms": (
+        "email.read",
+        "email.send",
+        "drive.read",
+        "drive.write",
+        "calendar.read",
+        "calendar.write",
+        "meet.manage",
+        "youtube.read",
+        "youtube.publish",
+        "whatsapp.send",
+        "whatsapp.read",
+        "whatsapp.contact_send",
+        "crm.read",
+        "crm.write",
+        "crm.delete",
+        "slack.read",
+        "slack.send",
+    ),
     "knowledge": ("brain.query", "brain.knowledge_read"),
     "always": (),
 }
@@ -238,6 +256,17 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "send mail",
             "reply",
             "outlook",
+            "drive",
+            "google drive",
+            "gdrive",
+            "calendar",
+            "google calendar",
+            "gcal",
+            "schedule",
+            "meeting",
+            "meet",
+            "google meet",
+            "gmeet",
             "whatsapp",
             "whats app",
             "zoho",
@@ -720,6 +749,14 @@ class ToolRouter:
             guidance_parts.append(lead_generation_run_guidance())
         if "comms" in groups and has_slack_scope(self.identity) and is_slack_api_intent(routing_text):
             guidance_parts.append(slack_run_guidance())
+        if "comms" in groups and "email.send" in (
+            set(self.identity.permission_scopes) | set(self.identity.always_scopes)
+        ):
+            from .cloud_email_runtime import email_mode_routing_guidance
+
+            email_guidance = email_mode_routing_guidance(routing_text)
+            if email_guidance:
+                guidance_parts.append(email_guidance)
         guidance = "\n\n".join(guidance_parts)
         # The tool array comes from scopes alone so it is byte-stable across runs and
         # can be served from the provider's cached prefix; `groups` above now only
@@ -791,6 +828,11 @@ class ToolRouter:
             )
         if "comms" in groups:
             tools.extend(openai_email_tool_definitions(self.identity, sf))
+            from .cloud_google_workspace_runtime import (
+                openai_google_workspace_tool_definitions,
+            )
+
+            tools.extend(openai_google_workspace_tool_definitions(self.identity, sf))
             tools.extend(openai_crm_tool_definitions(self.identity, sf))
             tools.extend(openai_slack_tool_definitions(self.identity, sf))
             tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
@@ -841,6 +883,7 @@ class ToolRouter:
         on_gui_frame: Any = None,
         agents3_context: Any = None,
         mcp_servers: Any = None,
+        subagent_context: Any = None,
     ) -> dict[str, callable]:
         import json
 
@@ -885,11 +928,11 @@ class ToolRouter:
             )
 
         if "web" in groups:
+            from .browser_failover import run_agent_browser_tool_with_failover
             from .cloud_browser_runtime import (
                 browser_collapse_enabled,
                 resolve_browser_action,
             )
-            from .luna.browser.agent_browser_cli import run_agent_browser_tool
 
             scopes = _effective_granted_scopes(self.identity)
             tools_list = openai_browser_tool_definitions(self.identity, sf)
@@ -909,7 +952,9 @@ class ToolRouter:
                     # Map query → what/text for extract convenience
                     if action.lower() in ("extract", "get") and params.get("query") and not params.get("what"):
                         params.setdefault("text", params.get("query"))
-                    ok, content = run_agent_browser_tool(resolved, params, granted_scopes=scps)
+                    ok, content = run_agent_browser_tool_with_failover(
+                        resolved, params, granted_scopes=scps
+                    )
                     return ("" if ok else "[failed] ") + content
 
                 executor_map["browser"] = _execute_browser
@@ -934,7 +979,9 @@ class ToolRouter:
                             params = json.loads(args_json) if args_json.strip() else {}
                             if not isinstance(params, dict):
                                 params = {}
-                            ok, content = run_agent_browser_tool(name, params, granted_scopes=scps)
+                            ok, content = run_agent_browser_tool_with_failover(
+                                name, params, granted_scopes=scps
+                            )
                             return ("" if ok else "[failed] ") + content
 
                         return _execute
@@ -994,6 +1041,20 @@ class ToolRouter:
                 qlix_sdk=qlix_sdk,
             )
             executor_map.update(email_executors)
+            from .cloud_google_workspace_runtime import (
+                build_google_workspace_tool_executors,
+            )
+
+            google_executors = build_google_workspace_tool_executors(
+                identity=self.identity,
+                skill_filter=sf,
+                agent_id=agent_id,
+                run_id=run_id,
+                backend_url=backend_url,
+                runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
+            )
+            executor_map.update(google_executors)
             crm_executors = build_crm_tool_executors(
                 identity=self.identity,
                 skill_filter=sf,
@@ -1137,6 +1198,11 @@ class ToolRouter:
             executor_map.setdefault("find_tools", _find_tools)
             executor_map.setdefault("call_tool", _call_tool)
             executor_map.setdefault("delegate_task", _delegate_task)
+
+            if subagent_context is not None:
+                from .subagents import build_subagent_executors
+
+                executor_map.update(build_subagent_executors(subagent_context))
 
         if mcp_servers and qlix_sdk is not None:
             from .cloud_mcp_runtime import build_mcp_tool_executors

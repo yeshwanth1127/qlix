@@ -30,7 +30,14 @@ const BUILDER_HINTS: Record<string, string> = {
   'brain.query': 'Query org AI brain',
   'brain.knowledge_read': 'Read org knowledge docs',
   'email.read': 'Read Gmail',
-  'email.send': 'Send Gmail',
+  'email.send': 'Send / draft Gmail',
+  'drive.read': 'Read Google Drive',
+  'drive.write': 'Write Google Drive',
+  'calendar.read': 'Read Google Calendar',
+  'calendar.write': 'Write Google Calendar',
+  'meet.manage': 'Google Meet',
+  'youtube.read': 'Read YouTube',
+  'youtube.publish': 'Publish YouTube',
   'whatsapp.send': 'Send files to linked WhatsApp self-chat',
   'whatsapp.read': 'Read WhatsApp chats/contacts',
   'whatsapp.contact_send': 'Message WhatsApp contacts',
@@ -74,10 +81,7 @@ function agentPropertiesSchema(): Record<string, unknown> {
       enum: ['cloud', 'hybrid', 'local'],
       description: 'cloud default; hybrid for local tools; local for on-device SDK.',
     },
-    model: {
-      type: 'string',
-      description: 'Use exora/exora-general for cloud/hybrid unless user names another model.',
-    },
+    model: { type: 'string', description: 'LLM model ID for the created agent. Prefer "exora/exora-general" for cloud/hybrid unless the user names a specific model.' },
     llmMode: {
       type: 'string',
       enum: ['proxy', 'direct'],
@@ -214,7 +218,7 @@ Forced: ${forceJitList || '(none)'}
 Include those in BOTH permissionScopes and jitScopes. Non-JIT only in permissionScopes. jitScopes ⊆ permissionScopes.
 
 ## Defaults
-model=exora/exora-general (cloud/hybrid unless user pins another), runtime=cloud, llmMode=proxy, localInferenceMode=null`;
+model=exora/exora-general (created agents; cloud/hybrid unless user pins another), runtime=cloud, llmMode=proxy, localInferenceMode=null`;
 
   return `${core}${renderNlPromptPacks(packs)}`;
 }

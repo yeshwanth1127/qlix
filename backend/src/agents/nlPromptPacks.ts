@@ -60,8 +60,9 @@ const PACK_TEXT: Record<NlPromptPackId, string> = {
   finance: `## Finance
 - Add finance.spend_50 or finance.spend_100 as needed (both JIT).`,
 
-  messaging: `## Email / WhatsApp / social
-- email.read / email.send (send is JIT). whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT).
+  messaging: `## Email / WhatsApp / social / Google
+- Google suite: email.read / email.send (Gmail; send JIT), drive.read / drive.write, calendar.read / calendar.write, meet.manage (JIT), youtube.read / youtube.publish (publish JIT).
+- whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT).
 - social.read / social.publish (publish JIT) via Orbit. Request only channels the task needs.`,
 };
 

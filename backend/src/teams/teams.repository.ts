@@ -297,24 +297,33 @@ export class TeamsRepository {
   }
 
   /**
-   * Rewrite the member pipeline order. `memberIds` must contain every member of the team
-   * exactly once; the array index becomes the new stage (index + 1).
+   * Rewrite the member pipeline order. Each inner array of `stages` is one pipeline stage
+   * and its index becomes the members' `stageOrder` (index + 1). Members sharing a stage
+   * run concurrently at run time.
+   *
+   * Flattened, `stages` must contain every member of the team exactly once.
    */
-  async reorderMembers(teamId: string, memberIds: string[]): Promise<TeamDTO> {
+  async reorderMembers(teamId: string, stages: string[][]): Promise<TeamDTO> {
+    const flat = stages.flat();
     const existing = await prisma.teamMember.findMany({
       where: { teamId },
       select: { id: true },
     });
     const existingIds = new Set(existing.map((m) => m.id));
-    if (memberIds.length !== existingIds.size || memberIds.some((id) => !existingIds.has(id))) {
+    if (flat.length !== existingIds.size || flat.some((id) => !existingIds.has(id))) {
       throw new Error('reorderMembers: memberIds must list every member of the team exactly once');
     }
-    if (new Set(memberIds).size !== memberIds.length) {
+    if (new Set(flat).size !== flat.length) {
       throw new Error('reorderMembers: duplicate memberIds');
     }
+    if (stages.some((stage) => stage.length === 0)) {
+      throw new Error('reorderMembers: a stage cannot be empty');
+    }
     await prisma.$transaction(
-      memberIds.map((id, i) =>
-        prisma.teamMember.update({ where: { id }, data: { stageOrder: i + 1 } }),
+      stages.flatMap((stage, stageIndex) =>
+        stage.map((id) =>
+          prisma.teamMember.update({ where: { id }, data: { stageOrder: stageIndex + 1 } }),
+        ),
       ),
     );
     const team = await this.findById(teamId);

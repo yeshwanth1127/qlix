@@ -52,9 +52,20 @@ const createTeamSchema = z.object({
   }).optional(),
 });
 
-const reorderMembersSchema = z.object({
-  memberIds: z.array(z.string().min(1)).min(1).max(50),
-});
+const reorderMembersSchema = z
+  .object({
+    /** Flat form — every member gets its own stage (nothing runs concurrently). */
+    memberIds: z.array(z.string().min(1)).min(1).max(50).optional(),
+    /** Grouped form — each inner array is one stage; members in a stage run together. */
+    stages: z
+      .array(z.array(z.string().min(1)).min(1).max(50))
+      .min(1)
+      .max(50)
+      .optional(),
+  })
+  .refine((v) => v.memberIds != null || v.stages != null, {
+    message: 'memberIds or stages is required',
+  });
 
 const updateConfigSchema = z.object({
   autoSequence: z.boolean().optional(),
@@ -283,14 +294,16 @@ export function createTeamsRouter(): Router {
   });
 
   /**
-   * Rewrite the pipeline order. Body: { memberIds: string[] } — array index becomes
-   * the new stage (1-indexed). Must list every current member exactly once.
+   * Rewrite the pipeline order. Body is either:
+   *   { memberIds: string[] }    — one member per stage, fully sequential
+   *   { stages: string[][] }     — each inner array is a stage; its members run concurrently
+   * Either way the (flattened) list must name every current member exactly once.
    * IMPORTANT: register before /:id/members/:agentId or Express treats "order" as agentId.
    */
   router.patch('/:id/members/order', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     const parsed = reorderMembersSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: { code: 'invalid_body', message: 'memberIds (array) is required' } });
+      res.status(400).json({ error: { code: 'invalid_body', message: 'memberIds or stages (array) is required' } });
       return;
     }
     try {
@@ -300,7 +313,7 @@ export function createTeamsRouter(): Router {
         auth.orgId,
         auth.userId,
         auth.role,
-        parsed.data.memberIds,
+        parsed.data,
       );
       res.json({ team });
     } catch (err) {

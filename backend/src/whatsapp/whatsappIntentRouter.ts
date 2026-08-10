@@ -11,10 +11,73 @@ import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 const CLASSIFIER_PROVIDER = defaultLlmProvider();
 const CLASSIFIER_MODEL = defaultModelForProvider(CLASSIFIER_PROVIDER);
 const HEARTBEAT_FRESH_MS = 20_000;
-const DESCRIPTION_PREVIEW = 300;
+const DESCRIPTION_PREVIEW = 120;
+const LLM_DESC_CHARS = 80;
+const LLM_PROMPT_CHARS = 500;
+const LLM_TOP_K = 3;
+const SCORE_WIN_THRESHOLD = 3;
+const SCORE_MARGIN_THRESHOLD = 2;
+const SCORE_SIGNAL_FLOOR = 1.5;
+const DEFAULT_AGENT_PRIOR = 0.5;
 
 const PC_TASK_PATTERN =
-  /[A-Za-z]:\\|[A-Za-z]:\/|\bon my pc\b|\bon my computer\b|\blocal file\b|\bopen in notepad\b|\bopen on my screen\b/i;
+  /[A-Za-z]:\\|[A-Za-z]:\/|\bon my pc\b|\bon my computer\b|\blocal file\b|\bopen in notepad\b|\bopen on my screen\b|\bread .{0,40}\.log\b/i;
+
+const CAPABILITY_RULES: Array<{ pattern: RegExp; scopePrefixes: string[]; weight: number }> = [
+  {
+    pattern: /\b(email|inbox|gmail|outlook|mail)\b/i,
+    scopePrefixes: ['email.'],
+    weight: 3,
+  },
+  {
+    pattern: /\b(web|search|research|browse|google|scrap)\b/i,
+    scopePrefixes: ['web.'],
+    weight: 3,
+  },
+  {
+    pattern: /\b(brain|policy|playbook|knowledge|handbook)\b/i,
+    scopePrefixes: ['brain.'],
+    weight: 2.5,
+  },
+  {
+    pattern: /\b(file|folder|directory|notepad|desktop|screenshot|gui)\b/i,
+    scopePrefixes: ['system.file', 'system.gui'],
+    weight: 2.5,
+  },
+];
+
+const STOP_WORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'and',
+  'or',
+  'to',
+  'for',
+  'of',
+  'in',
+  'on',
+  'my',
+  'me',
+  'i',
+  'is',
+  'it',
+  'this',
+  'that',
+  'with',
+  'from',
+  'please',
+  'can',
+  'you',
+  'your',
+  'our',
+  'we',
+  'be',
+  'do',
+  'at',
+  'as',
+  'by',
+]);
 
 export type IntentRosterAgent = {
   id: string;
@@ -24,13 +87,6 @@ export type IntentRosterAgent = {
   runtime: string;
   online: boolean;
   roleMission: string | null;
-};
-
-export type IntentRosterTeam = {
-  id: string;
-  name: string;
-  description: string;
-  memberSummary: string;
 };
 
 export type IntentRouteDecision = {
@@ -47,6 +103,17 @@ export type DisambiguationOption = {
   targetId: string;
   name: string;
   label: string;
+};
+
+export type AgentScore = {
+  agent: IntentRosterAgent;
+  score: number;
+  reasons: string[];
+};
+
+export type ClassifyWhatsAppIntentResult = {
+  decision: IntentRouteDecision | null;
+  agents: IntentRosterAgent[];
 };
 
 function agentScopeWhere(connector: ConnectorAccountDTO) {
@@ -68,15 +135,58 @@ function agentOnline(row: {
   return false;
 }
 
-function truncateDescription(text: string | null | undefined): string {
+function truncateText(text: string | null | undefined, max: number): string {
   const t = (text ?? '').trim();
   if (!t) return '';
-  return t.length > DESCRIPTION_PREVIEW ? `${t.slice(0, DESCRIPTION_PREVIEW)}…` : t;
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+function hasScopePrefix(scopes: string[], prefixes: string[]): boolean {
+  return scopes.some((s) => prefixes.some((p) => s === p || s.startsWith(p)));
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function nameMentioned(prompt: string, name: string): boolean {
+  const n = name.trim();
+  if (n.length < 2) return false;
+  const re = new RegExp(`\\b${escapeRegExp(n)}\\b`, 'i');
+  return re.test(prompt);
+}
+
+function promptTokens(prompt: string): string[] {
+  return prompt
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3 && !STOP_WORDS.has(t))
+    .slice(0, 24);
+}
+
+function tokenOverlapScore(promptToks: string[], text: string | null | undefined): number {
+  if (!text || promptToks.length === 0) return 0;
+  const hay = text.toLowerCase();
+  let hits = 0;
+  for (const t of promptToks) {
+    if (hay.includes(t)) hits += 1;
+  }
+  if (hits === 0) return 0;
+  return Math.min(2, hits * 0.4);
+}
+
+function capsTag(scopes: string[]): string {
+  const tags: string[] = [];
+  if (scopes.some((s) => s.startsWith('email.'))) tags.push('email');
+  if (scopes.some((s) => s.startsWith('web.'))) tags.push('web');
+  if (scopes.some((s) => s.startsWith('brain.'))) tags.push('brain');
+  if (scopes.some((s) => s.startsWith('system.file'))) tags.push('files');
+  if (scopes.some((s) => s.startsWith('system.gui'))) tags.push('gui');
+  return tags.join(',') || 'none';
 }
 
 export async function buildWhatsAppIntentRoster(connector: ConnectorAccountDTO): Promise<{
   agents: IntentRosterAgent[];
-  teams: IntentRosterTeam[];
 }> {
   const agentRows = await prisma.agent.findMany({
     where: {
@@ -102,7 +212,7 @@ export async function buildWhatsAppIntentRoster(connector: ConnectorAccountDTO):
     return {
       id: a.id,
       name: a.name,
-      description: truncateDescription(a.description),
+      description: truncateText(a.description, DESCRIPTION_PREVIEW),
       permissionScopes: a.permissionScopes,
       runtime: a.runtime,
       online: agentOnline(a),
@@ -110,139 +220,159 @@ export async function buildWhatsAppIntentRoster(connector: ConnectorAccountDTO):
     };
   });
 
-  const teamRows = await prisma.team.findMany({
-    where: { orgId: connector.orgId, status: { not: 'archived' } },
-    select: {
-      id: true,
-      name: true,
-      description: true,
-      members: {
-        select: {
-          role: true,
-          agent: { select: { name: true, description: true } },
-        },
-      },
-    },
-    orderBy: { name: 'asc' },
-  });
-
-  const teams: IntentRosterTeam[] = teamRows.map((t) => {
-    const memberSummary = t.members
-      .map((m) => {
-        const desc = truncateDescription(m.agent.description);
-        const descPart = desc ? ` — ${desc.slice(0, 80)}` : '';
-        return `${m.agent.name} (${m.role})${descPart}`;
-      })
-      .join('; ');
-    return {
-      id: t.id,
-      name: t.name,
-      description: truncateDescription(t.description),
-      memberSummary,
-    };
-  });
-
-  return { agents, teams };
+  return { agents };
 }
 
-function formatAgentLine(a: IntentRosterAgent, index: number): string {
-  const parts = [
-    `${index + 1}. Agent "${a.name}" id=${a.id}`,
-    `runtime=${a.runtime}`,
-    a.online ? 'online' : 'offline',
-    `scopes=${a.permissionScopes.join(', ') || 'none'}`,
-  ];
-  if (a.roleMission) parts.push(`role=${a.roleMission.slice(0, 120)}`);
-  if (a.description) parts.push(`desc=${a.description}`);
-  return parts.join(' | ');
+export function scoreAgents(
+  prompt: string,
+  agents: IntentRosterAgent[],
+  defaultAgentId: string | null,
+): AgentScore[] {
+  const toks = promptTokens(prompt);
+  const isPcTask = PC_TASK_PATTERN.test(prompt);
+
+  return agents
+    .map((agent) => {
+      let score = 0;
+      const reasons: string[] = [];
+
+      if (nameMentioned(prompt, agent.name)) {
+        score += 8;
+        reasons.push('name mention');
+      }
+
+      if (defaultAgentId && agent.id === defaultAgentId) {
+        score += DEFAULT_AGENT_PRIOR;
+        reasons.push('default prior');
+      }
+
+      if (isPcTask && agent.runtime === 'hybrid' && agent.permissionScopes.includes('system.file_read')) {
+        score += 5;
+        reasons.push('local PC / file task');
+        if (agent.online) {
+          score += 1.5;
+          reasons.push('online');
+        }
+      }
+
+      for (const rule of CAPABILITY_RULES) {
+        if (rule.pattern.test(prompt) && hasScopePrefix(agent.permissionScopes, rule.scopePrefixes)) {
+          score += rule.weight;
+          reasons.push(`caps:${rule.scopePrefixes[0]}`);
+        }
+      }
+
+      const overlap =
+        tokenOverlapScore(toks, agent.description) + tokenOverlapScore(toks, agent.roleMission);
+      if (overlap > 0) {
+        score += overlap;
+        reasons.push('desc overlap');
+      }
+
+      return { agent, score, reasons };
+    })
+    .sort((a, b) => b.score - a.score);
 }
 
-function formatTeamLine(t: IntentRosterTeam, index: number): string {
-  const parts = [
-    `${index + 1}. Team "${t.name}" id=${t.id}`,
-  ];
-  if (t.description) parts.push(`desc=${t.description}`);
-  if (t.memberSummary) parts.push(`members=${t.memberSummary.slice(0, 200)}`);
-  return parts.join(' | ');
+function decisionForAgent(
+  agent: IntentRosterAgent,
+  confidence: number,
+  reason: string,
+  source: IntentRouteDecision['source'],
+): IntentRouteDecision {
+  return {
+    targetType: 'agent',
+    targetId: agent.id,
+    targetName: agent.name,
+    confidence,
+    reason,
+    source,
+  };
 }
 
+/**
+ * Cheap local routing. Returns a decision when confident enough to skip the LLM,
+ * otherwise null (caller may invoke slim LLM on top-K scores).
+ */
 export function applyHeuristicRoute(
   prompt: string,
   agents: IntentRosterAgent[],
   defaultAgentId: string | null,
 ): IntentRouteDecision | null {
+  if (agents.length === 0) return null;
+
   if (agents.length === 1) {
-    const a = agents[0]!;
-    return {
-      targetType: 'agent',
-      targetId: a.id,
-      targetName: a.name,
-      confidence: 1,
-      reason: 'only agent in workspace',
-      source: 'single',
-    };
+    return decisionForAgent(agents[0]!, 1, 'only agent in workspace', 'single');
   }
 
-  if (defaultAgentId && prompt.trim().length < 20) {
+  const scores = scoreAgents(prompt, agents, defaultAgentId);
+  const nameHits = agents.filter((a) => nameMentioned(prompt, a.name));
+  if (nameHits.length === 1) {
+    return decisionForAgent(nameHits[0]!, 0.95, 'agent name mentioned', 'heuristic');
+  }
+
+  const top = scores[0];
+  const second = scores[1];
+  if (!top) return null;
+
+  const margin = top.score - (second?.score ?? 0);
+  const signalScore = top.score - (defaultAgentId && top.agent.id === defaultAgentId ? DEFAULT_AGENT_PRIOR : 0);
+
+  if (top.score >= SCORE_WIN_THRESHOLD && margin >= SCORE_MARGIN_THRESHOLD) {
+    const reason = top.reasons.filter((r) => r !== 'default prior').join(', ') || 'local score';
+    const confidence = Math.min(0.92, 0.7 + margin * 0.04);
+    return decisionForAgent(top.agent, confidence, reason, 'heuristic');
+  }
+
+  // No meaningful signal → default without LLM.
+  if (signalScore < SCORE_SIGNAL_FLOOR && defaultAgentId) {
     const def = agents.find((a) => a.id === defaultAgentId);
     if (def) {
-      return {
-        targetType: 'agent',
-        targetId: def.id,
-        targetName: def.name,
-        confidence: 0.8,
-        reason: 'short message with default agent',
-        source: 'default',
-      };
-    }
-  }
-
-  if (PC_TASK_PATTERN.test(prompt)) {
-    const hybridOnline = agents.filter(
-      (a) => a.runtime === 'hybrid' && a.online && a.permissionScopes.includes('system.file_read'),
-    );
-    if (hybridOnline.length === 1) {
-      const a = hybridOnline[0]!;
-      return {
-        targetType: 'agent',
-        targetId: a.id,
-        targetName: a.name,
-        confidence: 0.9,
-        reason: 'local PC / file task',
-        source: 'heuristic',
-      };
-    }
-    const hybridAny = agents.filter(
-      (a) => a.runtime === 'hybrid' && a.permissionScopes.includes('system.file_read'),
-    );
-    if (hybridAny.length === 1) {
-      const a = hybridAny[0]!;
-      return {
-        targetType: 'agent',
-        targetId: a.id,
-        targetName: a.name,
-        confidence: 0.75,
-        reason: 'local file task (hybrid agent)',
-        source: 'heuristic',
-      };
+      return decisionForAgent(def, 0.8, 'default agent (no strong signal)', 'default');
     }
   }
 
   return null;
 }
 
+export function topKAgentsForLlm(
+  prompt: string,
+  agents: IntentRosterAgent[],
+  defaultAgentId: string | null,
+  k = LLM_TOP_K,
+): IntentRosterAgent[] {
+  if (agents.length <= k) return agents;
+  return scoreAgents(prompt, agents, defaultAgentId)
+    .slice(0, k)
+    .map((s) => s.agent);
+}
+
+function formatAgentLine(a: IntentRosterAgent, index: number): string {
+  const parts = [
+    `${index + 1}. "${a.name}" id=${a.id}`,
+    a.runtime,
+    a.online ? 'on' : 'off',
+    `caps=${capsTag(a.permissionScopes)}`,
+  ];
+  const role = truncateText(a.roleMission, LLM_DESC_CHARS);
+  const desc = truncateText(a.description, LLM_DESC_CHARS);
+  if (role) parts.push(`role=${role}`);
+  if (desc) parts.push(`desc=${desc}`);
+  return parts.join(' | ');
+}
+
 const ROUTE_TOOL = {
   type: 'function' as const,
   function: {
     name: 'route_whatsapp_message',
-    description: 'Pick the best agent or team for an inbound WhatsApp message.',
+    description: 'Pick the best agent for an inbound WhatsApp message.',
     parameters: {
       type: 'object',
       properties: {
-        targetType: { type: 'string', enum: ['agent', 'team'] },
+        targetType: { type: 'string', enum: ['agent'] },
         targetId: { type: 'string' },
         confidence: { type: 'number', minimum: 0, maximum: 1 },
-        reason: { type: 'string', maxLength: 120 },
+        reason: { type: 'string', maxLength: 80 },
       },
       required: ['targetType', 'targetId', 'confidence', 'reason'],
     },
@@ -252,27 +382,17 @@ const ROUTE_TOOL = {
 async function llmRoute(
   prompt: string,
   agents: IntentRosterAgent[],
-  teams: IntentRosterTeam[],
 ): Promise<IntentRouteDecision | null> {
-  if (agents.length === 0 && teams.length === 0) return null;
+  if (agents.length === 0) return null;
 
   const agentLines = agents.map((a, i) => formatAgentLine(a, i)).join('\n');
-  const teamLines = teams.map((t, i) => formatTeamLine(t, i)).join('\n');
 
-  const system = `You route inbound WhatsApp messages to the best Qlix agent or team.
-
-Rules:
-- Pick ONE agent for single-step tasks; pick a team only when the goal clearly needs multiple specialists working in sequence.
-- Prefer online hybrid agents for local PC / file / "open Notepad" requests.
-- Match agent descriptions, role missions, and permission scopes to the user's request.
-- targetId MUST be copied exactly from the roster — never invent IDs.
-- If nothing fits well, pick the closest agent with confidence below 0.45.
+  const system = `Route this WhatsApp message to ONE agent from the list.
+Prefer online hybrid agents for local PC/file tasks. Match caps/desc to the request.
+Copy targetId exactly. If unsure, confidence < 0.45.
 
 Agents:
-${agentLines || '(none)'}
-
-Teams:
-${teamLines || '(none)'}`;
+${agentLines}`;
 
   try {
     const result = await chatCompletion(
@@ -280,10 +400,10 @@ ${teamLines || '(none)'}`;
         model: CLASSIFIER_MODEL,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: prompt.slice(0, 2000) },
+          { role: 'user', content: prompt.slice(0, LLM_PROMPT_CHARS) },
         ],
         temperature: 0.1,
-        max_tokens: 128,
+        max_tokens: 64,
         stream: false,
         tools: [ROUTE_TOOL],
         tool_choice: { type: 'function', function: { name: 'route_whatsapp_message' } },
@@ -306,32 +426,18 @@ ${teamLines || '(none)'}`;
       return null;
     }
 
-    const targetType = args.targetType === 'team' ? 'team' : 'agent';
     const targetId = String(args.targetId ?? '').trim();
     const confidence = Math.min(1, Math.max(0, Number(args.confidence) || 0));
-    const reason = String(args.reason ?? '').slice(0, 120);
+    const reason = String(args.reason ?? '').slice(0, 80);
 
     if (!targetId) return null;
 
-    if (targetType === 'agent') {
-      const agent = agents.find((a) => a.id === targetId);
-      if (!agent) return null;
-      return {
-        targetType: 'agent',
-        targetId: agent.id,
-        targetName: agent.name,
-        confidence,
-        reason,
-        source: 'llm',
-      };
-    }
-
-    const team = teams.find((t) => t.id === targetId);
-    if (!team) return null;
+    const agent = agents.find((a) => a.id === targetId);
+    if (!agent) return null;
     return {
-      targetType: 'team',
-      targetId: team.id,
-      targetName: team.name,
+      targetType: 'agent',
+      targetId: agent.id,
+      targetName: agent.name,
       confidence,
       reason,
       source: 'llm',
@@ -345,26 +451,27 @@ ${teamLines || '(none)'}`;
 export async function classifyWhatsAppIntent(
   connector: ConnectorAccountDTO,
   prompt: string,
-): Promise<IntentRouteDecision | null> {
-  const { agents, teams } = await buildWhatsAppIntentRoster(connector);
+): Promise<ClassifyWhatsAppIntentResult> {
+  const { agents } = await buildWhatsAppIntentRoster(connector);
 
   const heuristic = applyHeuristicRoute(prompt, agents, connector.whatsappDefaultAgentId);
   if (heuristic) {
     console.log(
-      `[whatsapp-intent] heuristic connector=${connector.id} agent=${heuristic.targetName} confidence=${heuristic.confidence}`,
+      `[whatsapp-intent] ${heuristic.source} connector=${connector.id} agent=${heuristic.targetName} confidence=${heuristic.confidence}`,
     );
-    return heuristic;
+    return { decision: heuristic, agents };
   }
 
-  const llm = await llmRoute(prompt, agents, teams);
+  const candidates = topKAgentsForLlm(prompt, agents, connector.whatsappDefaultAgentId);
+  const llm = await llmRoute(prompt, candidates);
   if (llm) {
     console.log(
-      `[whatsapp-intent] llm connector=${connector.id} ${llm.targetType}=${llm.targetName} confidence=${llm.confidence} reason=${llm.reason}`,
+      `[whatsapp-intent] llm connector=${connector.id} agent=${llm.targetName} confidence=${llm.confidence} reason=${llm.reason}`,
     );
-    return llm;
+    return { decision: llm, agents };
   }
 
-  return null;
+  return { decision: null, agents };
 }
 
 export function routeHintForConfidence(decision: IntentRouteDecision): string | null {

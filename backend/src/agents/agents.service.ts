@@ -12,8 +12,11 @@ import { isMcpScope } from '../mcp/mcpScopeCatalog.js';
 import { mcpService } from '../mcp/mcp.service.js';
 import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
 import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
+import { ensureQlixScheduleMcpForOrg } from '../schedules/ensureQlixScheduleMcp.js';
 import { prisma } from '../lib/prisma.js';
 import type { PermissionScope } from './agents.types.js';
+import { withDefaultAgentScopes } from './defaultAgentScopes.js';
+import { wireAgentMcpFromScopes } from './agentMcpWire.js';
 import {
   defaultLlmProvider,
   modelForProvider,
@@ -63,12 +66,18 @@ export class AgentsService {
     const { webauthnCredentialId } = await this.repo.assertDeviceVerified(userId);
     await this.repo.assertOrgMembership(userId, input.orgId);
 
-    const runtime = reconcileRuntimeWithScopes(input.runtime, input.permissionScopes);
+    // Always-on: brain.query + qlix-schedule MCP, regardless of intent / caller scopes.
+    const permissionScopes = withDefaultAgentScopes(input.permissionScopes);
+    const jitScopesInput = input.jitScopes.filter((s) => permissionScopes.includes(s));
+
+    const runtime = reconcileRuntimeWithScopes(input.runtime, permissionScopes);
     const normalizedInput: CreateAgentInput =
       runtime === input.runtime
-        ? input
+        ? { ...input, permissionScopes, jitScopes: jitScopesInput }
         : {
             ...input,
+            permissionScopes,
+            jitScopes: jitScopesInput,
             runtime,
             llmMode: runtime === 'local' ? input.llmMode : 'proxy',
             localInferenceMode: runtime === 'local' ? input.localInferenceMode : null,
@@ -104,17 +113,28 @@ export class AgentsService {
       webauthnCredentialId,
     });
 
+    // Bind qlix-schedule (and any other mcp.* defaults) before callers re-wire their own scopes.
+    await wireAgentMcpFromScopes({
+      userId,
+      orgId: normalizedInput.orgId,
+      agentId: agent.id,
+      scopes: normalizedInput.permissionScopes,
+    });
+
+    // Re-read so VCs + returned DTO include MCP scopes written by syncAgentScopes during wire.
+    const fresh = (await this.repo.findById(agent.id)) ?? agent;
+
     const credentials = await this.vcService.issueAgentVCs({
-      id: agent.id,
-      did: agent.did,
-      webauthnCredentialId: agent.webauthnCredentialId,
-      permissionScopes: agent.permissionScopes,
-      jitScopes: agent.jitScopes,
-      alwaysScopes: agent.alwaysScopes,
+      id: fresh.id,
+      did: fresh.did,
+      webauthnCredentialId: fresh.webauthnCredentialId,
+      permissionScopes: fresh.permissionScopes,
+      jitScopes: fresh.jitScopes,
+      alwaysScopes: fresh.alwaysScopes,
     });
 
     return {
-      agent,
+      agent: fresh,
       credentials,
       privateKey,
     };
@@ -186,7 +206,8 @@ export class AgentsService {
       throw new AgentDeleteForbiddenError('Not allowed to edit this agent');
     }
 
-    const permissionScopes = input.permissionScopes;
+    // Always-on defaults cannot be stripped via the scope editor.
+    const permissionScopes = withDefaultAgentScopes(input.permissionScopes);
     if (permissionScopes.length === 0) {
       throw new AgentScopeUpdateError('At least one permission scope is required');
     }
@@ -221,6 +242,9 @@ export class AgentsService {
     }
     if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-jobs.'))) {
       await ensureQlixJobsMcpForOrg(workspaceOrgId, userId);
+    }
+    if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-schedule.'))) {
+      await ensureQlixScheduleMcpForOrg(workspaceOrgId, userId);
     }
 
     if (workspaceOrgId && permissionScopes.some(isMcpScope)) {

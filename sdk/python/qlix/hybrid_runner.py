@@ -21,6 +21,7 @@ from .runner_common import (
     default_log,
     describe_capabilities,
     emit_event,
+    identity_with_live_scopes,
     maybe_prepend_brain_context,
     run_backend_proxy_inference,
     stream_assistant_deltas,
@@ -378,20 +379,25 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     from .tool_profiles import filter_scopes_by_tool_profile
 
                     tool_profile = str(run.get("toolProfile") or run.get("tool_profile") or "full")
-                    run_router = ToolRouter(
-                        dc_replace(
-                            identity,
-                            permission_scopes=tuple(
-                                filter_scopes_by_tool_profile(
-                                    list(identity.permission_scopes), tool_profile
-                                )
-                            ),
-                            always_scopes=tuple(
-                                filter_scopes_by_tool_profile(
-                                    list(identity.always_scopes), tool_profile
-                                )
-                            ),
+                    # Prefer live DB scopes from poll over boot-time agent.json (scope edits).
+                    live_identity = identity_with_live_scopes(
+                        identity, run if isinstance(run, dict) else None
+                    )
+                    scoped_identity = dc_replace(
+                        live_identity,
+                        permission_scopes=tuple(
+                            filter_scopes_by_tool_profile(
+                                list(live_identity.permission_scopes), tool_profile
+                            )
                         ),
+                        always_scopes=tuple(
+                            filter_scopes_by_tool_profile(
+                                list(live_identity.always_scopes), tool_profile
+                            )
+                        ),
+                    )
+                    run_router = ToolRouter(
+                        scoped_identity,
                         runner_runtime="hybrid",
                     )
                     plan = run_router.plan_run(
@@ -406,7 +412,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     from .agents3_runtime import diagnose_local_tools
 
                     tool_diag = diagnose_local_tools(
-                        identity,
+                        scoped_identity,
                         groups=plan.groups,
                         skill_filter=plan.skill_filter,
                         instruction=plan.instruction,
@@ -493,6 +499,24 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         run_id=run_id,
                         log_emit=_agents3_log_emit,
                     )
+                    from .subagents import SubAgentRunContext
+
+                    subagent_context = SubAgentRunContext(
+                        agent_id=identity.agent_id,
+                        parent_run_id=run_id,
+                        identity=scoped_identity,
+                        http=inference_http,
+                        headers=headers,
+                        model=model,
+                        backend_url=identity.backend_url,
+                        runner_token=runner_token,
+                        runner_runtime="hybrid",
+                        tool_profile=tool_profile,
+                        mcp_servers=mcp_servers,
+                        qlix_sdk=qlix,
+                        depth=0,
+                        agent_description=agent_description,
+                    )
                     tool_executors = run_router.build_executor_map(
                         plan,
                         agent_id=identity.agent_id,
@@ -503,6 +527,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         run_cache=run_cache,
                         agents3_context=agents3_context,
                         mcp_servers=mcp_servers,
+                        subagent_context=subagent_context,
                     )
 
                     tools_json = json.dumps(tools, sort_keys=True)
@@ -525,15 +550,15 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     # Tier B: clock, intent guidance, session cwd and the task itself
                     # sit after the cached prefix, not inside it.
                     granted_scopes = (
-                        set(identity.permission_scopes)
-                        | set(identity.always_scopes)
-                        | set(identity.jit_scopes)
+                        set(scoped_identity.permission_scopes)
+                        | set(scoped_identity.always_scopes)
+                        | set(scoped_identity.jit_scopes)
                     )
                     run_prompt = build_run_context_block(
                         prompt=enriched_prompt,
                         granted_scopes=granted_scopes,
                         guidance=_build_run_guidance(
-                            identity,
+                            scoped_identity,
                             groups=plan.groups,
                             instruction=enriched_prompt,
                             base_guidance=plan.guidance,
@@ -543,7 +568,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     seq, content, duration_ms, turns, tool_calls, proxy_usage, executed_tools = (
                         await run_backend_proxy_inference(
                             inference_http,
-                            identity=identity,
+                            identity=scoped_identity,
                             agent_id=identity.agent_id,
                             headers=headers,
                             seq=seq,
@@ -561,6 +586,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                                 wa_connector_id,
                                 identity,
                             ),
+                            subagent_context=subagent_context,
                         )
                     )
 

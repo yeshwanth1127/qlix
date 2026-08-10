@@ -11,13 +11,23 @@ export interface PlatformWiring {
 
 const SOCIAL_SCOPES: PermissionScope[] = ['social.read', 'social.publish'];
 const EMAIL_SCOPES: PermissionScope[] = ['email.read', 'email.send'];
+const GOOGLE_SCOPES: PermissionScope[] = [
+  ...EMAIL_SCOPES,
+  'drive.read',
+  'drive.write',
+  'calendar.read',
+  'calendar.write',
+  'meet.manage',
+  'youtube.read',
+  'youtube.publish',
+];
 const CRM_SCOPES: PermissionScope[] = ['crm.read', 'crm.write', 'crm.delete'];
 
 export const PLATFORM_WIRING: Record<string, PlatformWiring> = {
   google: {
     providers: ['google'],
-    scopes: EMAIL_SCOPES,
-    jitScopes: ['email.send'],
+    scopes: GOOGLE_SCOPES,
+    jitScopes: ['email.send', 'drive.write', 'calendar.write', 'meet.manage', 'youtube.publish'],
   },
   zoho: {
     providers: ['zoho'],

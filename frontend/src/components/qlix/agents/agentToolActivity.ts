@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import { Brain, Globe, Monitor, ShieldCheck, Terminal, Wrench } from "lucide-react";
+import { Brain, Globe, Monitor, ShieldCheck, Terminal, Users, Wrench } from "lucide-react";
 
-export type ToolCategory = "browser" | "brain" | "system" | "agents3" | "approval" | "other";
+export type ToolCategory = "browser" | "brain" | "system" | "agents3" | "approval" | "subagent" | "other";
 
 export type ActivityStep = {
   id: string;
@@ -9,9 +9,11 @@ export type ActivityStep = {
   detail?: string;
   tone: "neutral" | "accent" | "success" | "warn" | "error";
   category?: ToolCategory;
-  kind?: "tool_round" | "tool_done" | "jit_pending" | "jit_resolved" | "other";
+  kind?: "tool_round" | "tool_done" | "jit_pending" | "jit_resolved" | "subagent_running" | "subagent_done" | "other";
   toolIds?: string[];
   toolId?: string;
+  /** Links spawn ↔ complete for the same nested invocation. */
+  subagentInvocationId?: string;
   /** Source URLs a research/browse tool drew its data from (rendered inline). */
   sources?: Array<{ url: string; title?: string }>;
   /** Pending JIT only: id used to approve/deny from the dashboard, and the routing channel. */
@@ -65,6 +67,9 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   whatsapp_send_message: { label: "WhatsApp", category: "other", verb: "Send message" },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
+  spawn_subagents: { label: "Sub-agent", category: "subagent", verb: "Spawn sub-agents" },
+  await_subagents: { label: "Sub-agent", category: "subagent", verb: "Await sub-agents" },
+  delegate_task: { label: "Sub-agent", category: "subagent", verb: "Delegate task (legacy)" },
   shell_exec: { label: "Shell", category: "system", verb: "Run command" },
   code_interpreter: { label: "Code", category: "system", verb: "Run code" },
   luna_local_read_file: { label: "luna_local", category: "agents3", verb: "Read file" },
@@ -275,6 +280,8 @@ export function toolCategoryIcon(category: ToolCategory): LucideIcon {
       return Monitor;
     case "approval":
       return ShieldCheck;
+    case "subagent":
+      return Users;
     default:
       return Wrench;
   }
@@ -484,6 +491,45 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
     }
     case "luna_start":
       return { id, label: "Agent engine ready", tone: "neutral", kind: "other" };
+    case "subagent_spawned": {
+      const name = String(d.name ?? "").trim();
+      const inv = String(d.invocationId ?? "").trim();
+      const skills = Array.isArray(d.skills) ? d.skills.map(String).filter(Boolean) : [];
+      const promptPreview = String(d.promptPreview ?? "").trim();
+      const label = name ? `Sub-agent running — ${name}` : "Sub-agent running";
+      const detailParts = [
+        skills.length > 0 ? formatToolList(skills) : "",
+        promptPreview ? promptPreview.slice(0, 80) : "",
+      ].filter(Boolean);
+      return {
+        id: inv ? `subagent-run-${inv}` : id,
+        label,
+        detail: detailParts.join(" · ") || undefined,
+        tone: "accent",
+        kind: "subagent_running",
+        category: "subagent",
+        subagentInvocationId: inv || undefined,
+      };
+    }
+    case "subagent_completed": {
+      const name = String(d.name ?? "").trim();
+      const status = String(d.status ?? "").trim().toLowerCase();
+      const inv = String(d.invocationId ?? "").trim();
+      const failed = status === "failed" || status === "canceled";
+      const label = name
+        ? `Sub-agent ${failed ? "failed" : "finished"} — ${name}`
+        : `Sub-agent ${failed ? "failed" : "finished"}`;
+      const preview = String(d.resultPreview ?? d.errorMessage ?? "").trim();
+      return {
+        id: inv ? `subagent-done-${inv}` : id,
+        label,
+        detail: preview.slice(0, 120) || undefined,
+        tone: failed ? "error" : "success",
+        kind: "subagent_done",
+        category: "subagent",
+        subagentInvocationId: inv || undefined,
+      };
+    }
     case "browser_engine_info": {
       const engine = String(d.engine ?? "unknown");
       const binary = String(d.binary ?? "");
@@ -566,6 +612,30 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const toolId = String(d.tool ?? "");
       const f = formatToolId(toolId);
       const browserAction = describeBrowserToolAction(toolId, d);
+      if (toolId === "spawn_subagents") {
+        return {
+          id,
+          label: "Spawning sub-agents",
+          detail: "Starting nested workers",
+          tone: "accent",
+          kind: "tool_round",
+          category: "subagent",
+          toolIds: [toolId],
+          toolId,
+        };
+      }
+      if (toolId === "await_subagents") {
+        return {
+          id,
+          label: "Waiting on sub-agents",
+          detail: "Collecting results",
+          tone: "accent",
+          kind: "tool_round",
+          category: "subagent",
+          toolIds: [toolId],
+          toolId,
+        };
+      }
       return {
         id,
         label: browserAction ?? (f.group === "luna_local" ? `luna_local — ${f.short}` : `Running — ${f.group}`),
@@ -763,6 +833,37 @@ export function getActiveToolsFromSteps(steps: ActivityStep[]): Array<{
     short: f.short,
     category: f.category,
   }));
+}
+
+/** Active nested sub-agents (spawned, not yet completed) for live UI. */
+export function getActiveSubagentsFromSteps(steps: ActivityStep[]): Array<{
+  invocationId: string;
+  label: string;
+  detail?: string;
+}> {
+  const active = new Map<string, { label: string; detail?: string }>();
+  for (const step of steps) {
+    const inv = step.subagentInvocationId?.trim();
+    if (!inv) continue;
+    if (step.kind === "subagent_running") {
+      active.set(inv, {
+        label: step.label.replace(/^Sub-agent running — /, "").replace(/^Sub-agent running$/, "Sub-agent"),
+        detail: step.detail,
+      });
+    }
+    if (step.kind === "subagent_done") {
+      active.delete(inv);
+    }
+  }
+  return [...active.entries()].map(([invocationId, meta]) => ({
+    invocationId,
+    label: meta.label,
+    detail: meta.detail,
+  }));
+}
+
+export function hasActiveSubagents(steps: ActivityStep[]): boolean {
+  return getActiveSubagentsFromSteps(steps).length > 0;
 }
 
 /** True while a JIT approval was requested and not yet granted/denied/expired. */

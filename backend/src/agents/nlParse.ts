@@ -15,13 +15,16 @@ import {
   enrichCompetitorResearchPlan,
   enrichJobApplyPlan,
   enrichCrmPlan,
+  enrichSchedulePlan,
 } from './nlPlanEnrichment.js';
 import { selectNlPromptPacks } from './nlPromptPacks.js';
+import { withDefaultAgentScopes } from './defaultAgentScopes.js';
 
-const DEFAULT_BUILDER_MODEL = 'exora/exora-general';
+const DEFAULT_BUILDER_MODEL = 'openrouter/qlix/auto';
+const DEFAULT_AGENT_MODEL = 'exora/exora-general';
 
 function defaultAgentModel(): string {
-  return DEFAULT_BUILDER_MODEL;
+  return DEFAULT_AGENT_MODEL;
 }
 
 function providerForModel(model: string): LlmProviderId {
@@ -42,7 +45,7 @@ function sanitizeScopes(raw: unknown, allowed: Set<string>): PermissionScope[] {
   return raw.filter((s): s is PermissionScope => typeof s === 'string' && allowed.has(s));
 }
 
-function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set<string>): NLAgentSpec {
+export function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set<string>): NLAgentSpec {
   // The model can emit null / non-object entries; coerce so we never deref null.
   const raw: Record<string, unknown> =
     rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
@@ -53,6 +56,8 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
     const fallback = allowed.has('web.read') ? 'web.read' : [...allowed][0];
     if (fallback) permissionScopes = [fallback as PermissionScope];
   }
+  // Always-on defaults (brain.query + qlix-schedule) — force even if MCP catalog lag.
+  permissionScopes = withDefaultAgentScopes(permissionScopes);
   const rawJit = sanitizeScopes(raw.jitScopes, allowed);
   const scopeSet = new Set(permissionScopes);
   const jitScopes = [
@@ -83,19 +88,17 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
 
   let model =
     typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : defaultAgentModel();
-  // Cloud/hybrid: keep Exora general / qlix Auto / any already-namespaced model; else force default.
+  // Cloud/hybrid: keep namespaced Exora/OpenRouter models; else force Exora General.
   if (runtime === 'cloud' || runtime === 'hybrid') {
     const lower = model.toLowerCase();
     const keep =
-      lower === 'exora/exora-general' ||
-      lower === 'exora-general' ||
       lower.includes('qlix/auto') ||
       lower.startsWith('exora/') ||
       lower.startsWith('openrouter/');
     if (!keep) {
       model = defaultAgentModel();
     } else if (lower === 'exora-general') {
-      model = DEFAULT_BUILDER_MODEL;
+      model = DEFAULT_AGENT_MODEL;
     }
   }
 
@@ -112,7 +115,7 @@ function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allowed: Set
   };
 }
 
-function sanitizeWorkerSpec(rawInput: unknown, index: number, allowed: Set<string>): NLWorkerSpec {
+export function sanitizeWorkerSpec(rawInput: unknown, index: number, allowed: Set<string>): NLWorkerSpec {
   const raw: Record<string, unknown> =
     rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : {};
   const base = sanitizeAgentSpec(raw, `Worker ${index + 1}`, allowed);
@@ -240,5 +243,69 @@ export async function parseAgentCreationPrompt(
   const leadEnriched = enrichLeadGenPlan(userPrompt, plan, allowed);
   const jobEnriched = enrichJobApplyPlan(userPrompt, leadEnriched, allowed);
   const competitorEnriched = enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
-  return enrichCrmPlan(userPrompt, competitorEnriched, allowed);
+  const crmEnriched = enrichCrmPlan(userPrompt, competitorEnriched, allowed);
+  return enrichSchedulePlan(userPrompt, crmEnriched, allowed);
+}
+
+/**
+ * Sanitize a model- or API-provided creation plan against org-buildable scopes.
+ * Accepts `{ type: 'single'|'team', ... }` or `{ kind: 'single'|'team', ... }`.
+ */
+export async function sanitizeCreationPlan(
+  raw: unknown,
+  orgId: string | null,
+): Promise<AgentCreationPlan> {
+  if (!raw || typeof raw !== 'object') {
+    throw new NLParseError('Creation plan must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const kind = String(obj.type ?? obj.kind ?? '');
+  const availableScopes = await getBuildableScopes(orgId);
+  const allowed = new Set<string>(availableScopes.map((s) => s.id));
+  const rationale = String(obj.rationale ?? '');
+
+  if (kind === 'single') {
+    const agentRaw = obj.agent;
+    if (!agentRaw || typeof agentRaw !== 'object') {
+      throw new NLParseError('single plan: missing agent');
+    }
+    return {
+      type: 'single',
+      agent: sanitizeAgentSpec(agentRaw, 'Proposed Agent', allowed),
+      rationale,
+    };
+  }
+
+  if (kind === 'team') {
+    const teamRaw = (obj.team && typeof obj.team === 'object' ? obj.team : obj) as Record<string, unknown>;
+    const supervisorRaw = teamRaw.supervisor;
+    if (!supervisorRaw || typeof supervisorRaw !== 'object') {
+      throw new NLParseError('team plan: missing supervisor');
+    }
+    const workersRaw = (Array.isArray(teamRaw.workers) ? teamRaw.workers : []).filter(
+      (w) => w && typeof w === 'object',
+    );
+    const configRaw = (teamRaw.config ?? {}) as Record<string, unknown>;
+    return {
+      type: 'team',
+      rationale,
+      team: {
+        name: String(teamRaw.name ?? 'Proposed Team').slice(0, 120),
+        description: String(teamRaw.description ?? '').slice(0, 10000),
+        supervisor: sanitizeAgentSpec(supervisorRaw, 'Supervisor', allowed),
+        workers: workersRaw.map((w, i) => sanitizeWorkerSpec(w, i, allowed)),
+        config: {
+          maxParallelWorkers:
+            typeof configRaw.maxParallelWorkers === 'number' ? configRaw.maxParallelWorkers : 3,
+          subtaskTimeoutMs:
+            typeof configRaw.subtaskTimeoutMs === 'number' ? configRaw.subtaskTimeoutMs : 180_000,
+          retryPolicy: ['none', 'once', 'twice'].includes(configRaw.retryPolicy as string)
+            ? (configRaw.retryPolicy as 'none' | 'once' | 'twice')
+            : 'once',
+        },
+      },
+    };
+  }
+
+  throw new NLParseError(`Creation plan kind must be single or team (got "${kind}")`);
 }

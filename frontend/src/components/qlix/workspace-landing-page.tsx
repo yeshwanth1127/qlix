@@ -106,15 +106,30 @@ export function WorkspaceLandingPage() {
 
           <footer className="flex h-12 items-center justify-center px-8">
             <div className="pointer-events-auto flex flex-wrap justify-center gap-x-6 gap-y-1">
-              {["Terms", "Privacy", "Compliance", "Security"].map((label) => (
-                <a
-                  key={label}
-                  className="text-[11px] font-medium uppercase tracking-[0.05em] text-white/40 transition-colors hover:text-white/80"
-                  href="#"
-                >
-                  {label}
-                </a>
-              ))}
+              <Link
+                href="/terms"
+                className="text-[11px] font-medium uppercase tracking-[0.05em] text-white/40 transition-colors hover:text-white/80"
+              >
+                Terms
+              </Link>
+              <Link
+                href="/privacy"
+                className="text-[11px] font-medium uppercase tracking-[0.05em] text-white/40 transition-colors hover:text-white/80"
+              >
+                Privacy
+              </Link>
+              <a
+                href="#"
+                className="text-[11px] font-medium uppercase tracking-[0.05em] text-white/40 transition-colors hover:text-white/80"
+              >
+                Compliance
+              </a>
+              <a
+                href="#"
+                className="text-[11px] font-medium uppercase tracking-[0.05em] text-white/40 transition-colors hover:text-white/80"
+              >
+                Security
+              </a>
             </div>
           </footer>
         </div>

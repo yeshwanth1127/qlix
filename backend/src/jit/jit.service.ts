@@ -219,6 +219,10 @@ async function hasRunScopedJitGrant(
 /** Scopes for which one human approval covers the whole conversation ("approve once per session"). */
 const CONVERSATION_SCOPED_GRANT_SCOPES = new Set([
   'email.send',
+  'drive.write',
+  'calendar.write',
+  'meet.manage',
+  'youtube.publish',
   'crm.write',
   'crm.delete',
   'slack.send',
@@ -286,7 +290,11 @@ function formatScopeLabel(scope: string): string {
     'system.file_write': 'Write files',
     'system.file_read': 'Read files',
     'system.gui_control': 'Control desktop',
-    'email.send': 'Send email',
+    'email.send': 'Send email (not drafts)',
+    'drive.write': 'Write to Google Drive',
+    'calendar.write': 'Write to Google Calendar',
+    'meet.manage': 'Manage Google Meet',
+    'youtube.publish': 'Publish to YouTube',
     'crm.write': 'Create or update CRM records',
     'crm.delete': 'Delete CRM records',
     'slack.send': 'Post Slack messages',

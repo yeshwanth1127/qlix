@@ -2,6 +2,10 @@ import { prisma } from '../lib/prisma.js';
 import { ConnectorsRepository } from '../connectors/connectors.repository.js';
 import type { ConnectorProvider } from '../connectors/connectors.types.js';
 import { CRM_CONNECTOR_PROVIDERS } from '../connectors/crm/crm.types.js';
+import {
+  googleServiceConnected,
+  PERMISSION_SCOPE_GOOGLE_SERVICE,
+} from '../connectors/googleServices.js';
 import { getMcpScopeDefsForOrg } from '../mcp/mcpScopeCatalog.js';
 import type { AgentRuntime, BuiltinPermissionScope, PermissionScope } from './agents.types.js';
 
@@ -111,9 +115,10 @@ export const SCOPE_CATALOG: ScopeDef[] = [
   {
     id: 'brain.query',
     label: 'Query company AI brain',
-    description: 'Query the organization AI brain for insights and answers',
+    description:
+      'Query the organization AI brain for insights and answers (always granted to every standard agent)',
     forceJit: false,
-    runtimes: ['cloud', 'hybrid'],
+    runtimes: ['cloud', 'hybrid', 'local'],
   },
   {
     id: 'brain.knowledge_read',
@@ -132,8 +137,64 @@ export const SCOPE_CATALOG: ScopeDef[] = [
   },
   {
     id: 'email.send',
-    label: 'Send email via connected Gmail',
-    description: 'Send emails via a connected Gmail account',
+    label: 'Send / draft email via connected Gmail',
+    description: 'Send emails or save Gmail drafts via a connected Gmail account (send is JIT)',
+    forceJit: true,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'drive.read',
+    label: 'Read Google Drive',
+    description: 'List and read files from connected Google Drive',
+    forceJit: false,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'drive.write',
+    label: 'Write to Google Drive',
+    description: 'Create, update, or share files in connected Google Drive',
+    forceJit: true,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'calendar.read',
+    label: 'Read Google Calendar',
+    description: 'List and read events from connected Google Calendar',
+    forceJit: false,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'calendar.write',
+    label: 'Write to Google Calendar',
+    description: 'Create, update, or delete events on connected Google Calendar',
+    forceJit: true,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'meet.manage',
+    label: 'Google Meet',
+    description: 'Create and manage Google Meet links and meeting spaces',
+    forceJit: true,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'youtube.read',
+    label: 'Read YouTube',
+    description: 'Search and read YouTube channels, videos, and metadata via Google',
+    forceJit: false,
+    requiresConnector: 'google',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'youtube.publish',
+    label: 'Publish to YouTube',
+    description: 'Upload or update YouTube videos via a connected Google account',
     forceJit: true,
     requiresConnector: 'google',
     runtimes: ['cloud', 'hybrid'],
@@ -271,12 +332,16 @@ const connectorsRepo = new ConnectorsRepository();
  */
 export async function getEffectiveScopes(orgId: string | null): Promise<AnnotatedScopeDef[]> {
   const connected = new Set<ConnectorProvider>();
+  let googleOAuthScopes: string[] = [];
   let disabled = new Set<string>();
 
   if (orgId) {
     const accounts = await connectorsRepo.listForOrg(orgId);
     for (const a of accounts) {
       if (a.status === 'connected') connected.add(a.provider);
+      if (a.provider === 'google' && a.status === 'connected') {
+        googleOAuthScopes = a.scopes;
+      }
     }
     try {
       const org = await prisma.organization.findUnique({ where: { id: orgId } });
@@ -295,6 +360,12 @@ export async function getEffectiveScopes(orgId: string | null): Promise<Annotate
     let isConnected = !s.requiresConnector || connected.has(s.requiresConnector);
     if (s.requiresConnectorFamily === 'crm') {
       isConnected = CRM_CONNECTOR_PROVIDERS.some((p) => connected.has(p));
+    }
+    // Google products are individually connectable — email scopes need Gmail OAuth,
+    // drive scopes need Drive OAuth, etc. (not merely "google account linked").
+    const googleService = PERMISSION_SCOPE_GOOGLE_SERVICE[s.id];
+    if (googleService) {
+      isConnected = googleServiceConnected(googleService, googleOAuthScopes);
     }
     return { ...s, enabled, connected: isConnected, available: enabled && isConnected };
   });

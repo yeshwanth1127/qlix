@@ -29,11 +29,26 @@ export type TeamRunEventType =
   | 'user_injection'
   | 'lead_review_required';
 
+/**
+ * Which deterministic stage-goal playbook the orchestrator applies to a run.
+ *
+ * This is stored on the team rather than inferred from member scopes at run time.
+ * Inferring it meant that rewiring a team (adding a member, changing delegated
+ * scopes) could silently switch the whole execution strategy, so the pipeline a
+ * user sees would stop describing the pipeline that actually runs.
+ *
+ * `undefined` means "never resolved" — legacy teams created before the field
+ * existed. Those are detected once on their next run and then persisted.
+ */
+export type TeamPlaybook = 'lead_gen' | 'none';
+
 export interface TeamConfig {
   maxParallelWorkers: number;
   subtaskTimeoutMs: number;
   retryPolicy: 'none' | 'once' | 'twice';
   humanInLoopTriggers: string[];
+  /** Deterministic stage-goal playbook. Resolved once, then sticky. */
+  playbook?: TeamPlaybook;
   /** When true, workers run sequentially and each receives prior results as context. */
   pipelineMode?: boolean;
   /**
@@ -218,6 +233,12 @@ export const DEFAULT_TEAM_CONFIG: TeamConfig = {
 };
 
 export interface ReorderTeamMembersInput {
-  /** Ordered list of memberIds. Index 0 becomes stage 1, etc. */
-  memberIds: string[];
+  /** Ordered list of memberIds — index 0 becomes stage 1. Every member runs in its own stage. */
+  memberIds?: string[];
+  /**
+   * Ordered list of stages. Each inner array is one pipeline stage; members sharing a
+   * stage run concurrently. `[[a], [b, c], [d]]` → a, then b and c together, then d.
+   * Takes precedence over `memberIds` when both are supplied.
+   */
+  stages?: string[][];
 }

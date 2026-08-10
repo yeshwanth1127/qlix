@@ -6,6 +6,8 @@ import {
   formatDisambiguationMenu,
   parseDisambiguationSelection,
   routeHintForConfidence,
+  scoreAgents,
+  topKAgentsForLlm,
   type IntentRosterAgent,
   type IntentRouteDecision,
 } from './whatsappIntentRouter.js';
@@ -14,7 +16,7 @@ import { parseWhatsAppRunModifiers } from './whatsappRunModifiers.js';
 const hybridAgent: IntentRosterAgent = {
   id: 'hybrid-1',
   name: 'local',
-  description: 'Local PC assistant',
+  description: 'Local PC assistant for field support log review',
   permissionScopes: ['system.file_read'],
   runtime: 'hybrid',
   online: true,
@@ -26,6 +28,16 @@ const cloudAgent: IntentRosterAgent = {
   name: 'researcher',
   description: 'Web research',
   permissionScopes: ['web.read'],
+  runtime: 'cloud',
+  online: true,
+  roleMission: null,
+};
+
+const emailAgent: IntentRosterAgent = {
+  id: 'email-1',
+  name: 'mailer',
+  description: 'Inbox triage',
+  permissionScopes: ['email.read', 'email.send'],
   runtime: 'cloud',
   online: true,
   roleMission: null,
@@ -81,8 +93,23 @@ describe('applyHeuristicRoute', () => {
     assert.equal(decision?.source, 'single');
   });
 
-  it('uses default agent for short messages', () => {
-    const decision = applyHeuristicRoute('hi', [cloudAgent, hybridAgent], hybridAgent.id);
+  it('routes by agent name mention', () => {
+    const decision = applyHeuristicRoute(
+      'Ask researcher to summarize quarterly revenue',
+      [cloudAgent, hybridAgent],
+      null,
+    );
+    assert.equal(decision?.targetId, 'cloud-1');
+    assert.equal(decision?.source, 'heuristic');
+    assert.ok((decision?.confidence ?? 0) >= 0.9);
+  });
+
+  it('uses default agent when there is no strong signal', () => {
+    const decision = applyHeuristicRoute(
+      'Summarize quarterly revenue trends for the board',
+      [cloudAgent, hybridAgent],
+      hybridAgent.id,
+    );
     assert.equal(decision?.targetId, 'hybrid-1');
     assert.equal(decision?.source, 'default');
   });
@@ -98,13 +125,49 @@ describe('applyHeuristicRoute', () => {
     assert.ok(decision!.confidence >= 0.75);
   });
 
-  it('returns null when multiple agents and no strong signal', () => {
+  it('routes email capability keywords to email-scoped agent', () => {
     const decision = applyHeuristicRoute(
-      'Summarize quarterly revenue trends',
-      [cloudAgent, hybridAgent],
+      'Check my inbox and summarize unread email',
+      [cloudAgent, hybridAgent, emailAgent],
+      null,
+    );
+    assert.equal(decision?.targetId, 'email-1');
+    assert.equal(decision?.source, 'heuristic');
+  });
+
+  it('returns null on a close race so LLM can decide', () => {
+    const twin: IntentRosterAgent = {
+      ...cloudAgent,
+      id: 'cloud-2',
+      name: 'analyst',
+      description: 'Web research and market analysis',
+      permissionScopes: ['web.read', 'web.research'],
+    };
+    const decision = applyHeuristicRoute(
+      'Please research competitor pricing online',
+      [cloudAgent, twin],
       null,
     );
     assert.equal(decision, null);
+  });
+});
+
+describe('scoreAgents / topKAgentsForLlm', () => {
+  it('ranks hybrid higher for PC tasks', () => {
+    const scores = scoreAgents('Open C:\\tmp\\a.log on my computer', [cloudAgent, hybridAgent], null);
+    assert.equal(scores[0]?.agent.id, 'hybrid-1');
+    assert.ok((scores[0]?.score ?? 0) > (scores[1]?.score ?? 0));
+  });
+
+  it('limits LLM candidates to top K', () => {
+    const top = topKAgentsForLlm(
+      'search the web for news',
+      [hybridAgent, cloudAgent, emailAgent],
+      null,
+      2,
+    );
+    assert.equal(top.length, 2);
+    assert.equal(top[0]?.id, 'cloud-1');
   });
 });
 

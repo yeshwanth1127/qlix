@@ -13,6 +13,7 @@ import {
   Lightbulb,
   Loader2,
   MessageCircle,
+  Plus,
   Sparkles,
   User,
   Users,
@@ -51,6 +52,7 @@ import { useSession } from "@/components/qlix/session-context";
 import { ClaimAccountModal } from "@/components/qlix/ClaimAccountModal";
 import { HybridRunnerSetupPopup } from "@/components/qlix/agents/HybridRunnerSetupPopup";
 import { NLPlanPreview } from "@/components/qlix/agents/nl/NLPlanPreview";
+import { AddCapabilitiesPanel } from "@/components/qlix/agents/nl/AddCapabilitiesPanel";
 import { NLCreationProgress, type CreationStep } from "@/components/qlix/agents/nl/NLCreationProgress";
 import { RequiredConnectorsPopup } from "@/components/qlix/agents/nl/RequiredConnectorsPopup";
 import { QlixWordmark } from "@/components/qlix/landing/QlixWordmark";
@@ -127,36 +129,35 @@ function composeDesignPrompt(base: string, revisions: readonly string[]): string
 
 /** Guests: cloud-only for web agents; hybrid when scopes need local tools (desktop/files). */
 const GUEST_MAX_AGENTS = 3;
-const DEFAULT_BUILDER_MODEL = "exora/exora-general";
+/** Model used to design/plan agents in the AI Builder (OpenRouter). */
+const DEFAULT_BUILDER_PARSE_MODEL = CLOUD_MODELS[0];
+/** Default model stamped onto created agents (Exora). */
+const DEFAULT_AGENT_MODEL = "exora/exora-general";
 const BUILDER_MODELS = [
-  { id: DEFAULT_BUILDER_MODEL, label: "Exora General" },
-  { id: CLOUD_MODELS[0], label: "OpenRouter Auto" },
+  { id: DEFAULT_BUILDER_PARSE_MODEL, label: "OpenRouter Auto" },
 ] as const;
 
 function adaptSpecForGuest<T extends NLAgentSpec | NLWorkerSpec>(spec: T): T {
   const proxyModels = [...CLOUD_MODELS, ...EXORA_MODELS] as readonly string[];
   const model = proxyModels.includes(spec.model)
     ? spec.model
-    : DEFAULT_BUILDER_MODEL;
+    : DEFAULT_AGENT_MODEL;
   if (scopesRequireHybrid(spec.permissionScopes)) {
     return { ...spec, runtime: "hybrid", model, llmMode: "proxy", localInferenceMode: null };
   }
   return { ...spec, runtime: "cloud", model, llmMode: "proxy", localInferenceMode: null };
 }
 
-function applyBuilderModel(
-  plan: AgentCreationPlan,
-  model: string,
-): AgentCreationPlan {
+function applyDefaultAgentModel(plan: AgentCreationPlan): AgentCreationPlan {
   if (plan.type === "single") {
-    return { ...plan, agent: { ...plan.agent, model } };
+    return { ...plan, agent: { ...plan.agent, model: DEFAULT_AGENT_MODEL } };
   }
   return {
     ...plan,
     team: {
       ...plan.team,
-      supervisor: { ...plan.team.supervisor, model },
-      workers: plan.team.workers.map((worker) => ({ ...worker, model })),
+      supervisor: { ...plan.team.supervisor, model: DEFAULT_AGENT_MODEL },
+      workers: plan.team.workers.map((worker) => ({ ...worker, model: DEFAULT_AGENT_MODEL })),
     },
   };
 }
@@ -398,7 +399,7 @@ export function ChatLanding({
   const [introDone, setIntroDone] = useState(isDashboard);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
-  const [builderModel, setBuilderModel] = useState(DEFAULT_BUILDER_MODEL);
+  const [builderModel, setBuilderModel] = useState<string>(DEFAULT_BUILDER_PARSE_MODEL);
   const [busy, setBusy] = useState(false);
   const [claimOpen, setClaimOpen] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -406,6 +407,7 @@ export function ChatLanding({
   /** Plan item whose redesign composer is open, plus the change request being typed. */
   const [redesignFor, setRedesignFor] = useState<number | null>(null);
   const [redesignNote, setRedesignNote] = useState("");
+  const [capabilitiesFor, setCapabilitiesFor] = useState<number | null>(null);
   const idRef = useRef(0);
   const busyRef = useRef(false);
   const sessionRef = useRef<AuthSuccessResponse | null>(null);
@@ -486,7 +488,7 @@ export function ChatLanding({
       return;
     }
 
-    let plan = applyBuilderModel(res.plan, builderModel);
+      let plan = applyDefaultAgentModel(res.plan);
     let guestNote: string | null = null;
     const activeSession = isDashboard ? session : sessionRef.current;
     if (activeSession?.user.isGuest) {
@@ -1034,8 +1036,29 @@ export function ChatLanding({
                               <button
                                 type="button"
                                 disabled={busy}
+                                aria-expanded={capabilitiesFor === item.id}
+                                onClick={() => {
+                                  setRedesignFor(null);
+                                  setCapabilitiesFor((cur) => (cur === item.id ? null : item.id));
+                                }}
+                                className={cn(
+                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#1c1830]",
+                                  "bg-white/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
+                                  capabilitiesFor === item.id
+                                    ? "border-[#1c1830]/45 bg-white"
+                                    : "border-black/15 hover:border-[#1c1830]/40 hover:bg-white",
+                                  "disabled:cursor-not-allowed disabled:opacity-50",
+                                )}
+                              >
+                                <Plus className="size-4" aria-hidden />
+                                Add capabilities
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
                                 aria-expanded={redesignFor === item.id}
                                 onClick={() => {
+                                  setCapabilitiesFor(null);
                                   setRedesignNote("");
                                   setRedesignFor((cur) => (cur === item.id ? null : item.id));
                                 }}
@@ -1052,6 +1075,20 @@ export function ChatLanding({
                                 Redesign
                               </button>
                             </div>
+
+                            {capabilitiesFor === item.id && (
+                              <AddCapabilitiesPanel
+                                plan={plan}
+                                orgId={effectiveOrgId}
+                                onPlanChange={(p) =>
+                                  setItems((prev) =>
+                                    prev.map((it) =>
+                                      it.id === item.id && it.kind === "plan" ? { ...it, plan: p } : it,
+                                    ),
+                                  )
+                                }
+                              />
+                            )}
 
                             {redesignFor === item.id && (
                               <div className="qlix-msg-in rounded-2xl border border-black/12 bg-white/75 p-3 backdrop-blur-xl">

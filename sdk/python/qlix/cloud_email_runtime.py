@@ -22,7 +22,12 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "description": (
                 "Read or search emails from the connected Gmail account. "
                 "Use query for Gmail search syntax (e.g. is:unread, from:alice@example.com). "
-                "Provide messageId to fetch a single message."
+                "Provide messageId to fetch a single message. "
+                "File attachments are downloaded into the Qlix sandbox (same store as "
+                "agent-generated files), and extractable text (PDF/DOCX/XLSX/CSV/text) is "
+                "included in each message's attachments[].extractedText for you to use. "
+                "Also share attachments[].url download links with the user when relevant. "
+                "Images may only have a URL (no text extract)."
             ),
             "parameters": {
                 "type": "object",
@@ -39,6 +44,14 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         "type": "string",
                         "description": "Optional Gmail message id to fetch a single message.",
                     },
+                    "includeAttachments": {
+                        "type": "boolean",
+                        "description": (
+                            "Download + extract attachments into the sandbox and return "
+                            "their text to you (default true). Set false only for a quick "
+                            "metadata scan without files."
+                        ),
+                    },
                 },
             },
         },
@@ -48,8 +61,19 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "function": {
             "name": "email_send",
             "description": (
-                "Send an email via the connected Gmail account. "
-                "CRITICAL: only send to REAL email addresses obtained from tools such as "
+                "Gmail send / draft / list drafts / delete draft via the connected account. "
+                "ROUTE FROM THE USER MESSAGE using mode: "
+                "mode='draft' to compose/prepare/write without sending; "
+                "mode='send' to deliver; "
+                "mode='list_drafts' to list existing Gmail drafts (use this before deleting "
+                "when you don't already have a draftId); "
+                "mode='delete_draft' to delete a draft (requires draftId from a prior draft "
+                "create or list_drafts — never invent draftId). "
+                "Default to mode='send' only when intent is clearly to deliver. "
+                "IMPORTANT: mode=draft does NOT deliver mail. Tell the user the draft is in "
+                "the connected mailbox's Drafts (see mailboxEmail in the tool result), and "
+                "never say 'sent' for a draft. Recipients in 'to' only prefill the draft. "
+                "CRITICAL for mode=send: only send to REAL email addresses obtained from tools such as "
                 "list_leads / gmb_search_leads or provided by the user. NEVER invent or guess "
                 "addresses (e.g. info@cafe1.com, contact@business2.com) — fabricated recipients "
                 "are rejected by the server. For lead outreach you MUST follow this order: "
@@ -57,23 +81,53 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "(3) for EACH lead in needsBrowserEnrichment: browser_ab_open(website) "
                 "then update_lead_email or record_lead_enrichment(no_email_on_site), "
                 "(4) list_leads contactable and present verified emails to the user, "
-                "(5) only then email_send. Sends are blocked while website leads lack browser enrichment. "
-                "Never use Wix placeholders like info@mysite.com. "
-                "The first send in a chat may pause for one-time Approve/Deny in this chat; "
-                "call email_send when ready — do not tell the user to check the dashboard first. "
-                "After they approve once, later sends in the same conversation proceed automatically. "
-                "If Gmail is not connected, tell the user to open Connectors → Google (Gmail) → Connect Google."
+                "(5) only then email_send with mode=send. Sends are blocked while website leads "
+                "lack browser enrichment. Never use Wix placeholders like info@mysite.com. "
+                "The first mode=send in a chat may pause for one-time Approve/Deny in this chat; "
+                "draft / list_drafts / delete_draft never require approval. "
+                "If Gmail is not connected, tell the user to open Connectors → Google (Gmail) → Connect Google. "
+                "If draft ops fail for missing compose permission, tell them to reconnect Gmail in Connectors."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["send", "draft", "list_drafts", "delete_draft"],
+                        "description": (
+                            "send = deliver now (JIT may apply). "
+                            "draft = save to Gmail Drafts. "
+                            "list_drafts = list drafts (returns draftId values). "
+                            "delete_draft = permanently delete a draft by draftId."
+                        ),
+                    },
                     "to": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Recipient email addresses.",
+                        "description": (
+                            "Recipient email addresses. Required for mode=send; "
+                            "optional for mode=draft; unused for list/delete."
+                        ),
                     },
-                    "subject": {"type": "string", "description": "Email subject line."},
-                    "bodyText": {"type": "string", "description": "Plain-text email body."},
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject. Required for send/draft.",
+                    },
+                    "bodyText": {
+                        "type": "string",
+                        "description": "Plain-text body. Required for send/draft.",
+                    },
+                    "draftId": {
+                        "type": "string",
+                        "description": (
+                            "Gmail draft resource id for mode=delete_draft. "
+                            "Get it from mode=draft response or mode=list_drafts."
+                        ),
+                    },
+                    "maxResults": {
+                        "type": "integer",
+                        "description": "For mode=list_drafts: max drafts to return (1-25).",
+                    },
                     "replyToMessageId": {
                         "type": "string",
                         "description": "Optional Gmail message id to reply in-thread.",
@@ -87,11 +141,92 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         },
                     },
                 },
-                "required": ["to", "subject", "bodyText"],
+                "required": ["mode"],
             },
         },
     },
 }
+
+
+def email_mode_routing_guidance(instruction: str) -> str:
+    """Run-context hint so the model picks email_send mode from the user message."""
+    lower = (instruction or "").lower()
+    delete_markers = (
+        "delete draft",
+        "delete the draft",
+        "remove draft",
+        "remove the draft",
+        "discard draft",
+        "discard the draft",
+        "delete that draft",
+        "delete my draft",
+        "delete a draft",
+    )
+    list_markers = (
+        "list drafts",
+        "show drafts",
+        "my drafts",
+        "gmail drafts",
+        "what drafts",
+    )
+    draft_markers = (
+        "draft",
+        "compose",
+        "prepare an email",
+        "prepare email",
+        "write an email",
+        "write email",
+        "save as draft",
+        "don't send",
+        "do not send",
+        "dont send",
+        "without sending",
+    )
+    send_markers = (
+        "send email",
+        "send an email",
+        "send the email",
+        "email them",
+        "email him",
+        "email her",
+        "mail them",
+        "deliver the email",
+    )
+    wants_delete = any(m in lower for m in delete_markers)
+    wants_list = any(m in lower for m in list_markers)
+    wants_draft = any(m in lower for m in draft_markers)
+    wants_send = any(m in lower for m in send_markers)
+    if wants_delete:
+        return (
+            "## Email tool routing\n"
+            "The user asked to delete a draft — call email_send with mode='list_drafts' "
+            "if you don't already have the draftId, then mode='delete_draft' with that draftId. "
+            "Do not use mode='send'."
+        )
+    if wants_list and not wants_draft:
+        return (
+            "## Email tool routing\n"
+            "The user asked about drafts — call email_send with mode='list_drafts'."
+        )
+    if wants_draft and not wants_send and not wants_delete:
+        return (
+            "## Email tool routing\n"
+            "The user asked to draft/compose — call email_send with mode='draft'. "
+            "Do not use mode='send' unless they explicitly ask to send."
+        )
+    if wants_send and not wants_draft:
+        return (
+            "## Email tool routing\n"
+            "The user asked to send — call email_send with mode='send' "
+            "(approval may be required once per chat)."
+        )
+    if "email" in lower or "gmail" in lower or "mail" in lower:
+        return (
+            "## Email tool routing\n"
+            "Use email_send mode='draft' / 'send' / 'list_drafts' / 'delete_draft' "
+            "to match the user's wording."
+        )
+    return ""
 
 
 def _effective_granted_scopes(identity: AgentIdentity) -> set[str]:
@@ -158,8 +293,21 @@ def _post_email_tool(
         if isinstance(err, dict):
             code = err.get("code", "error")
             message = err.get("message", text[:500])
+            issues = err.get("issues")
+            if isinstance(issues, list) and issues and "Invalid email send payload (" not in str(message):
+                bits: list[str] = []
+                for issue in issues[:6]:
+                    if not isinstance(issue, dict):
+                        continue
+                    path = ".".join(str(p) for p in (issue.get("path") or [])) or "(root)"
+                    bits.append(f"{path}: {issue.get('message') or 'invalid'}")
+                if bits:
+                    message = f"{message} ({'; '.join(bits)})"
             instructions = err.get("connectInstructions")
-            if instructions and code == "connector_not_configured":
+            if instructions and code in (
+                "connector_not_configured",
+                "gmail_compose_scope_missing",
+            ):
                 return f"[failed] {code}: {message}\n\n{instructions}"
             return f"[failed] {code}: {message}"
         return f"[failed] HTTP {resp.status_code}: {text[:500]}"
@@ -195,6 +343,8 @@ def build_email_tool_executors(
                 body["maxResults"] = params["maxResults"]
             if params.get("messageId"):
                 body["messageId"] = params["messageId"]
+            if params.get("includeAttachments") is not None:
+                body["includeAttachments"] = bool(params.get("includeAttachments"))
             return _post_email_tool(
                 backend_url=backend_url,
                 runner_token=runner_token,
@@ -207,16 +357,73 @@ def build_email_tool_executors(
 
     if "email_send" in allowed:
 
+        def _coerce_recipients(raw: Any) -> list[str]:
+            out: list[str] = []
+
+            def _push(value: Any) -> None:
+                if value is None:
+                    return
+                if isinstance(value, str):
+                    for part in value.replace(";", ",").split(","):
+                        piece = part.strip()
+                        if not piece:
+                            continue
+                        if "<" in piece and ">" in piece:
+                            start = piece.rfind("<")
+                            end = piece.rfind(">")
+                            if start >= 0 and end > start:
+                                piece = piece[start + 1 : end].strip()
+                        if piece:
+                            out.append(piece)
+                    return
+                if isinstance(value, list):
+                    for item in value:
+                        _push(item)
+                    return
+                if isinstance(value, dict) and value.get("email") is not None:
+                    _push(value.get("email"))
+
+            _push(raw)
+            # Preserve order, drop empties/dupes.
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for addr in out:
+                key = addr.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                uniq.append(addr)
+            return uniq[:20]
+
         async def _email_send(args_json: str) -> str:
             params = json.loads(args_json) if args_json.strip() else {}
             if not isinstance(params, dict):
                 params = {}
+            mode_raw = str(params.get("mode") or "send").strip().lower()
+            if mode_raw in ("draft", "list_drafts", "delete_draft"):
+                mode = mode_raw
+            else:
+                mode = "send"
+            body_text = params.get("bodyText")
+            if body_text is None:
+                body_text = params.get("body")
+            if body_text is None:
+                body_text = params.get("text")
+            if body_text is None:
+                body_text = params.get("message")
+            if body_text is None:
+                body_text = params.get("content")
             body: dict[str, Any] = {
                 "runId": run_id,
-                "to": params.get("to") or [],
-                "subject": params.get("subject") or "",
-                "bodyText": params.get("bodyText") or "",
+                "mode": mode,
+                "to": _coerce_recipients(params.get("to")),
+                "subject": "" if params.get("subject") is None else str(params.get("subject")),
+                "bodyText": "" if body_text is None else str(body_text),
             }
+            if params.get("draftId"):
+                body["draftId"] = params["draftId"]
+            if params.get("maxResults") is not None:
+                body["maxResults"] = params["maxResults"]
             if params.get("replyToMessageId"):
                 body["replyToMessageId"] = params["replyToMessageId"]
             meta = params.get("metadata")
@@ -227,11 +434,13 @@ def build_email_tool_executors(
                     if meta.get(k)
                 }
 
+            # Draft ops stay in Gmail — never request JIT approval.
             jit_token = params.get("jitToken")
-            if email_send_needs_jit(identity) and not jit_token:
+            if mode == "send" and email_send_needs_jit(identity) and not jit_token:
                 jit_payload = {
                     "runId": run_id,
                     "tool": "email_send",
+                    "mode": mode,
                     "to": body.get("to"),
                     "subject": body.get("subject"),
                 }

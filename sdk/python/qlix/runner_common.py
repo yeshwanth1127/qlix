@@ -62,6 +62,54 @@ def is_read_only_tool(name: str) -> bool:
     return any(n.startswith(p) for p in _READ_ONLY_TOOL_PREFIXES)
 
 
+def identity_with_live_scopes(
+    identity: AgentIdentity,
+    run: dict[str, Any] | None,
+) -> AgentIdentity:
+    """Overlay DB scopes from ``runs/poll`` onto the baked ``agent.json`` identity.
+
+    Scope edits update Postgres immediately, but runners load identity once at boot.
+    Poll already returns live scopes — apply them per run so newly granted tools
+    (e.g. ``email.read``) work without waiting for a container restart / re-download.
+    """
+    from dataclasses import replace as dc_replace
+
+    if not isinstance(run, dict):
+        return identity
+
+    def _as_tuple(value: Any, fallback: tuple[str, ...]) -> tuple[str, ...]:
+        if value is None:
+            return fallback
+        if isinstance(value, list) and all(isinstance(s, str) for s in value):
+            return tuple(s.strip() for s in value if s.strip())
+        return fallback
+
+    permission = _as_tuple(
+        run.get("permissionScopes", run.get("permission_scopes")),
+        identity.permission_scopes,
+    )
+    jit = _as_tuple(
+        run.get("jitScopes", run.get("jit_scopes")),
+        identity.jit_scopes,
+    )
+    always = _as_tuple(
+        run.get("alwaysScopes", run.get("always_scopes")),
+        identity.always_scopes,
+    )
+    if (
+        permission == identity.permission_scopes
+        and jit == identity.jit_scopes
+        and always == identity.always_scopes
+    ):
+        return identity
+    return dc_replace(
+        identity,
+        permission_scopes=permission,
+        jit_scopes=jit,
+        always_scopes=always,
+    )
+
+
 def accumulate_usage(acc: dict[str, Any], round_usage: Any) -> None:
     """Sum a round's token usage into the run accumulator, in place.
 
@@ -840,6 +888,9 @@ async def run_backend_proxy_inference(
     log: LogFn,
     live_view_enabled: bool | None = None,
     system_prompt: str | None = None,
+    max_rounds: int | None = None,
+    max_seconds: float | None = None,
+    subagent_context: Any = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn inference with pre-bound tool executors."""
     if is_acknowledgement_only(enriched_prompt):
@@ -853,8 +904,18 @@ async def run_backend_proxy_inference(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": enriched_prompt})
-    max_rounds = int(os.environ.get("QLIX_CLOUD_TOOL_MAX_ROUNDS", "12"))
-    max_seconds = float(os.environ.get("QLIX_CLOUD_TOOL_MAX_SECONDS", "150"))
+    resolved_max_rounds = (
+        int(max_rounds)
+        if max_rounds is not None
+        else int(os.environ.get("QLIX_CLOUD_TOOL_MAX_ROUNDS", "15"))
+    )
+    resolved_max_seconds = (
+        float(max_seconds)
+        if max_seconds is not None
+        else float(os.environ.get("QLIX_CLOUD_TOOL_MAX_SECONDS", "200"))
+    )
+    max_rounds = resolved_max_rounds
+    max_seconds = resolved_max_seconds
     log(
         "proxy_tool_loop_start",
         agent_id=agent_id,
@@ -907,10 +968,12 @@ async def run_backend_proxy_inference(
     force_tool_next_round = False
     # Set from round 1's response; sent back on every later round (see pinned_model).
     pinned_model: str | None = None
+    exit_reason = "complete"
 
     for round_idx in range(max_rounds):
         inference_rounds += 1
         if time.time() > deadline:
+            exit_reason = "time_budget"
             content_out = content_out or "Stopped: tool loop time budget exceeded."
             break
 
@@ -1432,6 +1495,57 @@ async def run_backend_proxy_inference(
             )
             continue
         break
+    else:
+        # Exhausted max_rounds without a natural completion break.
+        exit_reason = "round_budget"
+        if not str(content_out or "").strip():
+            content_out = "Stopped: tool loop round budget exceeded."
+
+    if exit_reason in ("time_budget", "round_budget") and subagent_context is not None:
+        seq = await emit_event(
+            http,
+            agent_id=agent_id,
+            run_id=run_id,
+            headers=headers,
+            seq=seq,
+            event_type="log",
+            data={
+                "message": "budget_subagent_continue",
+                "reason": exit_reason,
+                "rounds": inference_rounds,
+                "toolsExecuted": len(tool_names_ran),
+            },
+            soft=True,
+        )
+        try:
+            from .subagents import continue_via_subagent_on_budget
+
+            continued = await continue_via_subagent_on_budget(
+                subagent_context,
+                original_prompt=enriched_prompt,
+                tool_names_ran=tool_names_ran,
+                executed_tools=executed_tools,
+                reason=exit_reason,
+                log=log,
+            )
+            if continued and str(continued).strip():
+                content_out = str(continued).strip()
+                tool_names_ran.append("budget_continue_subagent")
+                executed_tools.append(
+                    {
+                        "name": "budget_continue_subagent",
+                        "args": json.dumps({"reason": exit_reason}),
+                        "output": content_out[:2000],
+                    }
+                )
+                exit_reason = "continued_via_subagent"
+        except Exception as exc:  # noqa: BLE001
+            log(
+                "budget_subagent_continue_failed",
+                agent_id=agent_id,
+                run_id=run_id,
+                error=str(exc)[:300],
+            )
 
     duration_ms = int((time.time() - started) * 1000)
     log(
@@ -1441,6 +1555,7 @@ async def run_backend_proxy_inference(
         inference_rounds=inference_rounds,
         tools_executed=tool_names_ran,
         duration_ms=duration_ms,
+        exit_reason=exit_reason,
     )
     # Context budget awareness. `peakRequestTokens` is the largest single request;
     # `estimatedInputTokens` sums every round, which is what the run is billed for.

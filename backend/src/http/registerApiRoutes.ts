@@ -22,6 +22,7 @@ import { createTeamsRouter } from '../routes/createTeamsRouter.js';
 import { createConnectorsRouter } from '../routes/createConnectorsRouter.js';
 import { createMcpRouter } from '../routes/createMcpRouter.js';
 import { createNlBuilderHistoryRouter } from '../routes/createNlBuilderHistoryRouter.js';
+import { createBuilderCanvasRouter } from '../routes/createBuilderCanvasRouter.js';
 import { createBillingRouter } from '../billings/routes/createBillingRouter.js';
 import { createBillingIngestRouter } from '../billings/routes/createBillingIngestRouter.js';
 import { createAdminBillingRouter } from '../billings/routes/createAdminBillingRouter.js';
@@ -38,6 +39,8 @@ import { createHomepageVisitsRouter } from '../routes/createHomepageVisitsRouter
 import { createEmployeesRouter } from '../routes/createEmployeesRouter.js';
 import { createSkillsRouter } from '../routes/createSkillsRouter.js';
 import { createEmployeeSchedulesRouter } from '../routes/createEmployeeSchedulesRouter.js';
+import { createSchedulesRouter } from '../routes/createSchedulesRouter.js';
+import { createInternalSchedulesRouter } from '../routes/createInternalSchedulesRouter.js';
 import { createComplianceRouter } from '../routes/createComplianceRouter.js';
 import { createSlackRouter } from '../routes/createSlackRouter.js';
 import { createTelegramRouter } from '../routes/createTelegramRouter.js';
@@ -74,6 +77,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/connectors', createConnectorsRouter());
   application.use('/api/v1/mcp', createMcpRouter());
   application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());
+  application.use('/api/v1/builder/canvases', createBuilderCanvasRouter());
   application.use('/api/v1/actions', createActionsRouter());
   application.use('/api/v1/jit', createJitRouter());
   application.use('/api/v1/usage', createUsageRouter());
@@ -84,6 +88,8 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/leads', createLeadsRouter());
   application.use('/api/v1/internal/jobs', createInternalJobsRouter());
   application.use('/api/v1/jobs', createJobsRouter());
+  application.use('/api/v1/internal/schedules', createInternalSchedulesRouter());
+  application.use('/api/v1/schedules', createSchedulesRouter());
   application.use('/api/v1/sandbox', createSandboxRouter());
   application.use('/api/v1/waitlist', createWaitlistRouter());
   application.use('/api/v1/employees', createEmployeesRouter());

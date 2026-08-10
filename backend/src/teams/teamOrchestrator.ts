@@ -8,7 +8,6 @@ import {
   buildLeadGenStageGoal,
   extractCampaignIdFromText,
   findLeadReviewCheckpoint,
-  isLeadGenPipelineTeam,
   listAgentRunTools,
   memberLeadGenStage,
   normalizeFindingsText,
@@ -17,13 +16,14 @@ import {
   validateLeadGenWorkerOutput,
 } from '../leads/leadGenPipelineGoals.js';
 import { LeadsRepository } from '../leads/leads.repository.js';
+import { resolveTeamPlaybook } from './teamPlaybook.js';
 import {
   clearNotifierState,
   notifyTeamChannelProgress,
   teamRunShouldReplyWhatsApp,
 } from './teamChannelNotifier.js';
 
-interface SubtaskPlan {
+export interface SubtaskPlan {
   subtaskId: string;
   agentId: string;
   agentName: string;
@@ -31,6 +31,11 @@ interface SubtaskPlan {
   role: string;
   goal: string;
   delegatedScopes: PermissionScope[];
+  /**
+   * Pipeline stage this subtask belongs to. Subtasks sharing a stage run concurrently;
+   * stages themselves run in ascending order, each seeing every earlier stage's output.
+   */
+  stageOrder: number;
 }
 
 interface WorkerResult {
@@ -46,6 +51,26 @@ interface WorkerResult {
 
 // SSE event emitter type — callers register a callback to forward events to the HTTP response
 export type RunEventEmitter = (eventType: string, data: unknown) => void;
+
+/**
+ * Split an ordered plan into stage groups. Subtasks sharing a `stageOrder` become one
+ * group and run concurrently; groups run in sequence.
+ *
+ * The plan arrives sorted by stageOrder, so adjacent equal values are the whole group.
+ * Teams created through the existing APIs get strictly distinct stages (1..N), which
+ * yields one subtask per group — byte-for-byte the previous sequential behaviour.
+ * Parallelism only appears once something deliberately assigns two members the same
+ * stage (see `reorderMembers` with `stages`).
+ */
+export function groupSubtasksByStage(plan: SubtaskPlan[]): SubtaskPlan[][] {
+  const groups: SubtaskPlan[][] = [];
+  for (const subtask of plan) {
+    const last = groups[groups.length - 1];
+    if (last && last[0]!.stageOrder === subtask.stageOrder) last.push(subtask);
+    else groups.push([subtask]);
+  }
+  return groups;
+}
 
 export class TeamOrchestrator {
   private readonly repo = new TeamsRepository();
@@ -85,7 +110,10 @@ export class TeamOrchestrator {
 
       // Lead-gen teams always use deterministic stage goals (scrape → enrich → outreach)
       // so workers never all receive the full user goal from supervisor decomposition.
-      const isLeadGen = isLeadGenPipelineTeam(orderedMembers);
+      // The playbook is stored on the team (backfilled once for legacy teams) rather than
+      // re-inferred from member scopes, so rewiring a team can no longer silently change
+      // which stage goals its workers receive.
+      const isLeadGen = (await resolveTeamPlaybook(team, orderedMembers, this.repo)) === 'lead_gen';
 
       const planMessage =
         isLeadGen
@@ -122,29 +150,53 @@ export class TeamOrchestrator {
       const results: WorkerResult[] = [];
 
       if (config.pipelineMode) {
-        for (let stageIndex = 0; stageIndex < plan.length; stageIndex++) {
-          const subtask = plan[stageIndex]!;
+        const stageGroups = groupSubtasksByStage(plan);
+
+        for (let groupIndex = 0; groupIndex < stageGroups.length; groupIndex++) {
+          const group = stageGroups[groupIndex]!;
           const current = await this.repo.findRun(run.id);
           if (current?.status === 'canceled') {
             emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
             return;
           }
-          const result = await this.executeWorkerTask(run, team, subtask, emit, timeoutMs, maxAttempts, results);
-          results.push(result);
-          if (result.status === 'failed') {
-            await this.abortPipelineRun(run, team, supervisorId, result, emit);
+
+          // Everyone in a stage sees the same context: output from earlier stages only.
+          // Peers within a stage run concurrently and cannot read each other's results.
+          const priorResults = [...results];
+          const groupResults = await this.executeStage(
+            run,
+            team,
+            group,
+            emit,
+            timeoutMs,
+            maxAttempts,
+            priorResults,
+            config.maxParallelWorkers,
+            groupIndex + 1,
+            stageGroups.length,
+          );
+          results.push(...groupResults);
+
+          const failed = groupResults.find((r) => r.status === 'failed');
+          if (failed) {
+            await this.abortPipelineRun(run, team, supervisorId, failed, emit);
             return;
           }
 
-          const member = orderedMembers.find((m) => m.agentId === subtask.agentId);
-          const lgStage = member ? memberLeadGenStage(member) : null;
-          const hasOutreachRemaining = plan.slice(stageIndex + 1).some((s) => {
+          const remainingSubtasks = stageGroups.slice(groupIndex + 1).flat();
+          const groupHasEnrich = group.some((s) => {
+            const m = orderedMembers.find((x) => x.agentId === s.agentId);
+            return m != null && memberLeadGenStage(m) === 'enrich';
+          });
+          const hasOutreachRemaining = remainingSubtasks.some((s) => {
             const m = orderedMembers.find((x) => x.agentId === s.agentId);
             return m != null && memberLeadGenStage(m) === 'outreach';
           });
-          if (isLeadGen && lgStage === 'enrich' && hasOutreachRemaining) {
+          if (isLeadGen && groupHasEnrich && hasOutreachRemaining) {
             let campaignId =
-              extractCampaignIdFromText(result.findings) ??
+              groupResults
+                .map((r) => extractCampaignIdFromText(r.findings))
+                .find((id): id is string => Boolean(id)) ??
               results
                 .map((r) => extractCampaignIdFromText(r.findings))
                 .find((id): id is string => Boolean(id));
@@ -163,7 +215,7 @@ export class TeamOrchestrator {
                 {
                   campaignId,
                   completedResults: results,
-                  remainingSubtasks: plan.slice(stageIndex + 1),
+                  remainingSubtasks,
                 },
                 emit,
               );
@@ -237,24 +289,38 @@ export class TeamOrchestrator {
         message: 'Outreach approved — continuing pipeline…',
       }, emit);
 
-      for (const subtask of checkpoint.remainingSubtasks) {
+      // Checkpoints written before stage grouping have no stageOrder — fall back to one
+      // stage per subtask, which reproduces the original strictly-sequential resume.
+      const remainingPlan: SubtaskPlan[] = checkpoint.remainingSubtasks.map((s, i) => ({
+        ...s,
+        stageOrder: s.stageOrder ?? i + 1,
+      }));
+      const stageGroups = groupSubtasksByStage(remainingPlan);
+
+      for (let groupIndex = 0; groupIndex < stageGroups.length; groupIndex++) {
+        const group = stageGroups[groupIndex]!;
         const current = await this.repo.findRun(run.id);
         if (current?.status === 'canceled') {
           emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
           return;
         }
-        const result = await this.executeWorkerTask(
+        const groupResults = await this.executeStage(
           run,
           team,
-          subtask,
+          group,
           emit,
           timeoutMs,
           maxAttempts,
-          completedResults,
+          [...completedResults],
+          config.maxParallelWorkers,
+          groupIndex + 1,
+          stageGroups.length,
         );
-        completedResults.push(result);
-        if (result.status === 'failed') {
-          await this.abortPipelineRun(run, team, supervisorId, result, emit);
+        completedResults.push(...groupResults);
+
+        const failed = groupResults.find((r) => r.status === 'failed');
+        if (failed) {
+          await this.abortPipelineRun(run, team, supervisorId, failed, emit);
           return;
         }
       }
@@ -333,6 +399,7 @@ export class TeamOrchestrator {
         role: enrichMember.role,
         goal: retryGoal,
         delegatedScopes: enrichMember.delegatedScopes,
+        stageOrder: enrichMember.stageOrder,
       };
 
       const priorResults: WorkerResult[] = scrapeResults.map((r) => ({
@@ -475,7 +542,9 @@ export class TeamOrchestrator {
     params: {
       campaignId: string;
       completedResults: WorkerResult[];
-      remainingSubtasks: SubtaskPlan[];
+      // Persisted shape, not SubtaskPlan: checkpoints written before stage grouping
+      // existed have no stageOrder, and resume has to keep reading those.
+      remainingSubtasks: LeadReviewCheckpoint['remainingSubtasks'];
     },
     emit: RunEventEmitter,
   ): Promise<void> {
@@ -497,6 +566,7 @@ export class TeamOrchestrator {
         role: s.role,
         goal: s.goal,
         delegatedScopes: s.delegatedScopes,
+        stageOrder: s.stageOrder,
       })),
       timestampMs: Date.now(),
     };
@@ -597,6 +667,7 @@ export class TeamOrchestrator {
         role: m.role,
         goal: `Stage ${stage} of ${total} in the "${this.pipelineName(orderedMembers)}" pipeline.${descPart}\n\nUser goal: ${run.goal}`,
         delegatedScopes: m.delegatedScopes,
+        stageOrder: m.stageOrder,
       };
     });
   }
@@ -623,6 +694,7 @@ export class TeamOrchestrator {
         role: m.role,
         goal: `${stageGoal}${descPart}`,
         delegatedScopes: m.delegatedScopes,
+        stageOrder: m.stageOrder,
       };
     });
   }
@@ -650,6 +722,62 @@ export class TeamOrchestrator {
 
   private pipelineName(members: TeamMemberDTO[]): string {
     return members.map((m) => m.agent?.name ?? m.agentId.slice(0, 6)).join(' → ');
+  }
+
+  /**
+   * Run one pipeline stage. A single-member stage is awaited directly; a shared stage
+   * runs its members concurrently, capped at `maxParallelWorkers` so a wide stage cannot
+   * outrun the team's configured concurrency budget.
+   *
+   * Results are returned in plan order regardless of completion order, so downstream
+   * context stays deterministic across runs.
+   */
+  private async executeStage(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    group: SubtaskPlan[],
+    emit: RunEventEmitter,
+    timeoutMs: number,
+    maxAttempts: number,
+    priorResults: WorkerResult[],
+    maxParallelWorkers: number,
+    stageNumber: number,
+    stageCount: number,
+  ): Promise<WorkerResult[]> {
+    if (group.length === 1) {
+      return [
+        await this.executeWorkerTask(
+          run, team, group[0]!, emit, timeoutMs, maxAttempts, priorResults,
+        ),
+      ];
+    }
+
+    const limit = Math.max(1, maxParallelWorkers || 1);
+    await this.emitEvent(run, team, team.supervisorAgentId, 'supervisor_step', {
+      step: 'stage_started',
+      stage: stageNumber,
+      stageCount,
+      parallel: true,
+      agentIds: group.map((s) => s.agentId),
+      agentNames: group.map((s) => s.agentName),
+    }, emit);
+    await this.emitEvent(run, team, team.supervisorAgentId, 'task_status_update', {
+      message: `Stage ${stageNumber} of ${stageCount} — ${group.map((s) => s.agentName).join(', ')} working in parallel…`,
+    }, emit);
+
+    const results: WorkerResult[] = new Array(group.length);
+    let cursor = 0;
+    const lanes = Array.from({ length: Math.min(limit, group.length) }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= group.length) return;
+        results[index] = await this.executeWorkerTask(
+          run, team, group[index]!, emit, timeoutMs, maxAttempts, priorResults,
+        );
+      }
+    });
+    await Promise.all(lanes);
+    return results;
   }
 
   private async supervisorDecompose(
@@ -714,6 +842,10 @@ User goal: ${run.goal}`;
             role: member.role,
             goal: s.goal ?? run.goal,
             delegatedScopes: member.delegatedScopes,
+            // A supervisor-decomposed plan carries no stage semantics — the LLM chose an
+            // order, not a set of concurrent layers. Give each subtask its own stage so
+            // decomposed runs stay strictly sequential, as they were before grouping.
+            stageOrder: i + 1,
           };
         });
 
@@ -730,6 +862,7 @@ User goal: ${run.goal}`;
       role: m.role,
       goal: run.goal,
       delegatedScopes: m.delegatedScopes,
+      stageOrder: i + 1,
     }));
   }
 

@@ -141,6 +141,8 @@ def openai_knowledge_tool_definitions(
 
 
 def openai_always_tool_definitions() -> list[dict[str, Any]]:
+    from .subagents import openai_subagent_tool_definitions
+
     return [
         {
             "type": "function",
@@ -213,8 +215,8 @@ def openai_always_tool_definitions() -> list[dict[str, Any]]:
             "function": {
                 "name": "delegate_task",
                 "description": (
-                    "Spawn a lightweight child agent run for a subtask without creating a Team. "
-                    "Use for parallel research or bounded side work. Returns the child run id."
+                    "DEPRECATED: prefer spawn_subagents. Fire-and-forget child AgentRun on the "
+                    "same agent (cannot safely await — runner deadlock). Returns the child run id."
                 ),
                 "parameters": {
                     "type": "object",
@@ -230,4 +232,5 @@ def openai_always_tool_definitions() -> list[dict[str, Any]]:
                 },
             },
         },
+        *openai_subagent_tool_definitions(),
     ]

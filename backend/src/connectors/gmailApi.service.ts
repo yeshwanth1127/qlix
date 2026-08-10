@@ -130,7 +130,10 @@ async function loadReplyContext(
   }
 }
 
-export async function gmailSend(params: GmailSendParams): Promise<GmailSendResult> {
+async function buildRawMessage(params: GmailSendParams): Promise<{
+  raw: string;
+  threadId: string | null;
+}> {
   let inReplyTo: string | null = null;
   let references: string | null = null;
   let threadId: string | null = null;
@@ -150,7 +153,13 @@ export async function gmailSend(params: GmailSendParams): Promise<GmailSendResul
     references,
   });
 
-  const sendBody: Record<string, unknown> = { raw: base64UrlEncode(Buffer.from(mime, 'utf8')) };
+  return { raw: base64UrlEncode(Buffer.from(mime, 'utf8')), threadId };
+}
+
+export async function gmailSend(params: GmailSendParams): Promise<GmailSendResult> {
+  const { raw, threadId } = await buildRawMessage(params);
+
+  const sendBody: Record<string, unknown> = { raw };
   if (threadId) sendBody.threadId = threadId;
 
   const result = await gmailFetch(params.accessToken, '/messages/send', {
@@ -165,6 +174,93 @@ export async function gmailSend(params: GmailSendParams): Promise<GmailSendResul
   };
 }
 
+export interface GmailDraftResult {
+  draftId: string;
+  messageId: string;
+  threadId: string;
+  status: 'draft';
+}
+
+/** Create a Gmail draft (requires gmail.compose). Does not send. */
+export async function gmailCreateDraft(params: GmailSendParams): Promise<GmailDraftResult> {
+  const { raw, threadId } = await buildRawMessage(params);
+
+  const message: Record<string, unknown> = { raw };
+  if (threadId) message.threadId = threadId;
+
+  const result = await gmailFetch(params.accessToken, '/drafts', {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+
+  const messageObj = (result.message as { id?: string; threadId?: string } | undefined) ?? {};
+  return {
+    draftId: typeof result.id === 'string' ? result.id : '',
+    messageId: typeof messageObj.id === 'string' ? messageObj.id : '',
+    threadId: typeof messageObj.threadId === 'string' ? messageObj.threadId : threadId ?? '',
+    status: 'draft',
+  };
+}
+
+export interface GmailDraftListItem {
+  draftId: string;
+  messageId: string;
+  threadId: string;
+  to: string[];
+  subject: string;
+  snippet: string;
+}
+
+/** List Gmail drafts (requires gmail.compose). */
+export async function gmailListDrafts(params: {
+  accessToken: string;
+  maxResults?: number;
+}): Promise<{ drafts: GmailDraftListItem[] }> {
+  const maxResults = Math.min(25, Math.max(1, params.maxResults ?? 10));
+  const list = await gmailFetch(
+    params.accessToken,
+    `/drafts?maxResults=${maxResults}`,
+  );
+  const ids = Array.isArray(list.drafts)
+    ? (list.drafts as Array<{ id?: string }>).map((d) => d.id).filter((x): x is string => Boolean(x))
+    : [];
+
+  const drafts: GmailDraftListItem[] = [];
+  for (const draftId of ids) {
+    const draft = await gmailFetch(params.accessToken, `/drafts/${encodeURIComponent(draftId)}`);
+    const message = (draft.message as {
+      id?: string;
+      threadId?: string;
+      snippet?: string;
+      payload?: { headers?: Array<{ name: string; value: string }> };
+    }) ?? {};
+    const headers = message.payload?.headers ?? [];
+    const toRaw = headers.find((h) => h.name.toLowerCase() === 'to')?.value ?? '';
+    drafts.push({
+      draftId: typeof draft.id === 'string' ? draft.id : draftId,
+      messageId: typeof message.id === 'string' ? message.id : '',
+      threadId: typeof message.threadId === 'string' ? message.threadId : '',
+      to: toRaw ? toRaw.split(',').map((s) => s.trim()).filter(Boolean) : [],
+      subject: headers.find((h) => h.name.toLowerCase() === 'subject')?.value ?? '',
+      snippet: typeof message.snippet === 'string' ? message.snippet : '',
+    });
+  }
+  return { drafts };
+}
+
+/** Delete a Gmail draft by draft id (requires gmail.compose). */
+export async function gmailDeleteDraft(params: {
+  accessToken: string;
+  draftId: string;
+}): Promise<{ draftId: string; status: 'deleted' }> {
+  const draftId = params.draftId.trim();
+  if (!draftId) throw new GmailApiError('draftId is required', 400);
+  await gmailFetch(params.accessToken, `/drafts/${encodeURIComponent(draftId)}`, {
+    method: 'DELETE',
+  });
+  return { draftId, status: 'deleted' };
+}
+
 // ── read ────────────────────────────────────────────────────────────────────
 
 export interface GmailListParams {
@@ -177,8 +273,16 @@ export interface GmailListParams {
 
 interface GmailPart {
   mimeType?: string;
-  body?: { data?: string };
+  filename?: string;
+  body?: { data?: string; attachmentId?: string; size?: number };
   parts?: GmailPart[];
+}
+
+export interface GmailAttachmentMeta {
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
 }
 
 /** Depth-first search for the first text/plain part; falls back to stripped text/html. */
@@ -188,6 +292,11 @@ function extractPlainText(payload: GmailPart | undefined): string {
   let htmlFallback = '';
   while (stack.length > 0) {
     const part = stack.shift()!;
+    // Skip named attachments — their payload is not the email body.
+    if (part.filename) {
+      if (part.parts) stack.push(...part.parts);
+      continue;
+    }
     if (part.mimeType === 'text/plain' && part.body?.data) {
       return base64UrlDecode(part.body.data).toString('utf8');
     }
@@ -204,11 +313,54 @@ function extractPlainText(payload: GmailPart | undefined): string {
   return htmlFallback;
 }
 
+/** Collect file parts that have a Gmail attachmentId (downloadable binaries). */
+export function collectGmailAttachments(payload: GmailPart | undefined): GmailAttachmentMeta[] {
+  if (!payload) return [];
+  const out: GmailAttachmentMeta[] = [];
+  const seen = new Set<string>();
+  const stack: GmailPart[] = [payload];
+  while (stack.length > 0) {
+    const part = stack.shift()!;
+    const attachmentId = part.body?.attachmentId?.trim();
+    const fileName = (part.filename || '').trim();
+    if (attachmentId && fileName && !seen.has(attachmentId)) {
+      seen.add(attachmentId);
+      out.push({
+        attachmentId,
+        fileName: fileName.slice(0, 255),
+        mimeType: (part.mimeType || 'application/octet-stream').slice(0, 200),
+        sizeBytes: typeof part.body?.size === 'number' ? part.body.size : 0,
+      });
+    }
+    if (part.parts) stack.push(...part.parts);
+  }
+  return out;
+}
+
+export async function gmailDownloadAttachment(params: {
+  accessToken: string;
+  messageId: string;
+  attachmentId: string;
+}): Promise<Buffer> {
+  const result = await gmailFetch(
+    params.accessToken,
+    `/messages/${encodeURIComponent(params.messageId)}/attachments/${encodeURIComponent(params.attachmentId)}`,
+  );
+  const data = typeof result.data === 'string' ? result.data : '';
+  if (!data) throw new GmailApiError('Gmail attachment response missing data');
+  return base64UrlDecode(data);
+}
+
 function headerValue(headers: Array<{ name: string; value: string }>, name: string): string {
   return headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? '';
 }
 
-async function fetchMessage(accessToken: string, id: string): Promise<EmailReadResult['messages'][number]> {
+export type GmailFetchedMessage = EmailReadResult['messages'][number] & {
+  /** Raw attachment metadata before sandbox upload (filled by emailTool). */
+  _attachmentMetas?: GmailAttachmentMeta[];
+};
+
+async function fetchMessage(accessToken: string, id: string): Promise<GmailFetchedMessage> {
   const msg = await gmailFetch(accessToken, `/messages/${encodeURIComponent(id)}?format=full`);
   const payload = msg.payload as (GmailPart & { headers?: Array<{ name: string; value: string }> }) | undefined;
   const headers = payload?.headers ?? [];
@@ -226,10 +378,11 @@ async function fetchMessage(accessToken: string, id: string): Promise<EmailReadR
     receivedAt: Number.isFinite(internalDate)
       ? new Date(internalDate).toISOString()
       : new Date().toISOString(),
+    _attachmentMetas: collectGmailAttachments(payload),
   };
 }
 
-export async function gmailList(params: GmailListParams): Promise<EmailReadResult> {
+export async function gmailList(params: GmailListParams): Promise<{ messages: GmailFetchedMessage[] }> {
   if (params.messageId) {
     return { messages: [await fetchMessage(params.accessToken, params.messageId)] };
   }

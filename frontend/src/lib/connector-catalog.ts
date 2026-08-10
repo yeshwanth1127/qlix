@@ -50,7 +50,7 @@ export interface ConnectorCatalogEntry {
   /** Search aliases (e.g. "twitter" for X). */
   readonly aliases?: readonly string[];
   /** Scroll/focus target on the page when already wired. */
-  readonly liveAnchor?: "google" | "whatsapp" | "orbit" | "zoho" | "slack";
+  readonly liveAnchor?: "google" | "whatsapp" | "orbit" | "zoho" | "slack" | "discord" | "github";
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
@@ -59,11 +59,11 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     name: "Google",
     category: "Productivity",
     authTypes: ["OAuth2"],
-    description: "Gmail, Drive, Calendar, Sheets via Google OAuth.",
+    description: "Gmail, Drive, Calendar, Meet, YouTube via Google OAuth.",
     docsUrl: "https://developers.google.com/identity/protocols/oauth2",
     availability: "live",
     liveAnchor: "google",
-    aliases: ["gmail", "workspace"],
+    aliases: ["gmail", "workspace", "gmeet", "youtube", "drive", "calendar"],
     logo: { slug: "google", domain: "google.com", color: "4285F4" },
   },
   {
@@ -364,7 +364,8 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     authTypes: ["OAuth2", "APIKey"],
     description: "Repos, issues, and PRs; OAuth Apps, GitHub Apps, or PATs.",
     docsUrl: "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps",
-    availability: "soon",
+    availability: "live",
+    liveAnchor: "github",
     logo: { slug: "github", domain: "github.com", color: "181717" },
   },
   {
@@ -492,10 +493,11 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     id: "discord",
     name: "Discord",
     category: "Communication",
-    authTypes: ["OAuth2", "APIKey"],
-    description: "User OAuth for identity; bot tokens for server actions.",
+    authTypes: ["OAuth2"],
+    description: "OAuth connect — identity, email, and guilds for the signed-in Discord user.",
     docsUrl: "https://discord.com/developers/docs/topics/oauth2",
-    availability: "soon",
+    availability: "live",
+    liveAnchor: "discord",
     logo: { slug: "discord", domain: "discord.com", color: "5865F2" },
   },
   {
@@ -658,6 +660,8 @@ export function catalogIdsToConnectorsNeeded(platformIds: readonly string[]): st
     if (entry.liveAnchor === "orbit") providers.add("orbit");
     if (entry.liveAnchor === "zoho") providers.add("zoho");
     if (entry.liveAnchor === "slack") providers.add("slack");
+    if (entry.liveAnchor === "discord") providers.add("discord");
+    if (entry.liveAnchor === "github") providers.add("github");
   }
   return [...providers].join(",");
 }

@@ -36,6 +36,7 @@ model Organization {
   leadCampaigns             LeadCampaign[]
   brainConversations        BrainConversation[]
   brainUsages               BrainUsage[]
+  brainAgentProposals       BrainAgentProposal[]
   jobCandidateProfiles      JobCandidateProfile[]
   jobApplyCampaigns         JobApplyCampaign[]
   subscription              OrgSubscription?
@@ -50,7 +51,9 @@ model Organization {
   disabledScopes String[] @default([]) @map("disabled_scopes")
 
   employeeSchedules EmployeeSchedule[]
+  scheduledEvents   ScheduledEvent[]
   orgSkills         OrgSkill[]
+  builderCanvases   BuilderCanvas[]
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
@@ -86,6 +89,7 @@ model User {
   agentConversations AgentConversation[]
   brainConversations BrainConversation[]
   brainUsages        BrainUsage[]
+  brainAgentProposals BrainAgentProposal[]
   agentMemories      AgentMemory[]
   actionLogs         ActionLog[]
   approvals          Approval[]
@@ -104,6 +108,7 @@ model User {
   mcpServersCreated  McpServer[]
   oauthAccounts      OAuthAccount[]
   employeeEngagementsHired EmployeeEngagement[] @relation("EmployeeHiredBy")
+  builderCanvases    BuilderCanvas[]          @relation("BuilderCanvasCreator")
 
   @@index([orgId])
   @@map("users")
@@ -271,9 +276,13 @@ model Agent {
   mcpBindings      AgentMcpBinding[]
   employeeEngagement EmployeeEngagement?
   schedules        EmployeeSchedule[]
+  scheduledEvents  ScheduledEvent[]      @relation("ScheduledEventTarget")
+  createdSchedules ScheduledEvent[]      @relation("ScheduledEventCreator")
   orgSkills        OrgSkill[]
   brainConversations BrainConversation[] @relation("BrainAgentConversations")
   brainUsages        BrainUsage[]
+  brainAgentProposals BrainAgentProposal[] @relation("BrainAgentProposals")
+  subAgentInvocations SubAgentInvocation[]
 
   @@index([orgId])
   @@index([userId])
@@ -498,10 +507,40 @@ model BrainConversation {
   user       User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
   org        Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
   messages   BrainConversationMessage[]
+  proposals  BrainAgentProposal[]
 
   @@index([userId, orgId, updatedAt])
   @@index([brainAgentId])
   @@map("brain_conversations")
+}
+
+/// Pending agent/team plan from exa; DID/VC create only after user confirm.
+model BrainAgentProposal {
+  id              String    @id @default(cuid())
+  orgId           String    @map("org_id") @db.Uuid
+  brainAgentId    String    @map("brain_agent_id")
+  conversationId  String?   @map("conversation_id")
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  /// `pending` | `confirmed` | `rejected` | `expired`
+  status          String    @default("pending")
+  planJson        Json      @map("plan_json")
+  rationale       String    @default("") @db.Text
+  primaryAgentId  String?   @map("primary_agent_id")
+  createdAgentIds String[]  @default([]) @map("created_agent_ids")
+  teamId          String?   @map("team_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  resolvedAt      DateTime? @map("resolved_at")
+
+  org          Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  brainAgent   Agent             @relation("BrainAgentProposals", fields: [brainAgentId], references: [id], onDelete: Cascade)
+  createdBy    User              @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  conversation BrainConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status])
+  @@index([conversationId])
+  @@index([brainAgentId])
+  @@map("brain_agent_proposals")
 }
 
 model BrainConversationMessage {
@@ -670,6 +709,10 @@ model AgentRun {
   teamId         String?   @map("team_id")
   /// supervisor | worker — role within the team run.
   teamRole       String?   @map("team_role")
+  /// Parent AgentRun when this run is a child of another run (V2 child runs; optional in V1).
+  parentRunId String? @map("parent_run_id")
+  /// How this run was created: `user` | `subagent` | `team_worker` | null (legacy).
+  invocationKind String? @map("invocation_kind")
 
   agent        Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
   conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -677,12 +720,48 @@ model AgentRun {
   usage        RunUsage?
   teamRun      TeamRun?          @relation(fields: [teamRunId], references: [id], onDelete: SetNull)
   a2aTask      A2ATask?
+  parentRun    AgentRun?         @relation("AgentRunParentChild", fields: [parentRunId], references: [id], onDelete: SetNull)
+  childRuns    AgentRun[]        @relation("AgentRunParentChild")
+  subAgentInvocations SubAgentInvocation[] @relation("SubAgentParentRun")
+  asChildInvocation   SubAgentInvocation?  @relation("SubAgentChildRun")
 
   @@index([agentId, createdAt])
   @@index([conversationId, createdAt])
   @@index([status, createdAt])
   @@index([teamRunId])
+  @@index([parentRunId])
   @@map("agent_runs")
+}
+
+/// Mid-run sub-agent fan-out: logical children of a parent AgentRun (V1 nested; V2 may set childAgentId).
+model SubAgentInvocation {
+  id            String    @id @default(cuid())
+  parentRunId   String    @map("parent_run_id")
+  parentAgentId String    @map("parent_agent_id")
+  /// Reserved for V2 separate-identity sub-agents; null in V1 nested mode.
+  childAgentId  String?   @map("child_agent_id")
+  /// Optional AgentRun created for audit; null when nested in-process (V1).
+  childRunId    String?   @unique @map("child_run_id")
+  name          String?
+  prompt        String
+  skills        String[]  @default([])
+  /// Nesting depth (parent user run = 0; first-level children = 1).
+  depth         Int       @default(1)
+  /// queued | running | completed | failed | canceled
+  status        String    @default("queued")
+  result        Json?
+  errorMessage  String?   @map("error_message")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  startedAt     DateTime? @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+
+  parentRun   AgentRun  @relation("SubAgentParentRun", fields: [parentRunId], references: [id], onDelete: Cascade)
+  parentAgent Agent     @relation(fields: [parentAgentId], references: [id], onDelete: Cascade)
+  childRun    AgentRun? @relation("SubAgentChildRun", fields: [childRunId], references: [id], onDelete: SetNull)
+
+  @@index([parentRunId, status])
+  @@index([parentAgentId, createdAt])
+  @@map("sub_agent_invocations")
 }
 
 model AgentRunEvent {
@@ -1581,6 +1660,55 @@ model EmployeeSchedule {
   @@map("employee_schedules")
 }
 
+/// Generic scheduled event — cron / once / interval — fires an agent run (or future action types).
+/// Independent of EmployeeSchedule; agents and AI Brain create these via qlix-schedule MCP / brain tools.
+model ScheduledEvent {
+  id                 String    @id @default(cuid())
+  orgId              String    @map("org_id") @db.Uuid
+  /// Agent that receives the run when the event fires.
+  agentId            String    @map("agent_id")
+  /// Agent that created the schedule (MCP caller); null for console / brain.
+  createdByAgentId   String?   @map("created_by_agent_id")
+  createdByUserId    String?   @map("created_by_user_id") @db.Uuid
+  /// `cron` | `once` | `interval`
+  scheduleType       String    @map("schedule_type")
+  /// 5-field UTC cron when scheduleType=cron, e.g. `0 9 * * 1-5`
+  cronExpression     String?   @map("cron_expression")
+  /// Absolute fire time when scheduleType=once
+  onceAt             DateTime? @map("once_at")
+  /// Seconds between fires when scheduleType=interval (min 60)
+  intervalSeconds    Int?      @map("interval_seconds")
+  timezone           String    @default("UTC")
+  /// `agent_run` for now (webhook reserved)
+  actionType         String    @default("agent_run") @map("action_type")
+  label              String?
+  /// Prompt / goal enqueued on each fire for actionType=agent_run
+  prompt             String
+  payloadJson        Json?     @map("payload_json")
+  enabled            Boolean   @default(true)
+  /// `active` | `paused` | `cancelled` | `completed`
+  status             String    @default("active")
+  lastEnqueuedAt     DateTime? @map("last_enqueued_at")
+  nextRunAt          DateTime? @map("next_run_at")
+  runCount           Int       @default(0) @map("run_count")
+  maxRuns            Int?      @map("max_runs")
+  lastError          String?   @map("last_error")
+  /// `mcp` | `console` | `brain`
+  source             String    @default("mcp")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent          Agent        @relation("ScheduledEventTarget", fields: [agentId], references: [id], onDelete: Cascade)
+  createdByAgent Agent?       @relation("ScheduledEventCreator", fields: [createdByAgentId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, enabled])
+  @@index([enabled, nextRunAt])
+  @@index([agentId])
+  @@index([createdByAgentId])
+  @@map("scheduled_events")
+}
+
 /// Org skill library — promote a successful run into a reusable skill.
 model OrgSkill {
   id              String    @id @default(cuid())
@@ -1606,4 +1734,24 @@ model OrgSkill {
   @@unique([orgId, name])
   @@index([orgId, status])
   @@map("org_skills")
+}
+
+/// A saved Visual Builder canvas. Draft-only: nothing here mutates agents or teams.
+model BuilderCanvas {
+  id              String   @id @default(cuid())
+  orgId           String   @map("org_id") @db.Uuid
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  name            String
+  /// { version, nodes, edges, groups, viewport }. Nodes store references (agentId /
+  /// scopeId), never snapshots — labels are re-hydrated from live data on load.
+  graph           Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User         @relation("BuilderCanvasCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, updatedAt])
+  @@index([createdByUserId])
+  @@map("builder_canvases")
 }

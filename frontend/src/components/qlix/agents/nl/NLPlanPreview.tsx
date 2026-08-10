@@ -43,9 +43,9 @@ function modelsForRuntime(
   return groups.flatMap((group) => group.options.map((option) => option.id));
 }
 
-function defaultModelForRuntime(runtime: AgentRuntime, currentModel?: string): string {
+function defaultModelForRuntime(runtime: AgentRuntime, _currentModel?: string): string {
   if (runtime === "local") return LOCAL_MODELS[0];
-  if (currentModel?.toLowerCase().startsWith("openrouter/")) return CLOUD_MODELS[0];
+  // New / cloud-hybrid agents default to Exora General; chat can still switch to OpenRouter Auto.
   return EXORA_MODELS[0];
 }
 

@@ -5,6 +5,7 @@ import { reconcileStaleRuns } from '../agentChat/runReconciliation.js';
 import { pruneOrphanedRunnerStateDirs, pruneStaleRunnerImages } from '../cloudRunners/runnerPruning.js';
 import { pruneExpiredEphemeralGrants } from '../lib/ephemeralGrants.js';
 import { tickEmployeeSchedules } from '../employees/employeeSchedule.service.js';
+import { scheduleService } from '../schedules/schedule.service.js';
 
 /**
  * In-process interval scheduler for jobs that previously had to be triggered by hand
@@ -87,10 +88,19 @@ export function startBackgroundScheduler(): void {
     }
   }, MINUTE_MS, 45_000);
 
+  every(async () => {
+    try {
+      const n = await scheduleService.tick();
+      if (n > 0) console.log(`[scheduler] scheduled events fired=${n}`);
+    } catch (err) {
+      console.error('[scheduler] scheduled events failed', err);
+    }
+  }, MINUTE_MS, 50_000);
+
   console.log(
     `[scheduler] started — billing every ${(billingIntervalMs / HOUR_MS).toFixed(2)}h, ` +
       `run reconciliation every ${(runReconcileIntervalMs / MINUTE_MS).toFixed(1)}m, ` +
       `pruning every ${(pruneIntervalMs / HOUR_MS).toFixed(1)}h, ` +
-      `employee schedules every 1m`,
+      `employee schedules every 1m, scheduled events every 1m`,
   );
 }

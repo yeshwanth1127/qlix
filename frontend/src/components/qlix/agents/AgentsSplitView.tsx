@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Search, Trash2 } from "lucide-react";
+import { Info, Search, Trash2 } from "lucide-react";
 import { type AgentDTO, deleteAgent, deleteAllAgents, listAgents } from "@/lib/agents-api";
 import { useSession } from "@/components/qlix/session-context";
 import { canDeleteAgentRecord } from "@/lib/org-permissions";
@@ -244,8 +244,8 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
                   style={{ animationDelay: `${index * 40}ms` } as React.CSSProperties}
                 >
                   <Link
-                    href={`${routePrefix}/agents/${a.id}`}
-                    aria-label={`Open ${a.name}`}
+                    href={`${routePrefix}/agents/${a.id}/chat`}
+                    aria-label={`Chat with ${a.name}`}
                     className="absolute inset-0"
                   />
 
@@ -303,14 +303,14 @@ export function AgentsSplitView({ routePrefix }: AgentsSplitViewProps) {
 
                   <div className="relative flex shrink-0 items-center gap-1">
                     <Link
-                      href={`${routePrefix}/agents/${a.id}/chat`}
+                      href={`${routePrefix}/agents/${a.id}`}
                       className={cn(
                         "inline-flex items-center gap-1.5 rounded-full border bg-white/70 px-3 py-1 text-[11px] font-medium text-black transition-colors hover:bg-black hover:text-white",
                         HAIRLINE,
                       )}
                     >
-                      <MessageSquare size={12} />
-                      Chat
+                      <Info size={12} />
+                      Details
                     </Link>
                     {canDeleteAgentRow(a) ? (
                       <button

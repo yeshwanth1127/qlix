@@ -76,6 +76,15 @@ class QlixHttpClient:
     ) -> dict[str, Any]:
         return await self._request("GET", path, headers=headers)
 
+    async def patch_json(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return await self._request("PATCH", path, json=body, headers=headers)
+
     async def _request(
         self,
         method: str,
