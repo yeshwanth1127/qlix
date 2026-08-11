@@ -140,7 +140,9 @@ def openai_knowledge_tool_definitions(
     ]
 
 
-def openai_always_tool_definitions() -> list[dict[str, Any]]:
+def openai_always_tool_definitions(
+    askable_agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     from .subagents import openai_subagent_tool_definitions
 
     return [
@@ -232,5 +234,5 @@ def openai_always_tool_definitions() -> list[dict[str, Any]]:
                 },
             },
         },
-        *openai_subagent_tool_definitions(),
+        *openai_subagent_tool_definitions(askable_agents),
     ]

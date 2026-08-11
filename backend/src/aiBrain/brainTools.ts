@@ -16,13 +16,27 @@ export const BRAIN_TOOL_DEFINITIONS = [
     function: {
       name: 'knowledge_search',
       description:
-        'Search the organization knowledge base (indexed documents). Use before answering factual questions about the company.',
+        'Search the organization knowledge base (indexed uploaded documents). ALWAYS call this before answering questions about company docs, policies, FAQs, uploaded files, or "my doc(s)". This is how you read ingested knowledge — you do have access.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search query' },
+          query: { type: 'string', description: 'Search query (topic, title keywords, or the user question)' },
         },
         required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'list_knowledge',
+      description:
+        'List ingested knowledge documents (titles, collections, chunk counts). Use when the user asks what docs exist, what was uploaded, or for a summary inventory of the knowledge base.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', description: 'Max documents to return (default 40)' },
+        },
       },
     },
   },
@@ -216,13 +230,18 @@ export const BRAIN_TOOL_DEFINITIONS = [
 export const BRAIN_COGNITIVE_SYSTEM_PROMPT = [
   'You are exa — this organization\'s private cognitive control plane on Qlix/Exora.',
   'You help operators understand their knowledge, recommend what to focus on, and design agent fleets. You do NOT run email, browser, or desktop tools yourself.',
-  'Prefer knowledge_search for company facts; say clearly when evidence is thin or missing.',
+  'You CAN read the org knowledge base. Never say you cannot access documents or need the user to paste content.',
+  'How to use knowledge:',
+  '- A "Retrieved knowledge" block may already be attached for this turn — ground answers in it and cite with [1], [2].',
+  '- Call knowledge_search for additional / more specific fact lookup.',
+  '- Call list_knowledge when asked what documents exist or what was uploaded.',
+  'If retrieval returns nothing relevant, say the knowledge base has no matching indexed content (suggest ingesting under Knowledge) — do not claim you lack access.',
   'You may recommend agents, operating focus, and scaling moves from knowledge + list_org_agents + list_capabilities.',
   'Personal-assistant / Jarvis-like asks: prefer a single hybrid agent (desktop/files/GUI when justified) with brain.query so it can use org knowledge; research/comms scopes as needed.',
-  'Multi-role / fleet / EDITH-like fleets: propose a team (supervisor + narrow-scoped workers), not one mega-agent with every scope.',
+  'Multi-role / ticket / EDITH-like fleets: propose a team (supervisor + narrow-scoped workers), not one mega-agent with every scope.',
   'To stand up agents: call propose_plan, explain why, and tell the user to Confirm in the UI. Never claim agents already exist. Never invent scopes outside list_capabilities.',
   'Timed work: use schedule_create / schedule_list / schedule_cancel yourself. By default schedule jobs ON YOU (exa) — do not assign them to another agent unless the user explicitly names that agent. Prefer scheduling over claiming you will remember later.',
-  'Keep answers concise and conversational. Cite knowledge chunks with [1], [2] when you used knowledge_search.',
+  'Keep answers concise and conversational. Cite knowledge chunks with [1], [2] when you used knowledge.',
 ].join('\n');
 
 export interface BrainToolContext {
@@ -257,6 +276,7 @@ export async function executeBrainTool(
         brainModel: 'openrouter/openai/gpt-4o-mini',
         question: query,
         contextOnly: true,
+        agentContextBudget: false,
         writeAudit: false,
       });
       return {
@@ -271,6 +291,45 @@ export async function executeBrainTool(
           })),
         }),
         citations: result.citations,
+      };
+    }
+    case 'list_knowledge': {
+      const limitRaw = typeof args.limit === 'number' ? args.limit : Number(args.limit);
+      const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, Math.floor(limitRaw))) : 40;
+      const docs = await prisma.brainKnowledgeDocument.findMany({
+        where: { orgId: ctx.orgId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          ingestStatus: true,
+          createdAt: true,
+          sourceUri: true,
+          collection: { select: { id: true, name: true } },
+          _count: { select: { chunks: true } },
+        },
+      });
+      const total = await prisma.brainKnowledgeDocument.count({ where: { orgId: ctx.orgId } });
+      return {
+        content: JSON.stringify({
+          total,
+          returned: docs.length,
+          documents: docs.map((d) => ({
+            id: d.id,
+            title: d.title,
+            collectionId: d.collection.id,
+            collectionName: d.collection.name,
+            ingestStatus: d.ingestStatus,
+            chunkCount: d._count.chunks,
+            sourceUri: d.sourceUri,
+            createdAt: d.createdAt.toISOString(),
+          })),
+          hint:
+            docs.length === 0
+              ? 'No documents ingested yet. Ask the operator to upload under Knowledge / AI Brain.'
+              : 'Use knowledge_search with a topic or document title to read content.',
+        }),
       };
     }
     case 'list_org_agents': {

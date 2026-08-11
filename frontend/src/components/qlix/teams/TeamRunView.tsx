@@ -19,9 +19,11 @@ import {
   Globe,
   Loader2,
   Mail,
+  Paperclip,
   Phone,
   Search,
   Send,
+  ShieldCheck,
   Square,
   Terminal,
   Users,
@@ -34,6 +36,7 @@ import {
   cancelTeamRun,
   getTeamRun,
   injectTeamRunMessage,
+  listTeamRunPendingJit,
   listTeamRuns,
   startTeamRun,
   streamTeamRun,
@@ -41,7 +44,15 @@ import {
   type TeamRunDTO,
   type TeamRunEventDTO,
   type TeamRunArtifact,
+  type ChatAttachmentChip,
+  type TeamRunPendingJit,
 } from "@/lib/teams-api";
+import { decideJit } from "@/lib/jit-api";
+import {
+  CLOUD_MODELS,
+  EXORA_MODELS,
+  formatModelOptionLabel,
+} from "@/lib/agents-api";
 import {
   AgentBrowserLiveView,
   type BrowserFrame,
@@ -58,7 +69,10 @@ import {
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
 import { SketchBox } from "@/components/qlix/sketch";
-import { LeadReviewCard } from "@/components/qlix/teams/LeadReviewCard";
+import {
+  sketchButtonPrimary,
+  sketchButtonSecondary,
+} from "@/components/qlix/sketch/tokens";
 import {
   TeamRunGraph,
   type AgentState as GraphAgentState,
@@ -77,7 +91,16 @@ type ProcessedEvent =
   | { kind: "run_started"; eventId: string; timestampMs: number }
   | { kind: "supervisor_plan"; eventId: string; timestampMs: number; payload: Record<string, unknown> }
   | { kind: "task_delegated"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
-  | { kind: "tool_call"; eventId: string; timestampMs: number; tool: string; agentId: string; actionLabel?: string }
+  | {
+      kind: "tool_call";
+      eventId: string;
+      timestampMs: number;
+      tool: string;
+      agentId: string;
+      actionLabel?: string;
+      status: "running" | "done" | "error";
+      sources?: Array<{ url: string; title?: string }>;
+    }
   | {
       kind: "brain_query";
       eventId: string;
@@ -94,12 +117,128 @@ type ProcessedEvent =
         excerpt?: string;
       }>;
     }
+  | {
+      kind: "status_step";
+      eventId: string;
+      timestampMs: number;
+      agentId: string;
+      label: string;
+    }
+  | {
+      kind: "jit_pending";
+      eventId: string;
+      timestampMs: number;
+      agentId: string;
+      label: string;
+      detail?: string;
+      jitRequestId?: string;
+      jitChannel: "dashboard" | "whatsapp";
+      jitScope: string;
+      jitWhatsappExpected?: boolean;
+      jitWhatsappStatus?: "disconnected" | "not_linked";
+    }
+  | {
+      kind: "jit_resolved";
+      eventId: string;
+      timestampMs: number;
+      agentId: string;
+      label: string;
+      detail?: string;
+      decision: "approved" | "denied" | "expired";
+    }
   | { kind: "subtask_completed"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
   | { kind: "run_result"; eventId: string; timestampMs: number }
   | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string }
-  | { kind: "user_injection"; eventId: string; timestampMs: number; message: string }
-  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string }
-  | { kind: "lead_review"; eventId: string; timestampMs: number; campaignId: string };
+  | { kind: "user_injection"; eventId: string; timestampMs: number; message: string; attachments?: ChatAttachmentChip[] }
+  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string };
+
+const TEAM_CHAT_MAX_FILES = 10;
+const TEAM_CHAT_MAX_FILE_MB = 50;
+const TEAM_CHAT_MAX_FILE_BYTES = TEAM_CHAT_MAX_FILE_MB * 1024 * 1024;
+const TEAM_CHAT_FILE_ACCEPT =
+  ".pdf,.docx,.xlsx,.xls,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Agents built from the NL builder default to Exora General when the team has no override. */
+const TEAM_RUN_AGENT_DEFAULT_MODEL = "exora/exora-general";
+
+const TEAM_RUN_MODEL_OPTIONS: readonly string[] = Array.from(
+  new Set<string>([...EXORA_MODELS, ...CLOUD_MODELS]),
+);
+
+/** Strip embedded attachment dumps from stored run.goal for chat display. */
+function displayGoalText(goal: string): string {
+  const marker = "\n\n---\nAttached files";
+  const idx = goal.indexOf(marker);
+  if (idx >= 0) {
+    const head = goal.slice(0, idx).trim();
+    return head || "Attached files";
+  }
+  if (goal.startsWith("Attached files (")) {
+    const firstLine = goal.split("\n")[0]?.trim();
+    return firstLine || goal;
+  }
+  return goal;
+}
+
+/**
+ * Recover confirmed attachments from the enriched run goal / inject text
+ * (`buildPromptWithAttachments` format) so reload still shows delivery status.
+ */
+function parseAttachmentsFromEnrichedPrompt(text: string): ChatAttachmentChip[] | undefined {
+  if (!text.includes("Attached files") && !text.includes("\nDownload: ")) return undefined;
+  const out: ChatAttachmentChip[] = [];
+  const blockRe =
+    /###\s+(.+?)\s+\(([^,]+),\s*([^)]+)\)\s*\nDownload:\s+(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(text)) !== null) {
+    const fileName = m[1]!.trim();
+    const mimeType = m[2]!.trim();
+    const sizeLabel = m[3]!.trim();
+    const url = m[4]!.trim();
+    let sizeBytes: number | undefined;
+    const kb = /^([\d.]+)\s*KB$/i.exec(sizeLabel);
+    const mb = /^([\d.]+)\s*MB$/i.exec(sizeLabel);
+    if (kb) sizeBytes = Math.round(parseFloat(kb[1]!) * 1024);
+    else if (mb) sizeBytes = Math.round(parseFloat(mb[1]!) * 1024 * 1024);
+    out.push({
+      id: `goal-${out.length}-${fileName}`,
+      fileName,
+      mimeType,
+      url,
+      ...(sizeBytes != null ? { sizeBytes } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Backend-confirmed when we have a sandbox download URL (included in the agent prompt). */
+function attachmentReachedAgents(a: ChatAttachmentChip): boolean {
+  return typeof a.url === "string" && a.url.length > 0;
+}
+
+function parseInjectionAttachments(raw: unknown): ChatAttachmentChip[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: ChatAttachmentChip[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+    if (typeof a.fileName !== "string" || !a.fileName.trim()) continue;
+    out.push({
+      ...(typeof a.id === "string" ? { id: a.id } : {}),
+      fileName: a.fileName,
+      ...(typeof a.mimeType === "string" ? { mimeType: a.mimeType } : {}),
+      ...(typeof a.url === "string" ? { url: a.url } : {}),
+      ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 function brainQueryFromPayload(
   eventId: string,
@@ -163,6 +302,138 @@ const STATE_LABEL: Record<AgentState, string> = {
   failed: "Stopped",
 };
 
+const SESSION_CHAT_JIT_SCOPES = new Set([
+  "email.send",
+  "drive.write",
+  "calendar.write",
+  "meet.manage",
+  "social.publish",
+  "crm.write",
+  "crm.delete",
+  "whatsapp.contact_send",
+  "slack.send",
+]);
+
+function isSessionChatJitScope(scope: string | undefined): boolean {
+  return Boolean(scope && SESSION_CHAT_JIT_SCOPES.has(scope));
+}
+
+function jitPendingFromPayload(
+  eventId: string,
+  timestampMs: number,
+  agentId: string | null,
+  p: Record<string, unknown>,
+): Extract<ProcessedEvent, { kind: "jit_pending" }> {
+  const scope = String(p.scope ?? "");
+  const scopeLabel = String(p.scopeLabel ?? (scope || "action"));
+  const channel = String(p.channel ?? "");
+  const context = String(p.context ?? "").trim();
+  const whatsappExpected = p.whatsappExpected === true;
+  const whatsappStatus =
+    p.whatsappStatus === "disconnected" || p.whatsappStatus === "not_linked"
+      ? p.whatsappStatus
+      : undefined;
+  const detailParts = [
+    channel === "whatsapp"
+      ? "Reply on WhatsApp to approve or deny"
+      : "Waiting for your approval in Qlix",
+    scopeLabel ? `Scope: ${scopeLabel}` : "",
+    isSessionChatJitScope(scope) ? "Approving covers this whole conversation" : "",
+    context,
+  ].filter(Boolean);
+  return {
+    kind: "jit_pending",
+    eventId,
+    timestampMs,
+    agentId: agentId ?? "",
+    label: "Waiting for your approval",
+    detail: detailParts.join(" · ") || undefined,
+    jitRequestId:
+      typeof p.jitRequestId === "string" && p.jitRequestId ? p.jitRequestId : undefined,
+    jitChannel: channel === "whatsapp" ? "whatsapp" : "dashboard",
+    jitScope: scope,
+    jitWhatsappExpected: whatsappExpected || undefined,
+    jitWhatsappStatus: whatsappStatus,
+  };
+}
+
+function jitResolvedFromPayload(
+  eventId: string,
+  timestampMs: number,
+  agentId: string | null,
+  p: Record<string, unknown>,
+): Extract<ProcessedEvent, { kind: "jit_resolved" }> {
+  const msg = String(p.message ?? "");
+  const scopeLabel = String(p.scopeLabel ?? p.scope ?? "");
+  const decisionRaw = String(p.decision ?? "");
+  let decision: "approved" | "denied" | "expired" = "approved";
+  if (msg === "jit_approval_denied" || decisionRaw === "denied") decision = "denied";
+  else if (msg === "jit_approval_expired" || decisionRaw === "expired") decision = "expired";
+
+  const auto = p.auto === true;
+  const conversationGrant = String(p.reason ?? "") === "conversation";
+  let label = "You approved the action";
+  if (decision === "denied") label = "You denied the action";
+  else if (decision === "expired") label = "Approval request expired";
+  else if (auto) {
+    label = conversationGrant ? "Approved for this conversation" : "Pre-approved for this run";
+  }
+
+  return {
+    kind: "jit_resolved",
+    eventId,
+    timestampMs,
+    agentId: agentId ?? "",
+    label,
+    detail: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
+    decision,
+  };
+}
+
+function pendingJitToSyntheticEvent(
+  pending: TeamRunPendingJit,
+  teamId: string,
+  teamRunId: string,
+): TeamRunEventDTO {
+  return {
+    id: `synthetic-jit-${pending.jitRequestId}`,
+    runId: teamRunId,
+    teamId,
+    agentId: pending.agentId,
+    seq: 0,
+    eventType: "scope_requested",
+    payload: {
+      message: "jit_approval_pending",
+      scope: pending.scope,
+      scopeLabel: pending.scopeLabel,
+      channel: "dashboard",
+      context: pending.context,
+      jitRequestId: pending.jitRequestId,
+    },
+    prevHash: "",
+    timestampMs: String(Date.parse(pending.requestedAt) || Date.now()),
+  };
+}
+
+function mergePendingJitIntoEvents(
+  events: TeamRunEventDTO[],
+  pending: TeamRunPendingJit[],
+  teamId: string,
+  teamRunId: string,
+): TeamRunEventDTO[] {
+  if (pending.length === 0) return events;
+  const known = new Set<string>();
+  for (const e of events) {
+    if (e.eventType !== "scope_requested") continue;
+    const id = (e.payload as Record<string, unknown> | null)?.jitRequestId;
+    if (typeof id === "string" && id) known.add(id);
+  }
+  const extras = pending
+    .filter((p) => !known.has(p.jitRequestId))
+    .map((p) => pendingJitToSyntheticEvent(p, teamId, teamRunId));
+  return extras.length > 0 ? [...events, ...extras] : events;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Renders the glyph for a step directly — returning icon *components* from a
@@ -173,25 +444,77 @@ function ToolGlyph({
   size = 12,
   className,
 }: {
-  readonly kind?: "tool" | "brain";
+  readonly kind?: "tool" | "brain" | "status" | "jit_pending" | "jit_resolved";
   readonly tool?: string;
   readonly size?: number;
   readonly className?: string;
 }) {
   const t = tool ?? "";
+  if (kind === "jit_pending" || kind === "jit_resolved") {
+    return <ShieldCheck size={size} className={className} />;
+  }
   if (kind === "brain") return <Brain size={size} className={className} />;
+  if (kind === "status") return <Zap size={size} className={className} />;
   if (t === "email_read" || t === "email_send") return <Mail size={size} className={className} />;
-  if (t.startsWith("browser_")) return <Globe size={size} className={className} />;
-  if (t === "web_search") return <Search size={size} className={className} />;
+  if (t.startsWith("browser_") || t.includes("research_read") || t.includes("read_url")) {
+    return <Globe size={size} className={className} />;
+  }
+  if (t.includes("web_search") || t.includes("research_web")) return <Search size={size} className={className} />;
   if (t === "http_request") return <Zap size={size} className={className} />;
-  if (t.startsWith("file_")) return <FileText size={size} className={className} />;
+  if (t.startsWith("file_") || t.includes("xlsx") || t.includes("pdf")) {
+    return <FileText size={size} className={className} />;
+  }
   if (t.startsWith("code_") || t === "shell_exec" || t === "repl") {
     return <Terminal size={size} className={className} />;
   }
   if (t.startsWith("memory_") || t.startsWith("knowledge_") || t.startsWith("brain")) {
     return <Brain size={size} className={className} />;
   }
+  if (t.startsWith("crm") || t.includes("whatsapp")) return <Users size={size} className={className} />;
   return <Wrench size={size} className={className} />;
+}
+
+function parseToolSources(raw: unknown): Array<{ url: string; title?: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<{ url: string; title?: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const url = (item as Record<string, unknown>).url;
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url)) continue;
+    const title = (item as Record<string, unknown>).title;
+    out.push({
+      url,
+      title: typeof title === "string" && title.trim() ? title.trim() : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Keep noisy / duplicate runner chatter out of the dulled execution rail. */
+function statusStepLabel(message: string, payload: Record<string, unknown>): string | null {
+  const msg = message.trim();
+  if (!msg) return null;
+  if (
+    msg === "inference_tool_round" ||
+    msg === "inference_request" ||
+    msg === "browser_frame" ||
+    msg === "tool_started" ||
+    msg === "tool_finished"
+  ) {
+    return null;
+  }
+  if (msg.startsWith("Retrying ")) return msg;
+  if (msg.includes(" is working on:")) return msg;
+  if (msg.startsWith("Pipeline order locked")) return msg;
+  if (msg.startsWith("Supervisor retry")) return msg;
+  if (typeof payload.error === "string" && payload.error.trim()) {
+    return payload.error.trim();
+  }
+  // Generic human-readable status lines
+  if (msg.length <= 180 && !msg.includes("{") && !/_/.test(msg.split(" ")[0] ?? "")) {
+    return msg;
+  }
+  return null;
 }
 
 function formatDuration(ms: number): string {
@@ -262,11 +585,78 @@ function ChatMessage({
   );
 }
 
-function UserMessage({ text }: { readonly text: string }) {
+function UserMessage({
+  text,
+  attachments,
+  delivery = "confirmed",
+}: {
+  readonly text: string;
+  readonly attachments?: readonly ChatAttachmentChip[];
+  /** `uploading` while the multipart request is in flight; `confirmed` after backend ack. */
+  readonly delivery?: "uploading" | "confirmed";
+}) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-lg bg-black px-4 py-2.5 text-[13px] leading-relaxed text-white">
-        {text}
+      <div className="max-w-[85%] space-y-2">
+        {text ? (
+          <div className="whitespace-pre-wrap rounded-3xl rounded-br-lg bg-black px-4 py-2.5 text-[13px] leading-relaxed text-white">
+            {text}
+          </div>
+        ) : null}
+        {attachments && attachments.length > 0 ? (
+          <ul className="flex flex-wrap justify-end gap-1.5">
+            {attachments.map((a, i) => {
+              const reached = delivery === "confirmed" && attachmentReachedAgents(a);
+              const pending = delivery === "uploading";
+              const chip = (
+                <span
+                  className={cn(
+                    "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]",
+                    reached
+                      ? "border-emerald-600/25 bg-emerald-50 text-emerald-950"
+                      : pending
+                        ? "border-black/15 bg-white/90 text-black/65"
+                        : "border-amber-600/30 bg-amber-50 text-amber-950",
+                  )}
+                  title={
+                    reached
+                      ? "File reached the backend and was included in the agent prompt"
+                      : pending
+                        ? "Uploading file to the backend…"
+                        : "File was not confirmed by the backend"
+                  }
+                >
+                  {pending ? (
+                    <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />
+                  ) : reached ? (
+                    <CheckCircle className="size-3 shrink-0 text-emerald-700" aria-hidden />
+                  ) : (
+                    <XCircle className="size-3 shrink-0 text-amber-700" aria-hidden />
+                  )}
+                  <FileText className="size-3 shrink-0 opacity-70" aria-hidden />
+                  <span className="truncate max-w-[11rem]">{a.fileName}</span>
+                  {typeof a.sizeBytes === "number" ? (
+                    <span className="shrink-0 opacity-50">{formatFileSize(a.sizeBytes)}</span>
+                  ) : null}
+                  <span className="shrink-0 font-medium opacity-80">
+                    {pending ? "Uploading…" : reached ? "Reached agents" : "Not delivered"}
+                  </span>
+                </span>
+              );
+              return (
+                <li key={a.id ?? `${a.fileName}-${i}`}>
+                  {reached && a.url ? (
+                    <a href={a.url} target="_blank" rel="noreferrer" className="hover:opacity-80">
+                      {chip}
+                    </a>
+                  ) : (
+                    chip
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
       </div>
     </div>
   );
@@ -332,94 +722,250 @@ function PlanBody({
 
 function HandoffLine({ to, goal }: { readonly to: string; readonly goal?: string }) {
   return (
-    <div className={cn("flex items-start gap-2 pl-10 text-[12px] leading-relaxed", INK_FAINT)}>
-      <ArrowRight size={11} className="mt-[3px] shrink-0" />
+    <div className={cn("flex items-start gap-2.5 pl-9 text-[11.5px] leading-relaxed", INK_FAINT)}>
+      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-black/20" aria-hidden />
+      <ArrowRight size={11} className="mt-[3px] shrink-0 opacity-60" />
       <p className="min-w-0">
-        <span className="font-medium text-black">{to}</span>
-        {goal ? <span className={INK_SOFT}> · {goal}</span> : null}
+        <span className="font-medium text-black/70">{to}</span>
+        {goal ? <span className="opacity-80"> · {goal}</span> : null}
       </p>
     </div>
   );
 }
 
-/** One collapsed block for a run of consecutive tool / brain steps by one agent. */
+/** Dulled vertical execution rail — every tool / status step, default open. */
 function ActivityBody({
   entries,
   frames,
   running,
+  jitDeciding,
+  jitError,
+  onJitDecision,
 }: {
   readonly entries: ActivityEntry[];
   readonly frames: Record<string, BrowserFrame>;
   readonly running: boolean;
+  readonly jitDeciding?: Record<string, boolean>;
+  readonly jitError?: string | null;
+  readonly onJitDecision?: (jitRequestId: string, approved: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
+  const runningCount = entries.filter(
+    (e) => e.status === "running" || e.kind === "jit_pending",
+  ).length;
+  const doneCount = entries.filter(
+    (e) => e.status !== "running" && e.kind !== "jit_pending",
+  ).length;
   const last = entries[entries.length - 1];
-  const summary = last?.label ?? "Working";
+  const headerLabel =
+    running && runningCount > 0
+      ? last?.label ?? "Working…"
+      : `${entries.length} step${entries.length === 1 ? "" : "s"}`;
 
   return (
-    <div>
+    <div className="min-w-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-black/[0.04]"
+        className="-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:bg-black/[0.03]"
       >
-        {running ? (
-          <Loader2 size={12} className={cn("shrink-0 animate-spin", INK_SOFT)} />
+        {running && runningCount > 0 ? (
+          <Loader2 size={12} className={cn("shrink-0 animate-spin", INK_FAINT)} />
         ) : (
-          <ToolGlyph
-            kind={last?.kind}
-            tool={last?.tool}
-            className={cn("shrink-0", INK_FAINT)}
-          />
+          <CheckCircle size={12} className={cn("shrink-0 opacity-60", INK_FAINT)} />
         )}
-        <span className={cn("min-w-0 flex-1 truncate text-[12.5px]", INK_SOFT)}>{summary}</span>
-        {entries.length > 1 && (
-          <span className={cn("shrink-0 text-[11px] tabular-nums", INK_FAINT)}>
-            {entries.length}
-          </span>
-        )}
+        <span className={cn("min-w-0 flex-1 truncate text-[11.5px] font-medium tracking-wide", INK_FAINT)}>
+          Execution · {headerLabel}
+        </span>
+        <span className={cn("shrink-0 text-[10.5px] tabular-nums", INK_FAINT)}>
+          {doneCount}
+          {runningCount > 0 ? ` · ${runningCount} live` : ""}
+        </span>
         <ChevronDown
           size={12}
-          className={cn("shrink-0 transition-transform", INK_FAINT, open && "rotate-180")}
+          className={cn("shrink-0 transition-transform opacity-60", INK_FAINT, open && "rotate-180")}
         />
       </button>
 
-      {open && (
-        <ul className={cn("mt-2 space-y-2.5 border-l pl-3.5", HAIRLINE)}>
-          {entries.map((entry) => {
+      {open ? (
+        <ol className="relative mt-2 ml-1 space-y-0 border-l border-black/10 pl-0">
+          {entries.map((entry, index) => {
             const frame = frames[entry.id];
+            const isLast = index === entries.length - 1;
+            const isJitPending = entry.kind === "jit_pending";
+            const isJitResolved = entry.kind === "jit_resolved";
+            const isRunningStep = entry.status === "running" || isJitPending;
+            const isError = entry.status === "error" || (isJitResolved && entry.status === "error");
             return (
-              <li key={entry.id} className="space-y-1.5">
-                <div className={cn("flex items-start gap-2 text-[12px] leading-relaxed", INK_SOFT)}>
-                  <ToolGlyph
-                    kind={entry.kind}
-                    tool={entry.tool}
-                    size={11}
-                    className={cn("mt-[3px] shrink-0", INK_FAINT)}
-                  />
-                  <span className="min-w-0">
-                    {entry.label}
-                    {entry.detail && (
-                      <span className={cn("block text-[11px]", INK_FAINT)}>{entry.detail}</span>
+              <li key={entry.id} className="relative flex gap-2.5 pb-3 last:pb-0">
+                {/* rail node */}
+                <span
+                  className={cn(
+                    "absolute -left-[5px] top-1.5 size-2.5 shrink-0 rounded-full border bg-[color:var(--console-surface,#fafafa)]",
+                    isJitPending
+                      ? "border-amber-700/45 bg-amber-500/20"
+                      : isRunningStep
+                        ? "border-[color:var(--sketch-purple)]/50 bg-[color:var(--sketch-purple)]/15"
+                        : isError
+                          ? "border-[color:var(--sketch-red)]/40 bg-[color:var(--sketch-red)]/10"
+                          : "border-black/20 bg-black/[0.04]",
+                  )}
+                  aria-hidden
+                />
+                {!isLast ? (
+                  <span className="pointer-events-none absolute -left-px top-4 bottom-0 w-px bg-transparent" aria-hidden />
+                ) : null}
+
+                <div
+                  className={cn(
+                    "ml-3 min-w-0 flex-1 rounded-xl border px-2.5 py-2",
+                    isJitPending
+                      ? "border-amber-800/25 bg-amber-50/50"
+                      : isRunningStep
+                        ? "border-black/10 bg-black/[0.02]"
+                        : isError
+                          ? "border-[color:var(--sketch-red)]/15 bg-[color:var(--sketch-red)]/[0.03]"
+                          : "border-black/[0.06] bg-black/[0.015]",
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    {isRunningStep && !isJitPending ? (
+                      <Loader2 size={11} className={cn("mt-0.5 shrink-0 animate-spin", INK_FAINT)} />
+                    ) : (
+                      <ToolGlyph
+                        kind={entry.kind}
+                        tool={entry.tool}
+                        size={11}
+                        className={cn(
+                          "mt-0.5 shrink-0 opacity-55",
+                          isJitPending ? "text-amber-900 opacity-80" : INK_FAINT,
+                        )}
+                      />
                     )}
-                  </span>
-                </div>
-                {frame && (
-                  <>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span
+                          className={cn(
+                            "text-[12px] leading-snug",
+                            isError
+                              ? "text-[color:var(--sketch-red)]/80"
+                              : isJitPending
+                                ? "font-semibold text-black"
+                                : INK_SOFT,
+                          )}
+                        >
+                          {entry.label}
+                        </span>
+                        {entry.kind === "tool" && entry.tool ? (
+                          <span className={cn("truncate font-mono text-[10px] opacity-70", INK_FAINT)}>
+                            {entry.tool}
+                          </span>
+                        ) : null}
+                        <span
+                          className={cn(
+                            "ml-auto shrink-0 text-[10px] uppercase tracking-[0.08em]",
+                            INK_FAINT,
+                          )}
+                        >
+                          {isJitPending
+                            ? "approval"
+                            : isRunningStep
+                              ? "running"
+                              : isError
+                                ? "failed"
+                                : entry.kind === "status"
+                                  ? "step"
+                                  : "done"}
+                        </span>
+                      </div>
+                      {entry.detail ? (
+                        <p className={cn("mt-0.5 text-[11px] leading-relaxed", INK_FAINT)}>{entry.detail}</p>
+                      ) : null}
+                      {entry.sources && entry.sources.length > 0 ? (
+                        <ul className="mt-1.5 space-y-0.5">
+                          {entry.sources.slice(0, 3).map((s) => (
+                            <li key={s.url} className="min-w-0">
+                              <a
+                                href={s.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className={cn(
+                                  "block truncate text-[10.5px] underline decoration-black/15 underline-offset-2 hover:decoration-black/40",
+                                  INK_FAINT,
+                                )}
+                              >
+                                {s.title || s.url}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {isJitPending ? (
+                        <div className="mt-2.5">
+                          {entry.jitWhatsappExpected ? (
+                            <p className="mb-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
+                              {entry.jitWhatsappStatus === "not_linked"
+                                ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
+                                : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
+                            </p>
+                          ) : null}
+                          {entry.jitRequestId && onJitDecision ? (
+                            <>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={Boolean(jitDeciding?.[entry.jitRequestId])}
+                                  onClick={() => onJitDecision(entry.jitRequestId!, true)}
+                                  className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
+                                >
+                                  {jitDeciding?.[entry.jitRequestId] ? (
+                                    <Loader2 className="size-3 animate-spin" aria-hidden />
+                                  ) : null}
+                                  Approve
+                                  {isSessionChatJitScope(entry.jitScope) ? " for this chat" : ""}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(jitDeciding?.[entry.jitRequestId])}
+                                  onClick={() => onJitDecision(entry.jitRequestId!, false)}
+                                  className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
+                                >
+                                  Deny
+                                </button>
+                              </div>
+                              {entry.jitChannel === "whatsapp" ? (
+                                <p className="mt-2 text-[11px] font-medium text-black/60">
+                                  Or reply Approve or Deny on WhatsApp.
+                                </p>
+                              ) : null}
+                            </>
+                          ) : entry.jitChannel === "whatsapp" ? (
+                            <p className="mt-2 text-[11px] font-medium text-black/70">
+                              Reply Approve or Deny on WhatsApp to continue.
+                            </p>
+                          ) : null}
+                          {jitError ? (
+                            <p className="mt-1.5 text-[10px] text-black">{jitError}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  {frame ? (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={`data:${frame.mime};base64,${frame.imageBase64}`}
                       alt={frame.label}
-                      className={cn("max-h-56 w-full rounded-xl border object-contain", HAIRLINE)}
+                      className={cn("mt-2 max-h-56 w-full rounded-lg border object-contain opacity-90", HAIRLINE)}
                     />
-                  </>
-                )}
+                  ) : null}
+                </div>
               </li>
             );
           })}
-        </ul>
-      )}
+        </ol>
+      ) : null}
     </div>
   );
 }
@@ -590,10 +1136,17 @@ function ArtifactRow({
 
 interface ActivityEntry {
   id: string;
-  kind: "tool" | "brain";
+  kind: "tool" | "brain" | "status" | "jit_pending" | "jit_resolved";
   tool?: string;
   label: string;
   detail?: string;
+  status?: "running" | "done" | "error";
+  sources?: Array<{ url: string; title?: string }>;
+  jitRequestId?: string;
+  jitChannel?: "dashboard" | "whatsapp";
+  jitScope?: string;
+  jitWhatsappExpected?: boolean;
+  jitWhatsappStatus?: "disconnected" | "not_linked";
 }
 
 type ChatItem =
@@ -603,7 +1156,7 @@ type ChatItem =
   | { kind: "completed"; id: string; ts: number; agentId: string | null; summary?: string }
   | { kind: "result"; id: string; ts: number }
   | { kind: "failed"; id: string; ts: number; error: string }
-  | { kind: "user"; id: string; ts: number; message: string }
+  | { kind: "user"; id: string; ts: number; message: string; attachments?: ChatAttachmentChip[] }
   | { kind: "delivered"; id: string; ts: number; sent: boolean; reason?: string };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -615,7 +1168,19 @@ interface TeamRunViewProps {
 
 export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [composer, setComposer] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
   const [startedGoal, setStartedGoal] = useState<string | null>(null);
+  const [goalAttachments, setGoalAttachments] = useState<ChatAttachmentChip[] | null>(null);
+  /** Local pending chips while multipart start is in flight. */
+  const [uploadingAttachments, setUploadingAttachments] = useState<ChatAttachmentChip[] | null>(
+    null,
+  );
+  const [selectedModel, setSelectedModel] = useState(
+    () => team.config?.defaultModel?.trim() || TEAM_RUN_AGENT_DEFAULT_MODEL,
+  );
+  const [runModelLabel, setRunModelLabel] = useState<string | null>(null);
   const [run, setRun] = useState<TeamRunDTO | null>(null);
   const [events, setEvents] = useState<TeamRunEventDTO[]>([]);
   const [artifacts, setArtifacts] = useState<TeamRunArtifact[]>([]);
@@ -625,10 +1190,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [injecting, setInjecting] = useState(false);
-  const [leadReviewCampaignId, setLeadReviewCampaignId] = useState<string | null>(null);
-  const [leadReviewApproved, setLeadReviewApproved] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
   const [viewMode, setViewMode] = useState<RunViewMode>("chat");
+  const [jitDeciding, setJitDeciding] = useState<Record<string, boolean>>({});
+  const [jitError, setJitError] = useState<string | null>(null);
   const showChat = viewMode === "chat";
 
   // Browser frames: agentId → frames[]
@@ -639,6 +1204,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const streamCleanup = useRef<(() => void) | null>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const frameCounterRef = useRef(0);
   // Track the last tool_finished event id per agent to link browser_frame to it
   const pendingToolEventByAgent = useRef<Record<string, string>>({});
@@ -680,6 +1246,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       allAgents.find((a) => a.agentId === id)?.role ?? "worker",
     [allAgents],
   );
+
+  useEffect(() => {
+    const fromTeam = team.config?.defaultModel?.trim();
+    if (fromTeam) setSelectedModel(fromTeam);
+  }, [team.id, team.config?.defaultModel]);
 
   // ── Derive live agent states from events ───────────────────────────────────
   const agentStates = useMemo<Map<string, AgentStatus>>(() => {
@@ -777,6 +1348,25 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             });
           }
         }
+      } else if (e.eventType === "scope_requested" && aid) {
+        const s = states.get(aid);
+        if (s) {
+          states.set(aid, {
+            ...s,
+            state: "thinking",
+            currentAction: "Waiting for your approval…",
+            currentTool: undefined,
+          });
+        }
+      } else if (e.eventType === "approval_granted" && aid) {
+        const s = states.get(aid);
+        if (s && s.currentAction === "Waiting for your approval…") {
+          states.set(aid, {
+            ...s,
+            state: "thinking",
+            currentAction: "Working on task…",
+          });
+        }
       } else if (e.eventType === "subtask_completed") {
         const workerId = (p.agentId as string | undefined) ?? aid;
         if (workerId) {
@@ -863,13 +1453,46 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         case "task_delegated":
           result.push({ kind: "task_delegated", eventId: e.id, timestampMs: ts, payload: p, agentId: e.agentId });
           break;
+        case "task_status_update": {
+          const msg = typeof p.message === "string" ? p.message : "";
+          const label = statusStepLabel(msg, p);
+          if (label) {
+            result.push({
+              kind: "status_step",
+              eventId: e.id,
+              timestampMs: ts,
+              agentId: e.agentId ?? "",
+              label,
+            });
+          }
+          break;
+        }
         case "brain_queried":
           result.push(brainQueryFromPayload(e.id, ts, e.agentId, p));
+          break;
+        case "scope_requested":
+          result.push(jitPendingFromPayload(e.id, ts, e.agentId, p));
+          break;
+        case "approval_granted":
+          result.push(jitResolvedFromPayload(e.id, ts, e.agentId, p));
           break;
         case "tool_called": {
           const tool = p.tool as string | undefined;
           const msg = p.message as string | undefined;
-          if (tool && msg === "tool_finished") {
+          if (!tool) break;
+          if (msg === "tool_started") {
+            result.push({
+              kind: "tool_call",
+              eventId: e.id,
+              timestampMs: ts,
+              tool,
+              agentId: e.agentId ?? "",
+              actionLabel: formatToolId(tool).short,
+              status: "running",
+            });
+            break;
+          }
+          if (msg === "tool_finished") {
             if (tool === "brain.query") {
               result.push(brainQueryFromPayload(e.id, ts, e.agentId, p));
             } else {
@@ -877,6 +1500,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               const actionLabel = isBrowserToolId(tool)
                 ? resolveBrowserToolIntent(tool, p, hints)
                 : describeBrowserToolAction(tool, p) ?? undefined;
+              const ok = p.ok !== false;
               result.push({
                 kind: "tool_call",
                 eventId: e.id,
@@ -884,6 +1508,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 tool,
                 agentId: e.agentId ?? "",
                 actionLabel,
+                status: ok ? "done" : "error",
+                sources: parseToolSources(p.sources),
               });
             }
           }
@@ -899,7 +1525,13 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           result.push({ kind: "run_failed_event", eventId: e.id, timestampMs: ts, error: (p.error as string | undefined) ?? "Run failed" });
           break;
         case "user_injection":
-          result.push({ kind: "user_injection", eventId: e.id, timestampMs: ts, message: (p.message as string | undefined) ?? "" });
+          result.push({
+            kind: "user_injection",
+            eventId: e.id,
+            timestampMs: ts,
+            message: (p.message as string | undefined) ?? "",
+            attachments: parseInjectionAttachments(p.attachments),
+          });
           break;
         case "result_delivered":
           result.push({
@@ -910,47 +1542,111 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             reason: typeof p.reason === "string" ? p.reason : undefined,
           });
           break;
-        case "lead_review_required":
-          if (typeof p.campaignId === "string") {
-            result.push({
-              kind: "lead_review",
-              eventId: e.id,
-              timestampMs: ts,
-              campaignId: p.campaignId,
-            });
-          }
-          break;
       }
     }
     return result;
   }, [events]);
 
-  /** Chat stream — consecutive tool/brain steps by one agent collapse into a single block. */
+  /** Chat stream — consecutive tool/brain/status steps by one agent form one execution rail. */
   const chatItems = useMemo<ChatItem[]>(() => {
     const items: ChatItem[] = [];
 
     for (const ev of processedEvents) {
-      if (ev.kind === "tool_call" || ev.kind === "brain_query") {
+      if (
+        ev.kind === "tool_call" ||
+        ev.kind === "brain_query" ||
+        ev.kind === "status_step" ||
+        ev.kind === "jit_pending" ||
+        ev.kind === "jit_resolved"
+      ) {
         const agentId = ev.agentId ?? "";
-        const entry: ActivityEntry =
-          ev.kind === "tool_call"
-            ? {
-                id: ev.eventId,
-                kind: "tool",
-                tool: ev.tool,
-                label: ev.actionLabel ?? formatToolId(ev.tool).short,
-              }
-            : {
-                id: ev.eventId,
-                kind: "brain",
-                label:
-                  ev.citationCount > 0
-                    ? `Checked company brain — ${ev.citationCount} source${ev.citationCount === 1 ? "" : "s"}`
-                    : "Checked company brain — nothing matched",
-                detail: ev.citationTitles.slice(0, 3).join(" · ") || undefined,
-              };
+        let entry: ActivityEntry;
+        if (ev.kind === "tool_call") {
+          entry = {
+            id: ev.eventId,
+            kind: "tool",
+            tool: ev.tool,
+            label: ev.actionLabel ?? formatToolId(ev.tool).short,
+            status: ev.status,
+            ...(ev.sources ? { sources: ev.sources } : {}),
+          };
+        } else if (ev.kind === "brain_query") {
+          entry = {
+            id: ev.eventId,
+            kind: "brain",
+            label:
+              ev.citationCount > 0
+                ? `Checked company brain — ${ev.citationCount} source${ev.citationCount === 1 ? "" : "s"}`
+                : "Checked company brain — nothing matched",
+            detail: ev.citationTitles.slice(0, 3).join(" · ") || undefined,
+            status: "done",
+          };
+        } else if (ev.kind === "jit_pending") {
+          entry = {
+            id: ev.eventId,
+            kind: "jit_pending",
+            label: ev.label,
+            detail: ev.detail,
+            status: "running",
+            jitRequestId: ev.jitRequestId,
+            jitChannel: ev.jitChannel,
+            jitScope: ev.jitScope,
+            jitWhatsappExpected: ev.jitWhatsappExpected,
+            jitWhatsappStatus: ev.jitWhatsappStatus,
+          };
+        } else if (ev.kind === "jit_resolved") {
+          entry = {
+            id: ev.eventId,
+            kind: "jit_resolved",
+            label: ev.label,
+            detail: ev.detail,
+            status: ev.decision === "denied" || ev.decision === "expired" ? "error" : "done",
+          };
+        } else {
+          entry = {
+            id: ev.eventId,
+            kind: "status",
+            label: ev.label,
+            status: "done",
+          };
+        }
 
+        // Prefer a matching running tool step when the finished event arrives.
         const last = items[items.length - 1];
+        if (
+          last &&
+          last.kind === "activity" &&
+          last.agentId === agentId &&
+          entry.kind === "tool" &&
+          entry.status !== "running"
+        ) {
+          const runningIdx = [...last.entries]
+            .map((e, i) => ({ e, i }))
+            .reverse()
+            .find(({ e }) => e.kind === "tool" && e.tool === entry.tool && e.status === "running")?.i;
+          if (runningIdx != null) {
+            last.entries[runningIdx] = entry;
+            continue;
+          }
+        }
+
+        // Replace outstanding JIT pending card when a decision arrives.
+        if (
+          last &&
+          last.kind === "activity" &&
+          last.agentId === agentId &&
+          entry.kind === "jit_resolved"
+        ) {
+          const pendingIdx = [...last.entries]
+            .map((e, i) => ({ e, i }))
+            .reverse()
+            .find(({ e }) => e.kind === "jit_pending")?.i;
+          if (pendingIdx != null) {
+            last.entries[pendingIdx] = entry;
+            continue;
+          }
+        }
+
         if (last && last.kind === "activity" && last.agentId === agentId) {
           last.entries.push(entry);
         } else {
@@ -994,7 +1690,13 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           items.push({ kind: "failed", id: ev.eventId, ts: ev.timestampMs, error: ev.error });
           break;
         case "user_injection":
-          items.push({ kind: "user", id: ev.eventId, ts: ev.timestampMs, message: ev.message });
+          items.push({
+            kind: "user",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            message: ev.message,
+            attachments: ev.attachments,
+          });
           break;
         case "result_delivered":
           items.push({
@@ -1026,57 +1728,70 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     [browserFrames],
   );
 
-  /** Resolve campaign id from run DTO, checkpoint trace, or streamed events. */
-  const leadReviewState = useMemo(() => {
-    let campaignId = leadReviewCampaignId ?? run?.leadCampaignId ?? null;
-    let awaitingReview = runStatus === "paused" || run?.status === "paused";
-
-    if (!campaignId && run?.supervisorTrace && Array.isArray(run.supervisorTrace)) {
-      for (let i = run.supervisorTrace.length - 1; i >= 0; i--) {
-        const step = run.supervisorTrace[i] as { step?: string; campaignId?: string } | undefined;
-        if (step?.step === "lead_review_checkpoint" && step.campaignId) {
-          campaignId = step.campaignId;
-          break;
-        }
-      }
-    }
-
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]!;
-      if (e.eventType === "lead_review_required") {
-        const p = e.payload as Record<string, unknown>;
-        if (typeof p.campaignId === "string") {
-          campaignId = campaignId ?? p.campaignId;
-          awaitingReview = true;
-        }
-        break;
-      }
-    }
-
-    if (!awaitingReview) {
-      for (let i = events.length - 1; i >= 0; i--) {
-        const e = events[i]!;
-        if (e.eventType !== "task_status_update") continue;
-        const p = e.payload as Record<string, unknown>;
-        const msg = p.message as string | undefined;
-        if (msg?.includes("review leads and approve outreach")) {
-          awaitingReview = true;
-          break;
-        }
-      }
-    }
-
-    const approved = leadReviewApproved || Boolean(run?.leadOutreachApprovedAt);
-    const activelyRunning = runStatus === "running" || submitting;
-    return {
-      campaignId,
-      awaitingReview: awaitingReview && !approved && !activelyRunning,
-      approved,
-    };
-  }, [events, run, runStatus, leadReviewCampaignId, leadReviewApproved, submitting]);
-
-  const isPaused = leadReviewState.awaitingReview;
+  const isPaused = runStatus === "paused" || run?.status === "paused";
   const isRunning = (runStatus === "running" || submitting) && !isPaused;
+
+  const handleJitDecision = useCallback(
+    async (jitRequestId: string, approved: boolean) => {
+      if (jitDeciding[jitRequestId]) return;
+      setJitDeciding((p) => ({ ...p, [jitRequestId]: true }));
+      setJitError(null);
+      const res = await decideJit(jitRequestId, approved);
+      if (!res.ok) {
+        setJitError(res.errorMessage);
+        setJitDeciding((p) => ({ ...p, [jitRequestId]: false }));
+        return;
+      }
+
+      const agentId =
+        events.find((e) => {
+          if (e.eventType !== "scope_requested") return false;
+          const id = (e.payload as Record<string, unknown> | null)?.jitRequestId;
+          return id === jitRequestId;
+        })?.agentId ??
+        null;
+
+      setEvents((prev) => [
+        ...prev,
+        {
+          id: `local-jit-decision-${jitRequestId}`,
+          runId: run?.id ?? "",
+          teamId: team.id,
+          agentId,
+          seq: (prev[prev.length - 1]?.seq ?? 0) + 1,
+          eventType: "approval_granted",
+          payload: {
+            message: approved ? "jit_approval_granted" : "jit_approval_denied",
+            decision: approved ? "approved" : "denied",
+            jitRequestId,
+          },
+          prevHash: "",
+          timestampMs: String(Date.now()),
+        },
+      ]);
+      setJitDeciding((p) => ({ ...p, [jitRequestId]: false }));
+    },
+    [events, jitDeciding, run?.id, team.id],
+  );
+
+  // Recover approval cards if the live stream missed `scope_requested`.
+  useEffect(() => {
+    if (!run?.id || (!isRunning && !isPaused)) return;
+    let cancelled = false;
+    const sync = async () => {
+      const pending = await listTeamRunPendingJit(team.id, run.id);
+      if (cancelled || pending.length === 0) return;
+      setEvents((prev) => mergePendingJitIntoEvents(prev, pending, team.id, run.id));
+    };
+    void sync();
+    const interval = setInterval(() => {
+      void sync();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [run?.id, team.id, isRunning, isPaused]);
 
   const liveBrowserAction = useMemo(() => {
     const inferenceHintsByAgent = new Map<string, Map<string, string>>();
@@ -1207,30 +1922,51 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   }
 
   // ── Start run ──────────────────────────────────────────────────────────────
-  async function handleStart(text: string) {
-    if (!text.trim() || submitting) return;
+  async function handleStart(text: string, files: File[] = []) {
+    if (submitting) return;
+    if (!text.trim() && files.length === 0) return;
     setSubmitting(true);
     setError(null);
     setEvents([]);
     setArtifacts([]);
     setFinalResult(null);
     setRunStatus(null);
-    setLeadReviewCampaignId(null);
-    setLeadReviewApproved(false);
     setBrowserFrames({});
     setToolFrames({});
-    setStartedGoal(text.trim());
+    const display =
+      text.trim() ||
+      (files.length === 1 ? `Attached ${files[0]!.name}` : `Attached ${files.length} files`);
+    setStartedGoal(display);
+    // Only confirm chips after backend ack — show uploading state until then.
+    setGoalAttachments(null);
+    setUploadingAttachments(
+      files.length > 0
+        ? files.map((f, i) => ({
+            id: `uploading-${i}`,
+            fileName: f.name,
+            sizeBytes: f.size,
+            mimeType: f.type || undefined,
+          }))
+        : null,
+    );
     setComposer("");
+    setPendingFiles([]);
+    setFileError(null);
+    setFileInputKey((k) => k + 1);
     pendingToolEventByAgent.current = {};
     streamCleanup.current?.();
 
     try {
-      const newRun = await startTeamRun(team.id, text.trim());
-      setRun(newRun);
+      const started = await startTeamRun(team.id, text.trim(), files, selectedModel);
+      setRun(started.run);
+      setStartedGoal(started.displayGoal || display);
+      setGoalAttachments(started.attachments ?? null);
+      setUploadingAttachments(null);
+      setRunModelLabel(started.model ?? selectedModel);
       setRunStatus("running");
-      onRunStarted?.(newRun.id);
+      onRunStarted?.(started.run.id);
 
-      const cleanup = streamTeamRun(team.id, newRun.id, {
+      const cleanup = streamTeamRun(team.id, started.run.id, {
         onEvent: (event) => {
           setEvents((prev) => {
             if (prev.some((e) => e.id === event.id)) return prev;
@@ -1244,14 +1980,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               prev.some((a) => a.id === artifact.id) ? prev : [...prev, artifact],
             );
           }
-          if (event.eventType === "lead_review_required" && typeof p.campaignId === "string") {
-            setLeadReviewCampaignId(p.campaignId);
-            setRunStatus("paused");
-          }
         },
-        onPaused: (data) => {
+        onPaused: () => {
           setRunStatus("paused");
-          if (data.campaignId) setLeadReviewCampaignId(data.campaignId);
         },
         onComplete: (data) => {
           setRunStatus(data.status);
@@ -1268,6 +1999,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run");
       setRunStatus("failed");
+      setStartedGoal(null);
+      setGoalAttachments(null);
+      setUploadingAttachments(null);
+      setComposer(text);
+      setPendingFiles(files);
     } finally {
       setSubmitting(false);
     }
@@ -1289,27 +2025,67 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     }
   }
 
-  async function handleInject(text: string) {
-    if (!run || !text.trim() || injecting) return;
+  async function handleInject(text: string, files: File[] = []) {
+    if (!run || injecting) return;
+    if (!text.trim() && files.length === 0) return;
     setInjecting(true);
     setComposer("");
+    setPendingFiles([]);
+    setFileError(null);
+    setFileInputKey((k) => k + 1);
     try {
-      await injectTeamRunMessage(team.id, run.id, text.trim());
+      await injectTeamRunMessage(team.id, run.id, text.trim(), files);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send message");
+      setComposer(text);
+      setPendingFiles(files);
     } finally {
       setInjecting(false);
     }
   }
 
+  function addPendingFiles(picked: File[]) {
+    if (picked.length === 0) return;
+    const oversized = picked.filter((f) => f.size > TEAM_CHAT_MAX_FILE_BYTES);
+    if (oversized.length > 0) {
+      const names = oversized.map((f) => f.name).join(", ");
+      setFileError(
+        oversized.length === 1
+          ? `"${names}" is too large (max ${TEAM_CHAT_MAX_FILE_MB} MB).`
+          : `These files are too large (max ${TEAM_CHAT_MAX_FILE_MB} MB each): ${names}`,
+      );
+      picked = picked.filter((f) => f.size <= TEAM_CHAT_MAX_FILE_BYTES);
+      if (picked.length === 0) return;
+    } else {
+      setFileError(null);
+    }
+    setPendingFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      const merged = [...prev];
+      for (const file of picked) {
+        if (merged.length >= TEAM_CHAT_MAX_FILES) break;
+        const key = `${file.name}:${file.size}`;
+        if (!existing.has(key)) {
+          existing.add(key);
+          merged.push(file);
+        }
+      }
+      if (merged.length >= TEAM_CHAT_MAX_FILES && picked.length > 0) {
+        setFileError((prevErr) => prevErr ?? `Maximum ${TEAM_CHAT_MAX_FILES} files`);
+      }
+      return merged;
+    });
+  }
+
   function handleSend() {
     const text = composer.trim();
-    if (!text) return;
+    const files = [...pendingFiles];
+    if (!text && files.length === 0) return;
     if (isRunning && run) {
-      void handleInject(text);
+      void handleInject(text, files);
       return;
     }
-    void handleStart(text);
+    void handleStart(text, files);
   }
 
   function handleNewRun() {
@@ -1321,9 +2097,13 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setFinalResult(null);
     setRunStatus(null);
     setStartedGoal(null);
-    setLeadReviewCampaignId(null);
-    setLeadReviewApproved(false);
+    setGoalAttachments(null);
+    setUploadingAttachments(null);
+    setRunModelLabel(null);
     setError(null);
+    setPendingFiles([]);
+    setFileError(null);
+    setFileInputKey((k) => k + 1);
     setBrowserFrames({});
     setToolFrames({});
     pendingToolEventByAgent.current = {};
@@ -1337,9 +2117,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     void (async () => {
       try {
         const runs = await listTeamRuns(team.id);
-        const paused = runs.find(
-          (r) => r.status === "paused" && !r.leadOutreachApprovedAt,
-        );
+        const paused = runs.find((r) => r.status === "paused");
         if (!paused || cancelled) return;
 
         const detail = await getTeamRun(team.id, paused.id);
@@ -1347,11 +2125,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
         setRun(detail.run);
         setStartedGoal(detail.run.goal);
+        setGoalAttachments(parseAttachmentsFromEnrichedPrompt(detail.run.goal) ?? null);
         setEvents(detail.events);
         setRunStatus("paused");
-        if (detail.run.leadCampaignId) {
-          setLeadReviewCampaignId(detail.run.leadCampaignId);
-        }
 
         const lastSeq =
           detail.events.length > 0 ? detail.events[detail.events.length - 1]!.seq : -1;
@@ -1363,14 +2139,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             );
             processEventForFrames(event);
             const p = event.payload as Record<string, unknown>;
-            if (event.eventType === "lead_review_required" && typeof p.campaignId === "string") {
-              setLeadReviewCampaignId(p.campaignId);
-              setRunStatus("paused");
-            }
           },
-          onPaused: (data) => {
+          onPaused: () => {
             setRunStatus("paused");
-            if (data.campaignId) setLeadReviewCampaignId(data.campaignId);
           },
           onComplete: (data) => {
             setRunStatus(data.status);
@@ -1394,13 +2165,38 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   }, [team.id, run]);
 
   const supervisorName = agentNameById(team.supervisorAgentId ?? null);
-  const goalText = run?.goal ?? startedGoal;
+  const goalText = displayGoalText(run?.goal ?? startedGoal ?? "");
+  const displayGoalAttachments = useMemo(() => {
+    if (uploadingAttachments && uploadingAttachments.length > 0) return uploadingAttachments;
+    if (goalAttachments && goalAttachments.length > 0) return goalAttachments;
+    const fromGoal = run?.goal ? parseAttachmentsFromEnrichedPrompt(run.goal) : undefined;
+    return fromGoal ?? undefined;
+  }, [uploadingAttachments, goalAttachments, run?.goal]);
+  const goalAttachmentDelivery =
+    uploadingAttachments && uploadingAttachments.length > 0 ? "uploading" : "confirmed";
   const hasConversation = Boolean(goalText) || chatItems.length > 0;
+
+  const activeRunModel = useMemo(() => {
+    if (runModelLabel) return runModelLabel;
+    for (const e of events) {
+      if (e.eventType !== "run_started") continue;
+      const p = e.payload as Record<string, unknown>;
+      if (typeof p.model === "string" && p.model.trim()) return p.model.trim();
+    }
+    for (const e of events) {
+      if (e.eventType !== "task_status_update") continue;
+      const p = e.payload as Record<string, unknown>;
+      if (p.message === "inference_request" && typeof p.model === "string" && p.model.trim()) {
+        return p.model.trim();
+      }
+    }
+    return null;
+  }, [runModelLabel, events]);
 
   const statusLabel = isRunning
     ? "Running"
     : isPaused
-      ? "Waiting for your review"
+      ? "Paused"
       : runStatus === "completed"
         ? "Completed"
         : runStatus === "failed"
@@ -1420,7 +2216,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           : "bg-[color:var(--ink-faint)]";
 
   const placeholder = isPaused
-    ? "Review the leads below to continue…"
+    ? "Run is paused…"
     : isRunning
       ? "Add guidance while they work…"
       : run
@@ -1596,7 +2392,20 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               </div>
             )}
 
-            {showChat && goalText && <UserMessage text={goalText} />}
+            {showChat && goalText && (
+              <>
+                <UserMessage
+                  text={goalText}
+                  attachments={displayGoalAttachments}
+                  delivery={goalAttachmentDelivery}
+                />
+                {activeRunModel ? (
+                  <SystemLine icon={Zap}>
+                    Model: {formatModelOptionLabel(activeRunModel)}
+                  </SystemLine>
+                ) : null}
+              </>
+            )}
 
             {showChat && chatItems.map((item) => {
               switch (item.kind) {
@@ -1627,6 +2436,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                         entries={item.entries}
                         frames={toolFrames}
                         running={isRunning}
+                        jitDeciding={jitDeciding}
+                        jitError={jitError}
+                        onJitDecision={(jitRequestId, approved) => {
+                          void handleJitDecision(jitRequestId, approved);
+                        }}
                       />
                     </ChatMessage>
                   );
@@ -1670,7 +2484,13 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                   );
 
                 case "user":
-                  return <UserMessage key={item.id} text={item.message} />;
+                  return (
+                    <UserMessage
+                      key={item.id}
+                      text={item.message}
+                      attachments={item.attachments}
+                    />
+                  );
 
                 case "delivered":
                   return (
@@ -1697,34 +2517,73 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           </div>
         </div>
 
-        {run && leadReviewState.campaignId && isPaused && !leadReviewState.approved && (
-          <div className="mx-auto w-full max-w-2xl shrink-0 px-6">
-            <LeadReviewCard
-              teamId={team.id}
-              runId={run.id}
-              campaignId={leadReviewState.campaignId}
-              approved={leadReviewState.approved}
-              runPaused={isPaused}
-              onApproved={() => {
-                setLeadReviewApproved(true);
-                setRunStatus("running");
-              }}
-              onRetryStarted={() => setRunStatus("running")}
-              onRetryPaused={() => setRunStatus("paused")}
-              onRetryFailed={() => setRunStatus("paused")}
-            />
-          </div>
-        )}
-
         {/* ── Composer ───────────────────────────────────────────────────── */}
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="mx-auto w-full max-w-2xl">
+            {pendingFiles.length > 0 ? (
+              <ul className="mb-2 flex flex-wrap gap-1.5">
+                {pendingFiles.map((f, i) => (
+                  <li
+                    key={`${f.name}-${f.size}-${i}`}
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/70"
+                  >
+                    <FileText className="size-3 shrink-0" aria-hidden />
+                    <span className="truncate max-w-[10rem]">{f.name}</span>
+                    <span className="shrink-0 text-black/40">{formatFileSize(f.size)}</span>
+                    <button
+                      type="button"
+                      disabled={injecting || submitting}
+                      onClick={() => {
+                        setPendingFiles((prev) => prev.filter((_, idx) => idx !== i));
+                        setFileError(null);
+                      }}
+                      className="ml-0.5 shrink-0 rounded-full p-0.5 text-black/40 transition-colors hover:bg-black/5 hover:text-black disabled:opacity-40"
+                      title="Remove file"
+                    >
+                      <X className="size-3" aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {fileError ? (
+              <p className="mb-1.5 text-[11px] text-[color:var(--sketch-red)]">{fileError}</p>
+            ) : null}
             <div
               className={cn(
-                "flex items-end gap-2 rounded-3xl border bg-white/70 px-4 py-2 backdrop-blur-sm transition-colors focus-within:border-[color:var(--sketch-purple)]/45",
+                "flex items-end gap-2 rounded-3xl border bg-white/70 px-3 py-2 backdrop-blur-sm transition-colors focus-within:border-[color:var(--sketch-purple)]/45",
                 HAIRLINE,
               )}
             >
+              <input
+                ref={fileInputRef}
+                key={fileInputKey}
+                type="file"
+                multiple
+                accept={TEAM_CHAT_FILE_ACCEPT}
+                className="sr-only"
+                disabled={injecting || submitting || isPaused || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
+                onChange={(e) => {
+                  addPendingFiles(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={injecting || submitting || isPaused || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
+                onClick={() => fileInputRef.current?.click()}
+                title={
+                  isPaused
+                    ? "Resume or start a new run to attach files"
+                    : pendingFiles.length >= TEAM_CHAT_MAX_FILES
+                      ? `Maximum ${TEAM_CHAT_MAX_FILES} files`
+                      : `Attach files (up to ${TEAM_CHAT_MAX_FILES}, max ${TEAM_CHAT_MAX_FILE_MB} MB each)`
+                }
+                aria-label="Attach files"
+                className="mb-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-black/10 bg-white text-black/55 transition-colors hover:border-black/25 hover:text-black disabled:opacity-30"
+              >
+                <Paperclip size={14} />
+              </button>
               <textarea
                 ref={composerRef}
                 value={composer}
@@ -1743,7 +2602,12 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!composer.trim() || submitting || injecting || isPaused}
+                disabled={
+                  (!composer.trim() && pendingFiles.length === 0) ||
+                  submitting ||
+                  injecting ||
+                  isPaused
+                }
                 aria-label={isRunning ? "Send guidance" : "Start run"}
                 className="mb-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-black text-white transition-colors hover:bg-[color:var(--sketch-purple)] disabled:opacity-20"
               >
@@ -1754,11 +2618,51 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 )}
               </button>
             </div>
-            <p className={cn("mt-1.5 text-center text-[10.5px]", INK_FAINT)}>
-              {isRunning
-                ? "Enter to send · they'll pick it up on the next step"
-                : "Enter to send · Shift+Enter for a new line"}
-            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-0.5">
+              <label className={cn("inline-flex items-center gap-1.5 text-[11px]", INK_SOFT)}>
+                <span className="shrink-0">Model</span>
+                <select
+                  value={
+                    TEAM_RUN_MODEL_OPTIONS.includes(selectedModel)
+                      ? selectedModel
+                      : TEAM_RUN_AGENT_DEFAULT_MODEL
+                  }
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  disabled={isRunning || submitting}
+                  title={
+                    isRunning
+                      ? "Model applies to the next new run"
+                      : "LLM used by all agents in this team run"
+                  }
+                  className="max-w-[16rem] truncate rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/80 outline-none disabled:opacity-50"
+                >
+                  {!TEAM_RUN_MODEL_OPTIONS.includes(selectedModel) ? (
+                    <option value={selectedModel}>{formatModelOptionLabel(selectedModel)}</option>
+                  ) : null}
+                  <optgroup label="Exora">
+                    {EXORA_MODELS.map((m) => (
+                      <option key={m} value={m}>
+                        {formatModelOptionLabel(m)}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="OpenRouter">
+                    {CLOUD_MODELS.map((m) => (
+                      <option key={m} value={m}>
+                        {m === "openrouter/qlix/auto"
+                          ? "Auto (Qlix picks ≤ your plan)"
+                          : formatModelOptionLabel(m)}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </label>
+              <p className={cn("text-[10.5px]", INK_FAINT)}>
+                {isRunning
+                  ? `Enter to send · attach up to ${TEAM_CHAT_MAX_FILES} files · they'll pick it up on the next step`
+                  : `Enter to send · attach up to ${TEAM_CHAT_MAX_FILES} files · Shift+Enter for a new line`}
+              </p>
+            </div>
           </div>
         </div>
       </div>

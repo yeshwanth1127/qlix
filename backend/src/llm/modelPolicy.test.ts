@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeQlixInferenceModelId } from './modelPolicy.js';
+import {
+  assertModelAllowed,
+  llmProviderFromModelId,
+  ModelPolicyError,
+  normalizeQlixInferenceModelId,
+} from './modelPolicy.js';
 
 describe('normalizeQlixInferenceModelId', () => {
   it('prefixes bare model ids', () => {
@@ -33,5 +38,31 @@ describe('normalizeQlixInferenceModelId', () => {
       normalizeQlixInferenceModelId('exora/exora-general', 'exora'),
       'exora/exora-general',
     );
+  });
+});
+
+describe('assertModelAllowed cross-provider overrides', () => {
+  it('allows openrouter models even when the agent home provider is exora', () => {
+    assert.doesNotThrow(() =>
+      assertModelAllowed('openrouter/openai/gpt-4o-mini', 'exora'),
+    );
+  });
+
+  it('allows exora models even when the agent home provider is openrouter', () => {
+    assert.doesNotThrow(() => assertModelAllowed('exora/exora-general', 'openrouter'));
+  });
+
+  it('still rejects models outside the resolved namespace prefixes', () => {
+    assert.throws(
+      () => assertModelAllowed('anthropic/claude-sonnet-4.6', 'exora'),
+      ModelPolicyError,
+    );
+  });
+});
+
+describe('llmProviderFromModelId', () => {
+  it('maps namespaces', () => {
+    assert.equal(llmProviderFromModelId('exora/exora-general'), 'exora');
+    assert.equal(llmProviderFromModelId('openrouter/openai/gpt-4o-mini'), 'openrouter');
   });
 });

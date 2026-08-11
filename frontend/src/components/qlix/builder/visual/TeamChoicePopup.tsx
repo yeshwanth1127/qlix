@@ -10,7 +10,7 @@ const INK_FAINT = "text-[color:var(--ink-faint)]";
 const MICRO = "text-[10px] font-medium uppercase tracking-[0.16em]";
 
 export interface TeamChoice {
-  kind: "team" | "peers";
+  kind: "team" | "helper";
   name: string;
 }
 
@@ -18,6 +18,8 @@ export interface TeamChoicePopupProps {
   /** How many agents the new connection wired together. */
   readonly memberCount: number;
   readonly defaultName: string;
+  /** Name of the agent that would become the helper, for copy that names real agents. */
+  readonly helperName: string;
   readonly onChoose: (choice: TeamChoice) => void;
   /** Cancelling removes the edge, so no unlabelled cluster is left behind. */
   readonly onCancel: () => void;
@@ -26,14 +28,15 @@ export interface TeamChoicePopupProps {
 /**
  * Asked once, the moment two or more agents become wired together.
  *
- * The two answers mean genuinely different things, so the canvas asks rather than guessing:
- * a team has a lead that hands out steps and can be run, while peers are independent agents
- * that only pass messages. Copy must not imply peers can run — there is no runtime for
- * agent-to-agent work outside a team yet (`A2ATask` requires a `teamId`).
+ * The two answers are genuinely different relationships, so the canvas asks rather than
+ * guessing. A **team** runs as one pipeline with a lead handing out steps. A **helper** is a
+ * capability grant: the other agent stays independent and gets asked for things mid-run, under
+ * its own identity and permissions.
  */
 export function TeamChoicePopup({
   memberCount,
   defaultName,
+  helperName,
   onChoose,
   onCancel,
 }: TeamChoicePopupProps) {
@@ -89,18 +92,19 @@ export function TeamChoicePopup({
 
         <button
           type="button"
-          disabled={!trimmed}
-          onClick={() => onChoose({ kind: "peers", name: trimmed })}
+          onClick={() => onChoose({ kind: "helper", name: trimmed || helperName })}
           className={cn(
-            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-white disabled:pointer-events-none disabled:opacity-40",
+            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-white",
             HAIRLINE,
           )}
         >
           <Share2 size={12} className="mt-0.5 shrink-0 text-black" aria-hidden />
           <span className="min-w-0">
-            <span className="block text-[12px] font-medium text-black">Keep them separate</span>
+            <span className="block text-[12px] font-medium text-black">
+              Make {helperName} a helper
+            </span>
             <span className={cn("block text-[11px] leading-relaxed", INK_SOFT)}>
-              Agents that pass messages to each other. Can&apos;t be run yet.
+              They stay independent, and can be asked for things mid-task.
             </span>
           </span>
         </button>

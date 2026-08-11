@@ -8,30 +8,59 @@ import {
   DriveApiError,
 } from './driveApi.service.js';
 import {
+  DriveProviderNotAvailableError,
+  DriveProviderSelectionRequiredError,
+  resolveDriveSession,
+  type DriveProviderId,
+} from './driveConnector.service.js';
+import {
   appendGoogleActionLog,
   effectiveGoogleScopes,
-  getFreshGoogleAccessToken,
   GoogleConnectorNotConfiguredError,
   GoogleScopeDeniedError,
   GoogleToolError,
   loadGoogleAgentRunContext,
   requireGoogleJitIfNeeded,
 } from './googleToolContext.js';
+import { driveConnectorNotConnectedMessage } from './connectorUserMessages.js';
+import {
+  oneDriveCreateFile,
+  oneDriveDeleteFile,
+  oneDriveGetFileContent,
+  oneDriveGetFileMeta,
+  oneDriveListFiles,
+  oneDriveUpdateFile,
+  OneDriveApiError,
+} from './onedriveApi.service.js';
 
 export {
   GoogleConnectorNotConfiguredError,
   GoogleScopeDeniedError,
   GoogleToolError,
+  DriveProviderSelectionRequiredError,
+  DriveProviderNotAvailableError,
 };
 
 export type DriveReadAction = 'list' | 'get' | 'get_content';
 export type DriveWriteAction = 'create' | 'update' | 'delete';
+
+async function requireDriveSession(orgId: string | null, provider?: DriveProviderId) {
+  if (!orgId) {
+    throw new GoogleConnectorNotConfiguredError('drive', 'Agent must belong to an organization');
+  }
+  const session = await resolveDriveSession({ orgId, provider });
+  if (!session) {
+    throw new GoogleConnectorNotConfiguredError('drive', driveConnectorNotConnectedMessage());
+  }
+  return session;
+}
 
 export async function executeDriveRead(params: {
   agentId: string;
   runId: string | null;
   input: {
     action: DriveReadAction;
+    provider?: DriveProviderId;
     query?: string;
     fileId?: string;
     pageSize?: number;
@@ -43,34 +72,70 @@ export async function executeDriveRead(params: {
   if (!scopes.has('drive.read') && !scopes.has('drive.write')) {
     throw new GoogleScopeDeniedError('drive.read');
   }
-  if (!ctx.orgId) throw new GoogleConnectorNotConfiguredError('drive', 'Agent must belong to an organization');
 
-  const accessToken = await getFreshGoogleAccessToken(ctx.orgId, 'drive');
+  const session = await requireDriveSession(ctx.orgId, params.input.provider);
   try {
     let result: Record<string, unknown>;
     const asRecord = (v: object): Record<string, unknown> => ({ ...v });
-    if (params.input.action === 'list') {
-      result = asRecord(await driveListFiles({
-        accessToken,
-        query: params.input.query,
-        pageSize: params.input.pageSize,
-        pageToken: params.input.pageToken,
-      }));
+
+    if (session.provider === 'microsoft') {
+      if (params.input.action === 'list') {
+        result = asRecord(
+          await oneDriveListFiles({
+            accessToken: session.accessToken,
+            query: params.input.query,
+            pageSize: params.input.pageSize,
+            pageToken: params.input.pageToken,
+          }),
+        );
+      } else if (params.input.action === 'get') {
+        if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=get');
+        result = asRecord(
+          await oneDriveGetFileMeta({
+            accessToken: session.accessToken,
+            fileId: params.input.fileId.trim(),
+          }),
+        );
+      } else {
+        if (!params.input.fileId?.trim()) {
+          throw new GoogleToolError('fileId is required for action=get_content');
+        }
+        result = asRecord(
+          await oneDriveGetFileContent({
+            accessToken: session.accessToken,
+            fileId: params.input.fileId.trim(),
+          }),
+        );
+      }
+    } else if (params.input.action === 'list') {
+      result = asRecord(
+        await driveListFiles({
+          accessToken: session.accessToken,
+          query: params.input.query,
+          pageSize: params.input.pageSize,
+          pageToken: params.input.pageToken,
+        }),
+      );
     } else if (params.input.action === 'get') {
       if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=get');
-      result = asRecord(await driveGetFileMeta({
-        accessToken,
-        fileId: params.input.fileId.trim(),
-      }));
+      result = asRecord(
+        await driveGetFileMeta({
+          accessToken: session.accessToken,
+          fileId: params.input.fileId.trim(),
+        }),
+      );
     } else {
       if (!params.input.fileId?.trim()) {
         throw new GoogleToolError('fileId is required for action=get_content');
       }
-      result = asRecord(await driveGetFileContent({
-        accessToken,
-        fileId: params.input.fileId.trim(),
-      }));
+      result = asRecord(
+        await driveGetFileContent({
+          accessToken: session.accessToken,
+          fileId: params.input.fileId.trim(),
+        }),
+      );
     }
+
     await appendGoogleActionLog({
       agentId: params.agentId,
       userId: ctx.userId,
@@ -78,9 +143,13 @@ export async function executeDriveRead(params: {
       status: 'success',
       riskLevel: 'low',
       teamRunId: ctx.teamRunId,
-      payload: { action: params.input.action, fileId: params.input.fileId ?? null },
+      payload: {
+        provider: session.provider,
+        action: params.input.action,
+        fileId: params.input.fileId ?? null,
+      },
     });
-    return result;
+    return { provider: session.provider, ...result };
   } catch (err) {
     await appendGoogleActionLog({
       agentId: params.agentId,
@@ -89,17 +158,25 @@ export async function executeDriveRead(params: {
       status: 'failed',
       riskLevel: 'low',
       teamRunId: ctx.teamRunId,
-      payload: { action: params.input.action, error: String((err as Error)?.message ?? err) },
+      payload: {
+        provider: session.provider,
+        action: params.input.action,
+        error: String((err as Error)?.message ?? err),
+      },
     });
     if (
       err instanceof GoogleToolError ||
       err instanceof GoogleScopeDeniedError ||
-      err instanceof GoogleConnectorNotConfiguredError
+      err instanceof GoogleConnectorNotConfiguredError ||
+      err instanceof DriveProviderSelectionRequiredError ||
+      err instanceof DriveProviderNotAvailableError
     ) {
       throw err;
     }
     throw new GoogleToolError(
-      err instanceof DriveApiError ? err.message : String((err as Error)?.message ?? err),
+      err instanceof DriveApiError || err instanceof OneDriveApiError
+        ? err.message
+        : String((err as Error)?.message ?? err),
     );
   }
 }
@@ -109,6 +186,7 @@ export async function executeDriveWrite(params: {
   runId: string | null;
   input: {
     action: DriveWriteAction;
+    provider?: DriveProviderId;
     fileId?: string;
     name?: string;
     contentText?: string;
@@ -120,7 +198,9 @@ export async function executeDriveWrite(params: {
   const ctx = await loadGoogleAgentRunContext(params.agentId, params.runId);
   const scopes = effectiveGoogleScopes(ctx);
   if (!scopes.has('drive.write')) throw new GoogleScopeDeniedError('drive.write');
-  if (!ctx.orgId) throw new GoogleConnectorNotConfiguredError('drive', 'Agent must belong to an organization');
+
+  // Resolve provider first (may require user choice) — same order as email tools.
+  const session = await requireDriveSession(ctx.orgId, params.input.provider);
 
   await requireGoogleJitIfNeeded({
     agentId: params.agentId,
@@ -130,35 +210,74 @@ export async function executeDriveWrite(params: {
     jitToken: params.input.jitToken,
   });
 
-  const accessToken = await getFreshGoogleAccessToken(ctx.orgId, 'drive');
   try {
     let result: Record<string, unknown>;
     const asRecord = (v: object): Record<string, unknown> => ({ ...v });
-    if (params.input.action === 'create') {
+
+    if (session.provider === 'microsoft') {
+      if (params.input.action === 'create') {
+        if (!params.input.name?.trim()) throw new GoogleToolError('name is required for action=create');
+        result = asRecord(
+          await oneDriveCreateFile({
+            accessToken: session.accessToken,
+            name: params.input.name.trim(),
+            contentText: params.input.contentText,
+            mimeType: params.input.mimeType,
+            parentId: params.input.parentId,
+          }),
+        );
+      } else if (params.input.action === 'update') {
+        if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=update');
+        result = asRecord(
+          await oneDriveUpdateFile({
+            accessToken: session.accessToken,
+            fileId: params.input.fileId.trim(),
+            name: params.input.name,
+            contentText: params.input.contentText,
+            mimeType: params.input.mimeType,
+          }),
+        );
+      } else {
+        if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=delete');
+        result = asRecord(
+          await oneDriveDeleteFile({
+            accessToken: session.accessToken,
+            fileId: params.input.fileId.trim(),
+          }),
+        );
+      }
+    } else if (params.input.action === 'create') {
       if (!params.input.name?.trim()) throw new GoogleToolError('name is required for action=create');
-      result = asRecord(await driveCreateFile({
-        accessToken,
-        name: params.input.name.trim(),
-        contentText: params.input.contentText,
-        mimeType: params.input.mimeType,
-        parentId: params.input.parentId,
-      }));
+      result = asRecord(
+        await driveCreateFile({
+          accessToken: session.accessToken,
+          name: params.input.name.trim(),
+          contentText: params.input.contentText,
+          mimeType: params.input.mimeType,
+          parentId: params.input.parentId,
+        }),
+      );
     } else if (params.input.action === 'update') {
       if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=update');
-      result = asRecord(await driveUpdateFile({
-        accessToken,
-        fileId: params.input.fileId.trim(),
-        name: params.input.name,
-        contentText: params.input.contentText,
-        mimeType: params.input.mimeType,
-      }));
+      result = asRecord(
+        await driveUpdateFile({
+          accessToken: session.accessToken,
+          fileId: params.input.fileId.trim(),
+          name: params.input.name,
+          contentText: params.input.contentText,
+          mimeType: params.input.mimeType,
+        }),
+      );
     } else {
       if (!params.input.fileId?.trim()) throw new GoogleToolError('fileId is required for action=delete');
-      result = asRecord(await driveDeleteFile({
-        accessToken,
-        fileId: params.input.fileId.trim(),
-      }));
+      result = asRecord(
+        await driveDeleteFile({
+          accessToken: session.accessToken,
+          fileId: params.input.fileId.trim(),
+        }),
+      );
     }
+
     await appendGoogleActionLog({
       agentId: params.agentId,
       userId: ctx.userId,
@@ -167,12 +286,13 @@ export async function executeDriveWrite(params: {
       riskLevel: 'high',
       teamRunId: ctx.teamRunId,
       payload: {
+        provider: session.provider,
         action: params.input.action,
         fileId: (result.id as string | undefined) ?? params.input.fileId ?? null,
         name: params.input.name ?? null,
       },
     });
-    return result;
+    return { provider: session.provider, ...result };
   } catch (err) {
     await appendGoogleActionLog({
       agentId: params.agentId,
@@ -181,17 +301,25 @@ export async function executeDriveWrite(params: {
       status: 'failed',
       riskLevel: 'high',
       teamRunId: ctx.teamRunId,
-      payload: { action: params.input.action, error: String((err as Error)?.message ?? err) },
+      payload: {
+        provider: session.provider,
+        action: params.input.action,
+        error: String((err as Error)?.message ?? err),
+      },
     });
     if (
       err instanceof GoogleToolError ||
       err instanceof GoogleScopeDeniedError ||
-      err instanceof GoogleConnectorNotConfiguredError
+      err instanceof GoogleConnectorNotConfiguredError ||
+      err instanceof DriveProviderSelectionRequiredError ||
+      err instanceof DriveProviderNotAvailableError
     ) {
       throw err;
     }
     throw new GoogleToolError(
-      err instanceof DriveApiError ? err.message : String((err as Error)?.message ?? err),
+      err instanceof DriveApiError || err instanceof OneDriveApiError
+        ? err.message
+        : String((err as Error)?.message ?? err),
     );
   }
 }

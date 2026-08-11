@@ -124,10 +124,8 @@ const proxyCallSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
 
-/** GMB scrape + per-site email extraction can take 30–90s; default MCP timeout is 15s. */
+/** Job search/queue can take longer; default MCP timeout is 15s. */
 function mcpProxyTimeoutMs(slug: string, tool: string): number {
-  if (slug === 'qlix-leads' && tool === 'gmb_search_leads') return 120_000;
-  if (slug === 'qlix-leads') return 45_000;
   if (slug === 'qlix-jobs' && tool === 'search_jobs') return 45_000;
   if (slug === 'qlix-jobs' && tool === 'queue_applications') return 60_000;
   if (slug === 'qlix-jobs') return 30_000;
@@ -582,7 +580,7 @@ export function createMcpRouter(): Router {
       }
       const headers = target.authType === 'oauth' ? await mcpOAuth.bearerHeader(target.serverId) : target.headers;
       const proxyHeaders = { ...headers };
-      if (slug === 'qlix-leads' || slug === 'qlix-jobs') {
+      if (slug === 'qlix-jobs') {
         proxyHeaders['X-Qlix-Agent-Id'] = agentId;
       }
       const result = await callHttpTool({

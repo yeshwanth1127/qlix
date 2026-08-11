@@ -23,6 +23,9 @@ WHATSAPP_TOOL_SCOPES: dict[str, tuple[str, ...]] = {
     "whatsapp_list_contacts": ("whatsapp.read", "whatsapp.contact_send"),
     "whatsapp_read_chat": ("whatsapp.read",),
     "whatsapp_send_message": ("whatsapp.contact_send",),
+    "whatsapp_auto_reply_status": ("whatsapp.auto_reply",),
+    "whatsapp_auto_reply_stop": ("whatsapp.auto_reply",),
+    "whatsapp_auto_reply_set_instructions": ("whatsapp.auto_reply",),
 }
 
 # Upload cap (decoded bytes). WhatsApp documents are typically small (PDFs,
@@ -116,7 +119,9 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "Send a WhatsApp text message to a contact from the user's phonebook, or to a "
                 "phone number with country code. ONLY call this when the user explicitly asked "
                 "to message that person (never unsolicited outreach). Requires whatsapp.contact_send "
-                "and dashboard/WhatsApp approval the first time in a chat."
+                "and dashboard/WhatsApp approval the first time in a chat. "
+                "If this agent also has whatsapp.auto_reply, sending arms a 24h listener so "
+                "contact replies auto-route back to this agent."
             ),
             "parameters": {
                 "type": "object",
@@ -129,8 +134,73 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         "type": "string",
                         "description": "Text body to send (max ~4000 chars).",
                     },
+                    "reply_instructions": {
+                        "type": "string",
+                        "description": (
+                            "Optional. What this agent should do when that contact replies "
+                            "(requires whatsapp.auto_reply). Stored on the listen session."
+                        ),
+                    },
                 },
                 "required": ["recipient", "message"],
+            },
+        },
+    },
+    "whatsapp_auto_reply_status": {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_auto_reply_status",
+            "description": (
+                "List contacts this agent is currently listening to for auto-reply "
+                "(armed after whatsapp_send_message when whatsapp.auto_reply is granted)."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    "whatsapp_auto_reply_stop": {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_auto_reply_stop",
+            "description": (
+                "Stop listening for auto-replies. Pass recipient (name/phone/jid) to stop one "
+                "contact, or omit to stop all active listeners for this agent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "Optional contact name, phone, or jid to stop.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    "whatsapp_auto_reply_set_instructions": {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_auto_reply_set_instructions",
+            "description": (
+                "Set or update what this agent should do when a contact replies "
+                "(auto-reply session). Call after messaging them, or with a resolvable "
+                "name/phone/jid. Requires whatsapp.auto_reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "Contact name, phone with country code, or jid.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": (
+                            "What to do when they reply, e.g. 'Book a 30-min call and confirm the time.'"
+                        ),
+                    },
+                },
+                "required": ["recipient", "instructions"],
             },
         },
     },
@@ -356,6 +426,8 @@ def build_whatsapp_tool_executors(
                 "recipient": recipient,
                 "message": message,
             }
+            if params.get("reply_instructions"):
+                body["replyInstructions"] = str(params["reply_instructions"]).strip()
 
             if whatsapp_contact_send_needs_jit(identity) and not jit_granted:
                 jit_payload = {
@@ -393,6 +465,64 @@ def build_whatsapp_tool_executors(
             )
 
         executors["whatsapp_send_message"] = _send_message
+
+    if "whatsapp_auto_reply_status" in allowed:
+
+        def _auto_reply_status(args_json: str) -> str:
+            return _post_json(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/whatsapp/auto-reply/status",
+                body={"runId": run_id},
+            )
+
+        executors["whatsapp_auto_reply_status"] = _auto_reply_status
+
+    if "whatsapp_auto_reply_stop" in allowed:
+
+        def _auto_reply_stop(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            body: dict[str, Any] = {"runId": run_id}
+            if params.get("recipient"):
+                body["recipient"] = str(params["recipient"])
+            return _post_json(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/whatsapp/auto-reply/stop",
+                body=body,
+            )
+
+        executors["whatsapp_auto_reply_stop"] = _auto_reply_stop
+
+    if "whatsapp_auto_reply_set_instructions" in allowed:
+
+        def _auto_reply_set_instructions(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            recipient = str(params.get("recipient", "")).strip()
+            instructions = str(params.get("instructions", "")).strip()
+            if not recipient:
+                return "[failed] recipient is required"
+            if not instructions:
+                return "[failed] instructions are required"
+            return _post_json(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/whatsapp/auto-reply/set-instructions",
+                body={
+                    "runId": run_id,
+                    "recipient": recipient,
+                    "instructions": instructions,
+                },
+            )
+
+        executors["whatsapp_auto_reply_set_instructions"] = _auto_reply_set_instructions
 
     return executors
 

@@ -92,7 +92,12 @@ export function readDragPayload(transfer: DataTransfer): BuilderDragPayload | nu
 
 // ─── Connection rules ────────────────────────────────────────────────────────
 
-export type BuilderEdgeKind = "flow" | "tool";
+/**
+ * `flow`   — agent → agent pipeline stage (a team).
+ * `tool`   — a permission granted to an agent.
+ * `helper` — agent → agent as a capability: "you may hand work to this colleague".
+ */
+export type BuilderEdgeKind = "flow" | "tool" | "helper";
 
 /**
  * React Flow hands `isValidConnection` either an in-progress `Connection` or an existing
@@ -113,13 +118,18 @@ export function connectionKind(connection: ConnectionLike): BuilderEdgeKind | nu
 
   if (from === HANDLE.flowOut && to === HANDLE.flowIn) return "flow";
   if (from === HANDLE.toolOut && to === HANDLE.tools) return "tool";
+  // The *target* port disambiguates: an agent wired into another agent's tools port is being
+  // offered as a capability, not queued as a pipeline stage. `flow-out` only exists on agent
+  // nodes and `tool-out` only on tool nodes, so the handles alone are enough to tell them apart.
+  if (from === HANDLE.flowOut && to === HANDLE.tools) return "helper";
   return null;
 }
 
 /**
- * Exactly two shapes are allowed: agent→agent along the flow ports, and tool→agent into the
- * dedicated tools port. Everything else — tool into a flow port, tool→tool, self-edges — is
- * refused at the handle rather than cleaned up afterwards.
+ * Exactly three shapes are allowed: agent→agent along the flow ports (a team), tool→agent into
+ * the tools port (a permission), and agent→agent into the tools port (a colleague it may ask).
+ * Everything else — tool into a flow port, tool→tool, self-edges — is refused at the handle
+ * rather than cleaned up afterwards.
  */
 export function isValidBuilderConnection(connection: ConnectionLike): boolean {
   return connectionKind(connection) !== null;
@@ -141,6 +151,8 @@ export function connectedAgentIds(
 
   const neighbours = new Map<string, string[]>();
   for (const edge of edges) {
+    // `helper` edges are deliberately excluded: being allowed to ask a colleague does not put
+    // the two agents on one pipeline, which is exactly the distinction the popup asks about.
     if (edge.data?.kind !== "flow") continue;
     if (!agentIds.has(edge.source) || !agentIds.has(edge.target)) continue;
     // Undirected on purpose: membership is about who is wired together, not flow direction.
@@ -174,6 +186,51 @@ export function defaultLeadNodeId(memberIds: string[], edges: BuilderEdge[]): st
       .map((edge) => edge.target),
   );
   return memberIds.find((id) => !hasIncoming.has(id)) ?? memberIds[0]!;
+}
+
+// ─── Implied grants ──────────────────────────────────────────────────────────
+
+/** `agent.ask.<agentId>` — mirrors the backend scope id. */
+export function agentAskScope(agentId: string): string {
+  return `agent.ask.${agentId}`;
+}
+
+/**
+ * The scope grants the drawn graph implies, per agent: every tool wired into an agent's tools
+ * port, plus `agent.ask.<colleague>` for every agent wired there.
+ *
+ * Drawing never applies these — Apply diffs this against each agent's live scopes and asks for
+ * confirmation, so a canvas edit can't silently widen an agent's permissions.
+ */
+export function impliedGrants(
+  nodes: BuilderNode[],
+  edges: BuilderEdge[],
+): Map<string, Set<string>> {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const grants = new Map<string, Set<string>>();
+
+  for (const edge of edges) {
+    const kind = edge.data?.kind;
+    if (kind !== "tool" && kind !== "helper") continue;
+
+    const target = byId.get(edge.target);
+    const source = byId.get(edge.source);
+    if (!target?.data.agentId || !source) continue;
+
+    const scope =
+      kind === "tool"
+        ? source.data.scopeId
+        : source.data.agentId
+          ? agentAskScope(source.data.agentId)
+          : undefined;
+    if (!scope) continue;
+
+    const existing = grants.get(target.data.agentId);
+    if (existing) existing.add(scope);
+    else grants.set(target.data.agentId, new Set([scope]));
+  }
+
+  return grants;
 }
 
 // ─── Persistence ─────────────────────────────────────────────────────────────

@@ -69,33 +69,6 @@ WEB_INTERACTION_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
-# Lead website email enrichment — must load browser tools, not research or a re-scrape.
-LEAD_BROWSER_ENRICHMENT_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "browser enrichment",
-        "enrich lead",
-        "enrich the lead",
-        "enrich these leads",
-        "find email on",
-        "find emails on",
-        "search their website",
-        "search the website",
-        "search website for email",
-        "search websites for email",
-        "visit their website",
-        "visit the website",
-        "check their website",
-        "check the website",
-        "website for email",
-        "email on their website",
-        "email on the website",
-        "needsbrowserenrichment",
-        "update_lead_email",
-        "record_lead_enrichment",
-        "contact page",
-    }
-)
-
 # Internal group ids are jargon to the model ("comms" means nothing to it); describe
 # the capability instead so the steer is actually actionable.
 _GROUP_LABELS: dict[ToolGroup, str] = {
@@ -355,10 +328,6 @@ def _granted_scope_set(identity: AgentIdentity) -> set[str]:
     return set(identity.permission_scopes) | set(identity.always_scopes)
 
 
-def has_qlix_leads_scope(identity: AgentIdentity) -> bool:
-    return any(s.startswith("mcp.qlix-leads.") for s in _granted_scope_set(identity))
-
-
 def has_crm_scope(identity: AgentIdentity) -> bool:
     granted = _granted_scope_set(identity)
     return any(s.startswith("crm.") for s in granted)
@@ -431,12 +400,8 @@ CRM_MUTATION_KEYWORDS: frozenset[str] = frozenset(
 
 
 def is_crm_mutation_intent(text: str) -> bool:
-    """True when the user wants to create/update/delete a CRM record (not GMB lead scraping)."""
+    """True when the user wants to create/update/delete a CRM record."""
     lower = text.lower()
-    if any(kw in lower for kw in LEAD_GENERATION_KEYWORDS):
-        return False
-    if "google maps" in lower or "gmb" in lower or "scrape" in lower:
-        return False
     return any(kw in lower for kw in CRM_MUTATION_KEYWORDS)
 
 
@@ -453,77 +418,15 @@ def crm_jit_run_guidance() -> str:
     )
 
 
-def is_lead_browser_enrichment_intent(text: str) -> bool:
-    """True when the user wants emails from lead websites (post-scrape), not a new GMB search."""
-    lower = text.lower()
-    if any(kw in lower for kw in LEAD_BROWSER_ENRICHMENT_KEYWORDS):
-        return True
-    # Short follow-ups: "search ... website ... email"
-    if "website" in lower and "email" in lower:
-        if any(v in lower for v in ("search", "find", "visit", "check", "scrape", "look")):
-            return True
-    return False
-
-
-def lead_enrichment_run_guidance() -> str:
+def crm_no_invent_guidance() -> str:
+    """Steer CRM-capable agents away from inventing writes when the user didn't ask."""
     return (
-        "## Lead website email enrichment (this run)\n"
-        "The user wants emails from existing lead websites — NOT a new Google Maps scrape.\n"
-        "1. Call list_leads with includeAll=true and the campaignId from this conversation. "
-        "Do NOT call gmb_search_leads again.\n"
-        "2. For EACH lead in needsBrowserEnrichment: browser_ab_open(website), check /contact, "
-        "then update_lead_email (if found) or record_lead_enrichment with outcome=no_email_on_site.\n"
-        "3. Call list_leads again and summarize which businesses have verified emails.\n"
-        "Never invent emails. Wix placeholders like info@mysite.com are rejected."
-    )
-
-
-LEAD_GENERATION_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "generate leads",
-        "find leads",
-        "lead gen",
-        "lead generation",
-        "scrape leads",
-        "google maps",
-        "gmb",
-        "local business",
-        "local businesses",
-    }
-)
-
-
-def is_lead_generation_intent(text: str) -> bool:
-    """True when the user wants a new GMB scrape / lead list (not enrichment-only)."""
-    if is_lead_browser_enrichment_intent(text):
-        return False
-    lower = text.lower()
-    if any(kw in lower for kw in LEAD_GENERATION_KEYWORDS):
-        return True
-    if "generate" in lower and any(
-        w in lower for w in ("lead", "leads", "cafe", "cafes", "business", "restaurant", "shop")
-    ):
-        return True
-    if re.search(r"\bgenerate\s+\d+\b", lower) and any(
-        w in lower for w in ("cafe", "cafes", "salon", "salons", "lead", "leads", "business", "bangalore", "bengaluru")
-    ):
-        return True
-    if "gmb_search_leads" in lower or "google maps" in lower:
-        return True
-    return False
-
-
-def lead_generation_run_guidance() -> str:
-    return (
-        "## Lead generation (this run)\n"
-        "The user wants NEW leads scraped from Google Maps.\n"
-        "1. Call gmb_search_leads FIRST with searchQuery (business type), location, and maxResults. "
-        "Example: searchQuery='cafes', location='Bangalore', maxResults=5.\n"
-        "2. Do NOT call start_outreach, get_campaign, or list_leads until gmb_search_leads returns a campaignId.\n"
-        "3. After scrape: list_leads with includeAll=true, present the businesses to the user.\n"
-        "4. Browser-enrich websites (browser_ab_open → update_lead_email / record_lead_enrichment).\n"
-        "5. Only then offer or run outreach to verified emails.\n"
-        "Never invent a campaignId — use only the id returned by gmb_search_leads."
+        "## CRM tools (available but not requested)\n"
+        "You have CRM tools, but this request does NOT ask to create, update, or delete CRM records. "
+        "Do NOT call crm_create, crm_update, crm_delete, crm_bulk_create, convert, or link tools. "
+        "Do not invent CRM side work (e.g. saving filtered leads into Zoho) unless the user explicitly asks. "
+        "If you only need to filter or transform leads for the next pipeline stage, keep the result in your "
+        "findings / returned JSON — do not write to CRM."
     )
 
 
@@ -585,7 +488,7 @@ def tool_preference_text(
         lines.append(
             "Most relevant for this request: "
             + ", ".join(preferred)
-            + ". Other tools remain available if the task turns out to need them."
+            + ". Prefer those; do not expand into unrelated side work with other tools."
         )
     if "research" in available:
         if "research" in intent_groups and "web" not in intent_groups:
@@ -637,16 +540,10 @@ def classify_groups(
                 selected.add("web")
             if not selected and "web.research" in filt:
                 selected.add("research")
-            if is_lead_browser_enrichment_intent(instruction.lower()) and _group_allowed(
-                "web", identity, runner_runtime
-            ):
-                selected.add("web")
-                selected.discard("research")
             selected.add("always")
             return tuple(g for g in _GROUP_ORDER if g in selected)
 
     text = instruction.lower()
-    lead_enrich = is_lead_browser_enrichment_intent(text)
     scores: dict[ToolGroup, int] = {g: 0 for g in KEYWORD_MAP}
     for group, keywords in KEYWORD_MAP.items():
         for kw in keywords:
@@ -654,10 +551,6 @@ def classify_groups(
                 scores[group] += 1
 
     selected = {g for g, score in scores.items() if score > 0}
-    if lead_enrich and _group_allowed("web", identity, runner_runtime):
-        selected.add("web")
-        # Website email lookup is live browsing, not curated research APIs.
-        selected.discard("research")
     if not selected:
         if runner_runtime == "hybrid":
             selected = {"files"} if is_read_only_file_intent(instruction) else {"files", "code"}
@@ -669,7 +562,7 @@ def classify_groups(
     # Passive research (platform names, 调研, etc.) should not load the full browser suite —
     # UNLESS the agent was explicitly granted web.read (e.g. competitor research), where the
     # browser is a silent fallback for blocked platform APIs.
-    if "research" in selected and not lead_enrich:
+    if "research" in selected:
         research_has_browser = "web.read" in _granted_scopes(identity) and _group_allowed(
             "web", identity, runner_runtime
         )
@@ -741,12 +634,11 @@ class ToolRouter:
         guidance_parts: list[str] = []
         if "research" in groups and "web" in groups:
             guidance_parts.append(ESCALATION_LADDER_GUIDANCE)
-        if is_crm_mutation_intent(routing_text) and "comms" in groups:
-            guidance_parts.append(crm_jit_run_guidance())
-        if is_lead_browser_enrichment_intent(routing_text):
-            guidance_parts.append(lead_enrichment_run_guidance())
-        elif is_lead_generation_intent(routing_text):
-            guidance_parts.append(lead_generation_run_guidance())
+        if "comms" in groups and has_crm_scope(self.identity):
+            if is_crm_mutation_intent(routing_text):
+                guidance_parts.append(crm_jit_run_guidance())
+            else:
+                guidance_parts.append(crm_no_invent_guidance())
         if "comms" in groups and has_slack_scope(self.identity) and is_slack_api_intent(routing_text):
             guidance_parts.append(slack_run_guidance())
         if "comms" in groups and "email.send" in (
@@ -789,6 +681,7 @@ class ToolRouter:
         mcp_servers: Any = None,
         *,
         tool_profile: str = "full",
+        askable_agents: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         from .cloud_browser_runtime import openai_browser_tool_definitions
         from .cloud_document_runtime import openai_document_tool_definitions
@@ -839,7 +732,7 @@ class ToolRouter:
         if "knowledge" in groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
         if "always" in groups:
-            tools.extend(openai_always_tool_definitions())
+            tools.extend(openai_always_tool_definitions(askable_agents))
 
         if mcp_servers:
             from .cloud_mcp_runtime import openai_mcp_tool_definitions

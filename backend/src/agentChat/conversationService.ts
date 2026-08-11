@@ -38,7 +38,10 @@ export async function getOrCreatePrimaryConversation(params: {
   orgId: string | null;
 }): Promise<{ id: string; createdAt: Date; title: string | null; kind: string }> {
   const existing = await prisma.agentConversation.findFirst({
-    where: { agentId: params.agentId, userId: params.userId },
+    // `kind: 'chat'` matters: without it this returns the oldest conversation of ANY kind, so an
+    // agent first used from the Visual Builder (or a gateway channel) would adopt that thread as
+    // its direct chat — mixing machine-to-machine turns into the user's own conversation.
+    where: { agentId: params.agentId, userId: params.userId, kind: 'chat' },
     orderBy: { createdAt: 'asc' },
     select: { id: true, createdAt: true, title: true, kind: true },
   });
@@ -55,6 +58,100 @@ export async function getOrCreatePrimaryConversation(params: {
     select: { id: true, createdAt: true, title: true, kind: true },
   });
   return created;
+}
+
+/** `sessionKey` value grouping every participant's thread for one Visual Builder canvas. */
+export function builderSessionKey(canvasId: string): string {
+  return `builder:${canvasId}`;
+}
+
+/**
+ * The thread an agent uses for Visual Builder work — its own canvas-scoped conversation,
+ * never its direct chat.
+ *
+ * Keeping builder traffic in a separate `AgentConversation` row is what stops it reaching the
+ * agent's direct-chat context: `buildMemoryBlock` and `updateConversationSummary` are both
+ * scoped by `conversationId`, so the working window and the rolling summary of the direct chat
+ * physically cannot see these turns. That is a structural guarantee rather than a filter
+ * somebody has to remember to apply.
+ */
+export async function getOrCreateBuilderConversation(params: {
+  agentId: string;
+  userId: string;
+  orgId: string | null;
+  canvasId: string;
+  /** Shown in the agent's conversation list, e.g. "Visual Builder · asked by Researcher". */
+  title?: string | null;
+}): Promise<{ id: string; createdAt: Date; title: string | null; kind: string }> {
+  const sessionKey = builderSessionKey(params.canvasId);
+  const existing = await prisma.agentConversation.findFirst({
+    where: { agentId: params.agentId, userId: params.userId, kind: 'builder', sessionKey },
+    select: { id: true, createdAt: true, title: true, kind: true },
+  });
+  if (existing) return existing;
+
+  return prisma.agentConversation.create({
+    data: {
+      agentId: params.agentId,
+      userId: params.userId,
+      orgId: params.orgId,
+      kind: 'builder',
+      title: params.title?.trim() || 'Visual Builder',
+      sessionKey,
+    },
+    select: { id: true, createdAt: true, title: true, kind: true },
+  });
+}
+
+/** Every participating agent's thread for one canvas, for the builder chat transcript. */
+export async function listBuilderConversations(params: {
+  userId: string;
+  canvasId: string;
+}): Promise<Array<{ id: string; agentId: string; title: string | null }>> {
+  return prisma.agentConversation.findMany({
+    where: {
+      userId: params.userId,
+      kind: 'builder',
+      sessionKey: builderSessionKey(params.canvasId),
+    },
+    select: { id: true, agentId: true, title: true },
+    orderBy: { createdAt: 'asc' },
+  });
+}
+
+/**
+ * The thread a target agent uses for work handed to it by another agent, outside any canvas.
+ *
+ * One thread per calling agent (`peer:<callerAgentId>`), so B's conversation list reads as a set
+ * of labelled inboxes — "Asked by Researcher" — rather than one undifferentiated pile. Like
+ * builder threads, this is deliberately not `kind: 'chat'`, which is what keeps it out of B's
+ * direct-chat summary and working context.
+ */
+export async function getOrCreatePeerConversation(params: {
+  agentId: string;
+  userId: string;
+  orgId: string | null;
+  callerAgentId: string;
+  callerName: string;
+}): Promise<{ id: string; createdAt: Date; title: string | null; kind: string }> {
+  const sessionKey = `peer:${params.callerAgentId}`;
+  const existing = await prisma.agentConversation.findFirst({
+    where: { agentId: params.agentId, userId: params.userId, kind: 'peer', sessionKey },
+    select: { id: true, createdAt: true, title: true, kind: true },
+  });
+  if (existing) return existing;
+
+  return prisma.agentConversation.create({
+    data: {
+      agentId: params.agentId,
+      userId: params.userId,
+      orgId: params.orgId,
+      kind: 'peer',
+      title: `Asked by ${params.callerName}`,
+      sessionKey,
+    },
+    select: { id: true, createdAt: true, title: true, kind: true },
+  });
 }
 
 export async function ensureLocalConversation(params: {

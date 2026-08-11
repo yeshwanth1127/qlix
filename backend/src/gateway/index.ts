@@ -30,6 +30,7 @@ export { admitTurn } from './admission.js';
 export { resolveRoute, GatewayRouteError } from './resolveRoute.js';
 export { buildWebChatInbound } from './adapters/webChat.adapter.js';
 export { buildWhatsAppInbound, whatsappAdapter } from './adapters/whatsapp.adapter.js';
+export { buildTelegramInbound, telegramAdapter } from './adapters/telegram.adapter.js';
 export { buildLocalInbound, localAdapter } from './adapters/local.adapter.js';
 export { buildTeamInbound } from './adapters/team.adapter.js';
 export type {

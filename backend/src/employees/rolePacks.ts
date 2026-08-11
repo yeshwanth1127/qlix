@@ -112,7 +112,7 @@ export const EMPLOYEE_ROLE_MANIFESTS: EmployeeRoleManifest[] = [
     status: 'ga',
     label: 'Sales Executive',
     mission: 'Find qualified leads, personalize outreach, and keep the pipeline updated.',
-    changelog: 'Initial GA pack — research, email, optional qlix-leads MCP.',
+    changelog: 'Initial GA pack — research, email, CRM-friendly outreach.',
     outcomes: [
       {
         id: 'qualify',
@@ -136,13 +136,11 @@ export const EMPLOYEE_ROLE_MANIFESTS: EmployeeRoleManifest[] = [
         available: true,
       },
     ],
-    permissionScopes: ['web.research', ...BASE_BRAIN, 'mcp.qlix-leads.gmb_search_leads'],
-    jitScopes: [],
+    permissionScopes: ['web.research', 'email.read', 'email.send', ...BASE_BRAIN],
+    jitScopes: ['email.send'],
     runtime: 'cloud',
     model: DEFAULT_MODEL,
-    mcpRequirements: [
-      { serverSlug: 'qlix-leads', tools: ['gmb_search_leads', 'save_leads'], ensureRegistered: true },
-    ],
+    mcpRequirements: [],
     connectorsRequired: [],
     connectorsOptional: [],
     knowledgeRequirements: [

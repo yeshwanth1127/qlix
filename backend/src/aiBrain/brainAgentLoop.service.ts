@@ -17,6 +17,14 @@ import { BrainProposalService, type BrainProposalDTO } from './brainProposal.ser
 const MAX_ROUNDS = 6;
 const HISTORY_TURNS = 12;
 
+/** Heuristic: force a knowledge tool when auto-retrieval missed but the user asked about docs. */
+function looksLikeKnowledgeQuestion(question: string): boolean {
+  const s = question.toLowerCase();
+  return /\b(doc|docs|document|documents|knowledge|policy|policies|handbook|upload|uploaded|faq|ingest|collection|summar|summary|what(?:'s| is| are).{0,40}\babout|read (?:the |my )?doc|find|search)\b/.test(
+    s,
+  );
+}
+
 type LoopMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
@@ -59,9 +67,56 @@ export class BrainAgentLoopService {
         messages.push({ role: 'assistant', content: turn.content });
       }
     }
+
+    // Always retrieve knowledge for this turn. Models often skip knowledge_search under
+    // tool_choice=auto and then falsely claim they cannot access uploaded docs.
+    const citations: BrainQueryCitation[] = [];
+    let autoRetrieved = false;
+    try {
+      const primed = await this.queryService.queryBrain({
+        userId: input.userId,
+        orgId: input.orgId,
+        brainAgentId: input.brainAgentId,
+        brainModel: input.brainModel,
+        question: input.question,
+        contextOnly: true,
+        agentContextBudget: false,
+        writeAudit: false,
+      });
+      if (primed.citations.length > 0 && primed.contextBlock?.trim()) {
+        autoRetrieved = true;
+        for (const c of primed.citations) {
+          citations.push(c);
+        }
+        messages.push({
+          role: 'system',
+          content: [
+            'Retrieved knowledge for this user message (already searched — answer from this when relevant; cite with [n]):',
+            primed.contextBlock,
+          ].join('\n\n'),
+        });
+      } else {
+        messages.push({
+          role: 'system',
+          content:
+            primed.answer?.trim() ||
+            'Retrieved knowledge: no matching chunks for this message. You may still call list_knowledge or knowledge_search with a different query.',
+        });
+      }
+    } catch (err) {
+      console.error(
+        '[brainAgentLoop] auto knowledge retrieve failed:',
+        err instanceof Error ? err.message : err,
+      );
+      messages.push({
+        role: 'system',
+        content:
+          'Automatic knowledge retrieval failed for this turn. Call knowledge_search or list_knowledge before answering document questions.',
+      });
+    }
+
     messages.push({ role: 'user', content: input.question });
 
-    const citations: BrainQueryCitation[] = [];
     let latestProposal: BrainProposalDTO | null = null;
     let promptTokens = 0;
     let completionTokens = 0;
@@ -77,7 +132,10 @@ export class BrainAgentLoopService {
           max_tokens: 2048,
           stream: false,
           tools: BRAIN_TOOL_DEFINITIONS,
-          tool_choice: 'auto',
+          tool_choice:
+            round === 0 && !autoRetrieved && looksLikeKnowledgeQuestion(input.question)
+              ? 'required'
+              : 'auto',
         },
         {
           provider,
@@ -164,6 +222,7 @@ export class BrainAgentLoopService {
         proposalId: latestProposal?.id ?? null,
         citations: citations.length,
         toolLoop: true,
+        autoRetrieved,
       },
       status: 'success',
       riskLevel: latestProposal ? 'medium' : 'low',

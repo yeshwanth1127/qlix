@@ -50,7 +50,17 @@ export interface ConnectorCatalogEntry {
   /** Search aliases (e.g. "twitter" for X). */
   readonly aliases?: readonly string[];
   /** Scroll/focus target on the page when already wired. */
-  readonly liveAnchor?: "google" | "whatsapp" | "orbit" | "zoho" | "slack" | "discord" | "github";
+  readonly liveAnchor?:
+    | "google"
+    | "whatsapp"
+    | "orbit"
+    | "zoho"
+    | "slack"
+    | "discord"
+    | "github"
+    | "microsoft"
+    | "notion"
+    | "telegram";
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
@@ -235,14 +245,28 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     logo: { slug: "slack", domain: "slack.com", color: "4A154B" },
   },
   {
+    id: "telegram",
+    name: "Telegram",
+    category: "Communication",
+    authTypes: ["APIKey"],
+    description:
+      "Connect Telegram for this workspace — intent routing picks an agent (or shows a numbered picker).",
+    docsUrl: "https://core.telegram.org/bots/api",
+    availability: "live",
+    liveAnchor: "telegram",
+    aliases: ["tg", "botfather"],
+    logo: { slug: "telegram", domain: "telegram.org", color: "26A5E4" },
+  },
+  {
     id: "microsoft365",
     name: "Microsoft 365",
     category: "Productivity",
     authTypes: ["OAuth2"],
     description: "Outlook, Teams, OneDrive via Microsoft Graph + Entra ID.",
     docsUrl: "https://learn.microsoft.com/en-us/graph/auth",
-    availability: "soon",
-    aliases: ["outlook", "teams", "office", "entra"],
+    availability: "live",
+    liveAnchor: "microsoft",
+    aliases: ["outlook", "teams", "office", "entra", "microsoft"],
     logo: { slug: "microsoft", domain: "microsoft.com", color: "00A4EF" },
   },
   {
@@ -282,7 +306,8 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     authTypes: ["OAuth2", "APIKey"],
     description: "Pages and databases; public OAuth or internal integration tokens.",
     docsUrl: "https://developers.notion.com/docs/authorization",
-    availability: "soon",
+    availability: "live",
+    liveAnchor: "notion",
     logo: { slug: "notion", domain: "notion.so", color: "000000" },
   },
   {
@@ -660,8 +685,11 @@ export function catalogIdsToConnectorsNeeded(platformIds: readonly string[]): st
     if (entry.liveAnchor === "orbit") providers.add("orbit");
     if (entry.liveAnchor === "zoho") providers.add("zoho");
     if (entry.liveAnchor === "slack") providers.add("slack");
+    if (entry.liveAnchor === "telegram") providers.add("telegram");
     if (entry.liveAnchor === "discord") providers.add("discord");
     if (entry.liveAnchor === "github") providers.add("github");
+    if (entry.liveAnchor === "microsoft") providers.add("microsoft");
+    if (entry.liveAnchor === "notion") providers.add("notion");
   }
   return [...providers].join(",");
 }

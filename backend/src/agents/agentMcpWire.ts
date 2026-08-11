@@ -1,7 +1,6 @@
 /**
  * Wire MCP server bindings after agent creation when planned scopes include mcp.*.
  */
-import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
 import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
 import { ensureQlixScheduleMcpForOrg } from '../schedules/ensureQlixScheduleMcp.js';
 import { mcpService } from '../mcp/mcp.service.js';
@@ -20,7 +19,7 @@ export async function wireAgentMcpFromScopes(input: {
   // Guest/individual agents have agent.orgId = null, but their owning user always
   // belongs to a workspace org that holds the MCP servers (same fallback the email
   // connector uses). Without this, mcp.* scopes are granted but never bound → the
-  // agent has the permission but no actual tool, so it can't scrape/list leads.
+  // agent has the permission but no actual tool, so MCP tools never bind.
   let orgId = input.orgId;
   if (!orgId) {
     const user = await prisma.user.findUnique({
@@ -31,9 +30,6 @@ export async function wireAgentMcpFromScopes(input: {
   }
   if (!orgId) return;
 
-  if (scopes.some((s) => s.startsWith('mcp.qlix-leads.'))) {
-    await ensureQlixLeadsMcpForOrg(orgId, userId);
-  }
   if (scopes.some((s) => s.startsWith('mcp.qlix-jobs.'))) {
     await ensureQlixJobsMcpForOrg(orgId, userId);
   }

@@ -65,6 +65,13 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   whatsapp_list_contacts: { label: "WhatsApp", category: "other", verb: "List contacts" },
   whatsapp_read_chat: { label: "WhatsApp", category: "other", verb: "Read chat" },
   whatsapp_send_message: { label: "WhatsApp", category: "other", verb: "Send message" },
+  whatsapp_auto_reply_status: { label: "WhatsApp", category: "other", verb: "Auto-reply status" },
+  whatsapp_auto_reply_stop: { label: "WhatsApp", category: "other", verb: "Stop auto-reply" },
+  whatsapp_auto_reply_set_instructions: {
+    label: "WhatsApp",
+    category: "other",
+    verb: "Set reply instructions",
+  },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
   spawn_subagents: { label: "Sub-agent", category: "subagent", verb: "Spawn sub-agents" },

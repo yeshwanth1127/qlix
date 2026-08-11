@@ -1,4 +1,4 @@
-"""Cloud runner: email.read / email.send tools via Qlix backend proxy → n8n."""
+"""Cloud runner: multi-provider email.read / email.send tools via Qlix backend."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "function": {
             "name": "email_read",
             "description": (
-                "Read or search emails from the connected Gmail account. "
-                "Use query for Gmail search syntax (e.g. is:unread, from:alice@example.com). "
+                "Read or search emails from a connected Gmail or Microsoft 365 account. "
+                "Use query for mailbox search text (Gmail operators work only with Gmail). "
                 "Provide messageId to fetch a single message. "
                 "File attachments are downloaded into the Qlix sandbox (same store as "
                 "agent-generated files), and extractable text (PDF/DOCX/XLSX/CSV/text) is "
@@ -32,9 +32,18 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["google", "microsoft"],
+                        "description": (
+                            "Mailbox to use. Omit when one mailbox is connected. If the tool returns "
+                            "email_provider_selection_required, ask the user which listed mailbox to use, "
+                            "then retry with their selected provider."
+                        ),
+                    },
                     "query": {
                         "type": "string",
-                        "description": "Gmail search query. Defaults to is:unread.",
+                        "description": "Mailbox search query. Defaults to unread mail.",
                     },
                     "maxResults": {
                         "type": "integer",
@@ -42,7 +51,7 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     },
                     "messageId": {
                         "type": "string",
-                        "description": "Optional Gmail message id to fetch a single message.",
+                        "description": "Optional mailbox message id to fetch a single message.",
                     },
                     "includeAttachments": {
                         "type": "boolean",
@@ -61,11 +70,11 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "function": {
             "name": "email_send",
             "description": (
-                "Gmail send / draft / list drafts / delete draft via the connected account. "
+                "Send / draft / list drafts / delete draft via Gmail or Microsoft 365. "
                 "ROUTE FROM THE USER MESSAGE using mode: "
                 "mode='draft' to compose/prepare/write without sending; "
                 "mode='send' to deliver; "
-                "mode='list_drafts' to list existing Gmail drafts (use this before deleting "
+                "mode='list_drafts' to list existing mailbox drafts (use this before deleting "
                 "when you don't already have a draftId); "
                 "mode='delete_draft' to delete a draft (requires draftId from a prior draft "
                 "create or list_drafts — never invent draftId). "
@@ -73,24 +82,24 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "IMPORTANT: mode=draft does NOT deliver mail. Tell the user the draft is in "
                 "the connected mailbox's Drafts (see mailboxEmail in the tool result), and "
                 "never say 'sent' for a draft. Recipients in 'to' only prefill the draft. "
-                "CRITICAL for mode=send: only send to REAL email addresses obtained from tools such as "
-                "list_leads / gmb_search_leads or provided by the user. NEVER invent or guess "
-                "addresses (e.g. info@cafe1.com, contact@business2.com) — fabricated recipients "
-                "are rejected by the server. For lead outreach you MUST follow this order: "
-                "(1) gmb_search_leads, (2) list_leads includeAll=true, "
-                "(3) for EACH lead in needsBrowserEnrichment: browser_ab_open(website) "
-                "then update_lead_email or record_lead_enrichment(no_email_on_site), "
-                "(4) list_leads contactable and present verified emails to the user, "
-                "(5) only then email_send with mode=send. Sends are blocked while website leads "
-                "lack browser enrichment. Never use Wix placeholders like info@mysite.com. "
+                "CRITICAL for mode=send: only send to REAL email addresses provided by the user "
+                "or obtained from trusted tools. NEVER invent or guess addresses "
+                "(e.g. info@cafe1.com, contact@business2.com) — fabricated recipients "
+                "are rejected by the server. Never use placeholder addresses like info@mysite.com. "
                 "The first mode=send in a chat may pause for one-time Approve/Deny in this chat; "
                 "draft / list_drafts / delete_draft never require approval. "
-                "If Gmail is not connected, tell the user to open Connectors → Google (Gmail) → Connect Google. "
-                "If draft ops fail for missing compose permission, tell them to reconnect Gmail in Connectors."
+                "When email_provider_selection_required is returned, ask the user which listed mailbox "
+                "to use and retry this operation with provider='google' or provider='microsoft'. "
+                "Do not assume a provider and do not carry a prior choice to another operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["google", "microsoft"],
+                        "description": "Mailbox provider selected by the user when multiple mailboxes are connected.",
+                    },
                     "mode": {
                         "type": "string",
                         "enum": ["send", "draft", "list_drafts", "delete_draft"],
@@ -120,7 +129,7 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     "draftId": {
                         "type": "string",
                         "description": (
-                            "Gmail draft resource id for mode=delete_draft. "
+                            "Mailbox draft resource id for mode=delete_draft. "
                             "Get it from mode=draft response or mode=list_drafts."
                         ),
                     },
@@ -130,15 +139,7 @@ EMAIL_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     },
                     "replyToMessageId": {
                         "type": "string",
-                        "description": "Optional Gmail message id to reply in-thread.",
-                    },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Optional outreach metadata for lead campaigns.",
-                        "properties": {
-                            "campaignId": { "type": "string" },
-                            "leadId": { "type": "string" },
-                        },
+                        "description": "Optional mailbox message id to reply in-thread.",
                     },
                 },
                 "required": ["mode"],
@@ -309,6 +310,20 @@ def _post_email_tool(
                 "gmail_compose_scope_missing",
             ):
                 return f"[failed] {code}: {message}\n\n{instructions}"
+            if code == "email_provider_selection_required":
+                providers = err.get("providers")
+                if isinstance(providers, list):
+                    labels = [
+                        f'{item.get("id")}: {item.get("label")}'
+                        for item in providers
+                        if isinstance(item, dict) and item.get("id") and item.get("label")
+                    ]
+                    if labels:
+                        return (
+                            f"[failed] {code}: {message}\n"
+                            f"Available mailboxes: {'; '.join(labels)}. "
+                            "Ask the user which mailbox to use, then retry with its provider id."
+                        )
             return f"[failed] {code}: {message}"
         return f"[failed] HTTP {resp.status_code}: {text[:500]}"
 
@@ -345,6 +360,8 @@ def build_email_tool_executors(
                 body["messageId"] = params["messageId"]
             if params.get("includeAttachments") is not None:
                 body["includeAttachments"] = bool(params.get("includeAttachments"))
+            if params.get("provider") in ("google", "microsoft"):
+                body["provider"] = params["provider"]
             return _post_email_tool(
                 backend_url=backend_url,
                 runner_token=runner_token,
@@ -420,21 +437,16 @@ def build_email_tool_executors(
                 "subject": "" if params.get("subject") is None else str(params.get("subject")),
                 "bodyText": "" if body_text is None else str(body_text),
             }
+            if params.get("provider") in ("google", "microsoft"):
+                body["provider"] = params["provider"]
             if params.get("draftId"):
                 body["draftId"] = params["draftId"]
             if params.get("maxResults") is not None:
                 body["maxResults"] = params["maxResults"]
             if params.get("replyToMessageId"):
                 body["replyToMessageId"] = params["replyToMessageId"]
-            meta = params.get("metadata")
-            if isinstance(meta, dict) and (meta.get("campaignId") or meta.get("leadId")):
-                body["metadata"] = {
-                    k: meta[k]
-                    for k in ("campaignId", "leadId")
-                    if meta.get(k)
-                }
 
-            # Draft ops stay in Gmail — never request JIT approval.
+            # Draft operations stay in the selected mailbox — never request JIT approval.
             jit_token = params.get("jitToken")
             if mode == "send" and email_send_needs_jit(identity) and not jit_token:
                 jit_payload = {

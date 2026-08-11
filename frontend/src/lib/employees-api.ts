@@ -27,7 +27,9 @@ export type ConnectorProvider =
   | "slack"
   | "discord"
   | "github"
-  | "telegram";
+  | "telegram"
+  | "microsoft"
+  | "notion";
 
 export interface PlatformSuggestion {
   platformId: string;
@@ -186,6 +188,8 @@ const CONNECTOR_LABELS: Record<ConnectorProvider, string> = {
   discord: "Discord",
   github: "GitHub",
   telegram: "Telegram",
+  microsoft: "Microsoft 365",
+  notion: "Notion",
 };
 
 export function connectorLabel(provider: ConnectorProvider): string {

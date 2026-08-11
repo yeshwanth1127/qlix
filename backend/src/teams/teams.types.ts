@@ -26,8 +26,7 @@ export type TeamRunEventType =
   | 'run_completed'
   | 'run_failed'
   | 'result_delivered'
-  | 'user_injection'
-  | 'lead_review_required';
+  | 'user_injection';
 
 /**
  * Which deterministic stage-goal playbook the orchestrator applies to a run.
@@ -40,7 +39,7 @@ export type TeamRunEventType =
  * `undefined` means "never resolved" — legacy teams created before the field
  * existed. Those are detected once on their next run and then persisted.
  */
-export type TeamPlaybook = 'lead_gen' | 'none';
+export type TeamPlaybook = 'none';
 
 export interface TeamConfig {
   maxParallelWorkers: number;
@@ -139,8 +138,6 @@ export interface TeamRunDTO {
   scopeEscalations: ScopeEscalation[];
   result: unknown | null;
   errorMessage: string | null;
-  leadCampaignId: string | null;
-  leadOutreachApprovedAt: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

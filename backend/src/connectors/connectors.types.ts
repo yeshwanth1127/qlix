@@ -6,7 +6,9 @@ export type ConnectorProvider =
   | 'slack'
   | 'discord'
   | 'github'
-  | 'telegram';
+  | 'telegram'
+  | 'microsoft'
+  | 'notion';
 
 /** Orbit (Postiz) Public API credentials stored encrypted in tokenEnc. */
 export interface StoredOrbitCredentials {
@@ -74,6 +76,8 @@ export interface N8nIntegrationDTO {
 }
 
 export interface EmailReadInput {
+  /** Explicit mailbox provider when more than one email account is connected. */
+  provider?: EmailProviderId;
   query?: string;
   maxResults?: number;
   messageId?: string | null;
@@ -110,27 +114,26 @@ export interface EmailReadResult {
 }
 
 export type EmailSendMode = 'send' | 'draft' | 'list_drafts' | 'delete_draft';
+export type EmailProviderId = 'google' | 'microsoft';
 
 export interface EmailSendInput {
+  /** Explicit mailbox provider when more than one email account is connected. */
+  provider?: EmailProviderId;
   to: string[];
   subject: string;
   bodyText: string;
   /**
    * `send` delivers immediately;
-   * `draft` saves to Gmail Drafts (no JIT);
-   * `list_drafts` lists Gmail drafts;
+   * `draft` saves to the selected mailbox Drafts folder (no JIT);
+   * `list_drafts` lists selected mailbox drafts;
    * `delete_draft` deletes a draft by `draftId` (no JIT).
    */
   mode?: EmailSendMode;
-  /** Required for mode=delete_draft (Gmail draft resource id, not message id). */
+  /** Required for mode=delete_draft (provider draft resource id, not message id). */
   draftId?: string | null;
   maxResults?: number;
   replyToMessageId?: string | null;
   jitToken?: string | null;
-  metadata?: {
-    campaignId?: string;
-    leadId?: string;
-  };
 }
 
 export interface EmailSendResult {
@@ -140,7 +143,7 @@ export interface EmailSendResult {
   /** Present when mode=draft or delete_draft. */
   draftId?: string;
   mode?: EmailSendMode;
-  /** Connected Gmail mailbox where the draft/send was performed. */
+  /** Connected mailbox where the draft/send was performed. */
   mailboxEmail?: string;
   /**
    * Short instruction for the model/UI — e.g. drafts live in this mailbox's Drafts,

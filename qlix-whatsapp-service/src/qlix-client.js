@@ -74,13 +74,31 @@ export async function resolveApproval(actionId, approved, reason) {
   return null;
 }
 
-export async function sendInbound(connectorId, text) {
-  const result = await request('POST', '/api/v1/whatsapp/inbound', {
+export async function sendInbound(connectorId, text, opts = {}) {
+  const body = {
     connector_id: connectorId,
     text,
+  };
+  if (opts.remoteJid) body.remote_jid = opts.remoteJid;
+  if (opts.fromContact) body.from_contact = true;
+
+  const result = await request('POST', '/api/v1/whatsapp/inbound', body);
+  if (!result.ok) return { error: result.error };
+  return {
+    reply: result.data?.reply ?? result.data?.message ?? 'Message received.',
+    deliverTo: result.data?.deliver_to ?? 'self',
+    contactJid: result.data?.contact_jid ?? null,
+  };
+}
+
+export async function isAutoReplyArmed(connectorId, remoteJid) {
+  const q = new URLSearchParams({
+    connector_id: connectorId,
+    remote_jid: remoteJid,
   });
-  if (!result.ok) return result.error;
-  return result.data?.reply ?? result.data?.message ?? 'Message received.';
+  const result = await request('GET', `/api/v1/whatsapp/auto-reply/armed?${q}`);
+  if (!result.ok) return false;
+  return Boolean(result.data?.armed);
 }
 
 export async function getAgentStatus(connectorId) {

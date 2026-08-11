@@ -19,6 +19,7 @@ export interface EnqueueAgentRunInput {
   teamRunId?: string | null;
   teamId?: string | null;
   teamRole?: string | null;
+  whatsappReplyToJid?: string | null;
 }
 
 export interface EnqueueAgentRunResult {
@@ -108,6 +109,7 @@ export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<Enqu
         teamRunId: input.teamRunId ?? null,
         teamId: input.teamId ?? null,
         teamRole: input.teamRole ?? null,
+        whatsappReplyToJid: input.whatsappReplyToJid ?? null,
       },
     }),
   ]);

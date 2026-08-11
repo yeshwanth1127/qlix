@@ -31,8 +31,8 @@ const BUILDER_HINTS: Record<string, string> = {
   'brain.knowledge_read': 'Read org knowledge docs',
   'email.read': 'Read Gmail',
   'email.send': 'Send / draft Gmail',
-  'drive.read': 'Read Google Drive',
-  'drive.write': 'Write Google Drive',
+  'drive.read': 'Read Google Drive / OneDrive',
+  'drive.write': 'Write Google Drive / OneDrive',
   'calendar.read': 'Read Google Calendar',
   'calendar.write': 'Write Google Calendar',
   'meet.manage': 'Google Meet',
@@ -41,6 +41,7 @@ const BUILDER_HINTS: Record<string, string> = {
   'whatsapp.send': 'Send files to linked WhatsApp self-chat',
   'whatsapp.read': 'Read WhatsApp chats/contacts',
   'whatsapp.contact_send': 'Message WhatsApp contacts',
+  'whatsapp.auto_reply': 'Auto-route contact WhatsApp replies to this agent',
   'social.read': 'Read Orbit social channels',
   'social.publish': 'Publish/schedule Orbit posts',
   'crm.read': 'Read CRM records',
@@ -208,9 +209,11 @@ ${scopeList}
 - cloud (default): Qlix servers. llmMode=proxy, localInferenceMode=null.
 - hybrid: Qlix brain + local tools. Required for local files, desktop/GUI, screen automation. llmMode=proxy, localInferenceMode=null.
 - local: on-device SDK. llmMode=proxy|direct; localInferenceMode=local_llm|cloud_api.
+- If the user says cloud-hosted / cloud-only / all agents on cloud → runtime=cloud for EVERY agent. Never add system.file_* or system.gui_control in that case.
 
 ## Common combos
 - Web research: web.research. Browse: web.read+web.click. Forms: +web.transaction.
+- Excel / spreadsheet / PDF on cloud: web.research unlocks create_xlsx + create_report_pdf (Qlix sandbox download link). Do NOT add system.file_* for sheets or PDFs unless the user wants local filesystem/desktop (hybrid).
 - Request every scope the core task needs. Connector scopes OK before link. mcp.<server>.<tool> = MCP tools (bindings auto-created).
 
 ## JIT

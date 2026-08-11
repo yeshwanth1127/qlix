@@ -1,37 +1,17 @@
 /**
- * Post-process NL builder plans when the user prompt is clearly lead-generation /
- * Google Maps scraping — the LLM often picks web.read instead of mcp.qlix-leads.*.
+ * Post-process NL builder plans for specialized intents (jobs, competitor research, CRM, schedule, cloud prefs).
  */
 import type { PermissionScope } from './agents.types.js';
 import { scopesRequireHybrid } from './scopeCatalog.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
 import { DEFAULT_SCHEDULE_SCOPES } from './defaultAgentScopes.js';
 
-const LEAD_GEN_INTENT =
-  /\b(google\s*maps|gmb|google\s*business(?:\s*profile)?|business\s*profile|local\s+business(?:es)?|scrape\s+leads?|lead\s+gen|lead\s+generation|find\s+leads?|leads?\s+with\s+emails?|outreach\s+to\s+leads?|search\s+(?:their\s+)?website(?:s)?\s+for\s+emails?|browser\s+enrichment|enrich\s+leads?)\b/i;
+const LOCAL_HYBRID_INTENT =
+  /\b(local\s+(?:file|files|filesystem|machine|computer|desktop)|my\s+(?:machine|computer|desktop|files?)|desktop\s+app|gui\s+control|screen\s+automation|hybrid\s+agent|file\s+control|read\s+(?:local\s+)?files?|write\s+(?:local\s+)?files?)\b/i;
 
-const FINDER_SCOPES: readonly string[] = [
-  'mcp.qlix-leads.gmb_search_leads',
-  'mcp.qlix-leads.get_campaign',
-  'mcp.qlix-leads.list_leads',
-];
-
-const QUALIFIER_SCOPES: readonly string[] = [
-  'mcp.qlix-leads.list_leads',
-  'mcp.qlix-leads.get_campaign',
-  'mcp.qlix-leads.update_lead_email',
-  'mcp.qlix-leads.record_lead_enrichment',
-  'web.read',
-  'web.click',
-];
-
-const OUTREACH_PERM: readonly string[] = ['email.send', 'mcp.qlix-leads.start_outreach'];
-const OUTREACH_JIT: readonly string[] = ['email.send', 'mcp.qlix-leads.start_outreach'];
-
-const SUPERVISOR_SCOPES: readonly string[] = ['mcp.qlix-leads.get_campaign', 'mcp.qlix-leads.list_leads'];
-
-export function isLeadGenPrompt(prompt: string): boolean {
-  return LEAD_GEN_INTENT.test(prompt);
+/** True when the user explicitly wants on-device / hybrid local tools. */
+export function isLocalHybridPrompt(prompt: string): boolean {
+  return LOCAL_HYBRID_INTENT.test(prompt);
 }
 
 function filterAllowed(scopes: readonly string[], allowed: Set<string>): PermissionScope[] {
@@ -43,15 +23,10 @@ function mergeScopes(
   addPerm: readonly string[],
   addJit: readonly string[],
   allowed: Set<string>,
-  stripWebRead: boolean,
+  _stripUnused: boolean,
 ): NLAgentSpec {
   const perm = new Set(spec.permissionScopes);
   const jit = new Set(spec.jitScopes);
-
-  if (stripWebRead && (addPerm.some((s) => s.startsWith('mcp.qlix-leads.')) || [...perm].some((s) => s.startsWith('mcp.qlix-leads.')))) {
-    perm.delete('web.read');
-    perm.delete('web.click');
-  }
 
   for (const s of filterAllowed(addPerm, allowed)) perm.add(s);
   for (const s of filterAllowed(addJit, allowed)) {
@@ -63,114 +38,6 @@ function mergeScopes(
     ...spec,
     permissionScopes: [...perm],
     jitScopes: [...jit].filter((s) => perm.has(s)),
-  };
-}
-
-function workerKind(worker: NLWorkerSpec, index: number, total: number): 'finder' | 'qualifier' | 'outreach' | 'unknown' {
-  const blob = `${worker.role} ${worker.name} ${worker.description}`.toLowerCase();
-  if (/\b(finder|scrape|scraping|maps|gmb|search|collect)\b/.test(blob)) return 'finder';
-  if (/\b(qualif|enrich|verify|valid|email)\b/.test(blob)) return 'qualifier';
-  if (/\b(outreach|sender|send|email)\b/.test(blob)) return 'outreach';
-  if (total === 3) {
-    if (index === 0) return 'finder';
-    if (index === 1) return 'qualifier';
-    if (index === 2) return 'outreach';
-  }
-  if (total === 2) {
-    return index === 0 ? 'finder' : 'qualifier';
-  }
-  return index === 0 ? 'finder' : 'unknown';
-}
-
-function enrichWorker(
-  worker: NLWorkerSpec,
-  kind: 'finder' | 'qualifier' | 'outreach' | 'full',
-  allowed: Set<string>,
-): NLWorkerSpec {
-  return enrichAgent(worker, kind, allowed) as NLWorkerSpec;
-}
-function enrichAgent(spec: NLAgentSpec, kind: 'finder' | 'qualifier' | 'outreach' | 'full', allowed: Set<string>): NLAgentSpec {
-  switch (kind) {
-    case 'finder':
-      return mergeScopes(spec, FINDER_SCOPES, [], allowed, true);
-    case 'qualifier':
-      return mergeScopes(spec, QUALIFIER_SCOPES, [], allowed, false);
-    case 'outreach':
-      return mergeScopes(spec, OUTREACH_PERM, OUTREACH_JIT, allowed, true);
-    case 'full': {
-      let agent = mergeScopes(
-        spec,
-        [...FINDER_SCOPES, ...OUTREACH_PERM],
-        OUTREACH_JIT,
-        allowed,
-        true,
-      );
-      agent = mergeScopes(
-        agent,
-        ['web.read', 'web.click', 'mcp.qlix-leads.update_lead_email', 'mcp.qlix-leads.record_lead_enrichment'],
-        [],
-        allowed,
-        false,
-      );
-      return agent;
-    }
-    default:
-      return spec;
-  }
-}
-
-export function enrichLeadGenPlan(
-  userPrompt: string,
-  plan: AgentCreationPlan,
-  allowed: Set<string>,
-): AgentCreationPlan {
-  if (!isLeadGenPrompt(userPrompt)) return plan;
-
-  const hasQlixLeads = [...allowed].some((s) => s.startsWith('mcp.qlix-leads.'));
-  if (!hasQlixLeads) return plan;
-
-  if (plan.type === 'single') {
-    return {
-      ...plan,
-      agent: enrichAgent(plan.agent, 'full', allowed),
-      rationale: `${plan.rationale} Lead-gen enrichment: Qlix Leads MCP tools wired for GMB scrape and outreach.`,
-    };
-  }
-
-  const workers = plan.team.workers.map((w, i) => {
-    const kind = workerKind(w, i, plan.team.workers.length);
-    if (kind === 'finder') return enrichWorker(w, 'finder', allowed);
-    if (kind === 'qualifier') return enrichWorker(w, 'qualifier', allowed);
-    if (kind === 'outreach') return enrichWorker(w, 'outreach', allowed);
-    return enrichWorker(w, 'finder', allowed);
-  });
-
-  let supervisor = plan.team.supervisor;
-  supervisor = mergeScopes(supervisor, SUPERVISOR_SCOPES, [], allowed, true);
-  // Orchestrator should not send email directly — workers own outreach.
-  supervisor = {
-    ...supervisor,
-    permissionScopes: supervisor.permissionScopes.filter((s) => s !== 'email.send'),
-    jitScopes: supervisor.jitScopes.filter((s) => s !== 'email.send'),
-  };
-
-  const hasOutreachWorker = workers.some((w) =>
-    w.permissionScopes.includes('mcp.qlix-leads.start_outreach' as PermissionScope),
-  );
-  if (!hasOutreachWorker && /\b(email|outreach)\b/i.test(userPrompt)) {
-    const lastIdx = workers.length - 1;
-    const last = workers[lastIdx];
-    const lastKind = last ? workerKind(last, lastIdx, workers.length) : 'unknown';
-    // Do not replace a qualifier worker — it owns browser email enrichment.
-    if (last && lastKind !== 'qualifier' && lastKind !== 'finder') {
-      workers[lastIdx] = enrichWorker(last, 'outreach', allowed);
-    }
-  }
-
-  return {
-    ...plan,
-    team: { ...plan.team, supervisor, workers },
-    rationale: `${plan.rationale} Lead-gen enrichment: GMB scraping uses mcp.qlix-leads.*; browser enrichment uses web.read on lead websites.`,
   };
 }
 
@@ -234,7 +101,6 @@ export function enrichJobApplyPlan(
   allowed: Set<string>,
 ): AgentCreationPlan {
   if (!isJobApplyPrompt(userPrompt)) return plan;
-  if (isLeadGenPrompt(userPrompt)) return plan;
   const hasJobs = [...allowed].some((s) => s.startsWith('mcp.qlix-jobs.'));
   if (!hasJobs) return plan;
 
@@ -331,8 +197,7 @@ export function enrichCompetitorResearchPlan(
   allowed: Set<string>,
 ): AgentCreationPlan {
   if (!isCompetitorResearchPrompt(userPrompt)) return plan;
-  // Lead-gen / job-apply are distinct intents that own their own tool wiring.
-  if (isLeadGenPrompt(userPrompt)) return plan;
+  // Job-apply is a distinct intent that owns its own tool wiring.
   if (isJobApplyPrompt(userPrompt)) return plan;
   // The whole preset hangs off the research toolset; without it, do nothing.
   if (!allowed.has('web.research')) return plan;
@@ -382,7 +247,7 @@ export function enrichCrmPlan(
   allowed: Set<string>,
 ): AgentCreationPlan {
   if (!isCrmPrompt(userPrompt)) return plan;
-  if (isLeadGenPrompt(userPrompt) || isJobApplyPrompt(userPrompt) || isCompetitorResearchPrompt(userPrompt)) {
+  if (isJobApplyPrompt(userPrompt) || isCompetitorResearchPrompt(userPrompt)) {
     return plan;
   }
   const hasCrm = CRM_PERM.some((s) => allowed.has(s));
@@ -465,5 +330,90 @@ export function enrichSchedulePlan(
     ...plan,
     team: { ...plan.team, supervisor, workers },
     rationale: `${plan.rationale} Schedule enrichment: qlix-schedule tools wired for timed agent runs.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cloud preference / cloud documents
+//
+// The planner often stamps system.file_* for "Excel sheet" / "PDF", which forces
+// hybrid via reconcileRuntimeWithScopes. Cloud runners already have create_xlsx +
+// create_report_pdf (gated on web.research) that upload to the Qlix sandbox.
+// When the user asks for cloud-hosted agents or cloud documents — and does not
+// ask for local/desktop tools — strip hybrid-only scopes and stay on cloud.
+// ---------------------------------------------------------------------------
+
+const CLOUD_HOSTED_INTENT =
+  /\b(cloud[\s-]?hosted|fully\s+cloud|all\s+(?:agents?\s+)?(?:must\s+be\s+|on\s+)?cloud|(?:runtime|prefer|use)\s+cloud|must\s+(?:all\s+)?be\s+cloud|workers?\s+and\s+supervisors?\s+must\s+all\s+be\s+cloud)\b/i;
+
+const CLOUD_DOC_INTENT =
+  /\b(excel|\.xlsx|\bxlsx\b|spreadsheet|google\s+sheets?|make\s+a\s+pdf|create\s+a\s+pdf|send\s+(?:as\s+)?(?:a\s+)?pdf|export\s+(?:to\s+)?(?:csv|xlsx|excel))\b/i;
+
+/** Hybrid-only scopes that cloud document tools replace. */
+const CLOUD_STRIP_SCOPES: ReadonlySet<string> = new Set([
+  'system.file_read',
+  'system.file_write',
+  'system.gui_control',
+]);
+
+export function isCloudHostedPrompt(prompt: string): boolean {
+  return CLOUD_HOSTED_INTENT.test(prompt);
+}
+
+export function isCloudDocPrompt(prompt: string): boolean {
+  return CLOUD_DOC_INTENT.test(prompt);
+}
+
+function stripHybridOnlyScopes(spec: NLAgentSpec, addResearch: boolean, allowed: Set<string>): NLAgentSpec {
+  const hadHybridScopes = spec.permissionScopes.some((s) => CLOUD_STRIP_SCOPES.has(s));
+  let permissionScopes = spec.permissionScopes.filter((s) => !CLOUD_STRIP_SCOPES.has(s));
+  let jitScopes = spec.jitScopes.filter((s) => !CLOUD_STRIP_SCOPES.has(s));
+  let addedResearch = false;
+  if (addResearch && allowed.has('web.research') && !permissionScopes.includes('web.research')) {
+    permissionScopes = [...permissionScopes, 'web.research'];
+    addedResearch = true;
+  }
+  const runtime = scopesRequireHybrid(permissionScopes)
+    ? spec.runtime
+    : spec.runtime === 'local'
+      ? 'local'
+      : 'cloud';
+  if (!hadHybridScopes && !addedResearch && runtime === spec.runtime) return spec;
+  return { ...spec, permissionScopes, jitScopes, runtime };
+}
+
+export function enrichCloudPreferPlan(
+  userPrompt: string,
+  plan: AgentCreationPlan,
+  allowed: Set<string>,
+): AgentCreationPlan {
+  if (isLocalHybridPrompt(userPrompt)) return plan;
+  const wantCloud = isCloudHostedPrompt(userPrompt);
+  const wantDocs = isCloudDocPrompt(userPrompt);
+  if (!wantCloud && !wantDocs) return plan;
+
+  const mapAgent = (spec: NLAgentSpec): NLAgentSpec =>
+    stripHybridOnlyScopes(spec, wantDocs, allowed);
+
+  if (plan.type === 'single') {
+    const agent = mapAgent(plan.agent);
+    if (agent === plan.agent) return plan;
+    return {
+      ...plan,
+      agent,
+      rationale: `${plan.rationale} Cloud preference: stripped local-file scopes; documents use cloud sandbox tools (create_xlsx / create_report_pdf).`,
+    };
+  }
+
+  const supervisor = mapAgent(plan.team.supervisor);
+  const workers = plan.team.workers.map((w) => mapAgent(w) as NLWorkerSpec);
+  const unchanged =
+    supervisor === plan.team.supervisor &&
+    workers.every((w, i) => w === plan.team.workers[i]);
+  if (unchanged) return plan;
+  return {
+    ...plan,
+    team: { ...plan.team, supervisor, workers },
+    rationale: `${plan.rationale} Cloud preference: team kept on cloud; local-file scopes stripped in favor of sandbox document tools.`,
   };
 }

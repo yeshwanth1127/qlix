@@ -26,6 +26,7 @@ import {
   isValidBuilderConnection,
   readDragPayload,
   type BuilderEdge,
+  type BuilderEdgeKind,
   type BuilderNode,
 } from "./builderTypes";
 
@@ -53,13 +54,29 @@ const TOOL_EDGE = {
   style: { strokeDasharray: "4 3", strokeWidth: 1 },
 };
 
+/**
+ * Agent→agent as a capability. Dashed like a tool grant (because that is what it is) but
+ * arrowed, since work does travel along it when the colleague is asked.
+ */
+const HELPER_EDGE = {
+  type: "smoothstep",
+  style: { strokeDasharray: "6 3", strokeWidth: 1.25 },
+  markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+};
+
+const EDGE_STYLE: Record<BuilderEdgeKind, Record<string, unknown>> = {
+  flow: FLOW_EDGE,
+  tool: TOOL_EDGE,
+  helper: HELPER_EDGE,
+};
+
 export interface BuilderCanvasProps {
   readonly nodes: BuilderNode[];
   readonly edges: BuilderEdge[];
   readonly groups: BuilderGroup[];
   readonly onNodesChange: (changes: NodeChange<BuilderNode>[]) => void;
   readonly onEdgesChange: (changes: EdgeChange<BuilderEdge>[]) => void;
-  readonly onConnectEdge: (connection: Connection, kind: "flow" | "tool") => void;
+  readonly onConnectEdge: (connection: Connection, kind: BuilderEdgeKind) => void;
   readonly onDropNode: (node: BuilderNode) => void;
   readonly onClear: () => void;
   readonly onViewportChange: (viewport: Viewport) => void;
@@ -119,7 +136,11 @@ export function BuilderCanvas({
   );
 
   const styledEdges = useMemo(
-    () => edges.map((edge) => ({ ...edge, ...(edge.data?.kind === "tool" ? TOOL_EDGE : FLOW_EDGE) })),
+    () =>
+      edges.map((edge) => ({
+        ...edge,
+        ...(EDGE_STYLE[(edge.data?.kind as BuilderEdgeKind) ?? "flow"] ?? FLOW_EDGE),
+      })),
     [edges],
   );
 

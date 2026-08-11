@@ -73,12 +73,20 @@ def _build_run_guidance(
     baking it into the system prompt would invalidate the cached prefix.
     """
     from .cloud_crm_runtime import crm_jit_needs_sdk
-    from .tool_router import crm_jit_run_guidance, has_crm_scope, is_crm_mutation_intent
+    from .tool_router import (
+        crm_jit_run_guidance,
+        crm_no_invent_guidance,
+        has_crm_scope,
+        is_crm_mutation_intent,
+    )
 
     parts: list[str] = []
     if has_crm_scope(identity) and crm_jit_needs_sdk(identity):
-        if is_crm_mutation_intent(instruction) or (groups and "comms" in groups):
+        # Only promote CRM writes when the user actually asked for a CRM mutation.
+        if is_crm_mutation_intent(instruction):
             parts.append(crm_jit_run_guidance())
+        else:
+            parts.append(crm_no_invent_guidance())
     if base_guidance.strip():
         parts.append(base_guidance.strip())
     try:
@@ -452,7 +460,10 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     )
 
                     tools = run_router.build_tool_definitions(
-                        plan, mcp_servers=mcp_servers, tool_profile=tool_profile
+                        plan,
+                        mcp_servers=mcp_servers,
+                        tool_profile=tool_profile,
+                        askable_agents=run.get("askableAgents") or [],
                     )
                     if run_router.last_budget_report:
                         _log("tool_budget", run_id=run_id, **run_router.last_budget_report)

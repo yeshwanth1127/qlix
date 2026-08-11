@@ -6,12 +6,13 @@ import {
   openAiChatCompletionsRequestSchema,
   type InferenceChatRequest,
 } from '../llm/inferenceSchemas.js';
-import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
+import { assertModelAllowed, llmProviderFromModelId, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
 import {
   chatCompletion,
   chatCompletionStream,
   InferenceConfigError,
   InferenceProviderError,
+  isLlmProviderConfigured,
   LLM_APPLICATION_IDS,
   parseLlmProvider,
   type LlmProviderId,
@@ -175,6 +176,18 @@ function resolveRoute(
   return decision;
 }
 
+/** Gateway that will execute the routed model — may differ from the agent's home provider. */
+function executionProviderForRoutedModel(
+  routedModel: string,
+  agentProvider: LlmProviderId,
+): LlmProviderId {
+  const lower = routedModel.trim().toLowerCase();
+  if (lower.startsWith('exora/') || lower.startsWith('openrouter/')) {
+    return llmProviderFromModelId(routedModel);
+  }
+  return agentProvider;
+}
+
 function applyRouteToRequest(
   request: InferenceChatRequest,
   decision: RouteDecision,
@@ -241,10 +254,20 @@ export function createInferenceProxyRouter(): Router {
         throw new ModelPolicyError('Auto routing failed to resolve a concrete model');
       }
       assertModelAllowed(decision.routedModel, agent.llmProvider);
+      const execProvider = executionProviderForRoutedModel(
+        decision.routedModel,
+        agent.llmProvider,
+      );
+      if (!isLlmProviderConfigured(execProvider)) {
+        throw new InferenceConfigError(
+          execProvider,
+          `${execProvider === 'exora' ? 'EXORA_LLM_API_KEY' : 'OPENROUTER_API_KEY'} is required to run model "${decision.routedModel}"`,
+        );
+      }
       const inferenceRequest = applyRouteToRequest(withTools, decision);
 
       console.log(
-        `[inference] route provider=${agent.llmProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
+        `[inference] route agentProvider=${agent.llmProvider} execProvider=${execProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
       );
 
       if (parsed.data.stream === true) {
@@ -269,7 +292,7 @@ export function createInferenceProxyRouter(): Router {
             }
           },
           {
-            provider: agent.llmProvider,
+            provider: execProvider,
             applicationId: LLM_APPLICATION_IDS.agentInference,
             planAllowedTiers: agent.planAllowedTiers,
           },
@@ -286,7 +309,7 @@ export function createInferenceProxyRouter(): Router {
         logInferenceSuccess({
           agentId,
           orgId: agent.orgId,
-          provider: agent.llmProvider,
+          provider: execProvider,
           model: decision.routedModel,
           latencyMs: Date.now() - t0,
           streaming: true,
@@ -320,7 +343,7 @@ export function createInferenceProxyRouter(): Router {
           logInferenceSuccess({
             agentId,
             orgId: agent.orgId,
-            provider: agent.llmProvider,
+            provider: execProvider,
             model: decision.routedModel,
             usage: cached.usage,
             latencyMs: Date.now() - t0,
@@ -339,7 +362,7 @@ export function createInferenceProxyRouter(): Router {
         }
 
         const result = await chatCompletion(inferenceRequest, {
-          provider: agent.llmProvider,
+          provider: execProvider,
           applicationId: LLM_APPLICATION_IDS.agentInference,
           planAllowedTiers: agent.planAllowedTiers,
         });
@@ -368,7 +391,7 @@ export function createInferenceProxyRouter(): Router {
         logInferenceSuccess({
           agentId,
           orgId: agent.orgId,
-          provider: agent.llmProvider,
+          provider: execProvider,
           model: decision.routedModel,
           usage: result.usage,
           latencyMs: Date.now() - t0,
@@ -380,14 +403,14 @@ export function createInferenceProxyRouter(): Router {
 
       void cacheHit;
       const result = await chatCompletion(inferenceRequest, {
-        provider: agent.llmProvider,
+        provider: execProvider,
         applicationId: LLM_APPLICATION_IDS.agentInference,
         planAllowedTiers: agent.planAllowedTiers,
       });
       logInferenceSuccess({
         agentId,
         orgId: agent.orgId,
-        provider: agent.llmProvider,
+        provider: execProvider,
         model: decision.routedModel,
         usage: result.usage,
         latencyMs: Date.now() - t0,
@@ -467,10 +490,20 @@ export function createInferenceProxyRouter(): Router {
 
       const decision = resolveRoute(agent, baseRequest);
       assertModelAllowed(decision.routedModel, agent.llmProvider);
+      const execProvider = executionProviderForRoutedModel(
+        decision.routedModel,
+        agent.llmProvider,
+      );
+      if (!isLlmProviderConfigured(execProvider)) {
+        throw new InferenceConfigError(
+          execProvider,
+          `${execProvider === 'exora' ? 'EXORA_LLM_API_KEY' : 'OPENROUTER_API_KEY'} is required to run model "${decision.routedModel}"`,
+        );
+      }
       const inferenceRequest = applyRouteToRequest(baseRequest, decision);
 
       const result = await chatCompletion(inferenceRequest, {
-        provider: agent.llmProvider,
+        provider: execProvider,
         applicationId: LLM_APPLICATION_IDS.agentInference,
         timeoutMs: s3InferenceTimeoutMs(),
         planAllowedTiers: agent.planAllowedTiers,
@@ -478,7 +511,7 @@ export function createInferenceProxyRouter(): Router {
       logInferenceSuccess({
         agentId,
         orgId: agent.orgId,
-        provider: agent.llmProvider,
+        provider: execProvider,
         model: decision.routedModel,
         usage: result.usage,
         latencyMs: Date.now() - t0,

@@ -14,7 +14,9 @@ export type ConnectorProvider =
   | "slack"
   | "discord"
   | "github"
-  | "telegram";
+  | "telegram"
+  | "microsoft"
+  | "notion";
 
 export type ConnectorStatus = "connected" | "revoked" | "error" | "pending_qr";
 
@@ -209,6 +211,54 @@ export async function disconnectGitHub(): Promise<void> {
   }
 }
 
+export async function startMicrosoftOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/microsoft/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start Microsoft OAuth");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectMicrosoft(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/microsoft`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Microsoft 365");
+  }
+}
+
+export async function startNotionOAuth(): Promise<{ url: string }> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/notion/start`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await parseJson<{ url: string }>(response);
+  if (!response.ok) {
+    const err = data as ApiErrorBody;
+    throw new Error(err.error?.message ?? "Failed to start Notion OAuth");
+  }
+  return data as { url: string };
+}
+
+export async function disconnectNotion(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/connectors/notion`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Notion");
+  }
+}
+
 export async function saveN8nIntegration(input: {
   n8nBaseUrl: string;
   n8nWebhookSecret: string;
@@ -252,6 +302,8 @@ export const CONNECTOR_DISPLAY_NAMES: Record<ConnectorProvider, string> = {
   discord: "Discord",
   github: "GitHub",
   telegram: "Telegram",
+  microsoft: "Microsoft 365",
+  notion: "Notion",
 };
 
 export const CONNECTOR_CATALOG_IDS: Record<ConnectorProvider, string> = {
@@ -263,6 +315,8 @@ export const CONNECTOR_CATALOG_IDS: Record<ConnectorProvider, string> = {
   discord: "discord",
   github: "github",
   telegram: "telegram",
+  microsoft: "microsoft365",
+  notion: "notion",
 };
 
 export interface LiveConnectorItem {
@@ -302,6 +356,15 @@ export function listLiveConnectors(connectors: ConnectorAccountDTO[]): LiveConne
 
   const github = githubConnector(connectors);
   if (github) push("github", github);
+
+  const microsoft = microsoftConnector(connectors);
+  if (microsoft) push("microsoft", microsoft);
+
+  const notion = notionConnector(connectors);
+  if (notion) push("notion", notion);
+
+  const telegram = telegramConnector(connectors);
+  if (telegram) push("telegram", telegram);
 
   return items;
 }
@@ -459,12 +522,29 @@ export function slackConnector(connectors: ConnectorAccountDTO[]): ConnectorAcco
   return connectors.find((c) => c.provider === "slack" && c.status === "connected");
 }
 
+export function telegramConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find(
+    (c) =>
+      c.provider === "telegram" &&
+      c.status === "connected" &&
+      (c.scopes?.includes("bot") || Boolean(c.emailAddress?.startsWith("@"))),
+  );
+}
+
 export function discordConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "discord" && c.status === "connected");
 }
 
 export function githubConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
   return connectors.find((c) => c.provider === "github" && c.status === "connected");
+}
+
+export function microsoftConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "microsoft" && c.status === "connected");
+}
+
+export function notionConnector(connectors: ConnectorAccountDTO[]): ConnectorAccountDTO | undefined {
+  return connectors.find((c) => c.provider === "notion" && c.status === "connected");
 }
 
 export async function connectSlackBot(input: {
@@ -481,6 +561,36 @@ export async function connectSlackBot(input: {
   if (!response.ok) {
     const data = await parseJson<ApiErrorBody>(response);
     throw new Error((data as ApiErrorBody).error?.message ?? "Failed to connect Slack");
+  }
+}
+
+export async function connectTelegramBot(input: {
+  defaultAgentId?: string | null;
+}): Promise<{ bot?: { id: number; username: string | null; firstName: string | null } }> {
+  const response = await fetch(`${apiBase()}/api/v1/telegram/connect`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = await parseJson<{
+    ok: boolean;
+    bot?: { id: number; username: string | null; firstName: string | null };
+  }>(response);
+  if (!response.ok) {
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to connect Telegram");
+  }
+  return data as { bot?: { id: number; username: string | null; firstName: string | null } };
+}
+
+export async function disconnectTelegram(): Promise<void> {
+  const response = await fetch(`${apiBase()}/api/v1/telegram`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok && response.status !== 204) {
+    const data = await parseJson<ApiErrorBody>(response);
+    throw new Error((data as ApiErrorBody).error?.message ?? "Failed to disconnect Telegram");
   }
 }
 

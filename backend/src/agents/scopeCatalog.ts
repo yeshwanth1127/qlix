@@ -7,6 +7,7 @@ import {
   PERMISSION_SCOPE_GOOGLE_SERVICE,
 } from '../connectors/googleServices.js';
 import { getMcpScopeDefsForOrg } from '../mcp/mcpScopeCatalog.js';
+import { getPeerAgentScopeDefsForOrg } from './peerAgentScopes.js';
 import type { AgentRuntime, BuiltinPermissionScope, PermissionScope } from './agents.types.js';
 
 /**
@@ -28,7 +29,7 @@ export interface ScopeDef {
   /** Connector that must be `connected` for this scope to be available. Absent = base/always-on. */
   requiresConnector?: ConnectorProvider;
   /** When set, any connected provider in this family satisfies the connector requirement. */
-  requiresConnectorFamily?: 'crm';
+  requiresConnectorFamily?: 'crm' | 'email' | 'drive';
   /** Runtimes whose SDK runner has the backing tool. Informational for now. */
   runtimes: AgentRuntime[];
 }
@@ -129,34 +130,34 @@ export const SCOPE_CATALOG: ScopeDef[] = [
   },
   {
     id: 'email.read',
-    label: 'Read connected Gmail inbox',
-    description: 'Read messages from a connected Gmail inbox',
+    label: 'Read connected email inbox',
+    description: 'Read messages from a connected Gmail or Microsoft 365 inbox',
     forceJit: false,
-    requiresConnector: 'google',
+    requiresConnectorFamily: 'email',
     runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'email.send',
-    label: 'Send / draft email via connected Gmail',
-    description: 'Send emails or save Gmail drafts via a connected Gmail account (send is JIT)',
+    label: 'Send / draft email via connected mailbox',
+    description: 'Send emails or save drafts via Gmail or Microsoft 365 (send is JIT)',
     forceJit: true,
-    requiresConnector: 'google',
+    requiresConnectorFamily: 'email',
     runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'drive.read',
-    label: 'Read Google Drive',
-    description: 'List and read files from connected Google Drive',
+    label: 'Read cloud drive',
+    description: 'List and read files from connected Google Drive or OneDrive',
     forceJit: false,
-    requiresConnector: 'google',
+    requiresConnectorFamily: 'drive',
     runtimes: ['cloud', 'hybrid'],
   },
   {
     id: 'drive.write',
-    label: 'Write to Google Drive',
-    description: 'Create, update, or share files in connected Google Drive',
+    label: 'Write to cloud drive',
+    description: 'Create, update, or delete files in connected Google Drive or OneDrive',
     forceJit: true,
-    requiresConnector: 'google',
+    requiresConnectorFamily: 'drive',
     runtimes: ['cloud', 'hybrid'],
   },
   {
@@ -223,6 +224,15 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     description:
       'Send a WhatsApp text to a phonebook contact or phone number — only when the user explicitly asks; requires approval',
     forceJit: true,
+    requiresConnector: 'whatsapp_baileys',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'whatsapp.auto_reply',
+    label: 'Auto-reply to WhatsApp contacts',
+    description:
+      'After messaging a contact, listen for their replies and auto-route them into a new agent run; deliver the answer back to that contact',
+    forceJit: false,
     requiresConnector: 'whatsapp_baileys',
     runtimes: ['cloud', 'hybrid'],
   },
@@ -361,10 +371,17 @@ export async function getEffectiveScopes(orgId: string | null): Promise<Annotate
     if (s.requiresConnectorFamily === 'crm') {
       isConnected = CRM_CONNECTOR_PROVIDERS.some((p) => connected.has(p));
     }
-    // Google products are individually connectable — email scopes need Gmail OAuth,
-    // drive scopes need Drive OAuth, etc. (not merely "google account linked").
+    if (s.requiresConnectorFamily === 'email') {
+      isConnected =
+        googleServiceConnected('gmail', googleOAuthScopes) || connected.has('microsoft');
+    }
+    if (s.requiresConnectorFamily === 'drive') {
+      isConnected =
+        googleServiceConnected('drive', googleOAuthScopes) || connected.has('microsoft');
+    }
+    // Google products are individually connectable — email/drive families already handled above.
     const googleService = PERMISSION_SCOPE_GOOGLE_SERVICE[s.id];
-    if (googleService) {
+    if (googleService && !s.requiresConnectorFamily) {
       isConnected = googleServiceConnected(googleService, googleOAuthScopes);
     }
     return { ...s, enabled, connected: isConnected, available: enabled && isConnected };
@@ -389,6 +406,9 @@ export async function getAvailableScopes(orgId: string | null): Promise<ScopeDef
 export async function getBuildableScopes(orgId: string | null): Promise<ScopeDef[]> {
   const annotated = await getEffectiveScopes(orgId);
   const builtin = annotated.filter((s) => s.enabled);
-  const mcp = await getMcpScopeDefsForOrg(orgId);
-  return [...builtin, ...mcp];
+  const [mcp, peers] = await Promise.all([
+    getMcpScopeDefsForOrg(orgId),
+    getPeerAgentScopeDefsForOrg(orgId),
+  ]);
+  return [...builtin, ...mcp, ...peers];
 }

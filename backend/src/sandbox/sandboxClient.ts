@@ -11,8 +11,8 @@ function mcpBase(): string {
   const explicit = process.env.QLIX_MCP_SANDBOX_URL?.trim();
   if (explicit) return explicit.replace(/\/$/, '');
   const mcp =
-    process.env.QLIX_MCP_URL?.trim()?.replace(/\/mcp\/?$/, '') ||
-    process.env.QLIX_MCP_LEADS_URL?.trim()?.replace(/\/mcp\/?$/, '');
+    process.env.QLIX_MCP_URL?.trim()?.replace(/\/mcp(-jobs|-schedule)?\/?$/, '') ||
+    process.env.QLIX_MCP_JOBS_URL?.trim()?.replace(/\/mcp-jobs\/?$/, '');
   return (mcp || 'http://127.0.0.1:3940').replace(/\/$/, '');
 }
 

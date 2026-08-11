@@ -7,13 +7,20 @@ const BUILTIN_SET = new Set<string>(ALL_PERMISSION_SCOPES);
 /** `mcp.<server-slug>.<tool>` or `mcp.<server-slug>.*` */
 const MCP_SCOPE_RE = /^mcp\.[a-z0-9-]+(\.[a-z0-9_*_-]+)+$/;
 
+/** `agent.ask.<agentId>` — agent ids are cuids, so alphanumeric with no dots. */
+const AGENT_ASK_SCOPE_RE = /^agent\.ask\.[a-zA-Z0-9_-]+$/;
+
 export function isMcpPermissionScope(id: string): boolean {
   return MCP_SCOPE_RE.test(id);
 }
 
+export function isAgentAskPermissionScope(id: string): boolean {
+  return AGENT_ASK_SCOPE_RE.test(id);
+}
+
 export function isValidPermissionScope(id: string): id is PermissionScope {
   if (BUILTIN_SET.has(id)) return true;
-  return isMcpPermissionScope(id);
+  return isMcpPermissionScope(id) || isAgentAskPermissionScope(id);
 }
 
 /** Zod schema for API bodies — builtin catalog scopes plus dynamic MCP tool scopes. */

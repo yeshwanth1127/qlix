@@ -1,10 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import { createMcpRouter } from './mcpHttp.js';
-import { TOOL_CATALOG, executeTool } from './tools.js';
 import { JOBS_TOOL_CATALOG, executeJobsTool } from './jobsTools.js';
 import { SCHEDULE_TOOL_CATALOG, executeScheduleTool } from './scheduleTools.js';
-import { createScrapeRouter } from './scrapeRouter.js';
 import { createSandboxRouter } from './sandboxRouter.js';
 import { requireServiceSecret } from './serviceAuth.js';
 
@@ -26,7 +24,6 @@ async function main() {
   console.log('  Qlix MCP Service v1');
   console.log(`  HTTP port: ${port}`);
   console.log(`  Qlix URL:  ${process.env.QLIX_URL}`);
-  console.log(`  Mock mode: ${process.env.GMB_SCRAPER_MOCK === '1' ? 'yes' : 'no'}`);
   console.log('────────────────────────────────────────');
 
   const app = express();
@@ -35,13 +32,6 @@ async function main() {
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'qlix-mcp' });
   });
-
-  const leadsMcp = createMcpRouter({
-    name: 'qlix-leads',
-    tools: TOOL_CATALOG,
-    execute: executeTool,
-  });
-  app.post('/mcp', requireServiceSecret, leadsMcp);
 
   const jobsMcp = createMcpRouter({
     name: 'qlix-jobs',
@@ -57,7 +47,6 @@ async function main() {
   });
   app.post('/mcp-schedule', requireServiceSecret, scheduleMcp);
 
-  app.use('/scrape', createScrapeRouter());
   app.use('/sandbox', createSandboxRouter());
 
   const host = process.env.MCP_BIND_HOST?.trim() || '127.0.0.1';

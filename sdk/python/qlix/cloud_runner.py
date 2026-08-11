@@ -297,46 +297,25 @@ def _build_run_guidance(
     """TIER B guidance — intent-specific, so it must stay out of the cached prefix.
 
     `base_guidance` is what ToolRouter.plan_run already derived. Added here is the
-    leads-scope-aware advisory, which plan_run cannot produce because it does not
-    inspect mcp.qlix-leads.* grants.
+    CRM-scope-aware advisory, which plan_run cannot produce because it does not
+    inspect crm.* grants against the SDK wiring.
     """
     from .tool_router import (
-        has_qlix_leads_scope,
         has_crm_scope,
         is_crm_mutation_intent,
-        is_lead_browser_enrichment_intent,
-        is_lead_generation_intent,
         crm_jit_run_guidance,
-        lead_enrichment_run_guidance,
-        lead_generation_run_guidance,
+        crm_no_invent_guidance,
     )
     from .cloud_crm_runtime import crm_jit_needs_sdk
 
-    granted = (
-        set(identity.permission_scopes)
-        | set(identity.always_scopes)
-        | set(identity.jit_scopes)
-    )
     parts: list[str] = []
-    enrich_intent = is_lead_browser_enrichment_intent(instruction)
-    gen_intent = is_lead_generation_intent(instruction)
-    if enrich_intent and has_qlix_leads_scope(identity):
-        if "web" in (groups or ()):
-            parts.append(lead_enrichment_run_guidance())
-        elif not any(s.startswith("web.") and s != "web.research" for s in granted):
-            parts.append(
-                "The user asked to find emails on lead websites, but this agent is missing "
-                "the web.read and web.click scopes. Tell them to open the agent → "
-                "'Add or remove scopes' → enable web.read and web.click, wait for the "
-                "cloud runner to refresh (or restart it), then retry."
-            )
-        else:
-            parts.append(lead_enrichment_run_guidance())
-    elif gen_intent and has_qlix_leads_scope(identity):
-        parts.append(lead_generation_run_guidance())
     if has_crm_scope(identity) and crm_jit_needs_sdk(identity):
-        if is_crm_mutation_intent(instruction) or (groups and "comms" in groups):
+        # Only promote CRM writes when the user actually asked for a CRM mutation.
+        # Having CRM tools available (comms group) must NOT nudge inventing create/update work.
+        if is_crm_mutation_intent(instruction):
             parts.append(crm_jit_run_guidance())
+        else:
+            parts.append(crm_no_invent_guidance())
     # plan_run's guidance last so run-specific playbooks read after the advisories.
     if base_guidance.strip():
         parts.append(base_guidance.strip())
@@ -402,6 +381,7 @@ async def _run_backend_proxy_inference(
     agent_description: str | None = None,
     mcp_servers: Any = None,
     tool_profile: str = "full",
+    askable_agents: list[dict[str, Any]] | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email/MCP tools."""
     import hashlib
@@ -429,7 +409,10 @@ async def _run_backend_proxy_inference(
     _log("tool_router_plan", run_id=run_id, groups=list(plan.groups))
 
     tools = router.build_tool_definitions(
-        plan, mcp_servers=mcp_servers, tool_profile=tool_profile
+        plan,
+        mcp_servers=mcp_servers,
+        tool_profile=tool_profile,
+        askable_agents=askable_agents,
     )
     if router.last_budget_report:
         _log("tool_budget", run_id=run_id, **router.last_budget_report)
@@ -771,6 +754,7 @@ async def _poll_and_execute_loop() -> None:
                         agent_description=run.get("agentDescription"),
                         mcp_servers=run.get("mcpServers") or [],
                         tool_profile=tool_profile,
+                        askable_agents=run.get("askableAgents") or [],
                     )
                 )
                 seq = await _emit_event(

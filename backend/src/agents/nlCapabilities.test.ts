@@ -18,9 +18,14 @@ describe('scopeCatalog', () => {
     assert.equal(s.requiresConnector, 'whatsapp_baileys');
   });
 
-  it('email scopes require the google connector', () => {
-    assert.equal(SCOPE_CATALOG_BY_ID['email.send'].requiresConnector, 'google');
-    assert.equal(SCOPE_CATALOG_BY_ID['email.read'].requiresConnector, 'google');
+  it('email scopes require any supported email connector', () => {
+    assert.equal(SCOPE_CATALOG_BY_ID['email.send'].requiresConnectorFamily, 'email');
+    assert.equal(SCOPE_CATALOG_BY_ID['email.read'].requiresConnectorFamily, 'email');
+  });
+
+  it('drive scopes require any supported drive connector', () => {
+    assert.equal(SCOPE_CATALOG_BY_ID['drive.read'].requiresConnectorFamily, 'drive');
+    assert.equal(SCOPE_CATALOG_BY_ID['drive.write'].requiresConnectorFamily, 'drive');
   });
 
   it('ALL_PERMISSION_SCOPES and FORCE_JIT_SCOPES are derived from the catalog', () => {
@@ -158,13 +163,8 @@ describe('buildSystemPrompt', () => {
   it('omits specialty recipes without packs', () => {
     const prompt = buildSystemPrompt(SCOPE_CATALOG);
     assert.ok(!prompt.includes('Greenhouse'));
-    assert.ok(!prompt.includes('gmb_search_leads'));
+    assert.ok(!prompt.includes('mcp.qlix-jobs'));
     assert.ok(prompt.includes('mcp.<server>.<tool>'));
-  });
-
-  it('includes lead pack recipes when selected', () => {
-    const prompt = buildSystemPrompt(SCOPE_CATALOG, ['leads']);
-    assert.ok(prompt.includes('gmb_search_leads'));
   });
 
   it('includes job pack recipes when selected', () => {

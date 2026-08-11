@@ -34,7 +34,11 @@ export function filterScopesByToolProfile(
   // `lean` narrows the tool schema, not the permission set — see the type doc above.
   if (p === 'full' || p === 'lean') return scopes;
   const allow = p === 'minimal' ? MINIMAL_SCOPES : CODING_SCOPES;
-  return scopes.filter((s) => allow.has(s) || s.startsWith('mcp.'));
+  // `mcp.*` and `agent.ask.*` are explicit per-target grants the user had to make deliberately;
+  // a tool-profile narrowing is about hiding rarely-used built-ins, not revoking those.
+  return scopes.filter(
+    (s) => allow.has(s) || s.startsWith('mcp.') || s.startsWith('agent.ask.'),
+  );
 }
 
 export function isValidToolProfile(value: unknown): value is ToolProfile {

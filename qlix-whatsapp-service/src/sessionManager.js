@@ -481,18 +481,29 @@ export async function startSession(connectorId) {
         if (!selfJid) continue;
 
         const now = Date.now();
+        const fromMe = Boolean(msg.key.fromMe);
 
-        // Single authoritative gate: only the QR-linked account's own self-chat is allowed
-        // to *trigger* agent runs. Contact chats are buffered above for read tools only.
-        if (!isAllowedInboundChat(entry, remoteJid, Boolean(msg.key.fromMe))) {
+        // Self-chat: trigger agent runs. Contact chats: only when auto-reply is armed.
+        const selfChat = isAllowedInboundChat(entry, remoteJid, fromMe);
+        let contactArmed = false;
+        if (!selfChat && !fromMe) {
+          try {
+            contactArmed = await qlix.isAutoReplyArmed(connectorId, remoteJid);
+          } catch {
+            contactArmed = false;
+          }
+        }
+        if (!selfChat && !contactArmed) {
           continue;
         }
 
-        if (msg.key.fromMe) {
+        if (fromMe) {
           const phone = entry.ownerPhoneJid;
           if (phone && (remoteJid === phone || phoneJidFromUserId(remoteJid) === phone)) {
             entry.selfChatRemoteJid = remoteJid;
           }
+          // Outbound contact messages are buffered above; do not treat as inbound commands.
+          if (!selfChat) continue;
         }
 
         if (isEchoOfOurOutbound(entry, trimmed)) {
@@ -508,7 +519,7 @@ export async function startSession(connectorId) {
         entry.inboundLock = true;
         try {
           console.log(
-            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${Boolean(msg.key.fromMe)} remote=${remoteJid}`,
+            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${fromMe} remote=${remoteJid} contactArmed=${contactArmed}`,
           );
           await handleInboundMessage(
             connectorId,
@@ -516,6 +527,7 @@ export async function startSession(connectorId) {
             remoteJid,
             trimmed,
             allowedSelfJidsForEntry(entry),
+            { fromContact: contactArmed && !selfChat },
           );
         } finally {
           entry.inboundLock = false;

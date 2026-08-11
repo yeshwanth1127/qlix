@@ -9,9 +9,13 @@ import {
   disconnectGoogleService,
   disconnectOrbit,
   disconnectOrbitChannel,
+  connectTelegramBot,
   disconnectDiscord,
   disconnectGitHub,
+  disconnectMicrosoft,
+  disconnectNotion,
   disconnectSlack,
+  disconnectTelegram,
   disconnectWhatsApp,
   disconnectZoho,
   enableOrbit,
@@ -24,10 +28,15 @@ import {
   patchWhatsAppDefaults,
   discordConnector,
   githubConnector,
+  microsoftConnector,
+  notionConnector,
   slackConnector,
+  telegramConnector,
   startDiscordOAuth,
   startGitHubOAuth,
   startGoogleOAuth,
+  startMicrosoftOAuth,
+  startNotionOAuth,
   startOrbitSocialOAuth,
   startSlackOAuth,
   startWhatsAppLink,
@@ -106,8 +115,12 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const [defaultAgentId, setDefaultAgentId] = useState("");
   const [defaultsSaving, setDefaultsSaving] = useState(false);
   const [slackBusy, setSlackBusy] = useState(false);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramAgentId, setTelegramAgentId] = useState("");
   const [discordBusy, setDiscordBusy] = useState(false);
   const [githubBusy, setGithubBusy] = useState(false);
+  const [microsoftBusy, setMicrosoftBusy] = useState(false);
+  const [notionBusy, setNotionBusy] = useState(false);
   const [grants, setGrants] = useState<ConversationGrantDTO[]>([]);
   const [revoking, setRevoking] = useState<Record<string, boolean>>({});
   const [orbitConnecting, setOrbitConnecting] = useState(false);
@@ -122,8 +135,11 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const googleLogo = getCatalogEntry("google")!.logo;
   const whatsappLogo = getCatalogEntry("whatsapp")!.logo;
   const slackLogo = getCatalogEntry("slack")!.logo;
+  const telegramLogo = getCatalogEntry("telegram")!.logo;
   const discordLogo = getCatalogEntry("discord")!.logo;
   const githubLogo = getCatalogEntry("github")!.logo;
+  const microsoftLogo = getCatalogEntry("microsoft365")!.logo;
+  const notionLogo = getCatalogEntry("notion")!.logo;
   const zohoLogo = getCatalogEntry("zoho")!.logo;
 
   const toggleRow = useCallback((id: string) => {
@@ -228,8 +244,11 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const connected = data ? googleConnector(data.connectors) : undefined;
   const zoho = data ? zohoConnector(data.connectors) : undefined;
   const slack = data ? slackConnector(data.connectors) : undefined;
+  const telegram = data ? telegramConnector(data.connectors) : undefined;
   const discord = data ? discordConnector(data.connectors) : undefined;
   const github = data ? githubConnector(data.connectors) : undefined;
+  const microsoft = data ? microsoftConnector(data.connectors) : undefined;
+  const notion = data ? notionConnector(data.connectors) : undefined;
   const wa = data ? whatsappConnector(data.connectors) : undefined;
   const orbit = data ? orbitConnector(data.connectors) : undefined;
   const waConnected = wa?.status === "connected" || waStatus?.status === "connected";
@@ -237,14 +256,22 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const oauthError = searchParams.get("error");
 
   useEffect(() => {
-    if (!waConnected) return;
+    if (!waConnected && !telegram && openRow !== "telegram") return;
     void listTeams()
       .then((t) => setTeams(t.map((x) => ({ id: x.id, name: x.name }))))
       .catch(() => {});
     void listAgents(null)
       .then((a) => setAgents((a ?? []).map((x) => ({ id: x.id, name: x.name }))))
       .catch(() => {});
-  }, [waConnected]);
+  }, [waConnected, telegram, openRow]);
+
+  useEffect(() => {
+    if (!telegram) return;
+    const timer = window.setTimeout(() => {
+      setTelegramAgentId(telegram.whatsappDefaultAgentId ?? "");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [telegram]);
 
   useEffect(() => {
     if (!wa) return;
@@ -288,10 +315,19 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const needsWhatsApp = neededProviders.has("whatsapp_baileys") && !waConnected;
   const needsOrbit = neededProviders.has("orbit") && !orbit;
 
-  const connectedCount = [anyGoogleService, waConnected, slack, discord, github, zoho, orbit].filter(
-    Boolean,
-  ).length;
-  const totalLive = 7;
+  const connectedCount = [
+    anyGoogleService,
+    waConnected,
+    slack,
+    telegram,
+    discord,
+    github,
+    microsoft,
+    notion,
+    zoho,
+    orbit,
+  ].filter(Boolean).length;
+  const totalLive = 10;
 
   function rowStatus(isOn: boolean, isPending = false): ConnectorStatus {
     if (isOn) return "connected";
@@ -397,6 +433,35 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     }
   }
 
+  async function handleTelegramConnect() {
+    setTelegramBusy(true);
+    setError(null);
+    try {
+      await connectTelegramBot({
+        defaultAgentId: telegramAgentId || null,
+      });
+      setOpenRow(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to connect Telegram");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
+  async function handleTelegramDisconnect() {
+    setTelegramBusy(true);
+    setError(null);
+    try {
+      await disconnectTelegram();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Telegram");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
   async function handleDiscordConnect() {
     setDiscordBusy(true);
     setError(null);
@@ -452,6 +517,68 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       setError(err instanceof Error ? err.message : "Failed to disconnect GitHub");
     } finally {
       setGithubBusy(false);
+    }
+  }
+
+  async function handleMicrosoftConnect() {
+    setMicrosoftBusy(true);
+    setError(null);
+    try {
+      const { url } = await startMicrosoftOAuth();
+      const parsed = new URL(url);
+      if (
+        parsed.protocol !== "https:" ||
+        (parsed.hostname !== "login.microsoftonline.com" &&
+          !parsed.hostname.endsWith(".microsoftonline.com"))
+      ) {
+        throw new Error("Unexpected OAuth redirect target");
+      }
+      window.location.assign(parsed.toString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start Microsoft OAuth");
+      setMicrosoftBusy(false);
+    }
+  }
+
+  async function handleMicrosoftDisconnect() {
+    setMicrosoftBusy(true);
+    setError(null);
+    try {
+      await disconnectMicrosoft();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Microsoft 365");
+    } finally {
+      setMicrosoftBusy(false);
+    }
+  }
+
+  async function handleNotionConnect() {
+    setNotionBusy(true);
+    setError(null);
+    try {
+      const { url } = await startNotionOAuth();
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" || parsed.hostname !== "api.notion.com") {
+        throw new Error("Unexpected OAuth redirect target");
+      }
+      window.location.assign(parsed.toString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start Notion OAuth");
+      setNotionBusy(false);
+    }
+  }
+
+  async function handleNotionDisconnect() {
+    setNotionBusy(true);
+    setError(null);
+    try {
+      await disconnectNotion();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Notion");
+    } finally {
+      setNotionBusy(false);
     }
   }
 
@@ -588,6 +715,16 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     oauthSuccess === "github" ? (
       <ConnectorAlert key="ok-github" variant="success">
         GitHub connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    oauthSuccess === "microsoft" ? (
+      <ConnectorAlert key="ok-microsoft" variant="success">
+        Microsoft 365 connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
+      </ConnectorAlert>
+    ) : null,
+    oauthSuccess === "notion" ? (
+      <ConnectorAlert key="ok-notion" variant="success">
+        Notion connected{searchParams.get("email") ? ` · ${searchParams.get("email")}` : ""}.
       </ConnectorAlert>
     ) : null,
     neededProviders.size > 0 && (needsGoogle || needsZoho || needsWhatsApp || needsOrbit) ? (
@@ -837,6 +974,146 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
             ) : (
               <PrimaryAction onClick={() => void handleSlackConnect()} disabled={slackBusy}>
                 {slackBusy ? "Opening…" : "Connect"}
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* Telegram */}
+        <ConnectorRow
+          id="connector-telegram"
+          icon={<ConnectorLogo name="Telegram" logo={telegramLogo} size="md" />}
+          name="Telegram"
+          status={loading ? undefined : rowStatus(Boolean(telegram))}
+          expandable
+          expanded={openRow === "telegram"}
+          onToggle={() => toggleRow("telegram")}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : telegram ? (
+              (telegram.emailAddress ?? "Telegram bot")
+            ) : (
+              "DM a bot — agent replies in Telegram"
+            )
+          }
+          action={
+            telegram ? (
+              <QuietAction onClick={() => void handleTelegramDisconnect()} disabled={telegramBusy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction
+                onClick={() => {
+                  setOpenRow("telegram");
+                }}
+                disabled={telegramBusy || loading}
+              >
+                Connect
+              </PrimaryAction>
+            )
+          }
+        >
+          {telegram ? (
+            <div className="space-y-3">
+              <p className="connector-meta">
+                Connected as {telegram.emailAddress ?? "bot"}. Default agent:{" "}
+                {agents.find((a) => a.id === (telegram.whatsappDefaultAgentId ?? ""))?.name ??
+                  (telegram.whatsappDefaultAgentId ? telegram.whatsappDefaultAgentId : "none (intent picker)")}
+                . Disconnect and reconnect to change the default.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <label className="block space-y-1.5">
+                <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-black/60">
+                  Default agent (optional)
+                </span>
+                <select
+                  className={selectClass}
+                  value={telegramAgentId}
+                  onChange={(e) => setTelegramAgentId(e.target.value)}
+                >
+                  <option value="">None — show agent picker when needed</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="connector-meta">
+                  Uses the server Telegram bot. Without a default, Qlix lists agents and you reply with a number.
+                </p>
+                <PrimaryAction
+                  onClick={() => void handleTelegramConnect()}
+                  disabled={telegramBusy}
+                >
+                  {telegramBusy ? "Connecting…" : "Save & connect"}
+                </PrimaryAction>
+              </div>
+            </div>
+          )}
+        </ConnectorRow>
+
+        {/* Microsoft 365 */}
+        <ConnectorRow
+          id="connector-microsoft"
+          icon={<ConnectorLogo name="Microsoft 365" logo={microsoftLogo} size="md" />}
+          name="Microsoft 365"
+          status={loading ? undefined : rowStatus(Boolean(microsoft))}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : microsoft ? (
+              (microsoft.emailAddress ?? "Microsoft 365 account")
+            ) : (
+              "Outlook, calendar, and OneDrive"
+            )
+          }
+          action={
+            microsoft ? (
+              <QuietAction
+                onClick={() => void handleMicrosoftDisconnect()}
+                disabled={microsoftBusy}
+              >
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction
+                onClick={() => void handleMicrosoftConnect()}
+                disabled={microsoftBusy}
+              >
+                {microsoftBusy ? "Opening…" : "Connect"}
+              </PrimaryAction>
+            )
+          }
+        />
+
+        {/* Notion */}
+        <ConnectorRow
+          id="connector-notion"
+          icon={<ConnectorLogo name="Notion" logo={notionLogo} size="md" />}
+          name="Notion"
+          status={loading ? undefined : rowStatus(Boolean(notion))}
+          meta={
+            loading ? (
+              <LoadingMeta />
+            ) : notion ? (
+              (notion.emailAddress ?? "Notion workspace")
+            ) : (
+              "Pages and databases"
+            )
+          }
+          action={
+            notion ? (
+              <QuietAction onClick={() => void handleNotionDisconnect()} disabled={notionBusy}>
+                Disconnect
+              </QuietAction>
+            ) : (
+              <PrimaryAction onClick={() => void handleNotionConnect()} disabled={notionBusy}>
+                {notionBusy ? "Opening…" : "Connect"}
               </PrimaryAction>
             )
           }

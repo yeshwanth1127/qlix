@@ -23,6 +23,7 @@ export type BuiltinPermissionScope =
   | 'whatsapp.send'
   | 'whatsapp.read'
   | 'whatsapp.contact_send'
+  | 'whatsapp.auto_reply'
   | 'social.read'
   | 'social.publish'
   | 'crm.read'
@@ -34,7 +35,16 @@ export type BuiltinPermissionScope =
 /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
 export type McpPermissionScope = `mcp.${string}`;
 
-export type PermissionScope = BuiltinPermissionScope | McpPermissionScope;
+/**
+ * Per-target permission to hand work to another agent (`agent.ask.<agentId>`).
+ * A capability grant like any other, so it flows through JIT, audit, and delegation unchanged.
+ */
+export type AgentAskPermissionScope = `agent.ask.${string}`;
+
+export type PermissionScope =
+  | BuiltinPermissionScope
+  | McpPermissionScope
+  | AgentAskPermissionScope;
 
 // Derived from the canonical catalog (single source of truth). Re-exported here so
 // existing importers keep working.

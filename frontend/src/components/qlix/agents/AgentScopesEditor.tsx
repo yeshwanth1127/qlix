@@ -159,7 +159,7 @@ export function AgentScopesEditor({ agent, orgId, onUpdated }: AgentScopesEditor
         ) : null}
       </div>
       <p className="text-[11px] text-black/50">
-        Check scopes to grant. Uncheck to remove. MCP tools (e.g. qlix-leads) appear when registered
+        Check scopes to grant. Uncheck to remove. MCP tools (e.g. qlix-jobs) appear when registered
         for your workspace.
       </p>
       {scopeOptions.length === 0 ? (

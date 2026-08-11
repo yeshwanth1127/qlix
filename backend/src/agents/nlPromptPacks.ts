@@ -6,11 +6,10 @@ import {
   isCompetitorResearchPrompt,
   isCrmPrompt,
   isJobApplyPrompt,
-  isLeadGenPrompt,
+  isLocalHybridPrompt,
 } from './nlPlanEnrichment.js';
 
 export type NlPromptPackId =
-  | 'leads'
   | 'jobs'
   | 'competitor'
   | 'crm'
@@ -18,9 +17,6 @@ export type NlPromptPackId =
   | 'local'
   | 'finance'
   | 'messaging';
-
-const LOCAL_INTENT =
-  /\b(local\s+(?:file|files|filesystem|machine|computer|desktop)|my\s+(?:machine|computer|desktop|files?)|desktop\s+app|gui\s+control|screen\s+automation|hybrid\s+agent|file\s+control|read\s+(?:local\s+)?files?|write\s+(?:local\s+)?files?)\b/i;
 
 const FINANCE_INTENT =
   /\b(spend|payment|pay\b|purchase|checkout|buy\b|financ(?:e|ial)|\$\d+|up\s+to\s+\$?\d+)\b/i;
@@ -31,12 +27,6 @@ const MESSAGING_INTENT =
 const SLACK_INTENT = /\bslack\b/i;
 
 const PACK_TEXT: Record<NlPromptPackId, string> = {
-  leads: `## Leads / Google Maps
-- Use mcp.qlix-leads.gmb_search_leads + get_campaign + list_leads (export_leads if CSV needed). Never web.read/web.click for Maps.
-- list_leads defaults to contactable leads; includeAll=true before enrichment.
-- Enrichment: list_leads(includeAll) → for each needsBrowserEnrichment: browser open website → update_lead_email or record_lead_enrichment. Email domain must match site.
-- Outreach: email.send + mcp.qlix-leads.start_outreach (JIT). Team: finder=GMB, qualifier=web enrich, outreach=email.`,
-
   jobs: `## Job apply
 - Cloud: web.read + web.click + web.transaction + mcp.qlix-jobs.* (search_jobs, queue_applications, get_apply_brief, record_application_result, upsert_candidate_profile, stage_resume).
 - Greenhouse/Lever/Ashby only — not LinkedIn Easy Apply or Indeed. Put web.transaction in jitScopes.
@@ -61,32 +51,27 @@ const PACK_TEXT: Record<NlPromptPackId, string> = {
 - Add finance.spend_50 or finance.spend_100 as needed (both JIT).`,
 
   messaging: `## Email / WhatsApp / social / Google
-- Google suite: email.read / email.send (Gmail; send JIT), drive.read / drive.write, calendar.read / calendar.write, meet.manage (JIT), youtube.read / youtube.publish (publish JIT).
-- whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT).
+- Google / Microsoft: email.read / email.send (Gmail or Microsoft 365; send JIT), drive.read / drive.write (Google Drive or OneDrive), calendar.read / calendar.write, meet.manage (JIT), youtube.read / youtube.publish (publish JIT).
+- whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT); whatsapp.auto_reply arms listen-after-send.
+- Spreadsheets/Excel on cloud: web.research → create_xlsx (sandbox); deliver with whatsapp_send. Never system.file_write for sheets unless the user wants local files.
 - social.read / social.publish (publish JIT) via Orbit. Request only channels the task needs.`,
 };
 
 export function selectNlPromptPacks(userPrompt: string): NlPromptPackId[] {
   const packs: NlPromptPackId[] = [];
-  if (isLeadGenPrompt(userPrompt)) packs.push('leads');
-  if (isJobApplyPrompt(userPrompt) && !isLeadGenPrompt(userPrompt)) packs.push('jobs');
-  if (
-    isCompetitorResearchPrompt(userPrompt) &&
-    !isLeadGenPrompt(userPrompt) &&
-    !isJobApplyPrompt(userPrompt)
-  ) {
+  if (isJobApplyPrompt(userPrompt)) packs.push('jobs');
+  if (isCompetitorResearchPrompt(userPrompt) && !isJobApplyPrompt(userPrompt)) {
     packs.push('competitor');
   }
   if (
     isCrmPrompt(userPrompt) &&
-    !isLeadGenPrompt(userPrompt) &&
     !isJobApplyPrompt(userPrompt) &&
     !isCompetitorResearchPrompt(userPrompt)
   ) {
     packs.push('crm');
   }
   if (SLACK_INTENT.test(userPrompt)) packs.push('slack');
-  if (LOCAL_INTENT.test(userPrompt)) packs.push('local');
+  if (isLocalHybridPrompt(userPrompt)) packs.push('local');
   if (FINANCE_INTENT.test(userPrompt)) packs.push('finance');
   if (MESSAGING_INTENT.test(userPrompt)) packs.push('messaging');
   return packs;

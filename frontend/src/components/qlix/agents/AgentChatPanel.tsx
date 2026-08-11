@@ -10,6 +10,7 @@ import {
   Loader2,
   MessageSquare,
   Paperclip,
+  Pencil,
   SendHorizonal,
   ShieldAlert,
   ShieldCheck,
@@ -29,6 +30,7 @@ import {
   getAgent,
   getRuntimeStatus,
   normalizeQlixInferenceModelId,
+  resendEditedConversationMessage,
   type ConversationMessageDTO,
   type InferenceCapabilities,
 } from "@/lib/agents-api";
@@ -152,6 +154,13 @@ function toChatMsg(m: ConversationMessageDTO): ChatMsg {
     content: m.content ?? "",
     attachments: parseAttachments(m.attachments),
   };
+}
+
+function canEditUserMessage(m: ChatMsg): boolean {
+  if (m.role !== "user") return false;
+  if (m.id.startsWith("local-") || m.id.startsWith("steer-") || m.id.startsWith("run-")) return false;
+  if (m.content.trim().startsWith("[steer]")) return false;
+  return true;
 }
 
 function MessageAttachments({ attachments }: { readonly attachments: ChatAttachmentDTO[] }) {
@@ -357,6 +366,8 @@ export function AgentChatPanel({
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  /** When set, composer edits this prior user message and resend truncates later turns. */
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
   const streamRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -691,16 +702,44 @@ export function AgentChatPanel({
     });
   };
 
+  const beginEditMessage = (m: ChatMsg) => {
+    if (!canEditUserMessage(m) || sending) return;
+    setEditingMessageId(m.id);
+    setInput(m.content);
+    setPendingFiles([]);
+    setFileInputKey((k) => k + 1);
+    setFileError(null);
+    setError(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      const len = ta.value.length;
+      ta.setSelectionRange(len, len);
+    });
+  };
+
+  const cancelEditMessage = () => {
+    setEditingMessageId(null);
+    setInput("");
+  };
+
   const send = async () => {
     if (!conversationId) return;
     const text = input.trim();
-    const filesToSend = [...pendingFiles];
-    if (!text && filesToSend.length === 0) return;
+    const filesToSend = editingMessageId ? [] : [...pendingFiles];
+    const editingId = editingMessageId;
+    if (!text && filesToSend.length === 0) {
+      // Resend may keep prior attachments with empty text — allow when editing.
+      if (!editingId) return;
+      const prior = messages.find((m) => m.id === editingId);
+      if (!prior?.attachments?.length) return;
+    }
 
     const base = await apiBase();
 
     // Mid-run steer: while a run is active, inject guidance instead of starting a new run.
-    if (sending && currentRunId && text && filesToSend.length === 0) {
+    if (!editingId && sending && currentRunId && text && filesToSend.length === 0) {
       setInput("");
       setError(null);
       const optimisticId = `steer-${Date.now()}`;
@@ -739,86 +778,160 @@ export function AgentChatPanel({
     setFileInputKey((k) => k + 1);
     setSending(true);
     setError(null);
+    setEditingMessageId(null);
 
-    const optimisticId = `local-${Date.now()}`;
-    const optimisticAttachments: ChatAttachmentDTO[] = filesToSend.map((f, i) => ({
-      id: `local-file-${i}`,
-      fileName: f.name,
-      mimeType: f.type || "application/octet-stream",
-      url: "#",
-      sizeBytes: f.size,
-    }));
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: optimisticId,
-        role: "user",
-        content: text,
-        attachments: optimisticAttachments.length > 0 ? optimisticAttachments : undefined,
-      },
-    ]);
+    const priorAttachments = editingId
+      ? messages.find((m) => m.id === editingId)?.attachments
+      : undefined;
+
+    if (editingId) {
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === editingId);
+        if (idx < 0) return prev;
+        return [
+          ...prev.slice(0, idx),
+          {
+            id: editingId,
+            role: "user",
+            content: text,
+            attachments: priorAttachments,
+          },
+        ];
+      });
+    } else {
+      const optimisticId = `local-${Date.now()}`;
+      const optimisticAttachments: ChatAttachmentDTO[] = filesToSend.map((f, i) => ({
+        id: `local-file-${i}`,
+        fileName: f.name,
+        mimeType: f.type || "application/octet-stream",
+        url: "#",
+        sizeBytes: f.size,
+      }));
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: optimisticId,
+          role: "user",
+          content: text,
+          attachments: optimisticAttachments.length > 0 ? optimisticAttachments : undefined,
+        },
+      ]);
+    }
 
     const modelForSend = selectedModelRef.current.trim();
-    let res: Response;
-    if (filesToSend.length > 0) {
-      const form = new FormData();
-      form.append("content", text);
-      form.append("skills", JSON.stringify([]));
-      if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
-        form.append("model", modelForSend);
-      }
-      if (canUseBrain && useBrain) {
-        form.append("useBrain", "true");
-      }
-      for (const file of filesToSend) {
-        form.append("files", file);
-      }
-      res = await fetch(
-        `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
-        {
-          method: "POST",
-          credentials: "include",
-          body: form,
-        },
-      );
-    } else {
-      const payload: Record<string, unknown> = { content: text, skills: [] };
-      if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
-        payload.model = modelForSend;
-      }
-      if (canUseBrain && useBrain) {
-        payload.useBrain = true;
-      }
-      res = await fetch(
-        `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-      );
-    }
-    if (!res.ok) {
-      setSending(false);
-      let msg = "Failed to send message";
-      try {
-        const body = (await res.json()) as { error?: { message?: string; code?: string } };
-        if (body?.error?.message) msg = body.error.message;
-        if (res.status === 402) {
+    let body: { runId: string; messageId: string };
+
+    if (editingId) {
+      const result = await resendEditedConversationMessage(agentId, conversationId, editingId, {
+        content: text,
+        skills: [],
+        ...(isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0
+          ? { model: modelForSend }
+          : {}),
+        ...(canUseBrain && useBrain ? { useBrain: true } : {}),
+      });
+      if (!result.ok) {
+        setSending(false);
+        let msg = result.message;
+        if (result.status === 402) {
           const walletPath =
             session?.organization.workspaceKind === "organization"
               ? "/organization/billing"
               : "/individual/wallet";
           msg = `Insufficient wallet balance. Add credits to continue. Go to ${walletPath}`;
         }
-      } catch {
-        // ignore
+        setError(msg);
+        // Restore edit mode so the user can retry.
+        setEditingMessageId(editingId);
+        setInput(text);
+        return;
       }
-      setError(msg);
-      return;
+      body = { runId: result.runId, messageId: result.messageId };
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === editingId || m.id === result.messageId);
+        if (idx < 0) {
+          return [
+            ...prev,
+            {
+              id: result.messageId,
+              role: "user",
+              content: text,
+              attachments: priorAttachments,
+            },
+          ];
+        }
+        const next = [...prev];
+        next[idx] = {
+          id: result.messageId,
+          role: "user",
+          content: text,
+          attachments: priorAttachments,
+        };
+        return next.slice(0, idx + 1);
+      });
+    } else {
+      let res: Response;
+      if (filesToSend.length > 0) {
+        const form = new FormData();
+        form.append("content", text);
+        form.append("skills", JSON.stringify([]));
+        if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
+          form.append("model", modelForSend);
+        }
+        if (canUseBrain && useBrain) {
+          form.append("useBrain", "true");
+        }
+        for (const file of filesToSend) {
+          form.append("files", file);
+        }
+        res = await fetch(
+          `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+          {
+            method: "POST",
+            credentials: "include",
+            body: form,
+          },
+        );
+      } else {
+        const payload: Record<string, unknown> = { content: text, skills: [] };
+        if (isHostedChatRuntime(agent?.runtime) && modelForSend.length > 0) {
+          payload.model = modelForSend;
+        }
+        if (canUseBrain && useBrain) {
+          payload.useBrain = true;
+        }
+        res = await fetch(
+          `${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+      }
+      if (!res.ok) {
+        setSending(false);
+        let msg = "Failed to send message";
+        try {
+          const errBody = (await res.json()) as { error?: { message?: string; code?: string } };
+          if (errBody?.error?.message) msg = errBody.error.message;
+          if (res.status === 402) {
+            const walletPath =
+              session?.organization.workspaceKind === "organization"
+                ? "/organization/billing"
+                : "/individual/wallet";
+            msg = `Insufficient wallet balance. Add credits to continue. Go to ${walletPath}`;
+          }
+        } catch {
+          // ignore
+        }
+        setError(msg);
+        return;
+      }
+      body = (await res.json()) as { runId: string; messageId: string };
     }
-    const body = (await res.json()) as { runId: string; messageId: string };
+
     setCurrentRunId(body.runId);
 
     streamRef.current?.close();
@@ -1310,7 +1423,13 @@ export function AgentChatPanel({
 
                     <div
                       className={cn(
-                        "min-w-0 max-w-[min(100%,32rem)] rounded-2xl border border-black/10 px-4 py-3.5 text-[13px] leading-relaxed shadow-[var(--sketch-shadow)] transition-shadow duration-300",
+                        "flex min-w-0 max-w-[min(100%,32rem)] flex-col",
+                        m.role === "user" ? "items-end" : "items-start",
+                      )}
+                    >
+                    <div
+                      className={cn(
+                        "w-full rounded-2xl border border-black/10 px-4 py-3.5 text-[13px] leading-relaxed shadow-[var(--sketch-shadow)] transition-shadow duration-300",
                         m.role === "user" && sketchToneBg.purple,
                         m.role === "agent" && sketchToneBg.blue,
                         m.role === "system" &&
@@ -1441,6 +1560,21 @@ export function AgentChatPanel({
                         </>
                       )}
                     </div>
+                    {canEditUserMessage(m) && !sending ? (
+                      <button
+                        type="button"
+                        onClick={() => beginEditMessage(m)}
+                        title="Edit and resend"
+                        aria-label="Edit and resend"
+                        className={cn(
+                          "mt-1 flex size-6 items-center justify-center rounded-md text-black/35 transition-colors hover:bg-black/5 hover:text-black/70",
+                          editingMessageId === m.id && "bg-black/5 text-black/70",
+                        )}
+                      >
+                        <Pencil className="size-3" aria-hidden />
+                      </button>
+                    ) : null}
+                    </div>
                   </div>
                   );
                 })
@@ -1538,6 +1672,33 @@ export function AgentChatPanel({
                 {fileError}
               </p>
             ) : null}
+            {editingMessageId ? (
+              <div
+                className={cn(
+                  "mb-2 flex items-center justify-between gap-2 rounded-xl border border-black/12 px-3 py-2 text-[12px]",
+                  sketchToneBg.purple,
+                )}
+              >
+                <div className="min-w-0">
+                  <p className="font-semibold tracking-tight text-black">Editing message</p>
+                  <p className="text-[11px] text-black/55">
+                    Resend replaces this message and removes later replies
+                    {messages.find((m) => m.id === editingMessageId)?.attachments?.length
+                      ? " (original attachments are kept)"
+                      : ""}
+                    .
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelEditMessage}
+                  className={cn(sketchButtonGhost, "h-7 shrink-0 gap-1 px-2 text-[11px]")}
+                >
+                  <X className="size-3" aria-hidden />
+                  Cancel
+                </button>
+              </div>
+            ) : null}
             {pendingFiles.length > 0 ? (
               <ul className="mb-2 flex flex-wrap gap-1.5">
                 {pendingFiles.map((f, i) => (
@@ -1572,7 +1733,7 @@ export function AgentChatPanel({
                 multiple
                 accept=".pdf,.docx,.xlsx,.xls,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml"
                 className="sr-only"
-                disabled={!conversationId || sending || pendingFiles.length >= CHAT_MAX_FILES}
+                disabled={!conversationId || sending || editingMessageId != null || pendingFiles.length >= CHAT_MAX_FILES}
                 onChange={(e) => {
                   addPendingFiles(Array.from(e.target.files ?? []));
                   e.target.value = "";
@@ -1580,12 +1741,14 @@ export function AgentChatPanel({
               />
               <button
                 type="button"
-                disabled={!conversationId || sending || pendingFiles.length >= CHAT_MAX_FILES}
+                disabled={!conversationId || sending || editingMessageId != null || pendingFiles.length >= CHAT_MAX_FILES}
                 onClick={() => fileInputRef.current?.click()}
                 title={
-                  pendingFiles.length >= CHAT_MAX_FILES
-                    ? `Maximum ${CHAT_MAX_FILES} files`
-                    : "Attach files (up to 8, max 50 MB each)"
+                  editingMessageId
+                    ? "Attachments are kept from the original message while editing"
+                    : pendingFiles.length >= CHAT_MAX_FILES
+                      ? `Maximum ${CHAT_MAX_FILES} files`
+                      : "Attach files (up to 8, max 50 MB each)"
                 }
                 className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/12 bg-white text-black/55 transition-all duration-200 hover:border-black/25 hover:text-black disabled:opacity-30"
               >
@@ -1602,7 +1765,13 @@ export function AgentChatPanel({
                       void send();
                     }
                   }}
-                  placeholder={conversationId ? "Message your agent…" : "Initializing…"}
+                  placeholder={
+                    editingMessageId
+                      ? "Edit your message and resend…"
+                      : conversationId
+                        ? "Message your agent…"
+                        : "Initializing…"
+                  }
                   disabled={!conversationId || sending}
                   rows={1}
                   className={cn(
@@ -1660,10 +1829,19 @@ export function AgentChatPanel({
                   onClick={() => void send()}
                   disabled={
                     !conversationId ||
-                    (input.trim().length === 0 && pendingFiles.length === 0) ||
+                    (input.trim().length === 0 &&
+                      pendingFiles.length === 0 &&
+                      !(
+                        editingMessageId &&
+                        (messages.find((m) => m.id === editingMessageId)?.attachments?.length ?? 0) > 0
+                      )) ||
                     (isHostedChatRuntime(agent?.runtime) && selectedQlixModelId.trim().length === 0)
                   }
-                  title="Send (Enter · Shift+Enter for newline)"
+                  title={
+                    editingMessageId
+                      ? "Resend edited message (Enter)"
+                      : "Send (Enter · Shift+Enter for newline)"
+                  }
                   className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-black text-white transition-all duration-200 hover:border-[color:var(--sketch-purple)] hover:bg-[color:var(--sketch-purple)] hover:scale-[1.03] disabled:opacity-30 disabled:hover:scale-100 disabled:hover:border-black/90 disabled:hover:bg-black"
                 >
                   <SendHorizonal className="size-3.5" aria-hidden />

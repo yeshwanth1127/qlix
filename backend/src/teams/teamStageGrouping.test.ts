@@ -61,18 +61,18 @@ describe('groupSubtasksByStage', () => {
 describe('detectPlaybookFromScopeSets', () => {
   const scopes = (...s: string[]) => s as PermissionScope[];
 
-  it('detects a lead-gen team from scrape + enrich scopes', () => {
+  it('always returns none (specialized playbooks removed)', () => {
     assert.equal(
       detectPlaybookFromScopeSets([
-        scopes('mcp.qlix-leads.gmb_search_leads'),
-        scopes('mcp.qlix-leads.list_leads', 'web.read'),
+        scopes('mcp.qlix-jobs.search_jobs'),
+        scopes('web.read'),
         scopes('email.send'),
       ]),
-      'lead_gen',
+      'none',
     );
   });
 
-  it('returns none when the scrape stage is absent', () => {
+  it('returns none when only research/email scopes are present', () => {
     assert.equal(
       detectPlaybookFromScopeSets([scopes('web.research'), scopes('email.send')]),
       'none',

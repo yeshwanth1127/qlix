@@ -9,8 +9,8 @@ describe('scopeValidation', () => {
   });
 
   it('accepts mcp tool scopes', () => {
-    assert.equal(isValidPermissionScope('mcp.qlix-leads.gmb_search_leads'), true);
-    assert.equal(isValidPermissionScope('mcp.qlix-leads.start_outreach'), true);
+    assert.equal(isValidPermissionScope('mcp.qlix-jobs.search_jobs'), true);
+    assert.equal(isValidPermissionScope('mcp.qlix-jobs.queue_applications'), true);
   });
 
   it('rejects unknown scopes', () => {

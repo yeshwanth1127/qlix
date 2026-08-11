@@ -1,13 +1,19 @@
 import { prisma } from '../../lib/prisma.js';
 import type { ChannelAdapter, DeliveryTarget, InboundMessage, ReplyPayload } from '../types.js';
 
+function isWhatsAppContactJid(peerId: string | null | undefined): boolean {
+  if (!peerId) return false;
+  const p = peerId.toLowerCase();
+  return p.endsWith('@s.whatsapp.net') || p.endsWith('@lid') || p.endsWith('@c.us');
+}
+
 /**
  * WhatsApp channel adapter — delivery via existing notifier; inbound builders
  * normalize sidecar text into gateway InboundMessage.
  */
 export const whatsappAdapter: ChannelAdapter = {
   channel: 'whatsapp',
-  async deliver(_target: DeliveryTarget, payload: ReplyPayload): Promise<void> {
+  async deliver(target: DeliveryTarget, payload: ReplyPayload): Promise<void> {
     const run = await prisma.agentRun.findUnique({
       where: { id: payload.runId },
       select: {
@@ -18,6 +24,7 @@ export const whatsappAdapter: ChannelAdapter = {
         prompt: true,
         orgId: true,
         userId: true,
+        whatsappReplyToJid: true,
         agent: { select: { name: true, description: true, orgId: true } },
       },
     });
@@ -32,6 +39,11 @@ export const whatsappAdapter: ChannelAdapter = {
         ? String(payload.result ?? run.result)
         : JSON.stringify(payload.result ?? run.result ?? {}, null, 2);
 
+    const replyToJid =
+      (isWhatsAppContactJid(target.peerId) ? target.peerId : null) ??
+      run.whatsappReplyToJid ??
+      null;
+
     const { deliverRunResultToWhatsAppIfRequested } = await import(
       '../../whatsapp/whatsappChannel.service.js'
     );
@@ -45,6 +57,8 @@ export const whatsappAdapter: ChannelAdapter = {
       agentDescription: run.agent?.description ?? null,
       success: payload.ok,
       errorMessage: payload.errorMessage ?? run.errorMessage,
+      replyToJid,
+      connectorId: target.connectorId ?? null,
     });
   },
 };
@@ -56,20 +70,24 @@ export function buildWhatsAppInbound(input: {
   peerId?: string;
   body: string;
   useBrain?: boolean;
+  /** Contact JID when this turn should reply to a contact (auto-reply). */
+  whatsappReplyToJid?: string | null;
   preResolved: NonNullable<InboundMessage['preResolved']>;
 }): InboundMessage {
+  const contactPeer = input.whatsappReplyToJid?.trim() || null;
   return {
     channel: 'whatsapp',
     orgId: input.orgId,
     userId: input.userId,
-    peerId: input.peerId ?? input.connectorId,
+    peerId: contactPeer ?? input.peerId ?? input.connectorId,
     body: input.body,
     useBrain: input.useBrain,
     deliveryTarget: {
       channel: 'whatsapp',
       connectorId: input.connectorId,
-      peerId: input.peerId ?? input.connectorId,
+      peerId: contactPeer ?? input.peerId ?? input.connectorId,
     },
+    metadata: contactPeer ? { whatsappReplyToJid: contactPeer } : undefined,
     preResolved: {
       ...input.preResolved,
       teamRole: input.preResolved.teamRole ?? 'whatsapp',

@@ -11,16 +11,16 @@ import { getBuildableScopes, reconcileRuntimeWithScopes, type ScopeDef } from '.
 import { buildAgentToolSchema, buildTeamToolSchema, buildSystemPrompt } from './nlCapabilities.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
 import {
-  enrichLeadGenPlan,
   enrichCompetitorResearchPlan,
   enrichJobApplyPlan,
   enrichCrmPlan,
   enrichSchedulePlan,
+  enrichCloudPreferPlan,
 } from './nlPlanEnrichment.js';
 import { selectNlPromptPacks } from './nlPromptPacks.js';
 import { withDefaultAgentScopes } from './defaultAgentScopes.js';
 
-const DEFAULT_BUILDER_MODEL = 'openrouter/qlix/auto';
+const DEFAULT_BUILDER_MODEL = 'openrouter/openai/gpt-4o-mini';
 const DEFAULT_AGENT_MODEL = 'exora/exora-general';
 
 function defaultAgentModel(): string {
@@ -240,11 +240,12 @@ export async function parseAgentCreationPrompt(
     throw new NLParseError(`Unexpected tool name: ${toolCall.function.name}`);
   }
 
-  const leadEnriched = enrichLeadGenPlan(userPrompt, plan, allowed);
-  const jobEnriched = enrichJobApplyPlan(userPrompt, leadEnriched, allowed);
+  const jobEnriched = enrichJobApplyPlan(userPrompt, plan, allowed);
   const competitorEnriched = enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
   const crmEnriched = enrichCrmPlan(userPrompt, competitorEnriched, allowed);
-  return enrichSchedulePlan(userPrompt, crmEnriched, allowed);
+  const scheduleEnriched = enrichSchedulePlan(userPrompt, crmEnriched, allowed);
+  // Last: honor cloud-hosted / cloud docs (create_xlsx sandbox) by stripping hybrid-only scopes.
+  return enrichCloudPreferPlan(userPrompt, scheduleEnriched, allowed);
 }
 
 /**

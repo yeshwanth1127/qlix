@@ -29,11 +29,12 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "function": {
             "name": "drive_read",
             "description": (
-                "Read Google Drive. action='list' searches/lists files (optional Drive query, "
-                "e.g. name contains 'report' and trashed=false); "
-                "action='get' returns metadata for fileId; "
-                "action='get_content' exports/downloads file text content. "
-                "Requires Drive connected in Connectors → Google → Drive."
+                "Read Google Drive or OneDrive. action='list' searches/lists files "
+                "(optional query string); action='get' returns metadata for fileId; "
+                "action='get_content' downloads file text content. "
+                "When drive_provider_selection_required is returned, ask the user which listed drive "
+                "to use and retry this operation with provider='google' or provider='microsoft'. "
+                "Do not assume a provider and do not carry a prior choice to another operation."
             ),
             "parameters": {
                 "type": "object",
@@ -42,7 +43,15 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                         "type": "string",
                         "enum": ["list", "get", "get_content"],
                     },
-                    "query": {"type": "string", "description": "Drive search query for action=list."},
+                    "provider": {
+                        "type": "string",
+                        "enum": ["google", "microsoft"],
+                        "description": (
+                            "Drive provider selected by the user when both Google Drive and OneDrive "
+                            "are connected. google = Google Drive, microsoft = OneDrive."
+                        ),
+                    },
+                    "query": {"type": "string", "description": "Search/list query for action=list."},
                     "fileId": {"type": "string"},
                     "pageSize": {"type": "integer"},
                     "pageToken": {"type": "string"},
@@ -56,17 +65,27 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "function": {
             "name": "drive_write",
             "description": (
-                "Create, update, or delete Google Drive files. "
+                "Create, update, or delete files in Google Drive or OneDrive. "
                 "action='create' needs name (+ optional contentText/mimeType/parentId); "
                 "action='update' needs fileId (+ optional name/contentText); "
                 "action='delete' needs fileId. "
                 "Mutations may pause for one-time Approve/Deny in chat (JIT). "
-                "Note: with drive.file OAuth, only files created by this app are writable."
+                "When drive_provider_selection_required is returned, ask the user which listed drive "
+                "to use and retry this operation with provider='google' or provider='microsoft'. "
+                "Do not assume a provider and do not carry a prior choice to another operation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["create", "update", "delete"]},
+                    "provider": {
+                        "type": "string",
+                        "enum": ["google", "microsoft"],
+                        "description": (
+                            "Drive provider selected by the user when both Google Drive and OneDrive "
+                            "are connected. google = Google Drive, microsoft = OneDrive."
+                        ),
+                    },
                     "fileId": {"type": "string"},
                     "name": {"type": "string"},
                     "contentText": {"type": "string"},
@@ -244,6 +263,22 @@ def _post(
             instructions = err.get("connectInstructions")
             if instructions and code == "connector_not_configured":
                 return f"[failed] {code}: {message}\n\n{instructions}"
+            if code == "drive_provider_selection_required":
+                providers = err.get("providers")
+                if isinstance(providers, list):
+                    labels = [
+                        f'{item.get("id")}: {item.get("label")}'
+                        for item in providers
+                        if isinstance(item, dict) and item.get("id") and item.get("label")
+                    ]
+                    if labels:
+                        return (
+                            f"[failed] {code}: {message}\n"
+                            f"Available drives: {'; '.join(labels)}. "
+                            "Ask the user which drive to use (Google Drive or OneDrive), "
+                            "then retry with its provider id (provider='google' or provider='microsoft')."
+                        )
+                return f"[failed] {code}: {message}"
             return f"[failed] {code}: {message}"
         return f"[failed] HTTP {resp.status_code}: {text[:500]}"
 
@@ -297,7 +332,7 @@ def build_google_workspace_tool_executors(
             if not isinstance(params, dict):
                 params = {}
             body: dict[str, Any] = {"runId": run_id, "action": params.get("action") or "list"}
-            for key in ("query", "fileId", "pageSize", "pageToken"):
+            for key in ("provider", "query", "fileId", "pageSize", "pageToken"):
                 if params.get(key) is not None:
                     body[key] = params[key]
             return _post(
@@ -318,7 +353,7 @@ def build_google_workspace_tool_executors(
                 params = {}
             action = str(params.get("action") or "create")
             body: dict[str, Any] = {"runId": run_id, "action": action}
-            for key in ("fileId", "name", "contentText", "mimeType", "parentId"):
+            for key in ("provider", "fileId", "name", "contentText", "mimeType", "parentId"):
                 if params.get(key) is not None:
                     body[key] = params[key]
             try:

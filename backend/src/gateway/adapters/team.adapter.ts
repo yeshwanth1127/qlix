@@ -4,7 +4,7 @@ import type { InboundMessage } from '../types.js';
  * Build a gateway inbound for an @Team goal (web or WhatsApp).
  */
 export function buildTeamInbound(input: {
-  channel: 'web' | 'whatsapp' | 'slack';
+  channel: 'web' | 'whatsapp' | 'slack' | 'telegram';
   teamId: string;
   teamName: string;
   orgId: string;
@@ -14,6 +14,8 @@ export function buildTeamInbound(input: {
   connectorId?: string;
   peerId?: string;
   backendUrl?: string;
+  /** Optional per-run model override (wired into team.config.defaultModel for this execution). */
+  inferenceModel?: string | null;
 }): InboundMessage {
   return {
     channel: input.channel,
@@ -40,6 +42,7 @@ export function buildTeamInbound(input: {
       teamId: input.teamId,
       teamName: input.teamName,
       ...(input.backendUrl ? { backendUrl: input.backendUrl } : {}),
+      ...(input.inferenceModel ? { inferenceModel: input.inferenceModel } : {}),
     },
   };
 }

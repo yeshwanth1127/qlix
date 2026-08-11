@@ -13,6 +13,8 @@ const repo = new ConnectorsRepository();
 const inboundBody = z.object({
   connector_id: z.string().uuid(),
   text: z.string().trim().min(1).max(20_000),
+  remote_jid: z.string().trim().min(3).max(120).optional(),
+  from_contact: z.boolean().optional(),
 });
 
 const linkedBody = z.object({
@@ -30,12 +32,27 @@ export function createWhatsAppRouter(): Router {
       return;
     }
     try {
-      const result = await handleWhatsAppInbound(parsed.data.connector_id, parsed.data.text);
-      response.json({ ok: true, reply: result.reply, message: result.reply });
+      const result = await handleWhatsAppInbound(parsed.data.connector_id, parsed.data.text, {
+        remoteJid: parsed.data.remote_jid ?? null,
+        fromContact: parsed.data.from_contact === true,
+      });
+      response.json({
+        ok: true,
+        reply: result.reply,
+        message: result.reply,
+        deliver_to: result.deliverTo,
+        contact_jid: result.contactJid ?? null,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Inbound failed';
       // Always 200 + reply text so the sidecar does not post "Qlix API error (400): …" into self-chat.
-      response.status(200).json({ ok: true, reply: message, message });
+      response.status(200).json({
+        ok: true,
+        reply: message,
+        message,
+        deliver_to: 'self',
+        contact_jid: null,
+      });
     }
   });
 
@@ -72,6 +89,25 @@ export function createWhatsAppRouter(): Router {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Stop failed';
       response.status(500).json({ error: { code: 'stop_failed', message: msg } });
+    }
+  });
+
+  router.get('/auto-reply/armed', async (request: Request, response: Response) => {
+    const connectorId = typeof request.query.connector_id === 'string' ? request.query.connector_id : '';
+    const remoteJid = typeof request.query.remote_jid === 'string' ? request.query.remote_jid : '';
+    if (!connectorId || !remoteJid) {
+      response.status(400).json({
+        error: { code: 'invalid_query', message: 'connector_id and remote_jid required' },
+      });
+      return;
+    }
+    try {
+      const { isContactArmed } = await import('../whatsapp/whatsappAutoReply.service.js');
+      const armed = await isContactArmed(connectorId, remoteJid);
+      response.json({ ok: true, armed });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Armed check failed';
+      response.status(500).json({ error: { code: 'armed_check_failed', message } });
     }
   });
 

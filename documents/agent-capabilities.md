@@ -49,6 +49,7 @@ Scopes are not free-form. Each builtin scope maps to real tools in the SDK. Orgs
 | `whatsapp.send` | Send files to linked WhatsApp | File to self-chat | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.read` | Read WhatsApp chats | List contacts + read 1:1 messages | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.contact_send` | Message WhatsApp contacts | Text a contact/phone (user must ask) | Yes | WhatsApp (Baileys) | cloud, hybrid |
+| `whatsapp.auto_reply` | Auto-reply to contacts | After send, route that contact’s replies into a new run and deliver the answer back | No | WhatsApp (Baileys) | cloud, hybrid |
 | `mcp.<slug>.<tool>` | MCP tool | One tool on a registered MCP server | Per tool (`auto` / `jit` / `blocked`) | MCP server | cloud (HTTP), hybrid (HTTP + stdio) |
 | `mcp.<slug>.*` | MCP server wildcard | All tools on that server | If listed in JIT scopes | MCP server | same |
 
@@ -70,7 +71,7 @@ The intent router groups tools by required scopes:
 | `files` | `system.file_read`, `system.file_write` | hybrid |
 | `code` | `system.file_read` | hybrid |
 | `gui` | `system.gui_control` | hybrid |
-| `comms` | `email.read`, `email.send`, `whatsapp.send`, `whatsapp.read`, `whatsapp.contact_send` | cloud, hybrid |
+| `comms` | `email.read`, `email.send`, `whatsapp.send`, `whatsapp.read`, `whatsapp.contact_send`, `whatsapp.auto_reply` | cloud, hybrid |
 | `knowledge` | `brain.query`, `brain.knowledge_read` | cloud, hybrid |
 | `always` | (none) | cloud, hybrid |
 
@@ -145,15 +146,20 @@ No full browser — structured CLIs / APIs for search and content.
 
 ### 3.4 WhatsApp
 
-**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT)
+**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT), `whatsapp.auto_reply` (listen after send)
 
 | Tool | Notes |
 |------|-------|
 | `whatsapp_send` | Send a file to the linked WhatsApp **self-chat** |
 | `whatsapp_list_contacts` | Search phonebook contacts by name/phone |
 | `whatsapp_read_chat` | Read recent 1:1 messages with a contact (only when user asks) |
-| `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT) |
+| `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT). With `whatsapp.auto_reply`, arms a 24h listener for that contact. Optional `reply_instructions` stored on the session |
+| `whatsapp_auto_reply_status` | List active auto-reply listeners for this agent |
+| `whatsapp_auto_reply_stop` | Stop listening for one contact (or all) |
+| `whatsapp_auto_reply_set_instructions` | Set/update what to do when that contact replies |
 | `luna_local_send_whatsapp_document` | Hybrid: deliver a local file to self-chat; needs `system.file_read` **or** `system.file_write` |
+
+**Auto-reply flow:** contact replies are forwarded only when an active session exists for that JID → new agent run (prompt includes stored `replyInstructions` when set) → final result is sent back to the same contact (not self-chat).
 
 ---
 
@@ -217,23 +223,7 @@ See [sub-agents.md](./sub-agents.md) for V1 nested execution and V2 identity pro
 
 MCP servers are registered per org and bound to agents. Each tool is exposed as scope `mcp.<slug>.<tool>` (runtime name often `mcp__<slug>__<tool>`). Governance defaults: read-only → `auto`; mutating → `jit`; can be set to `blocked`.
 
-### 4.1 First-party — Qlix Leads
-
-**Server:** `qlix-leads` · Lead scrape → enrich → outreach pipeline.
-
-| Tool | Purpose | Constraints |
-|------|---------|-------------|
-| `gmb_search_leads` | Scrape Google Maps / GMB; create campaign | **STEP 1** — call before other lead tools |
-| `get_campaign` | Campaign status / stats | Needs `campaignId` from scrape |
-| `list_leads` | List leads (contactable or all) | Listing gate for outreach |
-| `export_leads` | Export campaign leads as CSV | |
-| `update_lead_email` | Save email found on business site | Email domain must match site |
-| `record_lead_enrichment` | Record `email_found` or `no_email_on_site` | After browser visit |
-| `start_outreach` | Queue outreach | After scrape + enrichment + approval; destructive |
-
-Typical flow: `gmb_search_leads` → `list_leads` → browser enrich → `update_lead_email` / `record_lead_enrichment` → user approval → `start_outreach`.
-
-### 4.2 First-party — Qlix Jobs (job apply)
+### 4.1 First-party — Qlix Jobs (job apply)
 
 **Server:** `qlix-jobs` · Endpoint `/mcp-jobs` · Greenhouse / Lever / Ashby only (LinkedIn/Indeed rejected).
 
@@ -251,7 +241,7 @@ Granted as normal agent scopes (`mcp.qlix-jobs.*`) via AI Builder or the agent s
 
 Typical flow (AI Builder: “create an agent that applies to jobs with my resume”): stage_resume → upsert profile → queue_applications → get_apply_brief → `browser_ab_*` fill + upload → record awaiting_jit → **JIT `web.transaction`** → submit → record submitted.
 
-### 4.3 First-party — Qlix Schedule (cron / once / interval)
+### 4.2 First-party — Qlix Schedule (cron / once / interval)
 
 **Server:** `qlix-schedule` · Endpoint `/mcp-schedule` · Persists `ScheduledEvent` rows; backend ticks every ~1 minute and enqueues the prompt as an agent run.
 
@@ -267,13 +257,12 @@ Typical flow (AI Builder: “create an agent that applies to jobs with my resume
 
 Console API: `GET/POST /api/v1/schedules` (user auth). Internal: `/api/v1/internal/schedules` (service secret).
 
-### 4.4 Catalog integrations (operator-registered)
+### 4.3 Catalog integrations (operator-registered)
 
 Templates in the MCP catalog (tools vary by server; scopes are generated per tool):
 
 | Id | Category | What it enables |
 |----|----------|-----------------|
-| `qlix-leads` | Data | Lead scrape & outreach (above) |
 | `qlix-jobs` | Data | Job Apply Copilot (above) |
 | `qlix-schedule` | Automation | Cron / once / interval agent runs (above) |
 | `github` | Dev | Issues, PRs, code & repo search |
@@ -316,9 +305,8 @@ Supporting agent APIs (non-exhaustive): run poll / events / complete, email & Wh
 | `brain.query` | `brain_query` (always-on for every standard agent) |
 | `brain.knowledge_read` | Org knowledge access (brain agent) |
 | `finance.spend_*` | Spend authorization (JIT) |
-| `mcp.qlix-leads.*` | Lead tools in §4.1 |
-| `mcp.qlix-jobs.*` | Job apply tools in §4.2 |
-| `mcp.qlix-schedule.*` | Schedule tools in §4.3 |
+| `mcp.qlix-jobs.*` | Job apply tools in §4.1 |
+| `mcp.qlix-schedule.*` | Schedule tools in §4.2 |
 | `mcp.<slug>.*` | Tools from that MCP server |
 | *(always)* | `think`, `done` |
 

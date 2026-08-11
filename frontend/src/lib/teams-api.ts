@@ -33,11 +33,10 @@ export type TeamRunEventType =
   | "run_completed"
   | "run_failed"
   | "result_delivered"
-  | "user_injection"
-  | "lead_review_required";
+  | "user_injection";
 
 /** Deterministic stage-goal playbook, pinned on the team at creation. */
-export type TeamPlaybook = "lead_gen" | "none";
+export type TeamPlaybook = "none";
 
 export interface TeamConfig {
   maxParallelWorkers: number;
@@ -139,8 +138,6 @@ export interface TeamRunDTO {
   scopeEscalations: ScopeEscalation[];
   result: unknown | null;
   errorMessage: string | null;
-  leadCampaignId?: string | null;
-  leadOutreachApprovedAt?: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -414,16 +411,65 @@ export async function getTeamRun(
   return res.json() as Promise<{ run: TeamRunDTO; events: TeamRunEventDTO[]; tasks: A2ATaskDTO[] }>;
 }
 
-export async function injectTeamRunMessage(teamId: string, runId: string, message: string): Promise<void> {
-  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/inject`, {
-    method: "POST",
+export interface TeamRunPendingJit {
+  jitRequestId: string;
+  agentId: string;
+  scope: string;
+  scopeLabel: string;
+  context: string;
+  runId: string | null;
+  conversationId: string | null;
+  requestedAt: string;
+}
+
+export async function listTeamRunPendingJit(
+  teamId: string,
+  runId: string,
+): Promise<TeamRunPendingJit[]> {
+  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/pending-jit`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
   });
+  if (!res.ok) return [];
+  const data = (await res.json().catch(() => null)) as { pending?: TeamRunPendingJit[] } | null;
+  return data?.pending ?? [];
+}
+
+export async function injectTeamRunMessage(
+  teamId: string,
+  runId: string,
+  message: string,
+  files: File[] = [],
+): Promise<void> {
+  const url = `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/inject`;
+  let res: Response;
+  if (files.length > 0) {
+    const form = new FormData();
+    form.append("message", message);
+    for (const file of files) {
+      form.append("files", file, file.name || "upload");
+    }
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+  } else {
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+  }
   if (!res.ok) {
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new Error(err?.error?.message ?? "Failed to send message");
+  }
+  if (files.length > 0) {
+    const data = (await res.json().catch(() => null)) as { attachments?: ChatAttachmentChip[] } | null;
+    if (!data?.attachments?.length) {
+      throw new Error("File upload did not reach the team run. Please try attaching the file again.");
+    }
   }
 }
 
@@ -438,45 +484,70 @@ export async function cancelTeamRun(teamId: string, runId: string): Promise<void
   }
 }
 
-export async function approveLeadOutreach(teamId: string, runId: string): Promise<TeamRunDTO> {
-  const res = await fetch(
-    `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/approve-lead-outreach`,
-    { method: "POST", credentials: "include" },
-  );
-  if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
-    throw new Error(err?.error?.message ?? "Failed to approve outreach");
-  }
-  const data = (await res.json()) as { run: TeamRunDTO };
-  return data.run;
-}
 
-export async function retryLeadEnrichment(teamId: string, runId: string): Promise<TeamRunDTO> {
-  const res = await fetch(
-    `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/retry-lead-enrichment`,
-    { method: "POST", credentials: "include" },
-  );
-  if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
-    throw new Error(err?.error?.message ?? "Failed to retry enrichment");
-  }
-  const data = (await res.json()) as { run: TeamRunDTO };
-  return data.run;
-}
 
-export async function startTeamRun(teamId: string, goal: string): Promise<TeamRunDTO> {
-  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal }),
-  });
+export async function startTeamRun(
+  teamId: string,
+  goal: string,
+  files: File[] = [],
+  model?: string | null,
+): Promise<{ run: TeamRunDTO; displayGoal: string; attachments?: ChatAttachmentChip[]; model?: string | null }> {
+  const url = `${apiBase()}/api/v1/teams/${teamId}/runs`;
+  const modelValue = model?.trim() || "";
+  let res: Response;
+  if (files.length > 0) {
+    const form = new FormData();
+    form.append("goal", goal);
+    if (modelValue) form.append("model", modelValue);
+    for (const file of files) {
+      form.append("files", file, file.name || "upload");
+    }
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+  } else {
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal, ...(modelValue ? { model: modelValue } : {}) }),
+    });
+  }
   if (!res.ok) {
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new Error(err?.error?.message ?? "Failed to start run");
   }
-  const data = (await res.json()) as { run: TeamRunDTO };
-  return data.run;
+  const data = (await res.json()) as {
+    run: TeamRunDTO;
+    displayGoal?: string;
+    attachments?: ChatAttachmentChip[];
+    model?: string | null;
+  };
+  if (files.length > 0 && !(data.attachments && data.attachments.length > 0)) {
+    // Run may already be queued without the file — cancel so we don't silently research without the sheet.
+    if (data.run?.id) {
+      await cancelTeamRun(teamId, data.run.id).catch(() => undefined);
+    }
+    throw new Error(
+      "File upload did not reach the team run. Please try attaching the file again.",
+    );
+  }
+  return {
+    run: data.run,
+    displayGoal: data.displayGoal ?? goal,
+    ...(data.attachments ? { attachments: data.attachments } : {}),
+    ...(data.model != null ? { model: data.model } : {}),
+  };
+}
+
+export interface ChatAttachmentChip {
+  id?: string;
+  fileName: string;
+  mimeType?: string;
+  url?: string;
+  sizeBytes?: number;
 }
 
 /**
@@ -489,7 +560,7 @@ export function streamTeamRun(
   handlers: {
     onEvent: (event: TeamRunEventDTO) => void;
     onComplete: (data: { status: string; result: unknown }) => void;
-    onPaused?: (data: { status: string; campaignId?: string | null; teamRunId?: string }) => void;
+    onPaused?: (data: { status: string; teamRunId?: string }) => void;
     onError?: (msg: string) => void;
   },
   afterSeq = -1,
@@ -519,7 +590,6 @@ export function streamTeamRun(
       handlers.onPaused?.(
         JSON.parse(e.data as string) as {
           status: string;
-          campaignId?: string | null;
           teamRunId?: string;
         },
       );

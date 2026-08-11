@@ -70,10 +70,13 @@ async function processOneFile(file: Express.Multer.File): Promise<ProcessedChatA
   };
 }
 
-export async function processChatUploads(files: Express.Multer.File[]): Promise<ProcessedChatAttachment[]> {
+export async function processChatUploads(
+  files: Express.Multer.File[],
+  maxFiles: number = CHAT_ATTACHMENT_MAX_FILES,
+): Promise<ProcessedChatAttachment[]> {
   if (files.length === 0) return [];
-  if (files.length > CHAT_ATTACHMENT_MAX_FILES) {
-    throw Object.assign(new Error(`Too many files (max ${CHAT_ATTACHMENT_MAX_FILES}).`), {
+  if (files.length > maxFiles) {
+    throw Object.assign(new Error(`Too many files (max ${maxFiles}).`), {
       code: 'too_many_files',
       status: 400,
     });

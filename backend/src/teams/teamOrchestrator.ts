@@ -5,23 +5,20 @@ import { TeamAgentRunBridge } from './teamAgentRunBridge.js';
 import { deliverTextToWorkspaceWhatsApp } from '../whatsapp/whatsappChannel.service.js';
 import { goalRequestsWhatsAppDelivery } from '../whatsapp/whatsappDeliveryIntent.js';
 import {
-  buildLeadGenStageGoal,
-  extractCampaignIdFromText,
-  findLeadReviewCheckpoint,
-  listAgentRunTools,
-  memberLeadGenStage,
-  normalizeFindingsText,
-  parseLeadGenRequest,
-  type LeadReviewCheckpoint,
-  validateLeadGenWorkerOutput,
-} from '../leads/leadGenPipelineGoals.js';
-import { LeadsRepository } from '../leads/leads.repository.js';
-import { resolveTeamPlaybook } from './teamPlaybook.js';
-import {
   clearNotifierState,
   notifyTeamChannelProgress,
   teamRunShouldReplyWhatsApp,
 } from './teamChannelNotifier.js';
+
+function normalizeFindingsText(findings: unknown): string {
+  if (typeof findings === 'string') return findings;
+  if (findings == null) return '';
+  try {
+    return JSON.stringify(findings, null, 2);
+  } catch {
+    return String(findings);
+  }
+}
 
 export interface SubtaskPlan {
   subtaskId: string;
@@ -75,7 +72,6 @@ export function groupSubtasksByStage(plan: SubtaskPlan[]): SubtaskPlan[][] {
 export class TeamOrchestrator {
   private readonly repo = new TeamsRepository();
   private readonly bridge = new TeamAgentRunBridge();
-  private readonly leadsRepo = new LeadsRepository();
 
   async execute(
     run: TeamRunDTO,
@@ -89,7 +85,13 @@ export class TeamOrchestrator {
 
     try {
       await this.repo.updateRunStatus(run.id, 'running', { startedAt: new Date() });
-      await this.emitEvent(run, team, null, 'run_started', { runId: run.id, goal: run.goal }, emit);
+      await this.emitEvent(run, team, null, 'run_started', {
+        runId: run.id,
+        goal: run.goal,
+        ...(((team.config as TeamConfig).defaultModel)
+          ? { model: (team.config as TeamConfig).defaultModel }
+          : {}),
+      }, emit);
 
       const members = team.members ?? [];
       if (members.length === 0) {
@@ -108,34 +110,22 @@ export class TeamOrchestrator {
       //   stageOrder, supervisor never sees a "pick the order" prompt.
       const useDeterministicOrder = !config.autoSequence;
 
-      // Lead-gen teams always use deterministic stage goals (scrape → enrich → outreach)
-      // so workers never all receive the full user goal from supervisor decomposition.
-      // The playbook is stored on the team (backfilled once for legacy teams) rather than
-      // re-inferred from member scopes, so rewiring a team can no longer silently change
-      // which stage goals its workers receive.
-      const isLeadGen = (await resolveTeamPlaybook(team, orderedMembers, this.repo)) === 'lead_gen';
-
-      const planMessage =
-        isLeadGen
-          ? `Lead-gen pipeline (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
-          : useDeterministicOrder
-            ? `Pipeline order locked by team stages (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
-            : 'Supervisor is planning subtasks…';
+      const planMessage = useDeterministicOrder
+        ? `Pipeline order locked by team stages (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
+        : 'Supervisor is planning subtasks…';
       await this.emitEvent(run, team, supervisorId, 'task_status_update', { message: planMessage }, emit);
 
-      const plan = isLeadGen
-        ? this.buildLeadGenPipelinePlan(run, orderedMembers)
-        : useDeterministicOrder
-          ? this.buildStaticPipelinePlan(run, orderedMembers)
-          : await this.supervisorDecompose(
-              run,
-              team,
-              orderedMembers,
-              emit,
-              timeoutMs,
-              maxAttempts,
-              !!config.pipelineMode,
-            );
+      const plan = useDeterministicOrder
+        ? this.buildStaticPipelinePlan(run, orderedMembers)
+        : await this.supervisorDecompose(
+            run,
+            team,
+            orderedMembers,
+            emit,
+            timeoutMs,
+            maxAttempts,
+            !!config.pipelineMode,
+          );
 
       await this.repo.appendSupervisorTrace(run.id, {
         step: 'decompose',
@@ -183,46 +173,6 @@ export class TeamOrchestrator {
             return;
           }
 
-          const remainingSubtasks = stageGroups.slice(groupIndex + 1).flat();
-          const groupHasEnrich = group.some((s) => {
-            const m = orderedMembers.find((x) => x.agentId === s.agentId);
-            return m != null && memberLeadGenStage(m) === 'enrich';
-          });
-          const hasOutreachRemaining = remainingSubtasks.some((s) => {
-            const m = orderedMembers.find((x) => x.agentId === s.agentId);
-            return m != null && memberLeadGenStage(m) === 'outreach';
-          });
-          if (isLeadGen && groupHasEnrich && hasOutreachRemaining) {
-            let campaignId =
-              groupResults
-                .map((r) => extractCampaignIdFromText(r.findings))
-                .find((id): id is string => Boolean(id)) ??
-              results
-                .map((r) => extractCampaignIdFromText(r.findings))
-                .find((id): id is string => Boolean(id));
-            if (!campaignId && run.startedAt) {
-              campaignId =
-                (await this.leadsRepo.findLatestCampaignSince(
-                  team.orgId,
-                  new Date(run.startedAt),
-                )) ?? undefined;
-            }
-            if (campaignId) {
-              await this.pauseForLeadReview(
-                run,
-                team,
-                supervisorId,
-                {
-                  campaignId,
-                  completedResults: results,
-                  remainingSubtasks,
-                },
-                emit,
-              );
-              emit('paused', { status: 'paused', campaignId, teamRunId: run.id });
-              return;
-            }
-          }
         }
       } else {
         const batches = this.batchSubtasksAvoidingCollision(plan, config.maxParallelWorkers);
@@ -258,197 +208,6 @@ export class TeamOrchestrator {
         await this.repo.clearChannelSession(run.sourceConnectorId);
       }
       clearNotifierState(run.id);
-      emit('error', { message });
-    }
-  }
-
-  /** Resume a paused lead-gen run after the user approves outreach in the UI. */
-  async resumeFromCheckpoint(
-    run: TeamRunDTO,
-    team: TeamDTO,
-    emit: RunEventEmitter,
-  ): Promise<void> {
-    const config = team.config as TeamConfig;
-    const supervisorId = team.supervisorAgentId!;
-    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
-    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
-
-    const checkpoint = findLeadReviewCheckpoint(run.supervisorTrace);
-    if (!checkpoint) {
-      throw new Error('No lead review checkpoint found for this run');
-    }
-
-    const completedResults: WorkerResult[] = checkpoint.completedResults.map((r) => ({
-      ...r,
-      artifacts: [],
-    }));
-
-    try {
-      await this.repo.updateRunStatus(run.id, 'running');
-      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
-        message: 'Outreach approved — continuing pipeline…',
-      }, emit);
-
-      // Checkpoints written before stage grouping have no stageOrder — fall back to one
-      // stage per subtask, which reproduces the original strictly-sequential resume.
-      const remainingPlan: SubtaskPlan[] = checkpoint.remainingSubtasks.map((s, i) => ({
-        ...s,
-        stageOrder: s.stageOrder ?? i + 1,
-      }));
-      const stageGroups = groupSubtasksByStage(remainingPlan);
-
-      for (let groupIndex = 0; groupIndex < stageGroups.length; groupIndex++) {
-        const group = stageGroups[groupIndex]!;
-        const current = await this.repo.findRun(run.id);
-        if (current?.status === 'canceled') {
-          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
-          return;
-        }
-        const groupResults = await this.executeStage(
-          run,
-          team,
-          group,
-          emit,
-          timeoutMs,
-          maxAttempts,
-          [...completedResults],
-          config.maxParallelWorkers,
-          groupIndex + 1,
-          stageGroups.length,
-        );
-        completedResults.push(...groupResults);
-
-        const failed = groupResults.find((r) => r.status === 'failed');
-        if (failed) {
-          await this.abortPipelineRun(run, team, supervisorId, failed, emit);
-          return;
-        }
-      }
-
-      await this.finalizeSuccessfulRun(
-        run,
-        team,
-        supervisorId,
-        completedResults,
-        emit,
-        timeoutMs,
-        maxAttempts,
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TeamOrchestrator] resume run ${run.id} failed:`, message);
-      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
-      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
-      clearNotifierState(run.id);
-      emit('error', { message });
-    }
-  }
-
-  /** Re-run the enrich worker to visit lead websites and find emails before outreach approval. */
-  async retryLeadEnrichment(
-    run: TeamRunDTO,
-    team: TeamDTO,
-    emit: RunEventEmitter,
-  ): Promise<void> {
-    const config = team.config as TeamConfig;
-    const supervisorId = team.supervisorAgentId!;
-    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
-    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
-
-    const checkpoint = findLeadReviewCheckpoint(run.supervisorTrace);
-    if (!checkpoint) {
-      throw new Error('No lead review checkpoint found for this run');
-    }
-
-    const enrichMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'enrich');
-    if (!enrichMember) {
-      throw new Error('Team has no email enricher worker');
-    }
-
-    const scrapeResults = checkpoint.completedResults.filter((r) => {
-      const member = team.members?.find((m) => m.agentId === r.agentId);
-      return member != null && memberLeadGenStage(member) === 'scrape';
-    });
-
-    try {
-      await this.leadsRepo.resetBrowserEnrichmentAttempts(team.orgId, checkpoint.campaignId);
-      await this.repo.updateRunStatus(run.id, 'running');
-      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
-        message: 'Retrying email enrichment — visiting lead websites with browser tools…',
-      }, emit);
-
-      const parsed = parseLeadGenRequest(run.goal);
-      const baseGoal = buildLeadGenStageGoal('enrich', run.goal, parsed, checkpoint.campaignId);
-      const description = (enrichMember.agent as { description?: string } | undefined)?.description;
-      const descPart = description?.trim() ? `\n\nRole description: ${description.trim()}` : '';
-      const retryGoal = [
-        baseGoal,
-        descPart,
-        '',
-        'RETRY PASS: A previous enrichment pass did not find enough emails.',
-        'Call list_leads with includeAll=true and visit EVERY lead in needsBrowserEnrichment.',
-        'Use browser_ab_open on each website, check /contact and footer mailto links, then update_lead_email or record_lead_enrichment(no_email_on_site).',
-        'Do not invent emails. Do not skip leads that were marked no_email_on_site before — try again.',
-      ].filter(Boolean).join('\n');
-
-      const enrichSubtask: SubtaskPlan = {
-        subtaskId: `leadgen_retry_enrich_${Date.now()}`,
-        agentId: enrichMember.agentId,
-        agentName: enrichMember.agent?.name ?? enrichMember.agentId,
-        agentDescription: description,
-        role: enrichMember.role,
-        goal: retryGoal,
-        delegatedScopes: enrichMember.delegatedScopes,
-        stageOrder: enrichMember.stageOrder,
-      };
-
-      const priorResults: WorkerResult[] = scrapeResults.map((r) => ({
-        ...r,
-        artifacts: [],
-      }));
-
-      const result = await this.executeWorkerTask(
-        run,
-        team,
-        enrichSubtask,
-        emit,
-        timeoutMs,
-        maxAttempts,
-        priorResults,
-      );
-
-      const completedResults =
-        result.status === 'completed'
-          ? [...priorResults, result]
-          : priorResults;
-
-      if (result.status === 'failed') {
-        await this.emitEvent(run, team, supervisorId, 'task_status_update', {
-          message: 'Enrichment retry did not complete — review leads and retry or approve outreach.',
-          error: result.errorMessage,
-        }, emit);
-      }
-
-      await this.pauseForLeadReview(
-        run,
-        team,
-        supervisorId,
-        {
-          campaignId: checkpoint.campaignId,
-          completedResults,
-          remainingSubtasks: checkpoint.remainingSubtasks,
-        },
-        emit,
-      );
-      emit('paused', { status: 'paused', campaignId: checkpoint.campaignId, teamRunId: run.id });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TeamOrchestrator] retry enrichment run ${run.id} failed:`, message);
-      await this.repo.updateRunStatus(run.id, 'paused');
-      await this.emitEvent(run, team, supervisorId, 'task_status_update', {
-        message: 'Enrichment retry failed — review leads and try again.',
-        error: message,
-      }, emit);
       emit('error', { message });
     }
   }
@@ -535,57 +294,6 @@ export class TeamOrchestrator {
     emit('complete', { status: 'completed', synthesis });
   }
 
-  private async pauseForLeadReview(
-    run: TeamRunDTO,
-    team: TeamDTO,
-    supervisorId: string,
-    params: {
-      campaignId: string;
-      completedResults: WorkerResult[];
-      // Persisted shape, not SubtaskPlan: checkpoints written before stage grouping
-      // existed have no stageOrder, and resume has to keep reading those.
-      remainingSubtasks: LeadReviewCheckpoint['remainingSubtasks'];
-    },
-    emit: RunEventEmitter,
-  ): Promise<void> {
-    const checkpoint: LeadReviewCheckpoint = {
-      step: 'lead_review_checkpoint',
-      campaignId: params.campaignId,
-      completedResults: params.completedResults.map((r) => ({
-        subtaskId: r.subtaskId,
-        agentId: r.agentId,
-        agentName: r.agentName,
-        summary: r.summary,
-        findings: r.findings,
-        status: r.status,
-      })),
-      remainingSubtasks: params.remainingSubtasks.map((s) => ({
-        subtaskId: s.subtaskId,
-        agentId: s.agentId,
-        agentName: s.agentName,
-        role: s.role,
-        goal: s.goal,
-        delegatedScopes: s.delegatedScopes,
-        stageOrder: s.stageOrder,
-      })),
-      timestampMs: Date.now(),
-    };
-
-    await this.repo.appendSupervisorTrace(run.id, checkpoint);
-    await this.repo.updateRunLeadReview(run.id, {
-      status: 'paused',
-      leadCampaignId: params.campaignId,
-    });
-    await this.emitEvent(run, team, supervisorId, 'lead_review_required', {
-      campaignId: params.campaignId,
-      teamRunId: run.id,
-      message: 'Review scraped leads and approve outreach to continue.',
-    }, emit);
-    await this.emitEvent(run, team, supervisorId, 'task_status_update', {
-      message: 'Waiting for you to review leads and approve outreach…',
-    }, emit);
-  }
-
   private async runSupervisorLlm(
     run: TeamRunDTO,
     team: TeamDTO,
@@ -666,33 +374,6 @@ export class TeamOrchestrator {
         agentDescription: description,
         role: m.role,
         goal: `Stage ${stage} of ${total} in the "${this.pipelineName(orderedMembers)}" pipeline.${descPart}\n\nUser goal: ${run.goal}`,
-        delegatedScopes: m.delegatedScopes,
-        stageOrder: m.stageOrder,
-      };
-    });
-  }
-
-  private buildLeadGenPipelinePlan(
-    run: TeamRunDTO,
-    orderedMembers: TeamMemberDTO[],
-  ): SubtaskPlan[] {
-    const parsed = parseLeadGenRequest(run.goal);
-    return orderedMembers.map((m, i) => {
-      const stageNum = i + 1;
-      const lgStage = memberLeadGenStage(m);
-      const description = (m.agent as { description?: string } | undefined)?.description;
-      const stageGoal =
-        lgStage != null
-          ? buildLeadGenStageGoal(lgStage, run.goal, parsed, null)
-          : `Stage ${stageNum}: contribute to lead generation.\n\nUser goal: ${run.goal}`;
-      const descPart = description?.trim() ? `\n\nRole description: ${description.trim()}` : '';
-      return {
-        subtaskId: `leadgen_${stageNum}_${m.agentId.slice(0, 8)}`,
-        agentId: m.agentId,
-        agentName: m.agent?.name ?? m.agentId,
-        agentDescription: description,
-        role: m.role,
-        goal: `${stageGoal}${descPart}`,
         delegatedScopes: m.delegatedScopes,
         stageOrder: m.stageOrder,
       };
@@ -798,7 +479,7 @@ export class TeamOrchestrator {
       .join('\n');
 
     const pipelineNote = pipelineMode
-      ? `\n- This is a PIPELINE team: assign tasks in the order they should execute (output of step N feeds into step N+1)\n- Preserve natural dependency order (e.g. lead generation → research → compliance → reporting)`
+      ? `\n- This is a PIPELINE team: assign tasks in the order they should execute (output of step N feeds into step N+1)\n- Preserve natural dependency order (e.g. research → analysis → reporting)`
       : '';
 
     const taskPrompt = `You are the supervisor of an agent team named "${team.name}".
@@ -913,59 +594,33 @@ User goal: ${run.goal}`;
         : '';
 
     const member = team.members?.find((m) => m.agentId === subtask.agentId);
-    const leadGenStage = member ? memberLeadGenStage(member) : null;
     const agentHasBrain = member?.agent?.permissionScopes?.includes('brain.query') ?? false;
     const useBrain =
       subtask.delegatedScopes.includes('brain.query') || agentHasBrain;
 
     const needsBrowser =
-      leadGenStage === 'enrich' ||
       /\bhttps?:\/\//i.test(subtask.goal) ||
       /\b(browse|navigate|scrape|visit|open\s+url|website|web\s+page)\b/i.test(subtask.goal);
     const browserGuidance = needsBrowser
-      ? '- Browser tools are allowed if needed; use at most 3 browser actions per lead, then return your JSON answer.\n'
-      : leadGenStage === 'scrape'
-        ? '- Do NOT use browser tools — call gmb_search_leads MCP tool only.\n'
-        : '- Do NOT use browser tools for this subtask unless explicitly required.\n';
+      ? '- Browser tools are allowed if needed; use at most 3 browser actions, then return your JSON answer.\n'
+      : '- Do NOT use browser tools for this subtask unless explicitly required.\n';
 
-    const leadScrapeGuidance =
-      subtask.delegatedScopes.includes('mcp.qlix-leads.gmb_search_leads')
-        ? `- Lead scraping: call mcp__qlix-leads__gmb_search_leads as your FIRST action (not think). Use searchQuery, location, maxResults from the subtask. Then list_leads includeAll=true. Return campaignId and leads in JSON.\n`
-        : '';
+    const workerPrompt = `You are completing one pipeline stage. Stay inside this stage.
 
-    const leadEnrichGuidance =
-      leadGenStage === 'enrich'
-        ? `- Email enrichment: call list_leads FIRST. For each lead with a website, browser_ab_open then update_lead_email or record_lead_enrichment. Never call update_lead_email without a real leadId from list_leads.\n`
-        : '';
-
-    const leadOutreachGuidance =
-      leadGenStage === 'outreach'
-        ? `- Outreach: call list_leads for contactable leads only. email_send requires verified emails and campaignId + leadId metadata from prior stages.\n`
-        : '';
-
-    const workerPrompt =
-      leadGenStage != null
-        ? `${subtask.goal}
-${browserGuidance}${leadScrapeGuidance}${leadEnrichGuidance}${leadOutreachGuidance}${priorContext}
-When finished, reply with JSON:
-{
-  "summary": "<concise 2-3 sentence summary>",
-  "findings": "<detailed output, include campaignId and lead data>",
-  "artifacts": []
-}`
-        : `Complete this subtask thoroughly. Return a JSON object:
+Rules:
+- Do only what this subtask asks. Do NOT invent side work (CRM writes, outreach, research, scheduling, etc.) unless the subtask explicitly requires it.
+- Prefer tools that are necessary for this stage. Having a tool available is not permission to use it.
+- Put the handoff data in your JSON findings so the next stage can use it — do not write it to CRM/email/WhatsApp unless this stage's goal says so.
+- Return a JSON object:
 {
   "summary": "<concise 2-3 sentence summary>",
   "findings": "<detailed output, include all relevant data>",
   "artifacts": []
 }
-${browserGuidance}${leadScrapeGuidance}${priorContext}
+${browserGuidance}${priorContext}
 Subtask: ${subtask.goal}`;
 
-    const workerSkills: PermissionScope[] =
-      leadGenStage === 'outreach'
-        ? [...new Set([...subtask.delegatedScopes, 'mcp.qlix-leads.list_leads' as PermissionScope])]
-        : subtask.delegatedScopes;
+    const workerSkills: PermissionScope[] = subtask.delegatedScopes;
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -1009,19 +664,6 @@ Subtask: ${subtask.goal}`;
           findings = normalizeFindingsText(parsed.findings ?? findings);
         } catch {
           // use raw text
-        }
-
-        if (leadGenStage != null) {
-          const toolsUsed = await listAgentRunTools(agentRunId);
-          const validationError = validateLeadGenWorkerOutput({
-            stage: leadGenStage,
-            toolsUsed,
-            findings,
-            pipelineMode: !!(team.config as TeamConfig).pipelineMode,
-          });
-          if (validationError) {
-            throw new Error(validationError);
-          }
         }
 
         const artifact: TeamRunArtifact = {

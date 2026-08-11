@@ -189,8 +189,32 @@ function previewText(text) {
   return t.length > 80 ? `${t.slice(0, 80)}…` : t;
 }
 
-export async function handleInboundMessage(connectorId, ownerJid, remoteJid, text, allowedSelfJids = []) {
-  if (!isSelfChat(ownerJid, remoteJid, allowedSelfJids)) {
+function inboundReplyText(result) {
+  if (result == null) return '';
+  if (typeof result === 'string') return result;
+  if (typeof result.error === 'string') return result.error;
+  return typeof result.reply === 'string' ? result.reply : '';
+}
+
+async function postInboundAck(connectorId, result) {
+  const deliverTo = result?.deliverTo ?? (typeof result === 'string' ? 'self' : 'self');
+  if (deliverTo === 'none' || deliverTo === 'contact') return;
+  const text = inboundReplyText(result);
+  if (!text) return;
+  await reply(connectorId, text);
+}
+
+export async function handleInboundMessage(
+  connectorId,
+  ownerJid,
+  remoteJid,
+  text,
+  allowedSelfJids = [],
+  opts = {},
+) {
+  const fromContact = opts.fromContact === true;
+
+  if (!fromContact && !isSelfChat(ownerJid, remoteJid, allowedSelfJids)) {
     console.log(
       `[qlix-whatsapp] inbound dropped (not-self-chat) connector=${connectorId} remote=${remoteJid}`,
     );
@@ -200,6 +224,20 @@ export async function handleInboundMessage(connectorId, ownerJid, remoteJid, tex
     console.log(
       `[qlix-whatsapp] inbound dropped (echo) connector=${connectorId} preview="${previewText(text)}"`,
     );
+    return;
+  }
+
+  if (fromContact) {
+    console.log(
+      `[qlix-whatsapp] contact auto-reply forwarding connector=${connectorId} remote=${remoteJid} preview="${previewText(text)}"`,
+    );
+    const result = await qlix.sendInbound(connectorId, text, {
+      remoteJid,
+      fromContact: true,
+    });
+    if (result?.error) {
+      console.warn(`[qlix-whatsapp] contact inbound error: ${result.error}`);
+    }
     return;
   }
 
@@ -236,13 +274,13 @@ export async function handleInboundMessage(connectorId, ownerJid, remoteJid, tex
     return;
   }
   if (lower.startsWith('!status')) {
-    const replyText = await qlix.sendInbound(connectorId, '!status');
-    await reply(connectorId, typeof replyText === 'string' ? replyText : String(replyText));
+    const result = await qlix.sendInbound(connectorId, '!status');
+    await postInboundAck(connectorId, result);
     return;
   }
   if (lower === '!cancel' || lower.startsWith('!stop team')) {
-    const replyText = await qlix.sendInbound(connectorId, text);
-    await reply(connectorId, typeof replyText === 'string' ? replyText : String(replyText));
+    const result = await qlix.sendInbound(connectorId, text);
+    await postInboundAck(connectorId, result);
     return;
   }
   if (lower.startsWith('!stop')) {
@@ -256,9 +294,9 @@ export async function handleInboundMessage(connectorId, ownerJid, remoteJid, tex
     return;
   }
 
-  const replyText = await qlix.sendInbound(connectorId, text);
+  const result = await qlix.sendInbound(connectorId, text);
   console.log(
-    `[qlix-whatsapp] inbound replied connector=${connectorId} replyPreview="${previewText(replyText)}"`,
+    `[qlix-whatsapp] inbound replied connector=${connectorId} replyPreview="${previewText(inboundReplyText(result))}"`,
   );
-  await reply(connectorId, typeof replyText === 'string' ? replyText : String(replyText));
+  await postInboundAck(connectorId, result);
 }

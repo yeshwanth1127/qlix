@@ -8,7 +8,6 @@ import { debitWalletTwoBucket } from '../billings/lib/recordBillingEvent.js';
 import { prisma } from '../lib/prisma.js';
 import { canonicalize } from './canonical.js';
 import { scopeRequiresJit } from './jitScope.js';
-import { isLeadListingActionType, markLeadsListed } from '../leads/leadOutreachGate.js';
 import type {
   ActionRiskLevel,
   CompleteSignedPayload,
@@ -177,12 +176,6 @@ export class ActionsService {
         timestampMs: BigInt(signedPayload.timestampMs),
       },
     });
-
-    // Lead-outreach UX gate: record when the agent lists/scrapes leads so email.send
-    // can require this "present leads to the user first" step (see leadOutreachGate).
-    if (isLeadListingActionType(signedPayload.actionType)) {
-      await markLeadsListed(agent.id);
-    }
 
     return {
       actionId: created.id,

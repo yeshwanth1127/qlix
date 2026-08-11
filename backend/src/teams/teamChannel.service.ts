@@ -156,6 +156,14 @@ export async function tryHandleTeamWhatsAppInbound(
   connector: ConnectorAccountDTO,
   text: string,
 ): Promise<{ reply: string; handled: boolean }> {
+  return tryHandleTeamChannelInbound(connector, text, 'whatsapp');
+}
+
+export async function tryHandleTeamChannelInbound(
+  connector: ConnectorAccountDTO,
+  text: string,
+  channel: 'whatsapp' | 'telegram',
+): Promise<{ reply: string; handled: boolean }> {
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
@@ -223,7 +231,7 @@ export async function tryHandleTeamWhatsAppInbound(
   const { buildTeamInbound, gatewayService } = await import('../gateway/index.js');
   const turn = await gatewayService.handleInbound(
     buildTeamInbound({
-      channel: 'whatsapp',
+      channel,
       teamId: team.id,
       teamName: team.name,
       orgId: connector.orgId,

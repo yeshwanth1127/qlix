@@ -10,7 +10,6 @@ import { enforceJitRules } from './jit.js';
 import { generateKeypair } from './keypair.js';
 import { isMcpScope } from '../mcp/mcpScopeCatalog.js';
 import { mcpService } from '../mcp/mcp.service.js';
-import { ensureQlixLeadsMcpForOrg } from '../leads/ensureQlixLeadsMcp.js';
 import { ensureQlixJobsMcpForOrg } from '../jobs/ensureQlixJobsMcp.js';
 import { ensureQlixScheduleMcpForOrg } from '../schedules/ensureQlixScheduleMcp.js';
 import { prisma } from '../lib/prisma.js';
@@ -237,9 +236,6 @@ export class AgentsService {
       workspaceOrgId = user?.orgId ?? null;
     }
 
-    if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-leads.'))) {
-      await ensureQlixLeadsMcpForOrg(workspaceOrgId, userId);
-    }
     if (workspaceOrgId && permissionScopes.some((s) => s.startsWith('mcp.qlix-jobs.'))) {
       await ensureQlixJobsMcpForOrg(workspaceOrgId, userId);
     }

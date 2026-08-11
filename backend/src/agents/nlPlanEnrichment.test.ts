@@ -1,8 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  enrichLeadGenPlan,
-  isLeadGenPrompt,
   enrichCompetitorResearchPlan,
   isCompetitorResearchPrompt,
   enrichJobApplyPlan,
@@ -11,94 +9,11 @@ import {
   isCrmPrompt,
   enrichSchedulePlan,
   isSchedulePrompt,
+  enrichCloudPreferPlan,
+  isCloudHostedPrompt,
+  isCloudDocPrompt,
 } from './nlPlanEnrichment.js';
 import type { AgentCreationPlan, NLAgentSpec } from './nlTypes.js';
-
-const ALLOWED = new Set([
-  'web.read',
-  'web.click',
-  'web.research',
-  'email.send',
-  'mcp.qlix-leads.gmb_search_leads',
-  'mcp.qlix-leads.get_campaign',
-  'mcp.qlix-leads.list_leads',
-  'mcp.qlix-leads.update_lead_email',
-  'mcp.qlix-leads.start_outreach',
-]);
-
-describe('nlPlanEnrichment', () => {
-  it('detects Google Maps lead prompts', () => {
-    assert.equal(isLeadGenPrompt('scrape Google Maps for coffee shops in Bangalore'), true);
-    assert.equal(isLeadGenPrompt('summarize my inbox'), false);
-  });
-
-  it('enriches a mis-scoped team plan with MCP lead tools', () => {
-    const plan: AgentCreationPlan = {
-      type: 'team',
-      rationale: 'team',
-      team: {
-        name: 'Coffee Shop Lead Generation Team',
-        description: 'scrape',
-        supervisor: {
-          name: 'Lead Generation Supervisor',
-          description: 'orchestrates',
-          permissionScopes: ['email.send'],
-          jitScopes: [],
-          runtime: 'cloud',
-          model: 'openrouter/openai/gpt-4o-mini',
-          llmMode: 'proxy',
-          localInferenceMode: null,
-          rationale: '',
-        },
-        workers: [
-          {
-            name: 'Coffee Shop Finder',
-            role: 'finder',
-            stageOrder: 1,
-            description: 'Scrapes Google Maps',
-            permissionScopes: ['web.read'],
-            jitScopes: [],
-            runtime: 'cloud',
-            model: 'openrouter/openai/gpt-4o-mini',
-            llmMode: 'proxy',
-            localInferenceMode: null,
-            rationale: '',
-          },
-          {
-            name: 'Lead Qualifier',
-            role: 'qualifier',
-            stageOrder: 2,
-            description: 'email addresses',
-            permissionScopes: ['web.read'],
-            jitScopes: [],
-            runtime: 'cloud',
-            model: 'openrouter/openai/gpt-4o-mini',
-            llmMode: 'proxy',
-            localInferenceMode: null,
-            rationale: '',
-          },
-        ],
-        config: { maxParallelWorkers: 3, subtaskTimeoutMs: 180_000, retryPolicy: 'once' },
-      },
-    };
-
-    const prompt = 'scrape Google Maps for coffee shops in Bangalore and lists leads with email addresses';
-    const enriched = enrichLeadGenPlan(prompt, plan, ALLOWED);
-    assert.equal(enriched.type, 'team');
-
-    const finder = enriched.team.workers[0];
-    assert.ok(finder.permissionScopes.includes('mcp.qlix-leads.gmb_search_leads'));
-    assert.ok(!finder.permissionScopes.includes('web.read'));
-
-    const qualifier = enriched.team.workers[1];
-    assert.ok(qualifier.permissionScopes.includes('mcp.qlix-leads.list_leads'));
-    assert.ok(qualifier.permissionScopes.includes('mcp.qlix-leads.update_lead_email'));
-    assert.ok(qualifier.permissionScopes.includes('web.read'));
-    assert.ok(qualifier.permissionScopes.includes('web.click'));
-
-    assert.ok(!enriched.team.supervisor.permissionScopes.includes('email.send'));
-  });
-});
 
 function singleAgentPlan(
   description: string,
@@ -153,14 +68,6 @@ describe('enrichCompetitorResearchPlan', () => {
     }
     const count = (twice.agent.description.match(/## Competitor research method/g) ?? []).length;
     assert.equal(count, 1);
-  });
-
-  it('defers to lead-gen: a lead-gen prompt is left untouched', () => {
-    const plan = singleAgentPlan('Find leads.', ['web.read']);
-    const out = enrichCompetitorResearchPlan('scrape google maps for competitor coffee shops', plan, ALLOWED_CI);
-    // isLeadGenPrompt matches ("google maps" / "scrape ... leads"), so no CI method is added.
-    if (out.type !== 'single') return;
-    assert.doesNotMatch(out.agent.description, /## Competitor research method/);
   });
 
   it('strips hybrid-forcing file scopes and keeps the agent on cloud', () => {
@@ -277,5 +184,73 @@ describe('enrichSchedulePlan', () => {
     }
     assert.ok(out.agent.permissionScopes.includes('mcp.qlix-schedule.schedule_create'));
     assert.match(out.agent.description, /## Schedule method/);
+  });
+});
+
+describe('enrichCloudPreferPlan', () => {
+  const ALLOWED = new Set([
+    'web.read',
+    'web.research',
+    'whatsapp.read',
+    'whatsapp.send',
+    'system.file_read',
+    'system.file_write',
+  ]);
+
+  it('detects cloud-hosted and spreadsheet prompts', () => {
+    assert.equal(isCloudHostedPrompt('workers and supervisors must all be cloud hosted'), true);
+    assert.equal(isCloudDocPrompt('update an Excel sheet and send it on WhatsApp'), true);
+    assert.equal(isCloudHostedPrompt('scrape google maps leads'), false);
+  });
+
+  it('strips system.file_* for excel intents and stays on cloud with web.research', () => {
+    const plan = singleAgentPlan(
+      'Track replies in Excel',
+      ['whatsapp.read', 'whatsapp.send', 'system.file_write', 'system.file_read'],
+      'hybrid',
+    );
+    const out = enrichCloudPreferPlan(
+      'Detect replies, update an Excel sheet, send via WhatsApp',
+      plan,
+      ALLOWED,
+    );
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(!out.agent.permissionScopes.includes('system.file_write'));
+    assert.ok(!out.agent.permissionScopes.includes('system.file_read'));
+    assert.ok(out.agent.permissionScopes.includes('web.research'));
+    assert.equal(out.agent.runtime, 'cloud');
+  });
+
+  it('honors explicit cloud-hosted even without excel wording', () => {
+    const plan = singleAgentPlan('Leads supervisor', ['web.read', 'system.file_read'], 'hybrid');
+    const out = enrichCloudPreferPlan(
+      'Build a team of 4; workers and supervisors must all be cloud hosted',
+      plan,
+      ALLOWED,
+    );
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(!out.agent.permissionScopes.includes('system.file_read'));
+    assert.equal(out.agent.runtime, 'cloud');
+  });
+
+  it('leaves hybrid scopes alone when the user asks for local files', () => {
+    const plan = singleAgentPlan('Desktop helper', ['system.file_write'], 'hybrid');
+    const out = enrichCloudPreferPlan(
+      'cloud hosted agent that also writes local files on my machine',
+      plan,
+      ALLOWED,
+    );
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(out.agent.permissionScopes.includes('system.file_write'));
+    assert.equal(out.agent.runtime, 'hybrid');
   });
 });

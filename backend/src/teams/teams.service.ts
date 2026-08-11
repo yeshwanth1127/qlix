@@ -26,8 +26,6 @@ import type {
 } from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamOrchestrator } from './teamOrchestrator.js';
-import { approveLeadOutreachForTeamRun } from '../leads/leadOutreachGate.js';
-import { findLeadReviewCheckpoint, memberLeadGenStage } from '../leads/leadGenPipelineGoals.js';
 
 export class TeamNotFoundError extends Error {
   readonly code = 'not_found';
@@ -79,35 +77,7 @@ export class TeamRunnersNotReadyError extends Error {
 export class TeamEmailConnectorRequiredError extends Error {
   readonly code = 'email_connector_required';
   constructor() {
-    super(`Gmail is not connected for this workspace. ${GMAIL_CONNECT_SHORT}`);
-  }
-}
-
-export class TeamRunNotPausedError extends Error {
-  readonly code = 'run_not_paused';
-  constructor() {
-    super('Team run is not paused awaiting lead review');
-  }
-}
-
-export class TeamRunNoLeadCheckpointError extends Error {
-  readonly code = 'no_lead_checkpoint';
-  constructor() {
-    super('No lead review checkpoint found for this run');
-  }
-}
-
-export class TeamRunAlreadyApprovedError extends Error {
-  readonly code = 'already_approved';
-  constructor() {
-    super('Lead outreach was already approved for this run');
-  }
-}
-
-export class TeamNoEnrichWorkerError extends Error {
-  readonly code = 'no_enrich_worker';
-  constructor() {
-    super('Team has no email enricher worker configured');
+    super(`No Gmail or Microsoft 365 mailbox is connected for this workspace. ${GMAIL_CONNECT_SHORT}`);
   }
 }
 
@@ -489,57 +459,6 @@ export class TeamsService {
     const run = await this.repo.findRun(runId);
     if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
     return run;
-  }
-
-  async approveLeadOutreach(teamId: string, runId: string, orgId: string): Promise<TeamRunDTO> {
-    const team = await this.repo.findByIdAndOrg(teamId, orgId);
-    if (!team) throw new TeamNotFoundError();
-    const run = await this.repo.findRun(runId);
-    if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
-    if (run.status !== 'paused') throw new TeamRunNotPausedError();
-    if (run.leadOutreachApprovedAt) throw new TeamRunAlreadyApprovedError();
-    if (!findLeadReviewCheckpoint(run.supervisorTrace)) throw new TeamRunNoLeadCheckpointError();
-
-    const outreachMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'outreach');
-
-    await this.repo.updateRunLeadReview(runId, {
-      leadOutreachApprovedAt: new Date(),
-      status: 'running',
-    });
-    await approveLeadOutreachForTeamRun(runId, outreachMember?.agentId, run.leadCampaignId);
-
-    const refreshed = await this.repo.findRun(runId);
-    if (!refreshed) throw new TeamNotFoundError();
-
-    const orchestrator = new TeamOrchestrator();
-    void orchestrator.resumeFromCheckpoint(refreshed, team, () => {}).catch((err) => {
-      console.error(`[TeamsService] resumeFromCheckpoint failed for ${runId}:`, err);
-    });
-
-    return refreshed;
-  }
-
-  async retryLeadEnrichment(teamId: string, runId: string, orgId: string): Promise<TeamRunDTO> {
-    const team = await this.repo.findByIdAndOrg(teamId, orgId);
-    if (!team) throw new TeamNotFoundError();
-    const run = await this.repo.findRun(runId);
-    if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
-    if (run.status !== 'paused') throw new TeamRunNotPausedError();
-    if (run.leadOutreachApprovedAt) throw new TeamRunAlreadyApprovedError();
-    if (!findLeadReviewCheckpoint(run.supervisorTrace)) throw new TeamRunNoLeadCheckpointError();
-
-    const enrichMember = (team.members ?? []).find((m) => memberLeadGenStage(m) === 'enrich');
-    if (!enrichMember) throw new TeamNoEnrichWorkerError();
-
-    await this.repo.updateRunStatus(runId, 'running');
-
-    const refreshed = (await this.repo.findRun(runId))!;
-    const orchestrator = new TeamOrchestrator();
-    void orchestrator.retryLeadEnrichment(refreshed, team, () => {}).catch((err) => {
-      console.error(`[TeamsService] retryLeadEnrichment failed for ${runId}:`, err);
-    });
-
-    return refreshed;
   }
 
   // ─── Internal helpers ───────────────────────────────────────────────────────

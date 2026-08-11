@@ -49,7 +49,11 @@ export interface BuilderGraphEdge {
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
-  kind: "flow" | "tool";
+  /**
+   * `flow` — pipeline stage (team). `tool` — a granted permission.
+   * `helper` — a colleague this agent may hand work to.
+   */
+  kind: "flow" | "tool" | "helper";
 }
 
 export interface BuilderGraph {

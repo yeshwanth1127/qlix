@@ -102,6 +102,10 @@ export class GatewayService {
         inferenceModel: msg.inferenceModel,
         useBrain: msg.useBrain,
         teamRole: route.teamRole,
+        whatsappReplyToJid:
+          typeof msg.metadata?.whatsappReplyToJid === 'string'
+            ? msg.metadata.whatsappReplyToJid
+            : null,
       });
 
       setActiveRun(sessionKey, runId);
@@ -167,6 +171,10 @@ export class GatewayService {
 
     const backendUrl =
       typeof msg.metadata?.backendUrl === 'string' ? msg.metadata.backendUrl : undefined;
+    const inferenceModel =
+      typeof msg.metadata?.inferenceModel === 'string' && msg.metadata.inferenceModel.trim()
+        ? msg.metadata.inferenceModel.trim()
+        : undefined;
 
     const { run, team } = await launchTeamRun({
       teamId: route.teamId,
@@ -174,6 +182,7 @@ export class GatewayService {
       userId: route.userId,
       goal: msg.body,
       backendUrl,
+      inferenceModel,
       source: {
         channel: sourceChannel,
         connectorId: msg.deliveryTarget.connectorId ?? undefined,

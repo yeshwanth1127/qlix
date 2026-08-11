@@ -244,6 +244,14 @@ export class BrainQueryService {
     callingAgentId?: string;
     /** When true, skip final LLM synthesis — only retrieve and return structured context + empty answer. */
     contextOnly?: boolean;
+    /**
+     * When contextOnly, apply the tighter agent-run prompt budget (top-K + char trim).
+     * Console / cognitive `knowledge_search` should pass false so Exa sees full TOP_K chunks.
+     * Defaults to true for backward compatibility with agent runners.
+     */
+    agentContextBudget?: boolean;
+    /** Override retrieval top-K (defaults to TOP_K, or AGENT_CONTEXT_TOP_K when agentContextBudget). */
+    topK?: number;
     /** When false, skip appendBrainActionLog (caller logs separately). */
     writeAudit?: boolean;
   }): Promise<{ answer: string; citations: BrainQueryCitation[]; contextBlock?: string }> {
@@ -255,6 +263,7 @@ export class BrainQueryService {
       orgId: input.orgId,
       questionEmbedding: queryResult.embedding,
       collectionIds: input.collectionIds,
+      topK: input.topK ?? TOP_K,
     });
 
     if (scored.length === 0) {
@@ -305,20 +314,21 @@ export class BrainQueryService {
     const model = modelForProvider(input.brainModel, provider);
 
     if (input.contextOnly) {
-      // Agent-run context: trim to the strongest few chunks. The full citation list is
-      // still returned (and audited) so the UI and audit trail are unchanged — only
-      // what gets prepended to the model's prompt shrinks.
-      const trimmed = scored.slice(0, AGENT_CONTEXT_TOP_K).map((s) => ({
-        ...s,
-        chunk: {
-          ...s.chunk,
-          textContent:
-            s.chunk.textContent.length > AGENT_CONTEXT_CHUNK_CHARS
-              ? `${s.chunk.textContent.slice(0, AGENT_CONTEXT_CHUNK_CHARS)}…`
-              : s.chunk.textContent,
-        },
-      }));
-      const agentContextBlock = this.buildContextBlocks(trimmed).join('\n\n---\n\n');
+      // Agent runners get a tight prompt budget; console / Exa tool search keeps full TOP_K.
+      const applyAgentBudget = input.agentContextBudget !== false;
+      const injected = applyAgentBudget
+        ? scored.slice(0, AGENT_CONTEXT_TOP_K).map((s) => ({
+            ...s,
+            chunk: {
+              ...s.chunk,
+              textContent:
+                s.chunk.textContent.length > AGENT_CONTEXT_CHUNK_CHARS
+                  ? `${s.chunk.textContent.slice(0, AGENT_CONTEXT_CHUNK_CHARS)}…`
+                  : s.chunk.textContent,
+            },
+          }))
+        : scored;
+      const injectedBlock = this.buildContextBlocks(injected).join('\n\n---\n\n');
       await this.recordUsage({
         brainAgentId: input.brainAgentId,
         userId: input.userId,
@@ -337,8 +347,9 @@ export class BrainQueryService {
           payload: {
             description: `Brain retrieval (context-only): "${input.question.slice(0, 100)}"`,
             chunksRetrieved: scored.length,
-            chunksInjected: trimmed.length,
+            chunksInjected: injected.length,
             contextOnly: true,
+            agentContextBudget: applyAgentBudget,
           },
           status: 'success',
           riskLevel: 'low',
@@ -349,7 +360,7 @@ export class BrainQueryService {
       return {
         answer: '',
         citations,
-        contextBlock: agentContextBlock,
+        contextBlock: injectedBlock,
       };
     }
 

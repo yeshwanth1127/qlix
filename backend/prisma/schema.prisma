@@ -33,7 +33,6 @@ model Organization {
   teams                     Team[]
   connectorAccounts         ConnectorAccount[]
   mcpServers                McpServer[]
-  leadCampaigns             LeadCampaign[]
   brainConversations        BrainConversation[]
   brainUsages               BrainUsage[]
   brainAgentProposals       BrainAgentProposal[]
@@ -54,6 +53,7 @@ model Organization {
   scheduledEvents   ScheduledEvent[]
   orgSkills         OrgSkill[]
   builderCanvases   BuilderCanvas[]
+  nlBuilderSessions NlBuilderSession[]
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
@@ -101,7 +101,7 @@ model User {
   teamRunsStarted    TeamRun[]                @relation("TeamRunsStarted")
   connectorAccounts  ConnectorAccount[]
   nlBuilderHistory   NlBuilderHistory[]
-  leadCampaigns      LeadCampaign[]           @relation("LeadCampaignCreator")
+  nlBuilderSessions  NlBuilderSession[]
   jobCandidateProfiles JobCandidateProfile[]  @relation("JobCandidateProfileOwner")
   jobApplyCampaigns  JobApplyCampaign[]       @relation("JobApplyCampaignCreator")
   apiKeys            ApiKey[]
@@ -170,6 +170,48 @@ model WhatsAppPendingRoute {
   createdAt   DateTime @default(now()) @map("created_at")
 
   @@map("whatsapp_pending_routes")
+}
+
+/// Pending agent-picker for Telegram (one row per connector + chat).
+model TelegramPendingRoute {
+  id          String   @id @default(uuid()) @db.Uuid
+  connectorId String   @map("connector_id") @db.Uuid
+  chatId      String   @map("chat_id")
+  prompt      String
+  brainFlag   Boolean  @default(false) @map("brain_flag")
+  optionsJson Json     @map("options_json")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([connectorId, chatId])
+  @@index([expiresAt])
+  @@map("telegram_pending_routes")
+}
+
+/// Active listen session: contact replies auto-route to the agent that messaged them.
+model WhatsAppAutoReplySession {
+  id            String    @id @default(cuid())
+  connectorId   String    @map("connector_id") @db.Uuid
+  agentId       String    @map("agent_id")
+  contactJid    String    @map("contact_jid")
+  contactName   String?   @map("contact_name")
+  contactPhone  String?   @map("contact_phone")
+  /// What the agent should do when this contact replies (set via tool / send).
+  replyInstructions String? @map("reply_instructions") @db.Text
+  /// `active` | `stopped` | `expired`
+  status        String    @default("active")
+  expiresAt     DateTime  @map("expires_at")
+  lastOutboundAt DateTime @default(now()) @map("last_outbound_at")
+  lastInboundAt DateTime? @map("last_inbound_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([connectorId, contactJid])
+  @@index([connectorId, status, expiresAt])
+  @@index([agentId, status])
+  @@map("whatsapp_auto_reply_sessions")
 }
 
 /// Email invite to join an organization workspace (`admin` or `member` only). Token is stored hashed.
@@ -283,6 +325,7 @@ model Agent {
   brainUsages        BrainUsage[]
   brainAgentProposals BrainAgentProposal[] @relation("BrainAgentProposals")
   subAgentInvocations SubAgentInvocation[]
+  whatsappAutoReplySessions WhatsAppAutoReplySession[]
 
   @@index([orgId])
   @@index([userId])
@@ -709,6 +752,8 @@ model AgentRun {
   teamId         String?   @map("team_id")
   /// supervisor | worker — role within the team run.
   teamRole       String?   @map("team_role")
+  /// When set, final run result is delivered to this WhatsApp contact JID (auto-reply).
+  whatsappReplyToJid String? @map("whatsapp_reply_to_jid")
   /// Parent AgentRun when this run is a child of another run (V2 child runs; optional in V1).
   parentRunId String? @map("parent_run_id")
   /// How this run was created: `user` | `subagent` | `team_worker` | null (legacy).
@@ -1261,9 +1306,6 @@ model TeamRun {
   /// Final synthesized result from the supervisor.
   result                 Json?
   errorMessage           String?   @map("error_message")
-  /// Lead campaign awaiting user review before outreach (lead-gen pipeline).
-  leadCampaignId         String?   @map("lead_campaign_id")
-  leadOutreachApprovedAt DateTime? @map("lead_outreach_approved_at")
   createdAt              DateTime  @default(now()) @map("created_at")
   startedAt              DateTime? @map("started_at")
   completedAt            DateTime? @map("completed_at")
@@ -1379,87 +1421,25 @@ model NlBuilderHistory {
   @@map("nl_builder_history")
 }
 
-// ─── Lead generation ─────────────────────────────────────────────────────────
+/// Full AI Builder chat session (transcript + created agent refs), scoped to user + workspace org.
+model NlBuilderSession {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id") @db.Uuid
+  orgId           String   @map("org_id") @db.Uuid
+  title           String   @default("New chat") @db.VarChar(160)
+  /// Durable chat items (user/info/error/plan/done) — no private keys or starter packs.
+  transcript      Json     @default("[]")
+  createdAgentIds String[] @default([]) @map("created_agent_ids")
+  teamId          String?  @map("team_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-model LeadCampaign {
-  id             String   @id @default(cuid())
-  orgId          String   @map("org_id") @db.Uuid
-  createdById    String   @map("created_by_id") @db.Uuid
-  name           String
-  /// draft | scraping | ready | outreach | completed | failed
-  status         String   @default("draft")
-  searchQuery    String   @map("search_query")
-  location       String?
-  maxResults     Int      @default(25) @map("max_results")
-  outreachConfig Json     @default("{}") @map("outreach_config")
-  agentRunId     String?  @map("agent_run_id")
-  scrapeJobId    String?  @map("scrape_job_id")
-  stats          Json     @default("{}")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
-  organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy    User           @relation("LeadCampaignCreator", fields: [createdById], references: [id], onDelete: Cascade)
-  leads        Lead[]
-  outreach     LeadOutreach[]
-
-  @@index([orgId, createdAt(sort: Desc)])
-  @@index([status])
-  @@map("lead_campaigns")
+  @@index([userId, orgId, updatedAt])
+  @@map("nl_builder_sessions")
 }
-
-model Lead {
-  id           String   @id @default(cuid())
-  campaignId   String   @map("campaign_id")
-  orgId        String   @map("org_id") @db.Uuid
-  businessName String   @map("business_name")
-  address      String?
-  phone        String?
-  website      String?
-  email        String?
-  categories   String[] @default([])
-  rating       Float?
-  reviewCount  Int?     @map("review_count")
-  placeId      String?  @map("place_id")
-  lat          Float?
-  lng          Float?
-  socialLinks  Json     @default("{}") @map("social_links")
-  raw          Json     @default("{}")
-  /// scraped | no_email | contacted | skipped
-  status       String   @default("scraped")
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  campaign LeadCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  outreach LeadOutreach[]
-
-  @@index([campaignId, createdAt(sort: Desc)])
-  @@index([orgId])
-  @@map("leads")
-}
-
-model LeadOutreach {
-  id          String    @id @default(cuid())
-  campaignId  String    @map("campaign_id")
-  leadId      String    @map("lead_id")
-  channel     String
-  provider    String
-  /// queued | sent | failed | blocked
-  status      String    @default("queued")
-  subject     String?
-  bodyPreview String?   @map("body_preview")
-  actionLogId String?   @map("action_log_id")
-  sentAt      DateTime? @map("sent_at")
-  error       String?
-
-  campaign LeadCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  lead     Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
-
-  @@index([campaignId])
-  @@index([leadId])
-  @@map("lead_outreach")
-}
-
-// ─── End lead generation ──────────────────────────────────────────────────────
 
 // ─── Job apply copilot ────────────────────────────────────────────────────────
 

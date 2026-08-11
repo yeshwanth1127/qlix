@@ -102,8 +102,6 @@ function toRunDTO(r: PrismaTeamRun): TeamRunDTO {
     scopeEscalations: r.scopeEscalations as unknown as TeamRunDTO['scopeEscalations'],
     result: r.result,
     errorMessage: r.errorMessage,
-    leadCampaignId: r.leadCampaignId ?? null,
-    leadOutreachApprovedAt: r.leadOutreachApprovedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
@@ -445,26 +443,6 @@ export class TeamsRepository {
   async findRun(runId: string): Promise<TeamRunDTO | null> {
     const run = await prisma.teamRun.findUnique({ where: { id: runId } });
     return run ? toRunDTO(run) : null;
-  }
-
-  async updateRunLeadReview(
-    runId: string,
-    data: {
-      status?: TeamRunStatus;
-      leadCampaignId?: string;
-      leadOutreachApprovedAt?: Date;
-    },
-  ): Promise<void> {
-    await prisma.teamRun.update({
-      where: { id: runId },
-      data: {
-        ...(data.status ? { status: data.status } : {}),
-        ...(data.leadCampaignId !== undefined ? { leadCampaignId: data.leadCampaignId } : {}),
-        ...(data.leadOutreachApprovedAt
-          ? { leadOutreachApprovedAt: data.leadOutreachApprovedAt }
-          : {}),
-      },
-    });
   }
 
   async updateRunStatus(runId: string, status: TeamRunStatus, extra?: {

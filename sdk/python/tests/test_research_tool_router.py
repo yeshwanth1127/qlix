@@ -110,43 +110,6 @@ def test_interaction_keeps_web_with_platform_keywords() -> None:
     assert "web" in groups
 
 
-def test_lead_website_email_enrichment_loads_web() -> None:
-    ident = _id(
-        permission_scopes=(
-            "mcp.qlix-leads.list_leads",
-            "mcp.qlix-leads.update_lead_email",
-            "web.read",
-            "web.click",
-        )
-    )
-    groups = classify_groups(
-        "search their website for emails",
-        ident,
-        runner_runtime="cloud",
-    )
-    assert "web" in groups
-    assert "research" not in groups
-
-
-def test_lead_enrichment_without_web_read_omits_web_group() -> None:
-    ident = _id(permission_scopes=("mcp.qlix-leads.list_leads", "mcp.qlix-leads.gmb_search_leads"))
-    groups = classify_groups(
-        "search their website for emails",
-        ident,
-        runner_runtime="cloud",
-    )
-    assert "web" not in groups
-
-
-def test_lead_generation_intent_detected() -> None:
-    from qlix.tool_router import is_lead_generation_intent
-
-    assert is_lead_generation_intent(
-        "generate leads for me. i need cafes around bangalore. generate 5"
-    )
-    assert not is_lead_generation_intent("search their website for emails")
-
-
 def test_learn_and_understand_route_to_research() -> None:
     ident = _id()
     router = ToolRouter(ident, runner_runtime="cloud")

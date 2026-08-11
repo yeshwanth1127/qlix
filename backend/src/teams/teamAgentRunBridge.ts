@@ -139,6 +139,44 @@ export class TeamAgentRunBridge {
   ): Promise<void> {
     const data = ev.data as Record<string, unknown> | null;
     if (ev.type === 'log') {
+      const logMessage = typeof data?.message === 'string' ? data.message : null;
+
+      // JIT approvals — same log messages as agent chat; surface in the team run timeline.
+      if (logMessage === 'jit_approval_pending') {
+        const clean = { ...(data ?? {}), message: logMessage };
+        await this.teamsRepo.appendEvent(
+          params.teamRun.id,
+          params.team.id,
+          params.agentId,
+          'scope_requested',
+          clean,
+        );
+        params.emit('scope_requested', { agentId: params.agentId, ...clean });
+        return;
+      }
+      if (
+        logMessage === 'jit_approval_granted' ||
+        logMessage === 'jit_approval_denied' ||
+        logMessage === 'jit_approval_expired'
+      ) {
+        const decision =
+          logMessage === 'jit_approval_granted'
+            ? 'approved'
+            : logMessage === 'jit_approval_denied'
+              ? 'denied'
+              : 'expired';
+        const clean = { ...(data ?? {}), message: logMessage, decision };
+        await this.teamsRepo.appendEvent(
+          params.teamRun.id,
+          params.team.id,
+          params.agentId,
+          'approval_granted',
+          clean,
+        );
+        params.emit('approval_granted', { agentId: params.agentId, ...clean });
+        return;
+      }
+
       const tool = typeof data?.tool === 'string' ? data.tool : typeof data?.name === 'string' ? data.name : null;
       if (tool === 'brain.query' && data?.message === 'tool_finished') {
         const payload = { tool, ...(data ?? {}) };
@@ -163,7 +201,6 @@ export class TeamAgentRunBridge {
         params.emit('tool_called', { agentId: params.agentId, tool, data });
         return;
       }
-      const logMessage = typeof data?.message === 'string' ? data.message : null;
       const thinkingLogMessages = new Set([
         'inference_tool_round',
         'inference_request',

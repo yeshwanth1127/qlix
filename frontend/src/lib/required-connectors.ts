@@ -3,18 +3,18 @@ import type { ConnectorProvider } from "@/lib/connectors-api";
 
 /** CRM scopes work with any connected CRM platform provider. */
 export const CRM_PLATFORM_PROVIDERS: readonly ConnectorProvider[] = ["zoho"];
+export const EMAIL_PLATFORM_PROVIDERS: readonly ConnectorProvider[] = ["google", "microsoft"];
+export const DRIVE_PLATFORM_PROVIDERS: readonly ConnectorProvider[] = ["google", "microsoft"];
 
 const CRM_SCOPES = new Set(["crm.read", "crm.write", "crm.delete"]);
+const EMAIL_SCOPES = new Set(["email.read", "email.send"]);
+const DRIVE_SCOPES = new Set(["drive.read", "drive.write"]);
 
 /**
  * Scope → connector mapping (mirrors backend `SCOPE_CATALOG`).
- * CRM scopes resolve dynamically to whichever CRM platform is connected.
+ * CRM / email / drive scopes resolve dynamically to whichever platform is connected.
  */
 const SCOPE_REQUIRES_CONNECTOR: Readonly<Partial<Record<string, ConnectorProvider>>> = {
-  "email.read": "google",
-  "email.send": "google",
-  "drive.read": "google",
-  "drive.write": "google",
   "calendar.read": "google",
   "calendar.write": "google",
   "meet.manage": "google",
@@ -23,6 +23,7 @@ const SCOPE_REQUIRES_CONNECTOR: Readonly<Partial<Record<string, ConnectorProvide
   "whatsapp.send": "whatsapp_baileys",
   "whatsapp.read": "whatsapp_baileys",
   "whatsapp.contact_send": "whatsapp_baileys",
+  "whatsapp.auto_reply": "whatsapp_baileys",
   "social.read": "orbit",
   "social.publish": "orbit",
 };
@@ -66,17 +67,35 @@ const CONNECTOR_INFO: Readonly<Record<ConnectorProvider, Omit<RequiredConnectorI
     name: "Telegram",
     description: "Receive and reply to Telegram messages via the bot API",
   },
+  microsoft: {
+    name: "Microsoft 365",
+    description: "Outlook mail and OneDrive via Microsoft Graph",
+  },
+  notion: {
+    name: "Notion",
+    description: "Pages and databases in your Notion workspace",
+  },
 };
 
-const PROVIDER_ORDER: readonly ConnectorProvider[] = ["google", "zoho", "whatsapp_baileys", "orbit"];
+const PROVIDER_ORDER: readonly ConnectorProvider[] = ["google", "microsoft", "zoho", "whatsapp_baileys", "orbit"];
 
 /** Unique connectors required by any of the given permission scopes. */
 export function connectorsRequiredByScopes(scopes: readonly string[]): ConnectorProvider[] {
   const found = new Set<ConnectorProvider>();
   let needsCrm = false;
+  let needsEmail = false;
+  let needsDrive = false;
   for (const scope of scopes) {
     if (CRM_SCOPES.has(scope)) {
       needsCrm = true;
+      continue;
+    }
+    if (EMAIL_SCOPES.has(scope)) {
+      needsEmail = true;
+      continue;
+    }
+    if (DRIVE_SCOPES.has(scope)) {
+      needsDrive = true;
       continue;
     }
     const provider = SCOPE_REQUIRES_CONNECTOR[scope];
@@ -84,6 +103,12 @@ export function connectorsRequiredByScopes(scopes: readonly string[]): Connector
   }
   if (needsCrm) {
     for (const p of CRM_PLATFORM_PROVIDERS) found.add(p);
+  }
+  if (needsEmail) {
+    for (const p of EMAIL_PLATFORM_PROVIDERS) found.add(p);
+  }
+  if (needsDrive) {
+    for (const p of DRIVE_PLATFORM_PROVIDERS) found.add(p);
   }
   return PROVIDER_ORDER.filter((p) => found.has(p));
 }
@@ -116,11 +141,21 @@ export function missingRequiredConnectors(
   const scopes = collectPlanScopes(plan);
   const required = connectorsRequiredByScopes(scopes);
   const needsCrm = scopes.some((s) => CRM_SCOPES.has(s));
+  const needsEmail = scopes.some((s) => EMAIL_SCOPES.has(s));
+  const needsDrive = scopes.some((s) => DRIVE_SCOPES.has(s));
   const crmConnected = CRM_PLATFORM_PROVIDERS.some((p) => connectedProviders.has(p));
+  const emailConnected = EMAIL_PLATFORM_PROVIDERS.some((p) => connectedProviders.has(p));
+  const driveConnected = DRIVE_PLATFORM_PROVIDERS.some((p) => connectedProviders.has(p));
 
   return required.filter((p) => {
     if (needsCrm && CRM_PLATFORM_PROVIDERS.includes(p)) {
       return !crmConnected;
+    }
+    if (needsEmail && EMAIL_PLATFORM_PROVIDERS.includes(p)) {
+      return !emailConnected;
+    }
+    if (needsDrive && DRIVE_PLATFORM_PROVIDERS.includes(p)) {
+      return !driveConnected;
     }
     return !connectedProviders.has(p);
   });

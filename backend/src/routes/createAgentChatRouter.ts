@@ -27,6 +27,7 @@ import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
 import { McpRepository } from '../mcp/mcp.repository.js';
+import { askableAgentIds } from '../agents/peerAgentScopes.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
 import { appendAgentRunLogEvent, ensureLocalConversation } from '../agentChat/agentRunService.js';
@@ -52,6 +53,10 @@ import {
   N8nNotConfiguredError,
 } from '../connectors/emailTool.service.js';
 import {
+  EmailProviderNotAvailableError,
+  EmailProviderSelectionRequiredError,
+} from '../connectors/emailConnector.service.js';
+import {
   CALENDAR_CONNECT_INSTRUCTIONS,
   DRIVE_CONNECT_INSTRUCTIONS,
   GMAIL_CONNECT_INSTRUCTIONS,
@@ -61,6 +66,8 @@ import {
 import {
   executeDriveRead,
   executeDriveWrite,
+  DriveProviderNotAvailableError,
+  DriveProviderSelectionRequiredError,
   GoogleConnectorNotConfiguredError as DriveConnectorNotConfiguredError,
   GoogleScopeDeniedError as DriveScopeDeniedError,
   GoogleToolError as DriveToolError,
@@ -97,6 +104,9 @@ import {
   startWhatsAppSession,
 } from '../connectors/whatsappServiceClient.js';
 import {
+  executeWhatsAppAutoReplySetInstructions,
+  executeWhatsAppAutoReplyStatus,
+  executeWhatsAppAutoReplyStop,
   executeWhatsAppContactSend,
   executeWhatsAppListContacts,
   executeWhatsAppReadChat,
@@ -128,10 +138,45 @@ const postMessageBody = z.object({
   useBrain: z.boolean().optional().default(false),
 });
 
+/** Edit a prior user message and re-enqueue (drops later messages + their runs). */
+const editResendMessageBody = z.object({
+  content: z.string().trim().max(20_000).default(''),
+  skills: z.array(z.string().trim().min(1).max(120)).default([]),
+  model: z.string().trim().min(1).max(200).optional(),
+  useBrain: z.boolean().optional().default(false),
+});
+
 const chatMessageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: CHAT_ATTACHMENT_MAX_BYTES, files: CHAT_ATTACHMENT_MAX_FILES },
 });
+
+/** Normalize stored AgentMessage.attachments JSON into ChatAttachmentMeta[]. */
+function parseAttachmentsJson(raw: unknown): ChatAttachmentMeta[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const out: ChatAttachmentMeta[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const a = item as Record<string, unknown>;
+    if (
+      typeof a.id === 'string' &&
+      typeof a.fileName === 'string' &&
+      typeof a.mimeType === 'string' &&
+      typeof a.url === 'string' &&
+      typeof a.sizeBytes === 'number'
+    ) {
+      out.push({
+        id: a.id,
+        fileName: a.fileName,
+        mimeType: a.mimeType,
+        url: a.url,
+        sizeBytes: a.sizeBytes,
+        ...(typeof a.textPreview === 'string' ? { textPreview: a.textPreview } : {}),
+      });
+    }
+  }
+  return out;
+}
 
 function parseMultipartMessageFields(body: Record<string, unknown>): {
   content: string;
@@ -228,6 +273,7 @@ const runnerCompleteBody = z.object({
 
 const emailReadBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
+  provider: z.enum(['google', 'microsoft']).optional(),
   query: z.string().trim().max(500).optional(),
   maxResults: z.number().int().min(1).max(25).optional(),
   messageId: z.string().trim().max(120).nullable().optional(),
@@ -287,6 +333,7 @@ const emailSendBody = z.preprocess(
   z
     .object({
       runId: z.string().trim().min(1).max(80).optional(),
+      provider: z.enum(['google', 'microsoft']).optional(),
       mode: z.enum(['send', 'draft', 'list_drafts', 'delete_draft']).optional().default('send'),
       to: z.array(z.string().email().max(320)).max(20).default([]),
       subject: z.string().trim().max(500).default(''),
@@ -336,15 +383,17 @@ const emailSendBody = z.preprocess(
 
 const driveReadBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
+  provider: z.enum(['google', 'microsoft']).optional(),
   action: z.enum(['list', 'get', 'get_content']),
   query: z.string().trim().max(500).optional(),
   fileId: z.string().trim().max(200).optional(),
   pageSize: z.number().int().min(1).max(50).optional(),
-  pageToken: z.string().trim().max(500).nullable().optional(),
+  pageToken: z.string().trim().max(2000).nullable().optional(),
 });
 
 const driveWriteBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
+  provider: z.enum(['google', 'microsoft']).optional(),
   action: z.enum(['create', 'update', 'delete']),
   fileId: z.string().trim().max(200).optional(),
   name: z.string().trim().max(500).optional(),
@@ -404,6 +453,22 @@ const whatsappContactSendBody = z.object({
   recipient: z.string().trim().min(1).max(200),
   message: z.string().trim().min(1).max(4000),
   jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+  replyInstructions: z.string().trim().min(1).max(2000).optional(),
+});
+
+const whatsappAutoReplyStopBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200).optional(),
+});
+
+const whatsappAutoReplyStatusBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+});
+
+const whatsappAutoReplyInstructionsBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200),
+  instructions: z.string().trim().min(1).max(2000),
 });
 
 const socialChannelsBody = z.object({
@@ -905,6 +970,165 @@ export function createAgentChatRouter(): Router {
       } catch (err) {
         console.error('clear messages error', err);
         response.status(500).json({ error: { code: 'messages_clear_failed', message: 'Failed to clear messages' } });
+      }
+    },
+  );
+
+  // UI: edit a prior user message and re-send (truncates later replies/runs).
+  router.post(
+    '/:agentId/conversations/:conversationId/messages/:messageId/resend',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    async (request: Request, response: Response) => {
+      try {
+        const agentId = String(request.params.agentId);
+        const conversationId = String(request.params.conversationId);
+        const messageId = String(request.params.messageId);
+        await assertOwnsAgent(request, agentId);
+
+        const parsed = editResendMessageBody.safeParse(request.body ?? {});
+        if (!parsed.success) {
+          response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid edit/resend payload' } });
+          return;
+        }
+
+        const convo = await prisma.agentConversation.findUnique({
+          where: { id: conversationId },
+          select: { id: true, agentId: true, userId: true, orgId: true },
+        });
+        if (!convo || convo.agentId !== agentId || convo.userId !== request.auth!.userId) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Conversation not found' } });
+          return;
+        }
+
+        const messages = await prisma.agentMessage.findMany({
+          where: { conversationId },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          select: { id: true, role: true, content: true, attachments: true, createdAt: true },
+        });
+        const idx = messages.findIndex((m) => m.id === messageId);
+        if (idx < 0) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Message not found' } });
+          return;
+        }
+        const target = messages[idx]!;
+        if (target.role !== 'user') {
+          response.status(400).json({
+            error: { code: 'invalid_message', message: 'Only user messages can be edited and resent' },
+          });
+          return;
+        }
+        if (target.content.startsWith('[steer]')) {
+          response.status(400).json({
+            error: { code: 'invalid_message', message: 'Steer notes cannot be edited' },
+          });
+          return;
+        }
+
+        const content = parsed.data.content;
+        const priorAttachments = parseAttachmentsJson(target.attachments);
+        if (!content && priorAttachments.length === 0) {
+          response.status(400).json({
+            error: { code: 'invalid_body', message: 'Edited message text or existing attachments are required' },
+          });
+          return;
+        }
+
+        let inferenceModel: string | null = null;
+        if (parsed.data.model != null && parsed.data.model.length > 0) {
+          inferenceModel = normalizeQlixInferenceModelId(parsed.data.model);
+          assertModelAllowed(inferenceModel);
+        }
+
+        const cutAt = target.createdAt;
+        const toDeleteIds = messages.slice(idx).map((m) => m.id);
+
+        await prisma.$transaction(async (tx) => {
+          // Stop any in-flight runs for this conversation from this turn onward.
+          await tx.agentRun.updateMany({
+            where: {
+              conversationId,
+              createdAt: { gte: cutAt },
+              status: { notIn: ['success', 'failed', 'canceled', 'cancelled'] },
+            },
+            data: {
+              status: 'canceled',
+              finishedAt: new Date(),
+              errorMessage: 'Superseded by message edit',
+            },
+          });
+
+          const runsToDrop = await tx.agentRun.findMany({
+            where: { conversationId, createdAt: { gte: cutAt } },
+            select: { id: true },
+          });
+          const runIds = runsToDrop.map((r) => r.id);
+          if (runIds.length > 0) {
+            await tx.agentRunEvent.deleteMany({ where: { runId: { in: runIds } } });
+            await tx.agentRun.deleteMany({ where: { id: { in: runIds } } });
+          }
+
+          await tx.agentMessage.deleteMany({ where: { id: { in: toDeleteIds } } });
+        });
+
+        const runnerPrompt =
+          priorAttachments.length > 0
+            ? buildPromptWithAttachments(
+                content,
+                priorAttachments.map((a) => ({
+                  ...a,
+                  ...(a.textPreview ? { extractedText: a.textPreview } : {}),
+                })),
+              )
+            : content;
+
+        const turn = await gatewayService.handleInbound(
+          buildWebChatInbound({
+            agentId,
+            conversationId,
+            userId: request.auth!.userId,
+            orgId: convo.orgId,
+            email: request.auth!.email,
+            body: runnerPrompt,
+            displayBody: content,
+            attachments: priorAttachments.length > 0 ? priorAttachments : undefined,
+            skills: parsed.data.skills,
+            inferenceModel,
+            useBrain: parsed.data.useBrain,
+          }),
+        );
+
+        if (turn.status === 'accepted') {
+          response.status(201).json({ messageId: turn.messageId, runId: turn.runId });
+          return;
+        }
+        if (turn.status === 'steered') {
+          response.status(202).json({ runId: turn.runId, status: 'steered' });
+          return;
+        }
+        const message =
+          turn.status === 'rejected'
+            ? turn.reason
+            : (turn.ackReply ?? 'Gateway could not accept message');
+        response.status(turn.status === 'rejected' ? 409 : 202).json({
+          error: {
+            code: turn.status === 'rejected' ? 'gateway_rejected' : 'gateway_busy',
+            message,
+          },
+        });
+      } catch (err) {
+        if (err instanceof ModelPolicyError) {
+          response.status(400).json({ error: { code: 'model_not_allowed', message: err.message } });
+          return;
+        }
+        if ((err as any)?.code === 'insufficient_balance') {
+          response.status(402).json({ error: { code: 'insufficient_balance', message: (err as Error).message } });
+          return;
+        }
+        console.error('edit/resend message error', err);
+        response.status(500).json({
+          error: { code: 'message_resend_failed', message: 'Failed to edit and resend message' },
+        });
       }
     },
   );
@@ -1518,12 +1742,29 @@ export function createAgentChatRouter(): Router {
         }
       }
 
+      // Colleagues this agent may hand work to. Sent by name because the model picks targets by
+      // name, and an id in a tool description is unusable to it.
+      const askableAgents = await (async () => {
+        const ids = askableAgentIds(agentRow?.permissionScopes ?? []);
+        if (ids.length === 0) return [];
+        const rows = await prisma.agent.findMany({
+          where: { id: { in: ids }, status: { not: 'revoked' } },
+          select: { id: true, name: true, description: true },
+          orderBy: { name: 'asc' },
+        });
+        return rows.map((r) => ({ id: r.id, name: r.name, description: r.description ?? null }));
+      })().catch((err) => {
+        console.error('[poll] askableAgents failed', err);
+        return [];
+      });
+
       response.json({
         run: {
           id: run.id,
           prompt: run.prompt,
           attachments: run.attachments ?? null,
           skills: run.skills,
+          askableAgents,
           // Fall back to the agent's configured model when the run didn't specify one,
           // so runs use the agent's chosen model instead of the runner's weak default.
           inferenceModel:
@@ -1634,6 +1875,8 @@ export function createAgentChatRouter(): Router {
             prompt: z.string().trim().min(1).max(8000),
             skills: z.array(z.string().trim().min(1)).max(50).optional(),
             name: z.string().trim().min(1).max(120).optional().nullable(),
+            /** V2: hand this task to a different agent (name or id). Omit for a nested child. */
+            agent: z.string().trim().min(1).max(200).optional().nullable(),
           }),
         )
         .min(1)
@@ -1659,6 +1902,7 @@ export function createAgentChatRouter(): Router {
           prompt: t.prompt,
           skills: t.skills,
           name: t.name,
+          agent: t.agent,
         })),
         depth: parsed.data.depth,
       });
@@ -1678,11 +1922,21 @@ export function createAgentChatRouter(): Router {
         code === 'parent_run_not_found' ||
         code === 'parent_run_not_active' ||
         code === 'subagent_cap_exceeded' ||
-        code === 'subagent_depth_exceeded'
+        code === 'subagent_depth_exceeded' ||
+        code === 'peer_not_found' ||
+        code === 'peer_not_allowed' ||
+        code === 'peer_self' ||
+        code === 'peer_cycle' ||
+        code === 'peer_chain_too_deep' ||
+        code === 'not_found'
       ) {
-        response.status(code === 'parent_run_not_found' ? 404 : 409).json({
-          error: { code, message: e.message },
-        });
+        const status =
+          code === 'parent_run_not_found' || code === 'peer_not_found' || code === 'not_found'
+            ? 404
+            : code === 'peer_not_allowed'
+              ? 403
+              : 409;
+        response.status(status).json({ error: { code, message: e.message } });
         return;
       }
       console.error('[subagents.create]', e);
@@ -2378,6 +2632,14 @@ export function createAgentChatRouter(): Router {
         response.status(403).json({ error: { code: err.code, message: err.message } });
         return;
       }
+      if (err instanceof EmailProviderSelectionRequiredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message, providers: err.providers } });
+        return;
+      }
+      if (err instanceof EmailProviderNotAvailableError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
       if (err instanceof ConnectorNotConfiguredError || err instanceof N8nNotConfiguredError) {
         response.status(409).json({
           error: {
@@ -2434,6 +2696,14 @@ export function createAgentChatRouter(): Router {
         response.status(403).json({ error: { code: err.code, message: err.message } });
         return;
       }
+      if (err instanceof EmailProviderSelectionRequiredError) {
+        response.status(409).json({ error: { code: err.code, message: err.message, providers: err.providers } });
+        return;
+      }
+      if (err instanceof EmailProviderNotAvailableError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
       if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
         response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
         return;
@@ -2485,12 +2755,21 @@ export function createAgentChatRouter(): Router {
       response.status(403).json({ error: { code: err.code, message: err.message } });
       return true;
     }
+    if (err instanceof DriveProviderSelectionRequiredError) {
+      response.status(409).json({
+        error: { code: err.code, message: err.message, providers: err.providers },
+      });
+      return true;
+    }
+    if (err instanceof DriveProviderNotAvailableError) {
+      response.status(409).json({ error: { code: err.code, message: err.message } });
+      return true;
+    }
     if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
       response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
       return true;
     }
     if (
-      err instanceof GoogleConnectorNotConfiguredError ||
       err instanceof DriveConnectorNotConfiguredError ||
       err instanceof CalendarConnectorNotConfiguredError ||
       err instanceof MeetConnectorNotConfiguredError
@@ -2742,6 +3021,120 @@ export function createAgentChatRouter(): Router {
       });
     }
   });
+
+  router.post('/:agentId/tools/whatsapp/auto-reply/status', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappAutoReplyStatusBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid payload' } });
+        return;
+      }
+      const result = await executeWhatsAppAutoReplyStatus({
+        agentId,
+        runId: parsed.data.runId ?? null,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/auto-reply/status', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_auto_reply_status_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'Auto-reply status failed',
+        },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/whatsapp/auto-reply/stop', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappAutoReplyStopBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid payload' } });
+        return;
+      }
+      const result = await executeWhatsAppAutoReplyStop({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: { recipient: parsed.data.recipient },
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/auto-reply/stop', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_auto_reply_stop_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'Auto-reply stop failed',
+        },
+      });
+    }
+  });
+
+  router.post(
+    '/:agentId/tools/whatsapp/auto-reply/set-instructions',
+    async (request: Request, response: Response) => {
+      const agentId = String(request.params.agentId);
+      try {
+        await assertRunnerAuth(agentId, request);
+        const parsed = whatsappAutoReplyInstructionsBody.safeParse(request.body ?? {});
+        if (!parsed.success) {
+          response.status(400).json({
+            error: { code: 'invalid_body', message: 'recipient and instructions required' },
+          });
+          return;
+        }
+        const result = await executeWhatsAppAutoReplySetInstructions({
+          agentId,
+          runId: parsed.data.runId ?? null,
+          input: {
+            recipient: parsed.data.recipient,
+            instructions: parsed.data.instructions,
+          },
+        });
+        response.json(result);
+      } catch (err) {
+        if (err instanceof RunnerUnauthorizedError) {
+          response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+          return;
+        }
+        if (err instanceof WhatsAppScopeDeniedError) {
+          response.status(403).json({ error: { code: err.code, message: err.message } });
+          return;
+        }
+        if (err instanceof WhatsAppNotLinkedError) {
+          response.status(409).json({ error: { code: err.code, message: err.message } });
+          return;
+        }
+        console.error('whatsapp/auto-reply/set-instructions', err);
+        response.status(500).json({
+          error: {
+            code: 'whatsapp_auto_reply_instructions_failed',
+            message:
+              err instanceof WhatsAppToolError ? err.message : 'Set reply instructions failed',
+          },
+        });
+      }
+    },
+  );
 
   registerCrmToolRoutes(router);
   registerSlackToolRoutes(router);

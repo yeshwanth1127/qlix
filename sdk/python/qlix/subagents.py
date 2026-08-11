@@ -86,6 +86,9 @@ class SubAgentRunContext:
     depth: int = 0
     agent_description: str | None = None
     live: dict[str, _LiveInvocation] = field(default_factory=dict)
+    #: Invocations handed to a *different* agent (V2). The backend started a real run for these,
+    #: so there is no in-process task here — they are collected by polling the backend instead.
+    remote: set[str] = field(default_factory=set)
     _semaphore: asyncio.Semaphore | None = None
 
     def semaphore(self, max_parallel: int) -> asyncio.Semaphore:
@@ -94,16 +97,38 @@ class SubAgentRunContext:
         return self._semaphore
 
 
-def openai_subagent_tool_definitions() -> list[dict[str, Any]]:
+def openai_subagent_tool_definitions(
+    askable_agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Tool schemas for sub-agents.
+
+    ``askable_agents`` are the colleagues this agent has been granted access to (from the run
+    poll). Their names go into the ``agent`` parameter description because the model chooses a
+    target by name, and it cannot invent one it was never told about.
+    """
+    roster = [str(a.get("name") or "").strip() for a in (askable_agents or [])]
+    roster = [n for n in roster if n]
+    agent_desc = (
+        "Optional name of a colleague agent to hand this task to. "
+        + (
+            f"Available colleagues: {', '.join(roster)}. "
+            if roster
+            else "You have not been granted access to any colleagues. "
+        )
+        + "Omit to run it yourself as a nested sub-agent."
+    )
+
     return [
         {
             "type": "function",
             "function": {
                 "name": "spawn_subagents",
                 "description": (
-                    "Spawn one or more nested sub-agents for bounded side work. "
-                    "Parent-only: children run in-process with a skill-filtered tool set "
-                    "and cannot spawn further sub-agents (depth=1). "
+                    "Spawn one or more sub-agents for bounded side work. "
+                    "Without `agent`, a task runs as a nested child in-process with a "
+                    "skill-filtered tool set and cannot spawn further sub-agents (depth=1). "
+                    "With `agent`, the task is handed to that named colleague, which runs it "
+                    "under its own identity and permissions. "
                     "Returns invocation ids; pass wait=true to block until all finish, "
                     "or call await_subagents later."
                 ),
@@ -129,6 +154,7 @@ def openai_subagent_tool_definitions() -> list[dict[str, Any]]:
                                         "type": "string",
                                         "description": "Short label for timeline/UI",
                                     },
+                                    "agent": {"type": "string", "description": agent_desc},
                                 },
                                 "required": ["prompt"],
                             },
@@ -372,7 +398,10 @@ def build_subagent_executors(ctx: SubAgentRunContext) -> dict[str, Any]:
             skills_raw = raw.get("skills") or []
             skills = [str(s).strip() for s in skills_raw if str(s).strip()] if isinstance(skills_raw, list) else []
             name = str(raw.get("name") or "").strip() or None
-            normalized.append({"prompt": prompt, "skills": skills, "name": name})
+            agent_ref = str(raw.get("agent") or "").strip() or None
+            normalized.append(
+                {"prompt": prompt, "skills": skills, "name": name, "agent": agent_ref}
+            )
 
         max_parallel = int(params.get("maxParallel") or subagent_max_parallel())
         max_parallel = max(1, min(max_parallel, subagent_max_parallel()))
@@ -404,6 +433,13 @@ def build_subagent_executors(ctx: SubAgentRunContext) -> dict[str, Any]:
             if not inv_id:
                 continue
             ids.append(inv_id)
+
+            # Handed to a colleague: the backend already started a real run under that agent's
+            # own identity. Running a nested loop here too would execute the task twice.
+            if inv.get("childAgentId"):
+                ctx.remote.add(inv_id)
+                continue
+
             coro = _run_one_nested(
                 ctx,
                 invocation_id=inv_id,
@@ -456,10 +492,59 @@ def build_subagent_executors(ctx: SubAgentRunContext) -> dict[str, Any]:
     }
 
 
+async def _poll_remote_invocation(
+    ctx: SubAgentRunContext,
+    inv_id: str,
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Poll a backend-owned invocation until it finishes, or the deadline passes.
+
+    Used for work handed to another agent, where the result lives in that agent's run rather
+    than in an in-process task here. Backs off gently so a long colleague task does not turn
+    into a tight polling loop.
+    """
+    deadline = asyncio.get_event_loop().time() + max(1.0, timeout_s)
+    delay = 0.5
+    last_status = "unknown"
+
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            remote = await ctx.http.get_json(
+                f"/api/v1/agents/{ctx.agent_id}/subagents/{inv_id}",
+                headers=ctx.headers,
+            )
+            inv = remote.get("invocation") if isinstance(remote, dict) else None
+            if isinstance(inv, dict):
+                last_status = str(inv.get("status") or "unknown")
+                if last_status in ("completed", "failed", "canceled"):
+                    result = inv.get("result") if isinstance(inv.get("result"), dict) else {}
+                    return {
+                        "id": inv_id,
+                        "status": last_status,
+                        "content": result.get("content", "") if isinstance(result, dict) else "",
+                        "error": inv.get("errorMessage"),
+                        "name": inv.get("name"),
+                    }
+        except Exception:  # noqa: BLE001 — a transient poll failure should not end the wait
+            pass
+
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 4.0)
+
+    return {
+        "id": inv_id,
+        "status": last_status if last_status != "unknown" else "running",
+        "content": "",
+        "error": f"timed out after {timeout_s}s",
+    }
+
+
 async def _await_ids(ctx: SubAgentRunContext, ids: list[str], *, timeout_s: float) -> str:
     results: list[dict[str, Any]] = []
     pending_tasks: list[asyncio.Task[dict[str, Any]]] = []
     id_for_task: dict[asyncio.Task[dict[str, Any]], str] = {}
+    remote_ids: list[str] = []
 
     for inv_id in ids:
         live = ctx.live.get(inv_id)
@@ -476,28 +561,18 @@ async def _await_ids(ctx: SubAgentRunContext, ids: list[str], *, timeout_s: floa
             except Exception as exc:  # noqa: BLE001
                 results.append({"id": inv_id, "status": "failed", "error": str(exc), "content": ""})
             continue
-        # Fall back to backend poll for persistence-only view.
-        try:
-            remote = await ctx.http.get_json(
-                f"/api/v1/agents/{ctx.agent_id}/subagents/{inv_id}",
-                headers=ctx.headers,
-            )
-            inv = remote.get("invocation") if isinstance(remote, dict) else None
-            if isinstance(inv, dict) and inv.get("status") in ("completed", "failed", "canceled"):
-                result = inv.get("result") if isinstance(inv.get("result"), dict) else {}
-                results.append(
-                    {
-                        "id": inv_id,
-                        "status": inv.get("status"),
-                        "content": result.get("content", "") if isinstance(result, dict) else "",
-                        "error": inv.get("errorMessage"),
-                        "name": inv.get("name"),
-                    }
-                )
-                continue
-        except Exception:
-            pass
-        results.append({"id": inv_id, "status": "unknown", "content": "", "error": "not found in this run"})
+        # No in-process task: either a colleague is running it (V2) or we only have the
+        # persisted view. Poll the backend until it reaches a terminal state — returning
+        # immediately here would make `wait=true` meaningless for handed-off work.
+        remote_ids.append(inv_id)
+
+    # Poll every handed-off invocation concurrently. Awaiting them one at a time would make the
+    # deadline cumulative, so collecting three colleagues could take three times the timeout.
+    if remote_ids:
+        polled = await asyncio.gather(
+            *(_poll_remote_invocation(ctx, rid, timeout_s=timeout_s) for rid in remote_ids)
+        )
+        results.extend(polled)
 
     if pending_tasks:
         done, not_done = await asyncio.wait(pending_tasks, timeout=max(1.0, timeout_s))

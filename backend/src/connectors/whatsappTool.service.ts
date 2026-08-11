@@ -218,8 +218,19 @@ export async function executeWhatsAppReadChat(params: {
 export async function executeWhatsAppContactSend(params: {
   agentId: string;
   runId: string | null;
-  input: { recipient: string; message: string; jitToken?: string | null };
-}): Promise<{ jid?: string; phone?: string | null; name?: string | null }> {
+  input: {
+    recipient: string;
+    message: string;
+    jitToken?: string | null;
+    replyInstructions?: string | null;
+  };
+}): Promise<{
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  autoReplyArmed?: boolean;
+  replyInstructionsSet?: boolean;
+}> {
   const ctx = await loadAgentRunContext(params.agentId);
   const scopes = new Set([
     ...(ctx.permissionScopes as string[]),
@@ -269,5 +280,169 @@ export async function executeWhatsAppContactSend(params: {
     riskLevel: 'high',
   }).catch(() => {});
 
-  return { jid: result.jid, phone: result.phone, name: result.name };
+  let autoReplyArmed = false;
+  let replyInstructionsSet = false;
+  if (scopes.has('whatsapp.auto_reply') && result.jid) {
+    try {
+      const { armAutoReplySession, normalizeReplyInstructions } = await import(
+        '../whatsapp/whatsappAutoReply.service.js'
+      );
+      const instructions = normalizeReplyInstructions(params.input.replyInstructions);
+      await armAutoReplySession({
+        connectorId: connector.id,
+        agentId: params.agentId,
+        contactJid: result.jid,
+        contactName: result.name ?? null,
+        contactPhone: result.phone ?? null,
+        replyInstructions: instructions,
+        userId: ctx.userId,
+      });
+      autoReplyArmed = true;
+      replyInstructionsSet = Boolean(instructions);
+    } catch (err) {
+      console.warn(
+        '[whatsapp-auto-reply] arm failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return {
+    jid: result.jid,
+    phone: result.phone,
+    name: result.name,
+    autoReplyArmed,
+    replyInstructionsSet,
+  };
+}
+
+export async function executeWhatsAppAutoReplyStatus(params: {
+  agentId: string;
+  runId: string | null;
+}): Promise<{ sessions: unknown[]; note?: string }> {
+  const ctx = await loadAgentRunContext(params.agentId);
+  const scopes = new Set([
+    ...(ctx.permissionScopes as string[]),
+    ...(ctx.alwaysScopes as string[]),
+  ]);
+  if (!scopes.has('whatsapp.auto_reply')) {
+    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  }
+
+  const connector = await getWhatsAppConnectorForAgent(params.agentId);
+  const { listAutoReplySessions } = await import('../whatsapp/whatsappAutoReply.service.js');
+  const sessions = await listAutoReplySessions({
+    agentId: params.agentId,
+    connectorId: connector?.id ?? null,
+  });
+  return {
+    sessions,
+    note:
+      sessions.length === 0
+        ? 'No active auto-reply listeners. Send a message with whatsapp_send_message to arm one.'
+        : undefined,
+  };
+}
+
+export async function executeWhatsAppAutoReplyStop(params: {
+  agentId: string;
+  runId: string | null;
+  input: { recipient?: string | null };
+}): Promise<{ stopped: number }> {
+  const ctx = await loadAgentRunContext(params.agentId);
+  const scopes = new Set([
+    ...(ctx.permissionScopes as string[]),
+    ...(ctx.alwaysScopes as string[]),
+  ]);
+  if (!scopes.has('whatsapp.auto_reply')) {
+    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  }
+
+  const connector = await getWhatsAppConnectorForAgent(params.agentId);
+  const { stopAutoReplySessions } = await import('../whatsapp/whatsappAutoReply.service.js');
+  return stopAutoReplySessions({
+    agentId: params.agentId,
+    recipient: params.input.recipient,
+    connectorId: connector?.id ?? null,
+    userId: ctx.userId,
+  });
+}
+
+export async function executeWhatsAppAutoReplySetInstructions(params: {
+  agentId: string;
+  runId: string | null;
+  input: { recipient: string; instructions: string };
+}): Promise<{
+  session: unknown;
+  note: string;
+}> {
+  const ctx = await loadAgentRunContext(params.agentId);
+  const scopes = new Set([
+    ...(ctx.permissionScopes as string[]),
+    ...(ctx.alwaysScopes as string[]),
+  ]);
+  if (!scopes.has('whatsapp.auto_reply')) {
+    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  }
+
+  const instructions = params.input.instructions.trim();
+  if (!instructions) {
+    throw new WhatsAppToolError('instructions are required');
+  }
+
+  const connector = await ensureLiveWhatsApp(params.agentId);
+  const {
+    findOrMatchSessionForInstructions,
+    setAutoReplyInstructions,
+  } = await import('../whatsapp/whatsappAutoReply.service.js');
+
+  const existing = await findOrMatchSessionForInstructions({
+    agentId: params.agentId,
+    connectorId: connector.id,
+    recipient: params.input.recipient,
+  });
+
+  let contactJid = existing?.contactJid ?? null;
+  let contactName = existing?.contactName ?? null;
+  let contactPhone = existing?.contactPhone ?? null;
+
+  if (!contactJid) {
+    // Resolve via chat lookup (same recipient resolver as read-chat).
+    const resolved = await getWhatsAppChatMessages({
+      connectorId: connector.id,
+      recipient: params.input.recipient,
+      limit: 1,
+    });
+    if (!resolved.ok || !resolved.jid) {
+      if (resolved.matches?.length) {
+        throw new WhatsAppToolError(
+          `${resolved.error ?? 'Ambiguous recipient'}: ${resolved.matches
+            .map((m) => `${m.name ?? 'unknown'} (${m.phone ?? m.jid})`)
+            .join(', ')}`,
+        );
+      }
+      throw new WhatsAppToolError(
+        resolved.error ??
+          `Could not resolve recipient "${params.input.recipient}". Send them a message first, or pass a phone/jid.`,
+      );
+    }
+    contactJid = resolved.jid;
+    contactName = resolved.name ?? null;
+    contactPhone = resolved.phone ?? null;
+  }
+
+  const session = await setAutoReplyInstructions({
+    connectorId: connector.id,
+    agentId: params.agentId,
+    contactJid,
+    contactName,
+    contactPhone,
+    instructions,
+    userId: ctx.userId,
+  });
+
+  return {
+    session,
+    note: `When ${session.contactName || session.contactPhone || session.contactJid} replies, this agent will run with your instructions.`,
+  };
 }

@@ -57,34 +57,6 @@ export interface McpCatalogEntry {
 
 export const MCP_CATALOG: readonly McpCatalogEntry[] = [
   {
-    id: "qlix-leads",
-    name: "Qlix Leads",
-    category: "Data",
-    blurb: "Google Business Profile lead scraping and outreach (first-party).",
-    icon: "postgres",
-    accent: "text-emerald-400",
-    transport: "http",
-    auth: "token",
-    endpointUrl:
-      typeof process !== "undefined"
-        ? process.env.NEXT_PUBLIC_QLIX_MCP_URL ??
-          process.env.NEXT_PUBLIC_QLIX_MCP_LEADS_URL ??
-          "http://localhost:3940/mcp"
-        : "http://localhost:3940/mcp",
-    secretFields: [
-      {
-        key: "Authorization",
-        label: "Service secret",
-        kind: "header",
-        prefix: "Bearer ",
-        placeholder: "Same as QLIX_INTERNAL_SERVICE_SECRET",
-        required: true,
-      },
-    ],
-    reviewNote:
-      "Auto-registered on deploy (qlix-mcp PM2 process). Bind agents to gmb_search_leads, list_leads, and start_outreach.",
-  },
-  {
     id: "qlix-jobs",
     name: "Qlix Jobs",
     category: "Data",

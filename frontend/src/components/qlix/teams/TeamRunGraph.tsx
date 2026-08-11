@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { CheckCircle2, Loader2, XCircle, Zap } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import type { TeamDTO } from "@/lib/teams-api";
 
@@ -96,8 +97,15 @@ function GraphRow({
  * Node centres are computable without measuring the DOM because each stage row is an
  * equal-column grid: node `i` of `n` is centred at `(i + 0.5) / n`. The viewBox is
  * stretched to fit, and `non-scaling-stroke` keeps the hairline even under that stretch.
+ * `active` tints the lines and adds a traveling pulse once work has reached this junction.
  */
-function StageConnector({ count }: { readonly count: number }) {
+function StageConnector({
+  count,
+  active = false,
+}: {
+  readonly count: number;
+  readonly active?: boolean;
+}) {
   const centers = Array.from({ length: count }, (_, i) => ((i + 0.5) / count) * 100);
   const first = centers[0] ?? 50;
   const last = centers[centers.length - 1] ?? 50;
@@ -106,10 +114,19 @@ function StageConnector({ count }: { readonly count: number }) {
     <svg
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
-      className="h-7 w-full text-[color:var(--ink-border)]"
+      className={cn(
+        "h-8 w-full transition-colors duration-500",
+        active ? "text-[color:var(--sketch-purple)]/55" : "text-[color:var(--ink-border)]",
+      )}
       aria-hidden
     >
-      <g stroke="currentColor" strokeWidth={1} vectorEffect="non-scaling-stroke" fill="none">
+      <g
+        stroke="currentColor"
+        strokeWidth={1.25}
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+        fill="none"
+      >
         <line x1={50} y1={0} x2={50} y2={count === 1 ? 100 : 50} />
         {count > 1 && (
           <>
@@ -120,48 +137,105 @@ function StageConnector({ count }: { readonly count: number }) {
           </>
         )}
       </g>
+      {active && (
+        <circle r={2.2} fill="var(--sketch-purple)">
+          <animateMotion
+            dur="1.6s"
+            repeatCount="indefinite"
+            path={`M 50 0 L 50 100`}
+          />
+        </circle>
+      )}
     </svg>
   );
 }
 
+/** Compact glyph that replaces the plain dot with a state-aware icon. */
+function StateGlyph({ state }: { readonly state: AgentState }) {
+  if (state === "completed") {
+    return <CheckCircle2 size={13} className="shrink-0 text-emerald-600" aria-hidden />;
+  }
+  if (state === "failed") {
+    return (
+      <XCircle size={13} className="shrink-0 text-[color:var(--sketch-red)]" aria-hidden />
+    );
+  }
+  if (state === "thinking" || state === "tool_active") {
+    return (
+      <Loader2
+        size={12}
+        className="shrink-0 animate-spin text-[color:var(--sketch-purple)]"
+        aria-hidden
+      />
+    );
+  }
+  return <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[state])} aria-hidden />;
+}
+
 function GraphNode({ status }: { readonly status: AgentStatus }) {
   const isSupervisor = status.role === "supervisor";
+  const isActive = status.state === "thinking" || status.state === "tool_active";
+  const isDone = status.state === "completed";
+  const isFailed = status.state === "failed";
+
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-col gap-1.5 rounded-2xl border px-3 py-2.5 backdrop-blur-sm transition-colors duration-200",
-        HAIRLINE,
-        status.state === "idle" ? "bg-white/45" : "bg-white/75",
-        status.state === "failed" && "border-[color:var(--sketch-red)]",
+        "group relative flex min-w-0 flex-col gap-2 overflow-hidden rounded-2xl border px-3.5 py-3 backdrop-blur-sm transition-all duration-300",
+        isFailed
+          ? "border-[color:var(--sketch-red)]/40 bg-gradient-to-br from-red-50/85 to-white/50 shadow-[0_6px_20px_-14px_rgba(220,38,38,0.4)]"
+          : isDone
+            ? "border-emerald-700/20 bg-gradient-to-br from-emerald-50/85 to-white/50 shadow-[0_6px_20px_-14px_rgba(16,185,129,0.35)]"
+            : isActive
+              ? "border-[color:var(--sketch-purple)]/35 bg-gradient-to-br from-orange-50/85 to-white/55 shadow-[0_10px_26px_-14px_rgba(249,115,22,0.4)]"
+              : cn(HAIRLINE, "bg-white/45"),
       )}
     >
       <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold",
-            isSupervisor ? "bg-black text-white" : cn("border bg-white/70 text-black", HAIRLINE),
+        <span className="relative flex shrink-0 items-center justify-center">
+          {isActive && (
+            <span
+              className="qlix-orb-ping absolute inline-flex size-8 rounded-full bg-[color:var(--sketch-purple)]/25"
+              aria-hidden
+            />
           )}
-          aria-hidden
-        >
-          {initialOf(status.name)}
+          <span
+            className={cn(
+              "relative grid size-7 place-items-center rounded-full text-[10px] font-semibold shadow-sm transition-transform duration-300",
+              isSupervisor
+                ? "bg-gradient-to-br from-black to-[#2b2b2e] text-white"
+                : cn("border bg-white/85 text-black", HAIRLINE),
+              isActive && "scale-[1.08]",
+            )}
+          >
+            {initialOf(status.name)}
+          </span>
         </span>
         <p className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-black">
           {status.name}
         </p>
-        <span
-          className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[status.state])}
-          aria-hidden
-        />
+        <StateGlyph state={status.state} />
       </div>
 
-      <p className={cn("truncate text-[11px] leading-relaxed", INK_SOFT)}>
+      <p
+        className={cn(
+          "truncate text-[11px] leading-relaxed",
+          isActive ? "qlix-text-shimmer" : INK_SOFT,
+        )}
+      >
         {status.currentAction ?? STATE_LABEL[status.state]}
       </p>
 
       {status.toolCount > 0 && (
-        <p className={cn("text-[10px]", INK_FAINT)}>
+        <span
+          className={cn(
+            "inline-flex w-fit items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium",
+            "bg-black/[0.05] text-black/55",
+          )}
+        >
+          <Zap size={9} />
           {status.toolCount} {status.toolCount === 1 ? "step" : "steps"}
-        </p>
+        </span>
       )}
     </div>
   );
@@ -209,6 +283,13 @@ export function TeamRunGraph({ team, agentStates = NO_STATES, goal }: TeamRunGra
     ? statusFor(team.supervisorAgentId, "supervisor")
     : null;
 
+  /** A stage has "handed off" once any of its agents has started or finished work. */
+  const stageHasStarted = (agentIds: readonly string[]) =>
+    agentIds.some((id) => {
+      const s = agentStates.get(id)?.state;
+      return s === "thinking" || s === "tool_active" || s === "completed" || s === "failed";
+    });
+
   if (stages.length === 0) {
     return (
       <p className={cn("py-16 text-center text-[12.5px]", INK_SOFT)}>
@@ -235,7 +316,14 @@ export function TeamRunGraph({ team, agentStates = NO_STATES, goal }: TeamRunGra
             </div>
           </GraphRow>
           <GraphRow>
-            <StageConnector count={stages[0]!.agentIds.length} />
+            <StageConnector
+              count={stages[0]!.agentIds.length}
+              active={
+                supervisorStatus.state === "thinking" ||
+                supervisorStatus.state === "tool_active" ||
+                stageHasStarted(stages[0]!.agentIds)
+              }
+            />
           </GraphRow>
         </>
       )}
@@ -244,7 +332,10 @@ export function TeamRunGraph({ team, agentStates = NO_STATES, goal }: TeamRunGra
         <div key={stage.stageOrder} className="flex flex-col gap-1.5">
           {index > 0 && (
             <GraphRow>
-              <StageConnector count={stage.agentIds.length} />
+              <StageConnector
+                count={stage.agentIds.length}
+                active={stageHasStarted(stages[index - 1]!.agentIds)}
+              />
             </GraphRow>
           )}
 

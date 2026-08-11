@@ -140,13 +140,49 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
   agentDescription?: string | null;
   success?: boolean;
   errorMessage?: string | null;
+  /** When set, send the result to this contact JID instead of self-chat. */
+  replyToJid?: string | null;
+  connectorId?: string | null;
 }): Promise<WhatsAppDeliveryResult> {
   const wantsDelivery =
+    Boolean(input.replyToJid) ||
     input.fromWhatsAppChannel === true ||
     goalRequestsWhatsAppDelivery(input.sourceText) ||
     goalRequestsWhatsAppDelivery(input.agentDescription ?? '');
   if (!wantsDelivery) {
     return { sent: false, reason: 'not_requested' };
+  }
+
+  const replyToJid = input.replyToJid?.trim() || null;
+  if (replyToJid) {
+    if (!isWhatsAppServiceConfigured()) {
+      return { sent: false, reason: 'WhatsApp service not configured on backend' };
+    }
+    const connector =
+      (input.connectorId
+        ? await repo.findById(input.connectorId)
+        : null) ?? (await getConnectedWhatsAppForOrg(input.orgId));
+    if (!connector || connector.status !== 'connected') {
+      return { sent: false, reason: 'WhatsApp not linked' };
+    }
+
+    const bodyText =
+      input.success === false
+        ? input.errorMessage ?? 'Run failed'
+        : truncateBody(input.body.trim());
+    if (!bodyText) return { sent: false, reason: 'Empty message body' };
+
+    const { sendWhatsAppToRecipient } = await import('../connectors/whatsappServiceClient.js');
+    const sent = await sendWhatsAppToRecipient({
+      connectorId: connector.id,
+      recipient: replyToJid,
+      message:
+        input.success === false
+          ? `⚠️ ${input.title}: ${bodyText}`
+          : truncateBody(`${input.title}\n\n${bodyText}`),
+    });
+    if (!sent.ok) return { sent: false, reason: sent.error ?? 'WhatsApp send failed' };
+    return { sent: true };
   }
 
   if (input.success === false) {
@@ -211,7 +247,8 @@ async function enqueueWhatsAppAgentRun(
   prompt: string,
   brainFlag: boolean,
   routeHint?: string | null,
-): Promise<{ reply: string }> {
+  whatsappReplyToJid?: string | null,
+): Promise<{ reply: string; deliverTo: 'self' | 'none' | 'contact'; contactJid?: string }> {
   const agentRow = await prisma.agent.findUnique({
     where: { id: agent.id },
     select: { orgId: true, permissionScopes: true, runtime: true },
@@ -234,6 +271,7 @@ async function enqueueWhatsAppAgentRun(
       userId: connector.userId,
       body: prompt,
       useBrain,
+      whatsappReplyToJid: whatsappReplyToJid ?? null,
       preResolved: {
         targetType: 'agent',
         agentId: agent.id,
@@ -248,12 +286,17 @@ async function enqueueWhatsAppAgentRun(
   );
 
   if (turn.status === 'accepted' || turn.status === 'steered') {
+    const deliverTo = whatsappReplyToJid ? ('none' as const) : ('self' as const);
     return {
       reply: turn.ackReply ?? formatQueuedReply(agent.name, { useBrain, routeHint }),
+      deliverTo,
+      contactJid: whatsappReplyToJid ?? undefined,
     };
   }
   return {
     reply: turn.ackReply ?? (turn.status === 'rejected' ? turn.reason : 'Could not queue run'),
+    deliverTo: whatsappReplyToJid ? 'none' : 'self',
+    contactJid: whatsappReplyToJid ?? undefined,
   };
 }
 
@@ -403,10 +446,70 @@ async function tryResolvePendingDisambiguation(
   );
 }
 
+export type WhatsAppInboundResult = {
+  reply: string;
+  /** Where the sidecar should post the ack (if any). Contact auto-reply uses `none`. */
+  deliverTo: 'self' | 'none' | 'contact';
+  contactJid?: string;
+};
+
+function withSelfReply(reply: string): WhatsAppInboundResult {
+  return { reply, deliverTo: 'self' };
+}
+
+async function handleContactAutoReplyInbound(
+  connector: ConnectorAccountDTO,
+  remoteJid: string,
+  text: string,
+): Promise<WhatsAppInboundResult | null> {
+  const {
+    findActiveAutoReplySession,
+    markAutoReplyInbound,
+  } = await import('./whatsappAutoReply.service.js');
+
+  const session = await findActiveAutoReplySession(connector.id, remoteJid);
+  if (!session) return null;
+
+  const agent = await prisma.agent.findUnique({
+    where: { id: session.agentId },
+    select: { id: true, name: true, status: true },
+  });
+  if (!agent || agent.status === 'suspended') {
+    return { reply: '', deliverTo: 'none' };
+  }
+
+  await markAutoReplyInbound(session.id);
+
+  const label = session.contactName || session.contactPhone || session.contactJid;
+  const { buildAutoReplyInboundPrompt } = await import('./whatsappAutoReply.service.js');
+  const prompt = buildAutoReplyInboundPrompt({
+    label,
+    contactJid: session.contactJid,
+    text,
+    replyInstructions: session.replyInstructions,
+  });
+
+  await enqueueWhatsAppAgentRun(
+    connector,
+    { id: agent.id, name: agent.name },
+    prompt,
+    false,
+    'auto-reply',
+    session.contactJid,
+  );
+  // Do not echo queue acks into the contact chat.
+  return {
+    reply: '',
+    deliverTo: 'none',
+    contactJid: session.contactJid,
+  };
+}
+
 export async function handleWhatsAppInbound(
   connectorId: string,
   text: string,
-): Promise<{ reply: string }> {
+  opts?: { remoteJid?: string | null; fromContact?: boolean },
+): Promise<WhatsAppInboundResult> {
   const connector = await repo.findById(connectorId);
   if (!connector || connector.status !== 'connected') {
     throw new Error('WhatsApp not connected for this workspace');
@@ -414,30 +517,35 @@ export async function handleWhatsAppInbound(
 
   const trimmed = text.trim();
   if (isLikelyOutboundEcho(trimmed)) {
-    return { reply: '' };
+    return { reply: '', deliverTo: 'none' };
+  }
+
+  if (opts?.fromContact && opts.remoteJid) {
+    const contactResult = await handleContactAutoReplyInbound(connector, opts.remoteJid, trimmed);
+    if (contactResult) return contactResult;
+    return { reply: '', deliverTo: 'none' };
   }
 
   const lower = trimmed.toLowerCase();
   if (lower.startsWith('!status')) {
     const { formatTeamRunStatus } = await import('../teams/teamChannel.service.js');
     const teamStatus = await formatTeamRunStatus(connectorId);
-    if (teamStatus) return { reply: teamStatus };
+    if (teamStatus) return withSelfReply(teamStatus);
     const agentStatus = await formatAgentsStatus(connectorId);
-    return { reply: agentStatus };
+    return withSelfReply(agentStatus);
   }
 
   if (lower === '!help') {
-    return {
-      reply:
-        'Just type your request — Qlix picks the right agent.\n' +
+    return withSelfReply(
+      'Just type your request — Qlix picks the right agent.\n' +
         '• @TeamName: goal — run a team\n' +
         '• #brain — use company AI brain\n' +
         '• !status · !cancel · yes/no for approvals',
-    };
+    );
   }
 
   const pendingReply = await tryResolvePendingDisambiguation(connector, trimmed);
-  if (pendingReply) return pendingReply;
+  if (pendingReply) return withSelfReply(pendingReply.reply);
 
   // Non-numeric message clears stale pending picker state.
   if (await getPendingRoute(connector.id)) {
@@ -451,25 +559,24 @@ export async function handleWhatsAppInbound(
     const { tryHandleTeamWhatsAppInbound } = await import('../teams/teamChannel.service.js');
     const teamResult = await tryHandleTeamWhatsAppInbound(connector, trimmed);
     if (teamResult.handled) {
-      return { reply: teamResult.reply };
+      return withSelfReply(teamResult.reply);
     }
-    return {
-      reply:
-        'Use @TeamName: your goal for teams, or type your request plainly for a single agent.',
-    };
+    return withSelfReply(
+      'Use @TeamName: your goal for teams, or type your request plainly for a single agent.',
+    );
   }
 
   if (!promptText.trim()) {
-    return {
-      reply:
-        'Just type your request — Qlix routes it to the best agent.\n' +
+    return withSelfReply(
+      'Just type your request — Qlix routes it to the best agent.\n' +
         '• @TeamName: goal for teams\n' +
         '• Add #brain for company knowledge\n' +
         '• Hybrid agents can open files on your PC (include the full path)',
-    };
+    );
   }
 
-  return routePlainTextMessage(connector, promptText, brainFlag);
+  const routed = await routePlainTextMessage(connector, promptText, brainFlag);
+  return withSelfReply(routed.reply);
 }
 
 export async function formatAgentsStatus(connectorId: string): Promise<string> {
@@ -545,6 +652,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
       prompt: true,
       orgId: true,
       userId: true,
+      whatsappReplyToJid: true,
       agent: { select: { name: true, description: true, orgId: true } },
     },
   });
@@ -566,6 +674,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
       fromWhatsAppChannel: run.teamRole === 'whatsapp',
       success: run.status === 'success',
       errorMessage: run.errorMessage,
+      replyToJid: run.whatsappReplyToJid,
     });
     return;
   }
@@ -579,6 +688,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
     fromWhatsAppChannel: run.teamRole === 'whatsapp',
     success: run.status === 'success',
     errorMessage: run.errorMessage,
+    replyToJid: run.whatsappReplyToJid,
   });
   if (!delivery.sent && delivery.reason && delivery.reason !== 'not_requested') {
     console.warn('[whatsapp] agent run delivery skipped:', delivery.reason);

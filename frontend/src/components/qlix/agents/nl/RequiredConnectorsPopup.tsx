@@ -1,6 +1,6 @@
 "use client";
 
-import { GitBranch, Link2, Mail, MessageCircle, Share2, Users } from "lucide-react";
+import { GitBranch, Link2, Mail, MessageCircle, NotebookText, Share2, Users } from "lucide-react";
 import type { RequiredConnectorInfo } from "@/lib/required-connectors";
 import type { ConnectorProvider } from "@/lib/connectors-api";
 import { sketchButtonPrimary, sketchButtonSecondary, sketchLabel } from "@/components/qlix/sketch";
@@ -14,6 +14,8 @@ const PROVIDER_ICON: Record<ConnectorProvider, React.ReactNode> = {
   discord: <MessageCircle className="size-3.5" aria-hidden />,
   github: <GitBranch className="size-3.5" aria-hidden />,
   telegram: <MessageCircle className="size-3.5" aria-hidden />,
+  microsoft: <Mail className="size-3.5" aria-hidden />,
+  notion: <NotebookText className="size-3.5" aria-hidden />,
 };
 
 interface RequiredConnectorsPopupProps {

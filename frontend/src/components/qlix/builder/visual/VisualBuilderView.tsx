@@ -20,6 +20,7 @@ import { ArrowLeft, X } from "lucide-react";
 import {
   fetchScopeCatalog,
   listAgents,
+  updateAgentScopes,
   type AgentDTO,
   type ScopeCatalogEntry,
 } from "@/lib/agents-api";
@@ -38,13 +39,16 @@ import { BuilderCanvas } from "./BuilderCanvas";
 import { PaletteSidebar } from "./PaletteSidebar";
 import { TeamChoicePopup, type TeamChoice } from "./TeamChoicePopup";
 import {
+  HANDLE,
   agentNodeData,
   connectedAgentIds,
   defaultLeadNodeId,
   fromGraph,
+  impliedGrants,
   isAgentNode,
   toGraph,
   type BuilderEdge,
+  type BuilderEdgeKind,
   type BuilderNode,
 } from "./builderTypes";
 
@@ -166,6 +170,8 @@ export interface VisualBuilderViewProps {
 interface PendingGroup {
   memberIds: string[];
   edgeId: string;
+  /** The connection's target — the agent that would become the helper. */
+  targetNodeId: string;
 }
 
 function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProps) {
@@ -189,6 +195,9 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
   const [pendingGroup, setPendingGroup] = useState<PendingGroup | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   /** Guards the autosave against firing for the state that hydration just installed. */
   const hydrated = useRef(false);
@@ -284,7 +293,7 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
    * triggers this, because sharing a tool doesn't make two agents colleagues.
    */
   const onConnectEdge = useCallback(
-    (connection: Connection, kind: "flow" | "tool") => {
+    (connection: Connection, kind: BuilderEdgeKind) => {
       const edgeId = `e-${connection.source}-${connection.target}-${Date.now()}`;
       setEdges((current) => {
         const next = addEdge({ ...connection, id: edgeId, data: { kind } }, current);
@@ -296,7 +305,7 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
             (node) => members.includes(node.id) && node.data.groupId,
           );
           if (members.length >= 2 && !alreadyGrouped) {
-            setPendingGroup({ memberIds: members, edgeId });
+            setPendingGroup({ memberIds: members, edgeId, targetNodeId: connection.target! });
           }
           return currentNodes;
         });
@@ -309,14 +318,27 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
   const resolvePendingGroup = useCallback(
     (choice: TeamChoice) => {
       if (!pendingGroup) return;
+
+      // "Helper" is not a group at all — it is a capability grant, so the edge is rewired from
+      // the pipeline port to the target's tools port and no group is recorded.
+      if (choice.kind === "helper") {
+        setEdges((current) =>
+          current.map((edge) =>
+            edge.id === pendingGroup.edgeId
+              ? { ...edge, targetHandle: HANDLE.tools, data: { kind: "helper" } }
+              : edge,
+          ),
+        );
+        setPendingGroup(null);
+        return;
+      }
+
       const group: BuilderGroup = {
         id: `group-${Date.now()}`,
-        kind: choice.kind,
+        kind: "team",
         name: choice.name,
         nodeIds: pendingGroup.memberIds,
-        ...(choice.kind === "team"
-          ? { leadNodeId: defaultLeadNodeId(pendingGroup.memberIds, edges) }
-          : {}),
+        leadNodeId: defaultLeadNodeId(pendingGroup.memberIds, edges),
       };
       setGroups((current) => [...current, group]);
       setNodes((current) =>
@@ -370,6 +392,51 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
     );
   }, []);
 
+  /**
+   * What Apply would change: for each agent on the canvas, the scopes the drawing implies that
+   * the agent does not already hold. Purely additive — the canvas never revokes, because a
+   * partial drawing is not a statement that everything absent should be taken away.
+   */
+  const pendingGrants = useMemo(() => {
+    const implied = impliedGrants(nodes, edges);
+    const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+    const rows: Array<{ agentId: string; agentName: string; scopes: string[] }> = [];
+
+    for (const [agentId, scopes] of implied) {
+      const agent = agentById.get(agentId);
+      if (!agent) continue;
+      const held = new Set<string>(agent.permissionScopes);
+      const missing = [...scopes].filter((scope) => !held.has(scope));
+      if (missing.length > 0) {
+        rows.push({ agentId, agentName: agent.name, scopes: missing.sort() });
+      }
+    }
+    return rows;
+  }, [nodes, edges, agents]);
+
+  const applyGrants = useCallback(async () => {
+    setApplying(true);
+    setApplyError(null);
+    try {
+      const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+      for (const row of pendingGrants) {
+        const agent = agentById.get(row.agentId);
+        if (!agent) continue;
+        const next = [...new Set([...agent.permissionScopes, ...row.scopes])];
+        const result = await updateAgentScopes(row.agentId, next);
+        if (!result.ok) throw new Error(result.error);
+        setAgents((current) =>
+          current.map((a) => (a.id === row.agentId ? result.agent : a)),
+        );
+      }
+      setApplyOpen(false);
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : "Couldn't apply the changes");
+    } finally {
+      setApplying(false);
+    }
+  }, [agents, pendingGrants]);
+
   const saveLabel = useMemo(() => {
     if (saveState === "saving") return "Saving…";
     if (saveState === "saved") return "Saved";
@@ -385,6 +452,19 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
         title={canvas?.name ?? "Visual Builder"}
         actions={
           <div className="flex items-center gap-3">
+            {pendingGrants.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setApplyOpen(true)}
+                className={cn(
+                  "rounded-full border px-2.5 py-0.5 text-[11px] text-black transition-colors hover:bg-black/[0.05]",
+                  HAIRLINE,
+                )}
+              >
+                Apply {pendingGrants.reduce((n, r) => n + r.scopes.length, 0)} change
+                {pendingGrants.reduce((n, r) => n + r.scopes.length, 0) === 1 ? "" : "s"}
+              </button>
+            )}
             {loadError ? (
               <span className={sketchLabel}>{loadError}</span>
             ) : (
@@ -442,6 +522,10 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
                 <TeamChoicePopup
                   memberCount={pendingGroup.memberIds.length}
                   defaultName={`Team ${groups.length + 1}`}
+                  helperName={
+                    nodes.find((node) => node.id === pendingGroup.targetNodeId)?.data.label ??
+                    "that agent"
+                  }
                   onChoose={resolvePendingGroup}
                   onCancel={cancelPendingGroup}
                 />
@@ -454,6 +538,70 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
           <Inspector node={selectedNode} group={selectedGroup} onClose={deselect} />
         )}
       </div>
+
+      {applyOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-6">
+          <div
+            role="dialog"
+            aria-label="Apply canvas changes"
+            className={cn(
+              "w-full max-w-sm rounded-2xl border bg-white/95 p-4 shadow-[0_20px_50px_-20px_rgba(16,14,22,0.55)] backdrop-blur-md",
+              HAIRLINE,
+            )}
+          >
+            <p className={cn(MICRO, "text-black")}>Apply to your agents</p>
+            <p className={cn("mt-1 text-[12px] leading-relaxed", INK_SOFT)}>
+              These permissions will be added. Nothing is removed, and nothing changes until you
+              confirm.
+            </p>
+
+            <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
+              {pendingGrants.map((row) => (
+                <div key={row.agentId}>
+                  <p className="text-[12px] font-medium text-black">{row.agentName}</p>
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {row.scopes.map((scope) => (
+                      <span
+                        key={scope}
+                        className={cn(
+                          "rounded-full border px-1.5 py-0.5 text-[10px]",
+                          HAIRLINE,
+                          INK_SOFT,
+                        )}
+                      >
+                        {scope.startsWith("agent.ask.") ? "may ask a colleague" : scope}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {applyError && (
+              <p className="mt-2 text-[11px] text-[color:var(--sketch-red)]">{applyError}</p>
+            )}
+
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setApplyOpen(false)}
+                disabled={applying}
+                className={cn("rounded-full px-3 py-1 text-[11px]", INK_SOFT)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void applyGrants()}
+                disabled={applying}
+                className="rounded-full bg-black px-3 py-1 text-[11px] text-white transition-colors hover:bg-[color:var(--sketch-purple)] disabled:opacity-40"
+              >
+                {applying ? "Applying…" : "Apply"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {createAgentOpen && (
         <CreateAgentModal

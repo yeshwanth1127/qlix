@@ -496,12 +496,17 @@ export function buildDisambiguationOptions(agents: IntentRosterAgent[]): Disambi
   });
 }
 
-export function formatDisambiguationMenu(options: DisambiguationOption[]): string {
+export function formatDisambiguationMenu(
+  options: DisambiguationOption[],
+  opts?: { defaultHint?: string },
+): string {
   const lines = ['I can help — which agent should handle this?', ''];
   options.forEach((o, i) => {
     lines.push(`${i + 1}. ${o.label}`);
   });
-  lines.push('', 'Reply 1–' + options.length + ', or set a WhatsApp default agent in Connectors.');
+  const hint =
+    opts?.defaultHint ?? 'or set a WhatsApp default agent in Connectors.';
+  lines.push('', `Reply 1–${options.length}, ${hint}`);
   return lines.join('\n');
 }
 

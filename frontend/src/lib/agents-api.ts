@@ -30,6 +30,7 @@ export type PermissionScope =
   | "whatsapp.send"
   | "whatsapp.read"
   | "whatsapp.contact_send"
+  | "whatsapp.auto_reply"
   | "social.read"
   | "social.publish"
   | "crm.read"
@@ -64,6 +65,7 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "whatsapp.send",
   "whatsapp.read",
   "whatsapp.contact_send",
+  "whatsapp.auto_reply",
   "social.read",
   "social.publish",
   "crm.read",
@@ -103,10 +105,10 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "finance.spend_100": "Spend up to $100",
   "brain.query": "Query company AI brain",
   "brain.knowledge_read": "Read org knowledge indexed for the brain",
-  "email.read": "Read connected Gmail inbox",
-  "email.send": "Send or draft email via connected Gmail",
-  "drive.read": "Read Google Drive",
-  "drive.write": "Write to Google Drive",
+  "email.read": "Read connected email inbox",
+  "email.send": "Send or draft email via connected mailbox",
+  "drive.read": "Read Google Drive / OneDrive",
+  "drive.write": "Write to Google Drive / OneDrive",
   "calendar.read": "Read Google Calendar",
   "calendar.write": "Write to Google Calendar",
   "meet.manage": "Google Meet",
@@ -115,6 +117,7 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "whatsapp.send": "Send files to your linked WhatsApp",
   "whatsapp.read": "Read WhatsApp contact chats",
   "whatsapp.contact_send": "Message WhatsApp contacts",
+  "whatsapp.auto_reply": "Auto-reply when messaged contacts respond",
   "social.read": "Read Orbit social channels & posts",
   "social.publish": "Publish / schedule posts via Orbit",
   "crm.read": "Read CRM records",
@@ -647,6 +650,51 @@ export async function clearConversationMessages(agentId: string, conversationId:
     },
   );
   return res.ok;
+}
+
+/** Edit a prior user message and re-enqueue; later messages/runs are dropped. */
+export async function resendEditedConversationMessage(
+  agentId: string,
+  conversationId: string,
+  messageId: string,
+  body: {
+    content: string;
+    skills?: string[];
+    model?: string;
+    useBrain?: boolean;
+  },
+): Promise<
+  | { ok: true; messageId: string; runId: string }
+  | { ok: false; status: number; message: string; code?: string }
+> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/resend`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: body.content,
+        skills: body.skills ?? [],
+        ...(body.model ? { model: body.model } : {}),
+        ...(body.useBrain ? { useBrain: true } : {}),
+      }),
+    },
+  );
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    return {
+      ok: false,
+      status: res.status,
+      message: err?.error?.message ?? "Failed to edit and resend",
+      code: err?.error?.code,
+    };
+  }
+  const data = (await res.json()) as { messageId?: string; runId?: string };
+  if (!data.messageId || !data.runId) {
+    return { ok: false, status: res.status, message: "Unexpected resend response" };
+  }
+  return { ok: true, messageId: data.messageId, runId: data.runId };
 }
 
 export type ChatAttachmentDTO = {

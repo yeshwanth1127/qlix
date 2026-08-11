@@ -22,6 +22,7 @@ import { createTeamsRouter } from '../routes/createTeamsRouter.js';
 import { createConnectorsRouter } from '../routes/createConnectorsRouter.js';
 import { createMcpRouter } from '../routes/createMcpRouter.js';
 import { createNlBuilderHistoryRouter } from '../routes/createNlBuilderHistoryRouter.js';
+import { createNlBuilderSessionsRouter } from '../routes/createNlBuilderSessionsRouter.js';
 import { createBuilderCanvasRouter } from '../routes/createBuilderCanvasRouter.js';
 import { createBillingRouter } from '../billings/routes/createBillingRouter.js';
 import { createBillingIngestRouter } from '../billings/routes/createBillingIngestRouter.js';
@@ -29,8 +30,6 @@ import { createAdminBillingRouter } from '../billings/routes/createAdminBillingR
 import { createUsageRouter } from '../routes/createUsageRouter.js';
 import { createWalletRouter } from '../routes/createWalletRouter.js';
 import { createMobileRouter } from '../routes/createMobileRouter.js';
-import { createLeadsRouter } from '../routes/createLeadsRouter.js';
-import { createInternalLeadsRouter } from '../routes/createInternalLeadsRouter.js';
 import { createJobsRouter } from '../routes/createJobsRouter.js';
 import { createInternalJobsRouter } from '../routes/createInternalJobsRouter.js';
 import { createSandboxRouter } from '../routes/createSandboxRouter.js';
@@ -77,6 +76,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/connectors', createConnectorsRouter());
   application.use('/api/v1/mcp', createMcpRouter());
   application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());
+  application.use('/api/v1/nl-builder/sessions', createNlBuilderSessionsRouter());
   application.use('/api/v1/builder/canvases', createBuilderCanvasRouter());
   application.use('/api/v1/actions', createActionsRouter());
   application.use('/api/v1/jit', createJitRouter());
@@ -84,8 +84,6 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/wallet', createWalletRouter());
   application.use('/api/v1/whatsapp', createWhatsAppRouter());
   application.use('/api/v1/internal', createInternalRouter());
-  application.use('/api/v1/internal/leads', createInternalLeadsRouter());
-  application.use('/api/v1/leads', createLeadsRouter());
   application.use('/api/v1/internal/jobs', createInternalJobsRouter());
   application.use('/api/v1/jobs', createJobsRouter());
   application.use('/api/v1/internal/schedules', createInternalSchedulesRouter());
@@ -97,6 +95,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/skills', createSkillsRouter());
   application.use('/api/v1/compliance', createComplianceRouter());
   application.use('/api/v1/slack', createSlackRouter());
+  application.use('/api/integrations/telegram', createTelegramRouter());
   application.use('/api/v1/telegram', createTelegramRouter());
   application.use('/api/v1/verify', createVcVerifyRouter());
   application.use('/api/v1/channel-defaults', createChannelDefaultsRouter());

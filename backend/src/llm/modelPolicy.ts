@@ -18,6 +18,11 @@ function allowedModelPrefixes(provider: LlmProviderId): string[] {
     .filter(Boolean);
 }
 
+/** Infer gateway from a canonical qlix model id (`exora/...` vs `openrouter/...`). */
+export function llmProviderFromModelId(model: string): LlmProviderId {
+  return model.trim().toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
+}
+
 /** Prefix OpenRouter-style ids (`provider/model`) so policy + proxy agree on one canonical form. */
 export function normalizeQlixInferenceModelId(
   raw: string,
@@ -44,8 +49,12 @@ export function assertModelAllowed(model: string, provider?: LlmProviderId): voi
   ) {
     return;
   }
-  const resolvedProvider =
-    provider ?? (normalized.startsWith('exora/') ? 'exora' : 'openrouter');
+  // Prefer the model's own namespace when present so an Exora-provisioned agent can
+  // still run an OpenRouter override (team-run model picker) and vice versa.
+  let resolvedProvider: LlmProviderId;
+  if (normalized.startsWith('exora/')) resolvedProvider = 'exora';
+  else if (normalized.startsWith('openrouter/')) resolvedProvider = 'openrouter';
+  else resolvedProvider = provider ?? 'openrouter';
   const prefixes = allowedModelPrefixes(resolvedProvider).map((p) => p.toLowerCase());
   if (!prefixes.some((prefix) => normalized.startsWith(prefix))) {
     throw new ModelPolicyError(

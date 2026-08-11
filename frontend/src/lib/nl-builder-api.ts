@@ -75,6 +75,99 @@ export async function saveBuilderPrompt(prompt: string): Promise<void> {
   }
 }
 
+// ── Builder chat sessions (full history) ───────────────────────────────────
+
+export interface NlBuilderSessionSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  createdAgentIds: string[];
+  teamId: string | null;
+}
+
+export interface NlBuilderSessionDetail extends NlBuilderSessionSummary {
+  transcript: unknown[];
+}
+
+export async function listBuilderSessions(): Promise<NlBuilderSessionSummary[]> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/sessions`, {
+      credentials: "include",
+    });
+    if (!res.ok) return [];
+    const body = (await res.json().catch(() => null)) as { sessions?: NlBuilderSessionSummary[] } | null;
+    return body?.sessions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function createBuilderSession(title?: string): Promise<NlBuilderSessionDetail | null> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(title ? { title } : {}),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { session?: NlBuilderSessionDetail } | null;
+    return body?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getBuilderSession(sessionId: string): Promise<NlBuilderSessionDetail | null> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/sessions/${encodeURIComponent(sessionId)}`, {
+      credentials: "include",
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { session?: NlBuilderSessionDetail } | null;
+    return body?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function updateBuilderSession(
+  sessionId: string,
+  patch: {
+    title?: string;
+    transcript?: unknown[];
+    createdAgentIds?: string[];
+    teamId?: string | null;
+  },
+): Promise<NlBuilderSessionDetail | null> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { session?: NlBuilderSessionDetail } | null;
+    return body?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteBuilderSession(sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/nl-builder/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    return res.ok || res.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 type ParseResult =
   | { ok: true; plan: AgentCreationPlan }
   | { ok: false; errorMessage: string };

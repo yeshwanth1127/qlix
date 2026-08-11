@@ -9,12 +9,15 @@ import {
   Check,
   ChevronDown,
   Download,
+  History,
   LayoutDashboard,
   Lightbulb,
   Loader2,
   MessageCircle,
+  MessageSquarePlus,
   Plus,
   Sparkles,
+  Trash2,
   User,
   Users,
   Wand2,
@@ -22,9 +25,15 @@ import {
 import {
   nlParsePrompt,
   saveBuilderPrompt,
+  listBuilderSessions,
+  createBuilderSession,
+  getBuilderSession,
+  updateBuilderSession,
+  deleteBuilderSession,
   type AgentCreationPlan,
   type NLAgentSpec,
   type NLWorkerSpec,
+  type NlBuilderSessionSummary,
 } from "@/lib/nl-builder-api";
 import {
   createAgent,
@@ -33,6 +42,7 @@ import {
   CLOUD_MODELS,
   EXORA_MODELS,
   type CreateAgentResponse,
+  type AgentRuntime,
 } from "@/lib/agents-api";
 import { createTeam, setSupervisorAgent, addTeamMember } from "@/lib/teams-api";
 import {
@@ -65,14 +75,18 @@ import { cn } from "@/lib/utils/cn";
 
 // ── Chat transcript model ───────────────────────────────────────────────────
 
-interface AgentOutput {
-  response: CreateAgentResponse;
-  label: string;
+interface DoneAgentRef {
+  id: string;
+  name: string;
+  runtime: AgentRuntime;
+  label?: string;
+  /** Present only right after create (starter pack / credentials). Not persisted. */
+  response?: CreateAgentResponse;
 }
 
 type DoneResult =
-  | { type: "single"; outputs: AgentOutput[] }
-  | { type: "team"; teamId: string; outputs: AgentOutput[] };
+  | { type: "single"; agents: DoneAgentRef[] }
+  | { type: "team"; teamId: string; agents: DoneAgentRef[] };
 
 type ChatItem =
   | { id: number; kind: "user"; text: string }
@@ -97,6 +111,123 @@ type ChatItem =
 
 /** `Omit` collapses unions to their common keys; this distributes over each member. */
 type NewChatItem = ChatItem extends infer T ? (T extends ChatItem ? Omit<T, "id"> : never) : never;
+
+function outputsToDoneAgents(outputs: { response: CreateAgentResponse; label: string }[]): DoneAgentRef[] {
+  return outputs.map((o) => ({
+    id: o.response.agent.id,
+    name: o.response.agent.name,
+    runtime: o.response.agent.runtime,
+    label: o.label,
+    response: o.response,
+  }));
+}
+
+/** Strip ephemeral fields before writing session history. */
+function serializeTranscript(items: readonly ChatItem[]): unknown[] {
+  return items
+    .filter((it) => it.kind !== "thinking" && it.kind !== "progress")
+    .map((it) => {
+      if (it.kind === "done") {
+        return {
+          id: it.id,
+          kind: "done" as const,
+          result:
+            it.result.type === "team"
+              ? {
+                  type: "team" as const,
+                  teamId: it.result.teamId,
+                  agents: it.result.agents.map(({ id, name, runtime, label }) => ({
+                    id,
+                    name,
+                    runtime,
+                    label,
+                  })),
+                }
+              : {
+                  type: "single" as const,
+                  agents: it.result.agents.map(({ id, name, runtime, label }) => ({
+                    id,
+                    name,
+                    runtime,
+                    label,
+                  })),
+                },
+        };
+      }
+      return it;
+    });
+}
+
+function hydrateTranscript(raw: unknown[]): ChatItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const it = entry as Record<string, unknown>;
+    const id = typeof it.id === "number" ? it.id : out.length + 1;
+    const kind = it.kind;
+    if (kind === "user" && typeof it.text === "string") {
+      out.push({ id, kind: "user", text: it.text });
+    } else if (kind === "info" && typeof it.text === "string") {
+      out.push({ id, kind: "info", text: it.text });
+    } else if (kind === "error" && typeof it.text === "string") {
+      out.push({ id, kind: "error", text: it.text });
+    } else if (kind === "plan" && it.plan && typeof it.plan === "object") {
+      out.push({
+        id,
+        kind: "plan",
+        plan: it.plan as AgentCreationPlan,
+        consumed: Boolean(it.consumed),
+        guestNote: typeof it.guestNote === "string" ? it.guestNote : null,
+        sourceText: typeof it.sourceText === "string" ? it.sourceText : "",
+        revisions: Array.isArray(it.revisions)
+          ? it.revisions.filter((r): r is string => typeof r === "string")
+          : [],
+        superseded: Boolean(it.superseded),
+      });
+    } else if (kind === "done" && it.result && typeof it.result === "object") {
+      const result = it.result as Record<string, unknown>;
+      const agentsRaw = Array.isArray(result.agents) ? result.agents : [];
+      const agents: DoneAgentRef[] = agentsRaw
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
+        .map((a) => ({
+          id: String(a.id ?? ""),
+          name: String(a.name ?? "Agent"),
+          runtime: (a.runtime === "hybrid" || a.runtime === "local" ? a.runtime : "cloud") as AgentRuntime,
+          label: typeof a.label === "string" ? a.label : undefined,
+        }))
+        .filter((a) => a.id);
+      if (result.type === "team" && typeof result.teamId === "string") {
+        out.push({ id, kind: "done", result: { type: "team", teamId: result.teamId, agents } });
+      } else {
+        out.push({ id, kind: "done", result: { type: "single", agents } });
+      }
+    }
+  }
+  return out;
+}
+
+function titleFromItems(items: readonly ChatItem[]): string {
+  const firstUser = items.find((it) => it.kind === "user");
+  if (firstUser && firstUser.kind === "user") {
+    return firstUser.text.replace(/\s+/g, " ").trim().slice(0, 72) || "New chat";
+  }
+  return "New chat";
+}
+
+function collectCreatedMeta(items: readonly ChatItem[]): {
+  createdAgentIds: string[];
+  teamId: string | null;
+} {
+  const ids: string[] = [];
+  let teamId: string | null = null;
+  for (const it of items) {
+    if (it.kind !== "done") continue;
+    for (const a of it.result.agents) ids.push(a.id);
+    if (it.result.type === "team") teamId = it.result.teamId;
+  }
+  return { createdAgentIds: [...new Set(ids)], teamId };
+}
 
 const EXAMPLE_PROMPTS = [
   "A web researcher that reads pages and sends me daily WhatsApp summaries",
@@ -130,11 +261,11 @@ function composeDesignPrompt(base: string, revisions: readonly string[]): string
 /** Guests: cloud-only for web agents; hybrid when scopes need local tools (desktop/files). */
 const GUEST_MAX_AGENTS = 3;
 /** Model used to design/plan agents in the AI Builder (OpenRouter). */
-const DEFAULT_BUILDER_PARSE_MODEL = CLOUD_MODELS[0];
+const DEFAULT_BUILDER_PARSE_MODEL = "openrouter/openai/gpt-4o-mini";
 /** Default model stamped onto created agents (Exora). */
 const DEFAULT_AGENT_MODEL = "exora/exora-general";
 const BUILDER_MODELS = [
-  { id: DEFAULT_BUILDER_PARSE_MODEL, label: "OpenRouter Auto" },
+  { id: DEFAULT_BUILDER_PARSE_MODEL, label: "GPT-4o Mini" },
 ] as const;
 
 function adaptSpecForGuest<T extends NLAgentSpec | NLWorkerSpec>(spec: T): T {
@@ -212,32 +343,43 @@ function specToCreateBody(spec: NLAgentSpec | NLWorkerSpec, orgId: string | null
 
 // ── Result row ──────────────────────────────────────────────────────────────
 
-function ResultRow({ output, routePrefix }: { readonly output: AgentOutput; readonly routePrefix: string }) {
-  const { agent, sdkAgentFile, sdkAgentPaths, hybridStarterPack } = output.response;
+function ResultRow({
+  agent: doneAgent,
+  routePrefix,
+}: {
+  readonly agent: DoneAgentRef;
+  readonly routePrefix: string;
+}) {
+  const response = doneAgent.response;
+  const agent = response?.agent;
+  const sdkAgentFile = response?.sdkAgentFile;
+  const sdkAgentPaths = response?.sdkAgentPaths;
+  const hybridStarterPack = response?.hybridStarterPack;
   const [downloaded, setDownloaded] = useState(false);
-  const isHybrid = agent.runtime === "hybrid";
-  const [setupPopupOpen, setSetupPopupOpen] = useState(isHybrid);
+  const isHybrid = doneAgent.runtime === "hybrid";
+  const [setupPopupOpen, setSetupPopupOpen] = useState(Boolean(response && isHybrid));
   const autoDownloadFiredRef = useRef(false);
 
   // Stash the just-created starter pack so the agent's own page can offer a
   // re-download without re-issuing (which would rotate the signing key).
   useEffect(() => {
-    if (isHybrid) stashStarterPack(agent.id, hybridStarterPack);
-  }, [isHybrid, agent.id, hybridStarterPack]);
+    if (response && isHybrid) stashStarterPack(doneAgent.id, hybridStarterPack);
+  }, [isHybrid, doneAgent.id, hybridStarterPack, response]);
 
   const download = () => {
+    if (!response || !agent) return;
     if (isHybrid && hybridStarterPack?.base64) {
       downloadBase64File(hybridStarterPack.base64, hybridStarterPack.filename, "application/zip");
-    } else {
+    } else if (sdkAgentFile && sdkAgentPaths) {
       downloadJsonFile(sdkAgentFile, sdkAgentPaths.suggestedDownloadFilename);
     }
     setDownloaded(true);
-    void confirmDownload(agent.id);
+    void confirmDownload(doneAgent.id);
   };
 
   // Auto-download hybrid starter ZIP as soon as this result appears.
   useEffect(() => {
-    if (!isHybrid) return;
+    if (!response || !isHybrid) return;
     if (autoDownloadFiredRef.current) return;
     if (!hybridStarterPack?.base64) return;
     autoDownloadFiredRef.current = true;
@@ -246,7 +388,36 @@ function ResultRow({ output, routePrefix }: { readonly output: AgentOutput; read
     }, 50);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHybrid, hybridStarterPack?.base64]);
+  }, [isHybrid, hybridStarterPack?.base64, response]);
+
+  // History restore — no starter pack / credentials, just a link back to the agent.
+  if (!response || !agent) {
+    return (
+      <div className="rounded-xl border border-black/10 bg-white/70 p-3 text-[12px] shadow-[0_10px_24px_-18px_rgba(28,24,48,0.3)] backdrop-blur-sm">
+        <div className="flex items-center gap-2 font-medium text-[#1c1830]">
+          <Bot className="size-3.5 text-[#1c1830]" aria-hidden />
+          {doneAgent.label ?? doneAgent.name}
+          <span className="ml-auto text-[10px] text-black/45">
+            {doneAgent.runtime === "cloud" ? "Cloud" : doneAgent.runtime === "hybrid" ? "Hybrid" : "Local"}
+          </span>
+        </div>
+        <div className="mt-2 flex items-center gap-3">
+          <Link
+            href={`${routePrefix}/agents/${doneAgent.id}/chat`}
+            className="inline-flex items-center gap-1.5 rounded-full bg-[#1c1830] px-2.5 py-1 text-[11px] font-semibold text-white hover:brightness-110"
+          >
+            Chat with it →
+          </Link>
+          <Link
+            href={`${routePrefix}/agents/${doneAgent.id}`}
+            className="text-[11px] text-black/55 hover:text-[#1c1830]"
+          >
+            Open agent
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   if (isHybrid) {
     return (
@@ -408,13 +579,21 @@ export function ChatLanding({
   const [redesignFor, setRedesignFor] = useState<number | null>(null);
   const [redesignNote, setRedesignNote] = useState("");
   const [capabilitiesFor, setCapabilitiesFor] = useState<number | null>(null);
+  const [builderSessionId, setBuilderSessionId] = useState<string | null>(null);
+  const [historySessions, setHistorySessions] = useState<NlBuilderSessionSummary[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const idRef = useRef(0);
   const busyRef = useRef(false);
   const sessionRef = useRef<AuthSuccessResponse | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const historyMenuRef = useRef<HTMLDivElement | null>(null);
+  const builderSessionIdRef = useRef<string | null>(null);
+  const skipPersistRef = useRef(false);
 
   sessionRef.current = session;
+  builderSessionIdRef.current = builderSessionId;
 
   useEffect(() => {
     if (session) sessionRef.current = session;
@@ -437,9 +616,137 @@ export function ChatLanding({
 
   const hasConversation = items.length > 0;
   const isGuest = session?.user.isGuest === true;
+  const canPersistHistory = Boolean(session && !session.user.isGuest);
   const isOrg = isDashboard ? orgIdProp != null : session?.user.workspaceKind === "organization";
   const routePrefix = isOrg ? "/organization" : "/individual";
   const effectiveOrgId = isDashboard ? orgIdProp : session?.user.workspaceKind === "organization" ? session.user.orgId : null;
+
+  const refreshHistoryList = async () => {
+    if (!canPersistHistory) {
+      setHistorySessions([]);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      setHistorySessions(await listBuilderSessions());
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canPersistHistory) {
+      setHistorySessions([]);
+      return;
+    }
+    void refreshHistoryList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPersistHistory, session?.user.id]);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!historyMenuRef.current?.contains(event.target as Node)) {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [historyOpen]);
+
+  /** Persist durable transcript for signed-in (non-guest) users. */
+  useEffect(() => {
+    if (!canPersistHistory || skipPersistRef.current) return;
+    if (items.length === 0) return;
+    const durable = serializeTranscript(items);
+    if (durable.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        let sessionId = builderSessionIdRef.current;
+        if (!sessionId) {
+          const created = await createBuilderSession(titleFromItems(items));
+          if (!created) return;
+          sessionId = created.id;
+          builderSessionIdRef.current = sessionId;
+          setBuilderSessionId(sessionId);
+        }
+        const meta = collectCreatedMeta(items);
+        const updated = await updateBuilderSession(sessionId, {
+          title: titleFromItems(items),
+          transcript: durable,
+          createdAgentIds: meta.createdAgentIds,
+          teamId: meta.teamId,
+        });
+        if (updated) {
+          setHistorySessions((prev) => {
+            const rest = prev.filter((s) => s.id !== updated.id);
+            return [
+              {
+                id: updated.id,
+                title: updated.title,
+                createdAt: updated.createdAt,
+                updatedAt: updated.updatedAt,
+                createdAgentIds: updated.createdAgentIds,
+                teamId: updated.teamId,
+              },
+              ...rest,
+            ];
+          });
+        }
+      })();
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [items, canPersistHistory]);
+
+  const startNewChat = () => {
+    skipPersistRef.current = true;
+    setItems([]);
+    setBuilderSessionId(null);
+    builderSessionIdRef.current = null;
+    idRef.current = 0;
+    setInput("");
+    setRedesignFor(null);
+    setRedesignNote("");
+    setCapabilitiesFor(null);
+    setConnectorGate(null);
+    setHistoryOpen(false);
+    window.setTimeout(() => {
+      skipPersistRef.current = false;
+    }, 0);
+  };
+
+  const openHistorySession = async (sessionId: string) => {
+    if (busyRef.current) return;
+    setHistoryLoading(true);
+    try {
+      const detail = await getBuilderSession(sessionId);
+      if (!detail) return;
+      skipPersistRef.current = true;
+      const hydrated = hydrateTranscript(detail.transcript);
+      const maxId = hydrated.reduce((m, it) => Math.max(m, it.id), 0);
+      idRef.current = maxId;
+      setItems(hydrated);
+      setBuilderSessionId(detail.id);
+      builderSessionIdRef.current = detail.id;
+      setHistoryOpen(false);
+      setRedesignFor(null);
+      setCapabilitiesFor(null);
+      setConnectorGate(null);
+      window.setTimeout(() => {
+        skipPersistRef.current = false;
+      }, 0);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const removeHistorySession = async (sessionId: string) => {
+    const ok = await deleteBuilderSession(sessionId);
+    if (!ok) return;
+    setHistorySessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (builderSessionIdRef.current === sessionId) startNewChat();
+  };
 
   // Particle background: scrambled until the first message, then it re-forms into
   // a new line-art shape each turn, alternating which half of the screen it owns.
@@ -647,7 +954,7 @@ export function ChatLanding({
         ),
       );
 
-    const outputs: AgentOutput[] = [];
+    const outputs: { response: CreateAgentResponse; label: string }[] = [];
     try {
       if (effectivePlan.type === "single") {
         setStep(0, { status: "active" });
@@ -655,7 +962,7 @@ export function ChatLanding({
         if (!res.ok) throw new Error(res.errorMessage);
         setStep(0, { status: "done" });
         outputs.push({ response: res.data, label: effectivePlan.agent.name });
-        push({ kind: "done", result: { type: "single", outputs } });
+        push({ kind: "done", result: { type: "single", agents: outputsToDoneAgents(outputs) } });
       } else {
         // Teams are workspace-scoped: the team is created under the user's own
         // workspace org, so its member agents must carry that same org or the
@@ -709,7 +1016,10 @@ export function ChatLanding({
           });
         }
         setStep(assembleIdx, { status: "done", label: `Team assembled — ${effectivePlan.team.name}` });
-        push({ kind: "done", result: { type: "team", teamId: team.id, outputs } });
+        push({
+          kind: "done",
+          result: { type: "team", teamId: team.id, agents: outputsToDoneAgents(outputs) },
+        });
       }
 
       if (options.redirectToConnectors && options.neededProviders && options.neededProviders.length > 0) {
@@ -799,6 +1109,103 @@ export function ChatLanding({
     </div>
   );
 
+  const historyControls = canPersistHistory ? (
+    <div ref={historyMenuRef} className="relative flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={startNewChat}
+        disabled={busy || (!hasConversation && !builderSessionId)}
+        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-white/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+        title="Start a new chat"
+      >
+        <MessageSquarePlus className="size-3.5" aria-hidden />
+        <span className="hidden sm:inline">New chat</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setHistoryOpen((open) => !open);
+          if (!historyOpen) void refreshHistoryList();
+        }}
+        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-white/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.06]"
+        aria-expanded={historyOpen}
+        aria-haspopup="menu"
+        title="Chat history"
+      >
+        <History className="size-3.5" aria-hidden />
+        <span className="hidden sm:inline">History</span>
+        <ChevronDown className={cn("size-3 transition-transform", historyOpen && "rotate-180")} aria-hidden />
+      </button>
+      {historyOpen ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-[calc(100%+0.4rem)] z-50 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-black/15 bg-white shadow-[0_18px_40px_-24px_rgba(28,24,48,0.55)]"
+        >
+          <div className="flex items-center justify-between border-b border-black/10 px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-black/55">Recent chats</p>
+            <button
+              type="button"
+              onClick={startNewChat}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1c1830] hover:underline"
+            >
+              <MessageSquarePlus className="size-3" aria-hidden />
+              New
+            </button>
+          </div>
+          <div className="max-h-72 overflow-y-auto p-1.5">
+            {historyLoading && historySessions.length === 0 ? (
+              <div className="flex items-center gap-2 px-2 py-3 text-[11px] text-black/45">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                Loading history…
+              </div>
+            ) : historySessions.length === 0 ? (
+              <p className="px-2 py-3 text-[11px] text-black/45">No previous chats yet. Build an agent to start a thread.</p>
+            ) : (
+              historySessions.map((row) => (
+                <div
+                  key={row.id}
+                  className={cn(
+                    "group flex items-start gap-1 rounded-lg px-1.5 py-1",
+                    row.id === builderSessionId ? "bg-black/[0.05]" : "hover:bg-black/[0.03]",
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void openHistorySession(row.id)}
+                    className="min-w-0 flex-1 rounded-md px-1.5 py-1.5 text-left"
+                  >
+                    <p className="truncate text-[12px] font-medium text-[#1c1830]">{row.title}</p>
+                    <p className="mt-0.5 text-[10px] text-black/40">
+                      {row.createdAgentIds.length > 0
+                        ? `${row.createdAgentIds.length} agent${row.createdAgentIds.length === 1 ? "" : "s"} created`
+                        : "Design in progress"}
+                      {" · "}
+                      {new Date(row.updatedAt).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${row.title}`}
+                    onClick={() => void removeHistorySession(row.id)}
+                    className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-md text-black/35 opacity-0 transition-opacity hover:bg-black/[0.06] hover:text-black group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" aria-hidden />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -843,6 +1250,13 @@ export function ChatLanding({
         <ParticleConstellation shape={constShape} side={shapeSide} className="absolute inset-0" />
       </div>
 
+      {/* History / new chat — dashboard chrome */}
+      {isDashboard && canPersistHistory ? (
+        <div className="relative z-20 flex h-11 shrink-0 items-center justify-end px-3 sm:px-4">
+          {historyControls}
+        </div>
+      ) : null}
+
       {/* Header — landing only */}
       {!isDashboard ? (
         <header className="relative z-20 flex h-14 shrink-0 items-center px-4">
@@ -853,6 +1267,7 @@ export function ChatLanding({
               hasConversation ? panelColumnClass : "ml-auto",
             )}
           >
+            {historyControls}
             {session && isGuest && (
               <>
                 <span className="hidden items-center gap-1.5 rounded-full border border-black/10 bg-black/[0.04] px-2.5 py-1 text-[11px] text-black/55 sm:flex">
@@ -1190,7 +1605,7 @@ export function ChatLanding({
               const result = item.result;
               if (isDashboard) {
                 const primaryName =
-                  result.outputs[0]?.response.agent.name ??
+                  result.agents[0]?.name ??
                   (result.type === "team" ? "Your team" : "Your agent");
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
@@ -1200,14 +1615,25 @@ export function ChatLanding({
                     <div className="min-w-0 flex-1 rounded-xl border border-green-600/35 bg-green-50 p-4">
                       <p className="text-[13px] font-medium text-[#1c1830]">
                         {result.type === "team"
-                          ? `${primaryName} is live — ${result.outputs.length} agents created`
+                          ? `${primaryName} is live — ${result.agents.length} agents created`
                           : `${primaryName} is live`}
                       </p>
                       <p className="mt-1 text-[12px] text-black/60">
                         {result.type === "team"
                           ? "Find your team on the Teams page to run and manage it."
-                          : "Find it on the Agents page. Use Chat there when you&apos;re ready to talk to it."}
+                          : "Find it on the Agents page. Use Chat there when you're ready to talk to it."}
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {result.agents.slice(0, 4).map((a) => (
+                          <Link
+                            key={a.id}
+                            href={`${routePrefix}/agents/${a.id}`}
+                            className="rounded-full border border-green-700/30 bg-white px-2.5 py-1 text-[11px] font-medium text-[#1c1830] hover:bg-green-50/80"
+                          >
+                            {a.name}
+                          </Link>
+                        ))}
+                      </div>
                       <Link
                         href={result.type === "team" ? `${routePrefix}/teams` : `${routePrefix}/agents`}
                         className={cn(
@@ -1232,11 +1658,11 @@ export function ChatLanding({
                       running in your workspace.
                     </p>
                     <div className="space-y-2">
-                      {result.outputs.map((o, i) => (
-                        <ResultRow key={i} output={o} routePrefix={routePrefix} />
+                      {result.agents.map((a) => (
+                        <ResultRow key={a.id} agent={a} routePrefix={routePrefix} />
                       ))}
                     </div>
-                    {result.outputs.some((o) => o.response.agent.jitScopes.length > 0) && result.outputs[0] && (
+                    {result.agents.some((a) => (a.response?.agent.jitScopes.length ?? 0) > 0) && result.agents[0] && (
                       <div className="rounded-xl border border-amber-500/25 bg-amber-50/70 p-3.5 backdrop-blur-sm space-y-2.5">
                         <div>
                           <p className="text-[12.5px] font-semibold text-[#1c1830]">
@@ -1255,7 +1681,7 @@ export function ChatLanding({
                             Approve via WhatsApp
                           </Link>
                           <Link
-                            href={`${routePrefix}/agents/${result.outputs[0].response.agent.id}/chat`}
+                            href={`${routePrefix}/agents/${result.agents[0].id}/chat`}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-black/15 bg-black/[0.04] px-3 py-1.5 text-[12px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.08]"
                           >
                             <LayoutDashboard className="size-3.5" aria-hidden />
@@ -1269,9 +1695,9 @@ export function ChatLanding({
                       </div>
                     )}
                     <div className="flex flex-wrap items-center gap-3 pt-1">
-                      {result.outputs[0] && (
+                      {result.agents[0] && (
                         <Link
-                          href={`${routePrefix}/agents/${result.outputs[0].response.agent.id}`}
+                          href={`${routePrefix}/agents/${result.agents[0].id}`}
                           className="rounded-lg border border-black/15 bg-black/[0.04] px-3.5 py-1.5 text-[12px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.08]"
                         >
                           Open dashboard →

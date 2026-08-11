@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import { addInjection } from '../teams/runInjectionStore.js';
 import { buildTeamInbound, gatewayService } from '../gateway/index.js';
 import { injectTeamRunMessage } from '../teams/teamChannel.service.js';
@@ -11,6 +12,18 @@ import { permissionScopeSchema } from '../agents/scopeValidation.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest } from '../lib/stepUpOrGuest.js';
+import {
+  buildPromptWithAttachments,
+  CHAT_ATTACHMENT_MAX_BYTES,
+  CHAT_ATTACHMENT_MAX_MB,
+  processChatUploads,
+  storedChatAttachments,
+} from '../agentChat/chatAttachment.service.js';
+import {
+  assertModelAllowed,
+  ModelPolicyError,
+  normalizeQlixInferenceModelId,
+} from '../llm/modelPolicy.js';
 import {
   AgentConfirmNameMismatchError,
   AgentDeleteForbiddenError,
@@ -30,13 +43,55 @@ import {
   TeamScopeExceedsAgentError,
   TeamsService,
   TeamEmailConnectorRequiredError,
-  TeamRunNotPausedError,
-  TeamRunNoLeadCheckpointError,
-  TeamRunAlreadyApprovedError,
-  TeamNoEnrichWorkerError,
 } from '../teams/teams.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
+import { JitService } from '../jit/jit.service.js';
 
+/** Team-run uploads allow slightly more files than agent chat (8). */
+const TEAM_INJECT_MAX_FILES = 10;
+const TEAM_INJECT_MESSAGE_MAX = 2000;
+const TEAM_RUN_GOAL_MAX = 4000;
+
+const teamFileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: CHAT_ATTACHMENT_MAX_BYTES, files: TEAM_INJECT_MAX_FILES },
+});
+
+function isMultipartRequest(req: Request): boolean {
+  const raw = req.headers['content-type'];
+  const ct = Array.isArray(raw) ? raw.join(';') : (raw ?? '');
+  if (ct.toLowerCase().includes('multipart/form-data')) return true;
+  // Fallback for proxies that normalize the header in ways type-is misses.
+  return Boolean(req.is('multipart/form-data'));
+}
+
+function parseTeamFileUpload(req: Request, res: Response, next: NextFunction): void {
+  if (!isMultipartRequest(req)) {
+    next();
+    return;
+  }
+  teamFileUpload.array('files', TEAM_INJECT_MAX_FILES)(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      res.status(400).json({
+        error: {
+          code: 'upload_error',
+          message:
+            err.code === 'LIMIT_FILE_SIZE'
+              ? `File is too large (max ${CHAT_ATTACHMENT_MAX_MB} MB).`
+              : err.code === 'LIMIT_FILE_COUNT'
+                ? `Too many files (max ${TEAM_INJECT_MAX_FILES}).`
+                : err.message,
+        },
+      });
+      return;
+    }
+    if (err) {
+      res.status(400).json({ error: { code: 'upload_error', message: 'File upload failed' } });
+      return;
+    }
+    next();
+  });
+}
 
 const createTeamSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -89,6 +144,7 @@ const patchMemberSchema = z.object({
 
 const startRunSchema = z.object({
   goal: z.string().trim().min(1).max(4000),
+  model: z.string().trim().min(1).max(200).optional(),
 });
 
 const deleteTeamBodySchema = z.object({
@@ -110,6 +166,7 @@ export function createTeamsRouter(): Router {
   const service = new TeamsService();
   const agentsService = new AgentsService();
   const repo = new TeamsRepository();
+  const jitService = new JitService();
 
   // ─── List & Create ──────────────────────────────────────────────────────────
 
@@ -430,13 +487,119 @@ export function createTeamsRouter(): Router {
     }
   });
 
-  router.post('/:id/runs', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
-    const parsed = startRunSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: { code: 'invalid_body', message: 'goal is required' } });
-      return;
-    }
+  /** Pending JIT approvals for worker/supervisor agent runs in this team execution. */
+  router.get(
+    '/:id/runs/:runId/pending-jit',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    async (req: Request, res: Response) => {
+      try {
+        const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
+        if (run.startedByUserId !== req.auth!.userId) {
+          res.status(403).json({ error: { code: 'forbidden', message: 'Not your team run' } });
+          return;
+        }
+        const tasks = await repo.listA2ATasks(run.id);
+        const agentRunIds = tasks
+          .map((t) => t.agentRunId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        const pending = await jitService.listPendingForAgentRuns({
+          userId: req.auth!.userId,
+          agentRunIds,
+        });
+        res.json({ pending });
+      } catch (err) {
+        if (err instanceof TeamNotFoundError) {
+          res.status(404).json({ error: { code: 'not_found', message: err.message } });
+          return;
+        }
+        res.status(500).json({ error: { code: 'pending_jit_failed', message: 'Failed to load pending approvals' } });
+      }
+    },
+  );
+
+  router.post(
+    '/:id/runs',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    parseTeamFileUpload,
+    async (req: Request, res: Response) => {
     try {
+      const isMultipart = isMultipartRequest(req);
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      let goal = '';
+      let modelRaw = '';
+      if (isMultipart) {
+        goal = typeof req.body?.goal === 'string' ? req.body.goal.trim() : '';
+        modelRaw = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+      } else {
+        const parsed = startRunSchema.safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: { code: 'invalid_body', message: 'goal is required' } });
+          return;
+        }
+        goal = parsed.data.goal;
+        modelRaw = parsed.data.model?.trim() ?? '';
+      }
+
+      if (goal.length > TEAM_RUN_GOAL_MAX) {
+        res.status(400).json({
+          error: { code: 'invalid_body', message: `goal is too long (max ${TEAM_RUN_GOAL_MAX} chars)` },
+        });
+        return;
+      }
+      if (!goal && files.length === 0) {
+        res.status(400).json({
+          error: { code: 'invalid_body', message: 'goal or at least one file is required' },
+        });
+        return;
+      }
+
+      let inferenceModel: string | undefined;
+      if (modelRaw) {
+        try {
+          inferenceModel = normalizeQlixInferenceModelId(modelRaw);
+          assertModelAllowed(inferenceModel);
+        } catch (err) {
+          const message =
+            err instanceof ModelPolicyError
+              ? err.message
+              : err instanceof Error
+                ? err.message
+                : 'Invalid model';
+          res.status(400).json({ error: { code: 'invalid_model', message } });
+          return;
+        }
+      }
+
+      console.info(
+        `[team-run-start] team=${req.params.id} multipart=${String(isMultipart)} files=${String(files.length)} ` +
+          `goalChars=${String(goal.length)} model=${inferenceModel ?? '(agent/team default)'} ` +
+          `contentType=${JSON.stringify(req.headers['content-type'] ?? null)}`,
+      );
+
+      let processed: Awaited<ReturnType<typeof processChatUploads>> = [];
+      if (files.length > 0) {
+        processed = await processChatUploads(files, TEAM_INJECT_MAX_FILES);
+      } else if (isMultipart) {
+        // Client sent multipart (usually means it intended files) but multer got none —
+        // common when the body was consumed upstream or the field name mismatched.
+        console.warn(
+          `[team-run-start] multipart with 0 files team=${req.params.id} bodyKeys=${Object.keys(req.body ?? {}).join(',')}`,
+        );
+      }
+      const attachments = storedChatAttachments(processed);
+      const agentGoal = buildPromptWithAttachments(goal, processed);
+      if (agentGoal.length > 100_000) {
+        res.status(400).json({
+          error: {
+            code: 'invalid_body',
+            message: 'Attached files are too large to include in the run goal. Try fewer or smaller files.',
+          },
+        });
+        return;
+      }
+
       const auth = req.auth!;
       const team = await service.getTeam(req.params.id!, auth.orgId);
       const backendUrl = resolveDockerBackendUrl(req);
@@ -448,8 +611,9 @@ export function createTeamsRouter(): Router {
           orgId: auth.orgId,
           userId: auth.userId,
           email: auth.email,
-          goal: parsed.data.goal,
+          goal: agentGoal,
           backendUrl,
+          inferenceModel: inferenceModel ?? null,
         }),
       );
       if (turn.status !== 'accepted') {
@@ -461,26 +625,86 @@ export function createTeamsRouter(): Router {
         });
         return;
       }
-      const run = await service.getRun(team.id, turn.runId, auth.orgId);
-      res.status(202).json({ run });
+      const run = await service.getRun(team.id, turn.runId!, auth.orgId);
+      const displayGoal =
+        goal ||
+        (processed.length === 1
+          ? `Attached ${processed[0]!.fileName}`
+          : processed.length > 0
+            ? `Attached ${processed.length} files`
+            : agentGoal);
+      res.status(202).json({
+        run,
+        displayGoal,
+        model: inferenceModel ?? team.config?.defaultModel ?? null,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
       if (err instanceof TeamNoSupervisorError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamRunnersNotReadyError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamEmailConnectorRequiredError) { res.status(409).json({ error: { code: err.code, message: err.message } }); return; }
+      if (err instanceof ModelPolicyError) {
+        res.status(400).json({ error: { code: 'invalid_model', message: err.message } });
+        return;
+      }
+      const status = typeof (err as { status?: number })?.status === 'number' ? (err as { status: number }).status : 500;
+      const code = typeof (err as { code?: string })?.code === 'string' ? (err as { code: string }).code : 'run_start_failed';
+      if (status >= 400 && status < 500) {
+        res.status(status).json({
+          error: { code, message: err instanceof Error ? err.message : 'Failed to start run' },
+        });
+        return;
+      }
       res.status(500).json({ error: { code: 'run_start_failed', message: 'Failed to start run' } });
     }
   });
 
-  // User: inject a guidance message into the active worker mid-run
-  router.post('/:id/runs/:runId/inject', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
-    const schema = z.object({ message: z.string().trim().min(1).max(2000) });
-    const body = schema.safeParse(req.body);
-    if (!body.success) {
-      res.status(400).json({ error: { code: 'validation_error', message: 'message is required (max 2000 chars)' } });
-      return;
-    }
+  // User: inject a guidance message (optional files) into the active worker mid-run
+  router.post(
+    '/:id/runs/:runId/inject',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    parseTeamFileUpload,
+    async (req: Request, res: Response) => {
     try {
+      const isMultipart = isMultipartRequest(req);
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      let message = '';
+      if (isMultipart) {
+        message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+      } else {
+        const body = z
+          .object({ message: z.string().trim().min(1).max(TEAM_INJECT_MESSAGE_MAX) })
+          .safeParse(req.body);
+        if (!body.success) {
+          res.status(400).json({
+            error: { code: 'validation_error', message: 'message is required (max 2000 chars)' },
+          });
+          return;
+        }
+        message = body.data.message;
+      }
+
+      if (message.length > TEAM_INJECT_MESSAGE_MAX) {
+        res.status(400).json({
+          error: { code: 'validation_error', message: `message is too long (max ${TEAM_INJECT_MESSAGE_MAX} chars)` },
+        });
+        return;
+      }
+      if (!message && files.length === 0) {
+        res.status(400).json({
+          error: { code: 'validation_error', message: 'message or at least one file is required' },
+        });
+        return;
+      }
+
+      console.info(
+        `[team-run-inject] team=${req.params.id} run=${req.params.runId} multipart=${String(isMultipart)} ` +
+          `files=${String(files.length)} messageChars=${String(message.length)} ` +
+          `contentType=${JSON.stringify(req.headers['content-type'] ?? null)}`,
+      );
+
       const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
       if (run.status !== 'running') {
         res.status(409).json({ error: { code: 'run_not_active', message: 'Run is not currently active' } });
@@ -496,13 +720,39 @@ export function createTeamsRouter(): Router {
         res.status(404).json({ error: { code: 'no_active_worker', message: 'No active worker found — run may be between stages' } });
         return;
       }
-      await addInjection(task.agentRunId, body.data.message);
+
+      let processed: Awaited<ReturnType<typeof processChatUploads>> = [];
+      if (files.length > 0) {
+        processed = await processChatUploads(files, TEAM_INJECT_MAX_FILES);
+      } else if (isMultipart) {
+        console.warn(
+          `[team-run-inject] multipart with 0 files team=${req.params.id} run=${req.params.runId} bodyKeys=${Object.keys(req.body ?? {}).join(',')}`,
+        );
+      }
+      const attachments = storedChatAttachments(processed);
+      const injectText = buildPromptWithAttachments(message, processed);
+      const displayMessage =
+        message ||
+        (processed.length === 1
+          ? `Attached ${processed[0]!.fileName}`
+          : `Attached ${processed.length} files`);
+
+      await addInjection(task.agentRunId, injectText);
       await repo.appendEvent(run.id, req.params.id!, task.toAgentId, 'user_injection' as any, {
-        message: body.data.message,
+        message: displayMessage,
+        ...(attachments.length > 0 ? { attachments } : {}),
       });
-      res.json({ ok: true });
+      res.json({ ok: true, attachments });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: (err as Error).message } }); return; }
+      const status = typeof (err as { status?: number })?.status === 'number' ? (err as { status: number }).status : 500;
+      const code = typeof (err as { code?: string })?.code === 'string' ? (err as { code: string }).code : 'inject_failed';
+      if (status >= 400 && status < 500) {
+        res.status(status).json({
+          error: { code, message: err instanceof Error ? err.message : 'Failed to inject message' },
+        });
+        return;
+      }
       res.status(500).json({ error: { code: 'inject_failed', message: 'Failed to inject message' } });
     }
   });
@@ -523,68 +773,6 @@ export function createTeamsRouter(): Router {
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
       res.status(500).json({ error: { code: 'cancel_failed', message: 'Failed to cancel run' } });
-    }
-  });
-
-  router.post('/:id/runs/:runId/approve-lead-outreach', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
-    try {
-      const run = await service.approveLeadOutreach(
-        req.params.id!,
-        req.params.runId!,
-        req.auth!.orgId,
-      );
-      res.json({ run });
-    } catch (err) {
-      if (err instanceof TeamNotFoundError) {
-        res.status(404).json({ error: { code: 'not_found', message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunNotPausedError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunNoLeadCheckpointError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunAlreadyApprovedError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      res.status(500).json({ error: { code: 'approve_failed', message: 'Failed to approve lead outreach' } });
-    }
-  });
-
-  router.post('/:id/runs/:runId/retry-lead-enrichment', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
-    try {
-      const run = await service.retryLeadEnrichment(
-        req.params.id!,
-        req.params.runId!,
-        req.auth!.orgId,
-      );
-      res.json({ run });
-    } catch (err) {
-      if (err instanceof TeamNotFoundError) {
-        res.status(404).json({ error: { code: 'not_found', message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunNotPausedError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunNoLeadCheckpointError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      if (err instanceof TeamRunAlreadyApprovedError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      if (err instanceof TeamNoEnrichWorkerError) {
-        res.status(409).json({ error: { code: err.code, message: err.message } });
-        return;
-      }
-      res.status(500).json({ error: { code: 'retry_enrichment_failed', message: 'Failed to retry lead enrichment' } });
     }
   });
 
@@ -626,7 +814,6 @@ export function createTeamsRouter(): Router {
       if (currentRun?.status === 'paused') {
         send('paused', {
           status: 'paused',
-          campaignId: currentRun.leadCampaignId,
           teamRunId: currentRun.id,
         });
       }
@@ -652,7 +839,6 @@ export function createTeamsRouter(): Router {
         if (latest?.status === 'paused' && !closed) {
           send('paused', {
             status: 'paused',
-            campaignId: latest.leadCampaignId,
             teamRunId: latest.id,
           });
         }

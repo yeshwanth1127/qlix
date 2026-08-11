@@ -291,7 +291,7 @@ function formatScopeLabel(scope: string): string {
     'system.file_read': 'Read files',
     'system.gui_control': 'Control desktop',
     'email.send': 'Send email (not drafts)',
-    'drive.write': 'Write to Google Drive',
+    'drive.write': 'Write to Google Drive / OneDrive',
     'calendar.write': 'Write to Google Calendar',
     'meet.manage': 'Manage Google Meet',
     'youtube.publish': 'Publish to YouTube',
@@ -1040,6 +1040,64 @@ export class JitService {
         context: formatJitApprovalContext(pl.toolPayload ?? pl),
         runId,
         conversationId: storedConvo ?? input.conversationId,
+        requestedAt: new Date(requestedMs).toISOString(),
+      });
+    }
+
+    return out;
+  }
+
+  /**
+   * Pending JIT approvals for one or more agent runs (team workers / supervisor).
+   * Used by team-run UI when SSE may have missed a scope_requested card.
+   */
+  async listPendingForAgentRuns(input: {
+    userId: string;
+    agentRunIds: string[];
+  }): Promise<PendingJitDTO[]> {
+    const runIds = [...new Set(input.agentRunIds.map((id) => id.trim()).filter(Boolean))];
+    if (runIds.length === 0) return [];
+
+    const pending = await prisma.approval.findMany({
+      where: {
+        decision: 'pending',
+        userId: input.userId,
+      },
+      include: {
+        actionLog: {
+          select: { id: true, actionType: true, payload: true, timestampMs: true, agentId: true },
+        },
+      },
+      orderBy: { requestedAtMs: 'desc' },
+      take: 50,
+    });
+
+    const want = new Set(runIds);
+    const now = Date.now();
+    const out: PendingJitDTO[] = [];
+
+    for (const row of pending) {
+      const ttlMs = (row.ttlSeconds ?? 120) * 1000;
+      const requestedMs = Number(row.requestedAtMs);
+      if (requestedMs + ttlMs < now) continue;
+
+      const payload = row.actionLog.payload;
+      if (!payload || typeof payload !== 'object') continue;
+      const pl = payload as Record<string, unknown>;
+      const runId = extractRunId(pl.toolPayload ?? pl);
+      if (!runId || !want.has(runId)) continue;
+
+      const storedConvo = typeof pl.conversationId === 'string' ? pl.conversationId : null;
+      const agentId = row.actionLog.agentId;
+      if (!agentId) continue;
+      out.push({
+        jitRequestId: row.actionLog.id,
+        agentId,
+        scope: row.actionLog.actionType,
+        scopeLabel: formatScopeLabel(row.actionLog.actionType),
+        context: formatJitApprovalContext(pl.toolPayload ?? pl),
+        runId,
+        conversationId: storedConvo,
         requestedAt: new Date(requestedMs).toISOString(),
       });
     }

@@ -4,8 +4,7 @@ import type { PermissionScope } from '../agents/agents.types.js';
 import { prisma } from '../lib/prisma.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { ConnectorsRepository } from './connectors.repository.js';
-import { googleTokenCanComposeDrafts, refreshGoogleAccessToken } from './googleOAuth.service.js';
-import { googleServiceConnected } from './googleServices.js';
+import { googleTokenCanComposeDrafts } from './googleOAuth.service.js';
 import {
   gmailCreateDraft,
   gmailDeleteDraft,
@@ -24,46 +23,33 @@ import type {
   EmailSendResult,
 } from './connectors.types.js';
 import {
+  EmailProviderNotAvailableError,
+  EmailProviderSelectionRequiredError,
+  hasEmailConnector as hasResolvedEmailConnector,
+  resolveEmailSession,
+} from './emailConnector.service.js';
+import {
+  outlookCreateDraft,
+  outlookDeleteDraft,
+  outlookDownloadAttachment,
+  outlookList,
+  outlookListDrafts,
+  outlookSend,
+  type OutlookAttachmentMeta,
+  type OutlookFetchedMessage,
+} from './outlookApi.service.js';
+import {
   GMAIL_RECONNECT_FOR_DRAFT_INSTRUCTIONS,
   gmailComposeScopeMissingMessage,
   gmailConnectorNotConnectedMessage,
 } from './connectorUserMessages.js';
-import { isPlaceholderEmail, isFabricatedRecipientBatch } from '../leads/leadEmailTrust.js';
-import {
-  hasListedLeadsRecently,
-  hasListedLeadsRecentlyForTeamRun,
-  isCampaignOutreachApproved,
-} from '../leads/leadOutreachGate.js';
-import { LeadsService, LeadEnrichmentRequiredError } from '../leads/leads.service.js';
-import { McpRepository } from '../mcp/mcp.repository.js';
+import { isPlaceholderEmail, isFabricatedRecipientBatch } from './emailSafety.js';
 import { safeFetch } from '../mcp/ssrfGuard.js';
 import { JitService } from '../jit/jit.service.js';
 import { extractTextFromUpload } from '../aiBrain/brainExtractText.js';
 import { storeSandboxFile } from '../sandbox/sandboxClient.js';
 
 const jitService = new JitService();
-const mcpRepo = new McpRepository();
-
-/**
- * True when this agent is wired for lead outreach: bound to the qlix-leads MCP server
- * or holding any mcp.qlix-leads.* scope. Such agents must only email verified scraped
- * leads, so we can safely reject any recipient that isn't in the lead DB.
- */
-async function agentDoesLeadOutreach(
-  agentId: string,
-  ctx: { permissionScopes: string[]; alwaysScopes: string[] },
-): Promise<boolean> {
-  const hasLeadScope = [...ctx.permissionScopes, ...ctx.alwaysScopes].some((s) =>
-    s.startsWith('mcp.qlix-leads.'),
-  );
-  if (hasLeadScope) return true;
-  try {
-    const bindings = await mcpRepo.listBindingsForAgent(agentId);
-    return bindings.some((b) => b.serverSlug === 'qlix-leads');
-  } catch {
-    return false;
-  }
-}
 
 export class ConnectorNotConfiguredError extends Error {
   readonly code = 'connector_not_configured';
@@ -94,7 +80,6 @@ export class EmailToolError extends Error {
 
 const repo = new ConnectorsRepository();
 const actionsService = new ActionsService();
-const leadsService = new LeadsService();
 
 function effectiveScopes(params: {
   permissionScopes: string[];
@@ -159,25 +144,6 @@ async function loadAgentRunContext(agentId: string, runId: string | null): Promi
     alwaysScopes: agent.alwaysScopes as string[],
     jitScopes: agent.jitScopes as string[],
   };
-}
-
-async function getFreshAccessToken(orgId: string): Promise<string> {
-  const tokens = await repo.loadTokens(orgId, 'google');
-  if (!tokens) throw new ConnectorNotConfiguredError(gmailConnectorNotConnectedMessage());
-
-  const bufferMs = 60_000;
-  if (tokens.expiresAtMs && tokens.expiresAtMs - Date.now() > bufferMs) {
-    return tokens.accessToken;
-  }
-
-  const refreshed = await refreshGoogleAccessToken(tokens.refreshToken);
-  const updated = {
-    ...tokens,
-    accessToken: refreshed.accessToken,
-    expiresAtMs: refreshed.expiresAtMs,
-  };
-  await repo.saveTokens(orgId, 'google', updated);
-  return refreshed.accessToken;
 }
 
 async function callN8nWebhook(params: {
@@ -348,6 +314,54 @@ async function enrichMessagesWithAttachments(params: {
   return out;
 }
 
+async function enrichOutlookMessagesWithAttachments(params: {
+  accessToken: string;
+  messages: OutlookFetchedMessage[];
+  includeAttachments: boolean;
+}): Promise<EmailReadResult['messages']> {
+  if (!params.includeAttachments) {
+    return params.messages.map(({ _attachmentMetas: _drop, ...message }) => message);
+  }
+  let remaining = EMAIL_ATTACHMENT_MAX_PER_READ;
+  const messages: EmailReadResult['messages'] = [];
+  for (const message of params.messages) {
+    const metas = (message._attachmentMetas ?? []).slice(0, EMAIL_ATTACHMENT_MAX_PER_MESSAGE);
+    const { _attachmentMetas: _drop, ...base } = message;
+    const selected = metas.slice(0, remaining);
+    remaining -= selected.length;
+    const attachments = await Promise.all(selected.map(async (meta: OutlookAttachmentMeta): Promise<EmailAttachmentProcessed> => {
+      if (meta.sizeBytes > EMAIL_ATTACHMENT_MAX_BYTES) {
+        return { ...meta, url: '', error: `Attachment too large (max ${EMAIL_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MB)` };
+      }
+      try {
+        const bytes = await outlookDownloadAttachment({
+          accessToken: params.accessToken, messageId: message.id, attachmentId: meta.attachmentId,
+        });
+        if (bytes.length > EMAIL_ATTACHMENT_MAX_BYTES) {
+          return { ...meta, sizeBytes: bytes.length, url: '', error: `Attachment too large after download (max ${EMAIL_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MB)` };
+        }
+        const stored = await storeSandboxFile(bytes, meta.fileName, meta.mimeType);
+        let extractedText: string | undefined;
+        try {
+          const raw = await extractTextFromUpload(bytes, meta.fileName);
+          if (raw.trim()) extractedText = raw.length > EMAIL_ATTACHMENT_EXTRACT_CHARS ? `${raw.slice(0, EMAIL_ATTACHMENT_EXTRACT_CHARS)}\n\n[…truncated]` : raw;
+        } catch { /* binary or unsupported attachment */ }
+        return {
+          ...meta, sizeBytes: bytes.length || meta.sizeBytes, url: stored.url,
+          ...(extractedText ? { extractedText, textPreview: extractedText.slice(0, 500) } : {}),
+        };
+      } catch (err) {
+        return { ...meta, url: '', error: String((err as Error)?.message ?? err).slice(0, 300) };
+      }
+    }));
+    const skipped = metas.slice(selected.length).map((meta) => ({
+      ...meta, url: '', error: 'Skipped: attachment budget for this email_read exceeded',
+    }));
+    messages.push({ ...base, ...(attachments.length || skipped.length ? { attachments: [...attachments, ...skipped] } : {}) });
+  }
+  return messages;
+}
+
 export async function executeEmailRead(params: {
   agentId: string;
   runId: string | null;
@@ -358,11 +372,17 @@ export async function executeEmailRead(params: {
   if (!scopes.has('email.read')) throw new EmailScopeDeniedError('email.read');
   if (!ctx.orgId) throw new ConnectorNotConfiguredError('Agent must belong to an organization');
 
-  const accessToken = await getFreshAccessToken(ctx.orgId);
+  const session = await resolveEmailSession({
+    orgId: ctx.orgId,
+    provider: params.input.provider,
+    operation: 'read',
+  });
+  if (!session) throw new ConnectorNotConfiguredError('No Gmail or Microsoft 365 mailbox is connected for this workspace.');
+  const accessToken = session.accessToken;
   const settings = await repo.getN8nSettings(ctx.orgId);
   // In-house Gmail API is the default; n8n is only used when an org explicitly
   // configured it (backward compat), keeping existing webhook setups working.
-  const useN8n = Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
+  const useN8n = session.provider === 'google' && Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
   const query = params.input.query ?? 'is:unread';
   const maxResults = Math.min(Math.max(params.input.maxResults ?? 10, 1), 25);
   const messageId = params.input.messageId ?? null;
@@ -379,12 +399,17 @@ export async function executeEmailRead(params: {
       });
       // Legacy n8n webhooks do not download attachments into the sandbox.
       messages = (Array.isArray(result.messages) ? result.messages : []) as EmailReadResult['messages'];
-    } else {
+    } else if (session.provider === 'google') {
       const listed = await gmailList({ accessToken, query, maxResults, messageId });
       messages = await enrichMessagesWithAttachments({
         accessToken,
         messages: listed.messages,
         includeAttachments,
+      });
+    } else {
+      const listed = await outlookList({ accessToken, query, maxResults, messageId });
+      messages = await enrichOutlookMessagesWithAttachments({
+        accessToken, messages: listed.messages, includeAttachments,
       });
     }
     const attachmentCount = messages.reduce((n, m) => n + (m.attachments?.length ?? 0), 0);
@@ -401,7 +426,9 @@ export async function executeEmailRead(params: {
         resultCount: messages.length,
         attachmentCount,
         includeAttachments,
-        via: useN8n ? 'n8n' : 'gmail_api',
+        provider: session.provider,
+        mailboxEmail: session.mailboxEmail,
+        via: useN8n ? 'n8n' : session.provider === 'google' ? 'gmail_api' : 'graph_api',
       },
     });
     return { messages };
@@ -415,7 +442,12 @@ export async function executeEmailRead(params: {
       teamRunId: ctx.teamRunId,
       payload: { error: String((err as Error)?.message ?? err) },
     });
-    throw err instanceof EmailToolError ? err : new EmailToolError(String((err as Error)?.message ?? err));
+    if (
+      err instanceof EmailToolError ||
+      err instanceof EmailProviderSelectionRequiredError ||
+      err instanceof EmailProviderNotAvailableError
+    ) throw err;
+    throw new EmailToolError(String((err as Error)?.message ?? err));
   }
 }
 
@@ -458,62 +490,28 @@ export async function executeEmailSend(params: {
     for (const to of params.input.to) {
       if (isPlaceholderEmail(to)) {
         throw new EmailToolError(
-          `Refusing to ${isDraft ? 'draft to' : 'send to'} fake/placeholder address "${to}". This is not a real business email. ` +
-            `Do NOT invent addresses like info@cafe1.com. First run mcp.qlix-leads.gmb_search_leads, ` +
-            `then mcp.qlix-leads.list_leads, and use ONLY the verified emails it returns.`,
+          `Refusing to ${isDraft ? 'draft to' : 'send to'} fake/placeholder address "${to}". ` +
+            'Do NOT invent addresses like info@cafe1.com — use only real addresses provided by the user or obtained from trusted tools.',
         );
       }
     }
 
-    // A whole batch of sequential invented recipients (info@cafe1.com, info@cafe2.com, …)
-    // is the classic signature of an agent skipping the scrape/list step. Refuse it outright.
     if (params.input.to.length > 0 && isFabricatedRecipientBatch(params.input.to)) {
       throw new EmailToolError(
         `Refusing to ${isDraft ? 'draft' : 'send'}: the recipient list looks fabricated (sequential invented domains). ` +
-          'Scrape real leads with mcp.qlix-leads.gmb_search_leads and use the verified emails from list_leads.',
+          'Use only real addresses provided by the user or obtained from trusted tools.',
       );
     }
   }
 
-  // Lead-gen enforcement applies to real sends only — drafts may be prepared before outreach.
-  if (mode === 'send' && (await agentDoesLeadOutreach(params.agentId, ctx))) {
-    const listed =
-      (await hasListedLeadsRecently(params.agentId)) ||
-      (ctx.teamRunId != null && (await hasListedLeadsRecentlyForTeamRun(ctx.teamRunId)));
-    if (!listed) {
-      throw new EmailToolError(
-        'Refusing to send: you must scrape and present the leads to the user before any outreach. ' +
-          'First call mcp.qlix-leads.gmb_search_leads, then mcp.qlix-leads.list_leads, show the ' +
-          'resulting business names and emails to the user, and only send after that step.',
-      );
-    }
-    const campaignId =
-      (params.input.metadata?.campaignId as string | undefined)?.trim() ||
-      (await leadsService.resolveCampaignIdFromRecipients(ctx.orgId, params.input.to));
-    // Skip the campaign-wide enrichment-complete block when the user already reviewed
-    // this campaign's leads in the UI and approved outreach — they saw which leads
-    // still lack emails. Per-recipient verified-email checks below still apply.
-    if (campaignId && !(await isCampaignOutreachApproved(campaignId))) {
-      try {
-        await leadsService.assertBrowserEnrichmentComplete(ctx.orgId, campaignId);
-      } catch (err) {
-        if (err instanceof LeadEnrichmentRequiredError) {
-          throw new EmailToolError(err.message);
-        }
-        throw err;
-      }
-    }
-    for (const to of params.input.to) {
-      const isRealLead = await leadsService.isVerifiedLeadRecipient(ctx.orgId, to);
-      if (!isRealLead) {
-        throw new EmailToolError(
-          `Refusing to send to "${to}" — it is not a verified lead for this workspace. ` +
-            `Only send to emails returned by mcp.qlix-leads.list_leads after scraping. ` +
-            `If you have no leads yet, run mcp.qlix-leads.gmb_search_leads first.`,
-        );
-      }
-    }
-  }
+  // Resolve the mailbox before requesting send approval. When both providers are
+  // connected this intentionally makes the model ask the user on every operation.
+  const session = await resolveEmailSession({
+    orgId: ctx.orgId,
+    provider: params.input.provider,
+    operation: mode === 'send' ? 'send' : 'draft',
+  });
+  if (!session) throw new ConnectorNotConfiguredError('No Gmail or Microsoft 365 mailbox is connected for this workspace.');
 
   // Draft list/create/delete never leave the mailbox — skip JIT. Sends keep approval.
   if (mode === 'send') {
@@ -548,21 +546,19 @@ export async function executeEmailSend(params: {
     }
   }
 
-  const tokens = await repo.loadTokens(ctx.orgId, 'google');
-  if (!tokens) throw new ConnectorNotConfiguredError(gmailConnectorNotConnectedMessage());
-  if (needsCompose && !googleTokenCanComposeDrafts(tokens.scopes ?? [])) {
+  if (session.provider === 'google' && needsCompose && !googleTokenCanComposeDrafts(session.tokens.scopes ?? [])) {
     throw new EmailComposeScopeMissingError();
   }
 
-  const accessToken = await getFreshAccessToken(ctx.orgId);
+  const accessToken = session.accessToken;
   const mailboxEmail =
-    tokens.emailAddress?.trim() ||
-    (await repo.findByOrgProvider(ctx.orgId, 'google'))?.emailAddress?.trim() ||
+    session.mailboxEmail?.trim() ||
+    (await repo.findByOrgProvider(ctx.orgId, session.provider))?.emailAddress?.trim() ||
     null;
   const settings = await repo.getN8nSettings(ctx.orgId);
   // In-house Gmail API is the default; n8n only when an org explicitly configured it.
   // Draft ops always use the Gmail API (n8n send webhooks do not manage drafts).
-  const useN8n = mode === 'send' && Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
+  const useN8n = session.provider === 'google' && mode === 'send' && Boolean(settings?.n8nBaseUrl && settings?.n8nWebhookSecretEnc);
   const riskLevel = mode === 'send' ? 'high' : 'medium';
 
   const withMailbox = (result: EmailSendResult): EmailSendResult => {
@@ -574,20 +570,20 @@ export async function executeEmailSend(params: {
       return {
         ...base,
         note:
-          `Draft saved in Gmail Drafts for ${mailboxEmail ?? 'the connected Google account'}. ` +
-          `It was NOT sent. Recipients in "to" only prefill the draft — they will not see it until someone clicks Send in Gmail.`,
+          `Draft saved in the selected mailbox Drafts folder for ${mailboxEmail ?? 'the connected account'}. ` +
+          `It was NOT sent. Recipients in "to" only prefill the draft — they will not see it until someone clicks Send.`,
       };
     }
     if (result.mode === 'send' || result.status === 'sent') {
       return {
         ...base,
-        note: `Email delivered from ${mailboxEmail ?? 'the connected Google account'}.`,
+        note: `Email delivered from ${mailboxEmail ?? 'the selected mailbox'}.`,
       };
     }
     if (result.mode === 'list_drafts' || result.status === 'listed') {
       return {
         ...base,
-        note: `Drafts listed from ${mailboxEmail ?? 'the connected Google account'}.`,
+        note: `Drafts listed from ${mailboxEmail ?? 'the selected mailbox'}.`,
       };
     }
     return base;
@@ -595,7 +591,7 @@ export async function executeEmailSend(params: {
 
   try {
     let result: EmailSendResult;
-    if (isListDrafts) {
+    if (isListDrafts && session.provider === 'google') {
       const listed = await gmailListDrafts({
         accessToken,
         maxResults: params.input.maxResults,
@@ -607,7 +603,10 @@ export async function executeEmailSend(params: {
         mode: 'list_drafts',
         drafts: listed.drafts,
       });
-    } else if (isDeleteDraft) {
+    } else if (isListDrafts) {
+      const listed = await outlookListDrafts({ accessToken, maxResults: params.input.maxResults });
+      result = withMailbox({ messageId: '', threadId: '', status: 'listed', mode: 'list_drafts', drafts: listed.drafts });
+    } else if (isDeleteDraft && session.provider === 'google') {
       const deleted = await gmailDeleteDraft({
         accessToken,
         draftId: params.input.draftId!.trim(),
@@ -619,7 +618,10 @@ export async function executeEmailSend(params: {
         draftId: deleted.draftId,
         mode: 'delete_draft',
       });
-    } else if (isDraft) {
+    } else if (isDeleteDraft) {
+      const deleted = await outlookDeleteDraft({ accessToken, draftId: params.input.draftId!.trim() });
+      result = withMailbox({ messageId: '', threadId: '', status: 'deleted', draftId: deleted.draftId, mode: 'delete_draft' });
+    } else if (isDraft && session.provider === 'google') {
       const draft = await gmailCreateDraft({
         accessToken,
         to: params.input.to,
@@ -634,6 +636,10 @@ export async function executeEmailSend(params: {
         draftId: draft.draftId,
         mode: 'draft',
       });
+    } else if (isDraft) {
+      result = withMailbox(await outlookCreateDraft({
+        accessToken, to: params.input.to, subject: params.input.subject, bodyText: params.input.bodyText,
+      }));
     } else if (useN8n) {
       const path = settings!.n8nEmailSendPath ?? '/webhook/qlix-email-send';
       const raw = await callN8nWebhook({
@@ -653,7 +659,7 @@ export async function executeEmailSend(params: {
         status: String(raw.status ?? 'sent'),
         mode: 'send',
       });
-    } else {
+    } else if (session.provider === 'google') {
       const sent = await gmailSend({
         accessToken,
         to: params.input.to,
@@ -662,6 +668,11 @@ export async function executeEmailSend(params: {
         replyToMessageId: params.input.replyToMessageId ?? null,
       });
       result = withMailbox({ ...sent, mode: 'send' });
+    } else {
+      result = withMailbox(await outlookSend({
+        accessToken, to: params.input.to, subject: params.input.subject, bodyText: params.input.bodyText,
+        replyToMessageId: params.input.replyToMessageId ?? null,
+      }));
     }
     await appendEmailActionLog({
       agentId: params.agentId,
@@ -679,22 +690,10 @@ export async function executeEmailSend(params: {
         draftId: result.draftId ?? null,
         draftCount: result.drafts?.length ?? null,
         mailboxEmail,
-        via: useN8n ? 'n8n' : 'gmail_api',
-        campaignId: params.input.metadata?.campaignId ?? null,
-        leadId: params.input.metadata?.leadId ?? null,
+        provider: session.provider,
+        via: useN8n ? 'n8n' : session.provider === 'google' ? 'gmail_api' : 'graph_api',
       },
     });
-    if (mode === 'send' && params.input.metadata?.campaignId && params.input.metadata?.leadId) {
-      await leadsService.recordOutreachFromEmail({
-        campaignId: params.input.metadata.campaignId,
-        leadId: params.input.metadata.leadId,
-        channel: 'email',
-        provider: useN8n ? 'n8n' : 'gmail',
-        status: 'sent',
-        subject: params.input.subject,
-        bodyPreview: params.input.bodyText.slice(0, 200),
-      }).catch(() => undefined);
-    }
     return result;
   } catch (err) {
     if (err instanceof EmailComposeScopeMissingError) throw err;
@@ -707,12 +706,15 @@ export async function executeEmailSend(params: {
       teamRunId: ctx.teamRunId,
       payload: { mode, error: String((err as Error)?.message ?? err), mailboxEmail },
     });
-    throw err instanceof EmailToolError ? err : new EmailToolError(String((err as Error)?.message ?? err));
+    if (
+      err instanceof EmailToolError ||
+      err instanceof EmailProviderSelectionRequiredError ||
+      err instanceof EmailProviderNotAvailableError
+    ) throw err;
+    throw new EmailToolError(String((err as Error)?.message ?? err));
   }
 }
 
 export async function hasEmailConnector(orgId: string): Promise<boolean> {
-  const account = await repo.findByOrgProvider(orgId, 'google');
-  if (account?.status !== 'connected') return false;
-  return googleServiceConnected('gmail', account.scopes);
+  return hasResolvedEmailConnector(orgId);
 }

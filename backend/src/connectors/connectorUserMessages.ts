@@ -49,11 +49,18 @@ Tell the user clearly:
 Connectors path: /individual/connectors or /organization/connectors.`;
 }
 
-export const DRIVE_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Drive');
+export const DRIVE_CONNECT_INSTRUCTIONS = `No cloud drive is connected for this workspace.
+
+Tell the user clearly:
+
+1. Open **Connectors** in the sidebar.
+2. Connect **Google → Drive**, or connect **Microsoft 365** (OneDrive), then retry.
+
+Connectors path: /individual/connectors or /organization/connectors.`;
 export const DRIVE_CONNECT_SHORT =
-  'Connect Drive first: sidebar → Connectors → Google → Drive → Connect, then retry.';
+  'Connect a drive first: Connectors → Google → Drive, or Connectors → Microsoft 365, then retry.';
 export function driveConnectorNotConnectedMessage(): string {
-  return `Google Drive is not connected for this workspace. ${DRIVE_CONNECT_SHORT}`;
+  return `No Google Drive or OneDrive is connected for this workspace. ${DRIVE_CONNECT_SHORT}`;
 }
 
 export const CALENDAR_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Calendar');

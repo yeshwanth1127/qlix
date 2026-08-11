@@ -26,6 +26,7 @@ export function createChannelDefaultsRouter(): Router {
         whatsappDefaultAgentId: true,
         whatsappDefaultTeamId: true,
         status: true,
+        scopes: true,
       },
     });
     const by = Object.fromEntries(connectors.map((c) => [c.provider, c]));
@@ -44,7 +45,10 @@ export function createChannelDefaultsRouter(): Router {
       },
       telegram: {
         agentId: telegram?.whatsappDefaultAgentId ?? null,
-        connected: telegram?.status === 'connected',
+        connected:
+          telegram?.status === 'connected' &&
+          Array.isArray(telegram.scopes) &&
+          telegram.scopes.includes('bot'),
       },
     });
   });
@@ -85,18 +89,28 @@ export function createChannelDefaultsRouter(): Router {
       ['telegram', d.telegramAgentId],
     ] as const) {
       if (agentId === undefined) continue;
-      await prisma.connectorAccount.upsert({
+      const existing = await prisma.connectorAccount.findUnique({
         where: { orgId_provider: { orgId, provider } },
-        create: {
+        select: { id: true, tokenEnc: true, scopes: true, status: true },
+      });
+      if (existing) {
+        await prisma.connectorAccount.update({
+          where: { id: existing.id },
+          data: { whatsappDefaultAgentId: agentId },
+        });
+        continue;
+      }
+      // Do not mark Telegram "connected" without a real bot token — only store default agent stub for Slack-compat.
+      await prisma.connectorAccount.create({
+        data: {
           orgId,
           userId,
           provider,
-          status: 'connected',
+          status: provider === 'telegram' ? 'revoked' : 'connected',
           scopes: [],
           tokenEnc: 'channel-defaults',
           whatsappDefaultAgentId: agentId,
         },
-        update: { whatsappDefaultAgentId: agentId },
       });
     }
 

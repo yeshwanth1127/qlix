@@ -52,6 +52,22 @@ import {
   revokeGitHubToken,
   verifyGitHubOAuthState,
 } from '../connectors/githubOAuth.service.js';
+import {
+  buildMicrosoftAuthUrl,
+  exchangeMicrosoftCode,
+  MicrosoftOAuthNotConfiguredError,
+  mintMicrosoftOAuthState,
+  revokeMicrosoftToken,
+  verifyMicrosoftOAuthState,
+} from '../connectors/microsoftOAuth.service.js';
+import {
+  buildNotionAuthUrl,
+  exchangeNotionCode,
+  NotionOAuthNotConfiguredError,
+  mintNotionOAuthState,
+  revokeNotionToken,
+  verifyNotionOAuthState,
+} from '../connectors/notionOAuth.service.js';
 import { clearCachedModules } from '../connectors/crm/crmModuleCache.js';
 import type { ConnectorAccountDTO, N8nIntegrationDTO } from '../connectors/connectors.types.js';
 import {
@@ -466,6 +482,156 @@ export function createConnectorsRouter(): Router {
       console.error('[connectors] github/delete', err);
       response.status(500).json({
         error: { code: 'connector_delete_failed', message: 'Failed to disconnect GitHub' },
+      });
+    }
+  });
+
+  router.post('/microsoft/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintMicrosoftOAuthState(auth.userId, auth.orgId);
+      const url = buildMicrosoftAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof MicrosoftOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] microsoft/start', err);
+      response.status(500).json({
+        error: { code: 'oauth_start_failed', message: 'Failed to start Microsoft OAuth' },
+      });
+    }
+  });
+
+  router.get('/microsoft/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifyMicrosoftOAuthState(state);
+      const tokens = await exchangeMicrosoftCode(code);
+      const connector: ConnectorAccountDTO = await repo.upsertMicrosoft({ orgId, userId, tokens });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(
+          `${prefix}/connectors?connected=microsoft&email=${encodeURIComponent(connector.emailAddress ?? '')}`,
+        ),
+      );
+    } catch (err) {
+      console.error('[connectors] microsoft/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/microsoft', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'microsoft');
+      if (tokens?.accessToken) await revokeMicrosoftToken(tokens.accessToken);
+      await repo.delete(request.auth!.orgId, 'microsoft');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] microsoft/delete', err);
+      response.status(500).json({
+        error: { code: 'connector_delete_failed', message: 'Failed to disconnect Microsoft 365' },
+      });
+    }
+  });
+
+  router.post('/notion/start', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const auth = request.auth!;
+      const state = mintNotionOAuthState(auth.userId, auth.orgId);
+      const url = buildNotionAuthUrl(state);
+      response.json({ url });
+    } catch (err) {
+      if (err instanceof NotionOAuthNotConfiguredError) {
+        response.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('[connectors] notion/start', err);
+      response.status(500).json({
+        error: { code: 'oauth_start_failed', message: 'Failed to start Notion OAuth' },
+      });
+    }
+  });
+
+  router.get('/notion/callback', async (request: Request, response: Response) => {
+    const code = typeof request.query.code === 'string' ? request.query.code : '';
+    const state = typeof request.query.state === 'string' ? request.query.state : '';
+    const oauthError = typeof request.query.error === 'string' ? request.query.error : '';
+
+    if (oauthError) {
+      response.redirect(frontendRedirect(`/individual/connectors?error=${encodeURIComponent(oauthError)}`));
+      return;
+    }
+    if (!code || !state) {
+      response.redirect(frontendRedirect('/individual/connectors?error=missing_code'));
+      return;
+    }
+
+    try {
+      const { userId, orgId } = verifyNotionOAuthState(state);
+      const tokens = await exchangeNotionCode(code);
+      const connector: ConnectorAccountDTO = await repo.upsertNotion({ orgId, userId, tokens });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { workspaceKind: true },
+      });
+      const prefix = org?.workspaceKind === 'organization' ? '/organization' : '/individual';
+      response.redirect(
+        frontendRedirect(
+          `${prefix}/connectors?connected=notion&email=${encodeURIComponent(connector.emailAddress ?? '')}`,
+        ),
+      );
+    } catch (err) {
+      console.error('[connectors] notion/callback', err);
+      response.redirect(frontendRedirect(`/individual/connectors?error=oauth_failed`));
+    }
+  });
+
+  router.delete('/notion', authenticateUser(true), async (request: Request, response: Response) => {
+    try {
+      if (!(await canManageConnectors(request))) {
+        response.status(403).json({ error: { code: 'forbidden', message: 'Not allowed to manage connectors' } });
+        return;
+      }
+      const tokens = await repo.loadTokens(request.auth!.orgId, 'notion');
+      if (tokens?.accessToken) await revokeNotionToken(tokens.accessToken);
+      await repo.delete(request.auth!.orgId, 'notion');
+      response.status(204).send();
+    } catch (err) {
+      console.error('[connectors] notion/delete', err);
+      response.status(500).json({
+        error: { code: 'connector_delete_failed', message: 'Failed to disconnect Notion' },
       });
     }
   });
