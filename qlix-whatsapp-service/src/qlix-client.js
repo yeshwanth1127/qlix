@@ -101,6 +101,26 @@ export async function isAutoReplyArmed(connectorId, remoteJid) {
   return Boolean(result.data?.armed);
 }
 
+/** Phone JIDs with open auto-reply / team waits, plus post-ack muted leads. */
+export async function listArmedAndMutedContacts(connectorId) {
+  const q = new URLSearchParams({ connector_id: connectorId });
+  const result = await request('GET', `/api/v1/whatsapp/auto-reply/armed-contacts?${q}`);
+  if (!result.ok) return { contacts: [], muted: [] };
+  const contacts = Array.isArray(result.data?.contacts)
+    ? result.data.contacts.filter((j) => typeof j === 'string')
+    : [];
+  const muted = Array.isArray(result.data?.muted)
+    ? result.data.muted.filter((j) => typeof j === 'string')
+    : [];
+  return { contacts, muted };
+}
+
+/** Phone JIDs with open auto-reply / team waits for this connector. */
+export async function listArmedContacts(connectorId) {
+  const { contacts } = await listArmedAndMutedContacts(connectorId);
+  return contacts;
+}
+
 export async function getAgentStatus(connectorId) {
   const result = await request(
     'GET',

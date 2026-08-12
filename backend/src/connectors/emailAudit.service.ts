@@ -32,7 +32,7 @@ async function computePrevHashForAgent(agentId: string): Promise<string> {
 export async function appendEmailActionLog(input: {
   agentId: string;
   userId: string;
-  actionType: 'email.read' | 'email.send' | 'social.read' | 'social.publish' | 'crm.read' | 'crm.write' | 'crm.delete' | 'whatsapp.read' | 'whatsapp.contact_send' | 'whatsapp.auto_reply' | 'slack.read' | 'slack.send';
+  actionType: 'email.read' | 'email.send' | 'social.read' | 'social.publish' | 'crm.read' | 'crm.write' | 'crm.delete' | 'whatsapp.read' | 'whatsapp.contact_send' | 'whatsapp.auto_reply' | 'slack.read' | 'slack.send' | 'notion.read' | 'notion.write';
   payload: Record<string, unknown>;
   status: 'success' | 'blocked' | 'failed';
   riskLevel: 'low' | 'medium' | 'high';

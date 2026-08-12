@@ -72,6 +72,8 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
     category: "other",
     verb: "Set reply instructions",
   },
+  notion_read: { label: "Notion", category: "other", verb: "Read Notion" },
+  notion_write: { label: "Notion", category: "other", verb: "Write Notion" },
   brain_query: { label: "AI Brain", category: "brain", verb: "Query knowledge" },
   brain_knowledge_read: { label: "AI Brain", category: "brain", verb: "Read knowledge" },
   spawn_subagents: { label: "Sub-agent", category: "subagent", verb: "Spawn sub-agents" },
@@ -342,14 +344,17 @@ function formatToolList(toolIds: string[]): string {
 
 /**
  * Step kinds that represent the LLM actually invoking a tool (or a tool-gated
- * approval). Everything else — run lifecycle, engine warmup, "calling model",
- * routing, etc. — is plumbing and is not surfaced as agent activity.
+ * approval), plus nested sub-agent lifecycle. Everything else — run lifecycle,
+ * engine warmup, "calling model", routing, etc. — is plumbing and is not
+ * surfaced as agent activity.
  */
 const TOOL_ACTIVITY_KINDS = new Set<ActivityStep["kind"]>([
   "tool_round",
   "tool_done",
   "jit_pending",
   "jit_resolved",
+  "subagent_running",
+  "subagent_done",
 ]);
 
 /**
@@ -498,6 +503,23 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
     }
     case "luna_start":
       return { id, label: "Agent engine ready", tone: "neutral", kind: "other" };
+    case "budget_subagent_continue": {
+      const reason = String(d.reason ?? "").trim();
+      const detail =
+        reason === "time_budget"
+          ? "Time budget exceeded"
+          : reason === "round_budget"
+            ? "Round budget exceeded"
+            : reason || undefined;
+      return {
+        id,
+        label: "Continuing via sub-agent",
+        detail,
+        tone: "accent",
+        kind: "subagent_running",
+        category: "subagent",
+      };
+    }
     case "subagent_spawned": {
       const name = String(d.name ?? "").trim();
       const inv = String(d.invocationId ?? "").trim();
@@ -748,6 +770,7 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         String(d.scope ?? "") === "crm.write" ||
         String(d.scope ?? "") === "crm.delete" ||
         String(d.scope ?? "") === "slack.send" ||
+        String(d.scope ?? "") === "notion.write" ||
         String(d.scope ?? "") === "whatsapp.contact_send";
       const detailParts = [
         channel === "whatsapp"

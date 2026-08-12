@@ -5,6 +5,7 @@ import type {
   TeamRunEvent as PrismaTeamRunEvent,
   A2ATask as PrismaA2ATask,
 } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import type { TeamRunReplyChannel, TeamRunSourceChannel } from './teams.types.js';
 import { createHash } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
@@ -17,6 +18,7 @@ import type {
   TeamDTO,
   TeamMemberDTO,
   TeamRunDTO,
+  TeamRunArtifact,
   TeamRunEventDTO,
   TeamRunEventType,
   TeamRunStatus,
@@ -100,6 +102,7 @@ function toRunDTO(r: PrismaTeamRun): TeamRunDTO {
     supervisorTrace: r.supervisorTrace as unknown[],
     artifacts: r.artifacts as unknown as TeamRunDTO['artifacts'],
     scopeEscalations: r.scopeEscalations as unknown as TeamRunDTO['scopeEscalations'],
+    checkpointJson: r.checkpointJson as TeamRunDTO['checkpointJson'],
     result: r.result,
     errorMessage: r.errorMessage,
     createdAt: r.createdAt.toISOString(),
@@ -425,7 +428,7 @@ export class TeamsRepository {
       include: { run: true },
     });
     if (!session?.run) return null;
-    if (!['queued', 'running'].includes(session.run.status)) {
+    if (!['queued', 'running', 'paused'].includes(session.run.status)) {
       await this.clearChannelSession(connectorId);
       return null;
     }
@@ -445,11 +448,26 @@ export class TeamsRepository {
     return run ? toRunDTO(run) : null;
   }
 
+  /** Recover the inference model used by a prior successful worker in this team run. */
+  async findLatestSuccessfulAgentInferenceModel(teamRunId: string): Promise<string | null> {
+    const row = await prisma.agentRun.findFirst({
+      where: {
+        teamRunId,
+        status: 'success',
+        inferenceModel: { not: null },
+      },
+      orderBy: { finishedAt: 'desc' },
+      select: { inferenceModel: true },
+    });
+    return row?.inferenceModel?.trim() || null;
+  }
+
   async updateRunStatus(runId: string, status: TeamRunStatus, extra?: {
     startedAt?: Date;
     completedAt?: Date;
     result?: unknown;
     errorMessage?: string;
+    checkpointJson?: unknown | null;
   }): Promise<void> {
     await prisma.teamRun.update({
       where: { id: runId },
@@ -459,6 +477,14 @@ export class TeamsRepository {
         ...(extra?.completedAt ? { completedAt: extra.completedAt } : {}),
         ...(extra?.result !== undefined ? { result: extra.result as object } : {}),
         ...(extra?.errorMessage ? { errorMessage: extra.errorMessage } : {}),
+        ...(extra?.checkpointJson !== undefined
+          ? {
+              checkpointJson:
+                extra.checkpointJson === null
+                  ? Prisma.JsonNull
+                  : (extra.checkpointJson as Prisma.InputJsonValue),
+            }
+          : {}),
       },
     });
   }
@@ -474,6 +500,21 @@ export class TeamsRepository {
     const run = await prisma.teamRun.findUnique({ where: { id: runId }, select: { artifacts: true } });
     if (!run) return;
     const artifacts = (run.artifacts as unknown[]).concat([artifact]);
+    await prisma.teamRun.update({ where: { id: runId }, data: { artifacts: artifacts as object[] } });
+  }
+
+  /** Replace or append a run artifact by stable id (e.g. live sandbox files). */
+  async upsertArtifactById(runId: string, artifact: TeamRunArtifact): Promise<void> {
+    const run = await prisma.teamRun.findUnique({ where: { id: runId }, select: { artifacts: true } });
+    if (!run) return;
+    const existing = run.artifacts as unknown[];
+    const index = existing.findIndex(
+      (item) => typeof item === 'object' && item !== null && (item as { id?: string }).id === artifact.id,
+    );
+    const artifacts =
+      index >= 0
+        ? existing.map((item, i) => (i === index ? artifact : item))
+        : existing.concat([artifact]);
     await prisma.teamRun.update({ where: { id: runId }, data: { artifacts: artifacts as object[] } });
   }
 

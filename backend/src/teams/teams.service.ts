@@ -19,6 +19,7 @@ import type {
   ReorderTeamMembersInput,
   TeamDTO,
   TeamMemberDTO,
+  TeamRunCheckpoint,
   TeamRunDTO,
   TeamRunReplyChannel,
   TeamRunSourceChannel,
@@ -26,6 +27,12 @@ import type {
 } from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamOrchestrator } from './teamOrchestrator.js';
+
+function formatWaitHours(hours: number): string {
+  if (hours === 1) return '1 hour';
+  if (Number.isInteger(hours)) return `${hours} hours`;
+  return `${hours} hours`;
+}
 
 export class TeamNotFoundError extends Error {
   readonly code = 'not_found';
@@ -459,6 +466,62 @@ export class TeamsService {
     const run = await this.repo.findRun(runId);
     if (!run || run.teamId !== teamId) throw new TeamNotFoundError();
     return run;
+  }
+
+  /**
+   * User-selected wait duration for a paused WhatsApp collect wait.
+   * Applies the same expiresAt to every still-open wait for the run.
+   */
+  async setWaitTtlHours(
+    teamId: string,
+    runId: string,
+    orgId: string,
+    hours: number,
+  ): Promise<{ expiresAt: string; hours: number; updatedWaits: number }> {
+    const {
+      WaitTriggerService,
+      clampWaitTtlHours,
+    } = await import('./waitTrigger.service.js');
+    const ttlHours = clampWaitTtlHours(hours);
+    const run = await this.getRun(teamId, runId, orgId);
+    if (run.status !== 'paused') {
+      const err = new Error('Run is not waiting for WhatsApp replies') as Error & { status?: number; code?: string };
+      err.status = 409;
+      err.code = 'run_not_paused';
+      throw err;
+    }
+    const checkpoint = run.checkpointJson as TeamRunCheckpoint | null | undefined;
+    if (!checkpoint?.awaitingTtlSelection) {
+      const err = new Error('Wait duration was already set for this pause') as Error & {
+        status?: number;
+        code?: string;
+      };
+      err.status = 409;
+      err.code = 'ttl_already_set';
+      throw err;
+    }
+
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+    const waitTriggers = new WaitTriggerService();
+    const updatedWaits = await waitTriggers.setExpiresAtForOpenTeamWaits(run.id, expiresAt);
+    const nextCheckpoint: TeamRunCheckpoint = {
+      ...checkpoint,
+      awaitingTtlSelection: false,
+      waitExpiresAt: expiresAt.toISOString(),
+      waitTtlHours: ttlHours,
+      waitReason:
+        `Waiting for WhatsApp replies from ${checkpoint.waitTriggerIds.length} contacted lead` +
+        `${checkpoint.waitTriggerIds.length === 1 ? '' : 's'} ` +
+        `(up to ${formatWaitHours(ttlHours)}, until ${expiresAt.toISOString()}).`,
+    };
+    await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: nextCheckpoint });
+    await this.repo.appendEvent(run.id, teamId, null, 'wait_ttl_set', {
+      hours: ttlHours,
+      expiresAt: expiresAt.toISOString(),
+      updatedWaits,
+      reason: nextCheckpoint.waitReason,
+    });
+    return { expiresAt: expiresAt.toISOString(), hours: ttlHours, updatedWaits };
   }
 
   // ─── Internal helpers ───────────────────────────────────────────────────────

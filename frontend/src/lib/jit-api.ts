@@ -97,6 +97,8 @@ export function jitScopeLabel(scope: string): string {
     "crm.read": "Read Zoho CRM",
     "slack.send": "Write to Slack",
     "slack.read": "Read Slack",
+    "notion.write": "Write to Notion",
+    "notion.read": "Read Notion",
     "whatsapp.contact_send": "Message a WhatsApp contact",
     "whatsapp.read": "Read WhatsApp chats",
     "whatsapp.send": "Send files to linked WhatsApp",

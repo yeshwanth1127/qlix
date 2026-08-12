@@ -49,6 +49,8 @@ const BUILDER_HINTS: Record<string, string> = {
   'crm.delete': 'Delete CRM records',
   'slack.read': 'Read Slack',
   'slack.send': 'Write Slack',
+  'notion.read': 'Read Notion pages/databases',
+  'notion.write': 'Write Notion pages/databases',
 };
 
 function builderHint(scope: ScopeDef): string {

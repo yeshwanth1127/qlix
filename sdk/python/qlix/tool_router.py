@@ -35,6 +35,8 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
         "crm.delete",
         "slack.read",
         "slack.send",
+        "notion.read",
+        "notion.write",
     ),
     "knowledge": ("brain.query", "brain.knowledge_read"),
     "always": (),
@@ -260,6 +262,9 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "slack list",
             "list item",
             "task board",
+            "notion",
+            "notion page",
+            "notion database",
         }
     ),
     "knowledge": frozenset(
@@ -688,6 +693,7 @@ class ToolRouter:
         from .cloud_email_runtime import openai_email_tool_definitions
         from .cloud_crm_runtime import openai_crm_tool_definitions
         from .cloud_slack_runtime import openai_slack_tool_definitions
+        from .cloud_notion_runtime import openai_notion_tool_definitions
         from .cloud_research_runtime import openai_research_tool_definitions
         from .cloud_whatsapp_runtime import openai_whatsapp_tool_definitions
         from .agents3_runtime import openai_agents3_tool_definitions
@@ -728,6 +734,7 @@ class ToolRouter:
             tools.extend(openai_google_workspace_tool_definitions(self.identity, sf))
             tools.extend(openai_crm_tool_definitions(self.identity, sf))
             tools.extend(openai_slack_tool_definitions(self.identity, sf))
+            tools.extend(openai_notion_tool_definitions(self.identity, sf))
             tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
         if "knowledge" in groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
@@ -970,6 +977,18 @@ class ToolRouter:
                 qlix_sdk=qlix_sdk,
             )
             executor_map.update(slack_executors)
+            from .cloud_notion_runtime import build_notion_tool_executors
+
+            notion_executors = build_notion_tool_executors(
+                identity=self.identity,
+                skill_filter=sf,
+                agent_id=agent_id,
+                run_id=run_id,
+                backend_url=backend_url,
+                runner_token=runner_token,
+                qlix_sdk=qlix_sdk,
+            )
+            executor_map.update(notion_executors)
             whatsapp_executors = build_whatsapp_tool_executors(
                 identity=self.identity,
                 skill_filter=sf,

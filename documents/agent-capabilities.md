@@ -50,6 +50,8 @@ Scopes are not free-form. Each builtin scope maps to real tools in the SDK. Orgs
 | `whatsapp.read` | Read WhatsApp chats | List contacts + read 1:1 messages | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.contact_send` | Message WhatsApp contacts | Text a contact/phone (user must ask) | Yes | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.auto_reply` | Auto-reply to contacts | After send, route that contact’s replies into a new run and deliver the answer back | No | WhatsApp (Baileys) | cloud, hybrid |
+| `notion.read` | Read Notion | Search pages/databases, read page markdown, query databases | No | Notion | cloud, hybrid |
+| `notion.write` | Write to Notion | Create/update pages and create database rows | **Yes** | Notion | cloud, hybrid |
 | `mcp.<slug>.<tool>` | MCP tool | One tool on a registered MCP server | Per tool (`auto` / `jit` / `blocked`) | MCP server | cloud (HTTP), hybrid (HTTP + stdio) |
 | `mcp.<slug>.*` | MCP server wildcard | All tools on that server | If listed in JIT scopes | MCP server | same |
 
@@ -71,7 +73,7 @@ The intent router groups tools by required scopes:
 | `files` | `system.file_read`, `system.file_write` | hybrid |
 | `code` | `system.file_read` | hybrid |
 | `gui` | `system.gui_control` | hybrid |
-| `comms` | `email.read`, `email.send`, `whatsapp.send`, `whatsapp.read`, `whatsapp.contact_send`, `whatsapp.auto_reply` | cloud, hybrid |
+| `comms` | `email.read`, `email.send`, `drive.*`, `calendar.*`, `meet.manage`, `whatsapp.*`, `crm.*`, `slack.*`, `notion.read`, `notion.write` | cloud, hybrid |
 | `knowledge` | `brain.query`, `brain.knowledge_read` | cloud, hybrid |
 | `always` | (none) | cloud, hybrid |
 
@@ -159,7 +161,26 @@ No full browser — structured CLIs / APIs for search and content.
 | `whatsapp_auto_reply_set_instructions` | Set/update what to do when that contact replies |
 | `luna_local_send_whatsapp_document` | Hybrid: deliver a local file to self-chat; needs `system.file_read` **or** `system.file_write` |
 
-**Auto-reply flow:** contact replies are forwarded only when an active session exists for that JID → new agent run (prompt includes stored `replyInstructions` when set) → final result is sent back to the same contact (not self-chat).
+**Auto-reply flow:** standalone agents receive a new agent run when an active contact listener matches; the prompt includes stored `replyInstructions` and the result is sent back to the same contact (not self-chat).
+
+**Team wait flow:** when a team worker has both `whatsapp.contact_send` and `whatsapp.auto_reply`, and the team has a configured **wait step** (`TeamConfig.waitSteps`) or the run goal requests reply-wait, the send arms a durable `whatsapp_inbound` wait **per contacted lead**. The team pauses after that stage (workers stop; the run stays observable via SSE). On pause, team chat asks how long to wait (1h / 6h / 24h / 48h / custom). Progress events show “N of M replies received” until every lead replies or the chosen TTL ends.
+
+**Wait side-effects (generic):** a wait step can declare side effects such as `live_sandbox_artifact` (xlsx/csv/json). While waiting, each included inbound reply appends a row to a **stable sandbox download URL** (same link, file replaced in place). Contact ack policy is configurable (`fixed` ack to the lead is the default preset). Delivery to the owner (`whatsapp.send` self-chat) typically happens `on_resume` when the next stage runs.
+
+On each inbound reply while waiting:
+1. The lead receives a short fixed WhatsApp ack (“Thanks — we'll get back to you shortly.”) when `contactAck: fixed`.
+2. Each reply is classified for interest (keywords first; cheap LLM only when ambiguous).
+3. Live artifact policy: append rows for `interested` and `unclear`; skip clear `not_interested`.
+4. UI emits `live_artifact_updated` with row count and download URL.
+
+On resume (all replied or TTL):
+1. Bulk interest classification is injected for the next stage.
+2. Live artifact URLs from the wait are passed in context — the delivery stage should `whatsapp_send` that file, not call `create_xlsx` again unless no live artifact exists.
+3. If the TTL ends first, the pipeline continues with whoever has replied so far (including zero).
+
+Teams opt in via **`waitSteps`** on team config (NL builder persists these when reply-wait + sheet language is detected) or legacy goal inference on the run. Solo-agent side effects on `WaitTrigger` are planned separately.
+
+This is a stage-boundary continuation — workers do not remain running while they wait.
 
 ---
 
@@ -269,7 +290,7 @@ Templates in the MCP catalog (tools vary by server; scopes are generated per too
 | `google-workspace` | Productivity | Gmail, Calendar, Drive, Docs, Sheets (via Workspace MCP) |
 | `slack` | Comms | Read channels / post as bot (hybrid stdio) |
 | `linear` | Productivity | Issues, projects, cycles |
-| `notion` | Productivity | Search / read pages, append databases |
+| `notion` | Productivity | Search / read pages, create/update pages, query/append databases (`notion.read` / `notion.write`) |
 | `postgres` | Data | Read-only SQL |
 | `filesystem` | Data | Read/write under an allow-listed path (hybrid) |
 
@@ -299,6 +320,7 @@ Supporting agent APIs (non-exhaustive): run poll / events / complete, email & Wh
 | `system.file_write` | `luna_local_write_file`, `luna_local_bash`, `luna_local_python`, `luna_local_code_task`, `luna_local_create_pdf`, `luna_local_create_xlsx` |
 | `system.gui_control` | `gui_control` |
 | `email.read` / `email.send` | `email_read`, `email_send` |
+| `notion.read` / `notion.write` | `notion_read`, `notion_write` |
 | `whatsapp.send` | `whatsapp_send` (+ `luna_local_send_whatsapp_document` with file scopes) |
 | `social.read` | Orbit channels / posts / analytics (via Connectors → Orbit) |
 | `social.publish` | Orbit create/schedule post (JIT; via Connectors → Orbit) |

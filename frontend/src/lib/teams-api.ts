@@ -33,7 +33,14 @@ export type TeamRunEventType =
   | "run_completed"
   | "run_failed"
   | "result_delivered"
-  | "user_injection";
+  | "user_injection"
+  | "wait_armed"
+  | "wait_ttl_requested"
+  | "wait_ttl_set"
+  | "wait_progress"
+  | "live_artifact_updated"
+  | "wait_fulfilled"
+  | "wait_expired";
 
 /** Deterministic stage-goal playbook, pinned on the team at creation. */
 export type TeamPlaybook = "none";
@@ -58,6 +65,8 @@ export interface TeamConfig {
   autoSequence?: boolean;
   /** Default model for all agents in this team (overrides each agent's own model). */
   defaultModel?: string;
+  /** Declarative external-event waits (WhatsApp inbound + side effects). */
+  waitSteps?: unknown[];
 }
 
 export interface TeamMemberDTO {
@@ -123,6 +132,23 @@ export interface ScopeEscalation {
 export type TeamRunSourceChannel = "web" | "whatsapp";
 export type TeamRunReplyChannel = "whatsapp" | "none";
 
+export interface TeamRunCheckpoint {
+  liveArtifacts?: Array<{
+    id: string;
+    sideEffectId: string;
+    sandboxId: string;
+    url: string;
+    fileName: string;
+    format: string;
+    columns: string[];
+    rows: Array<Record<string, string | null>>;
+    rowCount: number;
+    updatedAt: string;
+  }>;
+  waitReason?: string;
+  awaitingTtlSelection?: boolean;
+}
+
 export interface TeamRunDTO {
   id: string;
   teamId: string;
@@ -136,6 +162,7 @@ export interface TeamRunDTO {
   supervisorTrace: unknown[];
   artifacts: TeamRunArtifact[];
   scopeEscalations: ScopeEscalation[];
+  checkpointJson?: TeamRunCheckpoint | null;
   result: unknown | null;
   errorMessage: string | null;
   createdAt: string;
@@ -432,6 +459,24 @@ export async function listTeamRunPendingJit(
   if (!res.ok) return [];
   const data = (await res.json().catch(() => null)) as { pending?: TeamRunPendingJit[] } | null;
   return data?.pending ?? [];
+}
+
+export async function setTeamRunWaitTtl(
+  teamId: string,
+  runId: string,
+  hours: number,
+): Promise<{ expiresAt: string; hours: number; updatedWaits: number }> {
+  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/wait-ttl`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hours }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new Error(body?.error?.message ?? "Failed to set wait duration");
+  }
+  return res.json() as Promise<{ expiresAt: string; hours: number; updatedWaits: number }>;
 }
 
 export async function injectTeamRunMessage(

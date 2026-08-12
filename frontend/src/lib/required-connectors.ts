@@ -26,6 +26,10 @@ const SCOPE_REQUIRES_CONNECTOR: Readonly<Partial<Record<string, ConnectorProvide
   "whatsapp.auto_reply": "whatsapp_baileys",
   "social.read": "orbit",
   "social.publish": "orbit",
+  "slack.read": "slack",
+  "slack.send": "slack",
+  "notion.read": "notion",
+  "notion.write": "notion",
 };
 
 export interface RequiredConnectorInfo {
@@ -77,7 +81,15 @@ const CONNECTOR_INFO: Readonly<Record<ConnectorProvider, Omit<RequiredConnectorI
   },
 };
 
-const PROVIDER_ORDER: readonly ConnectorProvider[] = ["google", "microsoft", "zoho", "whatsapp_baileys", "orbit"];
+const PROVIDER_ORDER: readonly ConnectorProvider[] = [
+  "google",
+  "microsoft",
+  "zoho",
+  "whatsapp_baileys",
+  "orbit",
+  "slack",
+  "notion",
+];
 
 /** Unique connectors required by any of the given permission scopes. */
 export function connectorsRequiredByScopes(scopes: readonly string[]): ConnectorProvider[] {

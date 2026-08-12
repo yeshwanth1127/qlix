@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RunnerOrchestrator } from './runnerOrchestrator.js';
 
-export const RUNNER_DOCKERFILE_REV = 'shared-base-2';
+export const RUNNER_DOCKERFILE_REV = 'shared-base-3';
 
 const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/cloud_runner.py',
@@ -17,6 +17,8 @@ const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/cloud_google_workspace_runtime.py',
   'sdk/python/qlix/cloud_crm_runtime.py',
   'sdk/python/qlix/cloud_slack_runtime.py',
+  'sdk/python/qlix/cloud_notion_runtime.py',
+  'sdk/python/qlix/cloud_whatsapp_runtime.py',
   'sdk/python/qlix/jit.py',
   'sdk/python/qlix/cloud_research_runtime.py',
   'sdk/python/qlix/cloud_document_runtime.py',

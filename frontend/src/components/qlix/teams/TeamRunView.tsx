@@ -25,6 +25,7 @@ import {
   Send,
   ShieldCheck,
   Square,
+  Table2,
   Terminal,
   Users,
   Wrench,
@@ -38,6 +39,7 @@ import {
   injectTeamRunMessage,
   listTeamRunPendingJit,
   listTeamRuns,
+  setTeamRunWaitTtl,
   startTeamRun,
   streamTeamRun,
   type TeamDTO,
@@ -73,11 +75,20 @@ import {
   sketchButtonPrimary,
   sketchButtonSecondary,
 } from "@/components/qlix/sketch/tokens";
+import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
 import {
   TeamRunGraph,
   type AgentState as GraphAgentState,
   type AgentStatus as GraphAgentStatus,
 } from "@/components/qlix/teams/TeamRunGraph";
+import { LiveSpreadsheetPanel } from "@/components/qlix/teams/LiveSpreadsheetPanel";
+import {
+  liveSheetFromCheckpoint,
+  liveSheetFromEventPayload,
+  mergeLiveSheet,
+  replayLiveSheetFromEvents,
+  type LiveSheetPreview,
+} from "@/components/qlix/teams/liveSheetState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -149,6 +160,35 @@ type ProcessedEvent =
   | { kind: "subtask_completed"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
   | { kind: "run_result"; eventId: string; timestampMs: number }
   | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string }
+  | { kind: "wait_armed"; eventId: string; timestampMs: number; reason: string; contactCount: number }
+  | {
+      kind: "wait_ttl_requested";
+      eventId: string;
+      timestampMs: number;
+      reason: string;
+      optionsHours: number[];
+      allowCustom: boolean;
+    }
+  | { kind: "wait_ttl_set"; eventId: string; timestampMs: number; hours: number; expiresAt: string }
+  | {
+      kind: "wait_progress";
+      eventId: string;
+      timestampMs: number;
+      received: number;
+      remaining: number;
+      total: number;
+    }
+  | {
+      kind: "live_artifact_updated";
+      eventId: string;
+      timestampMs: number;
+      url: string;
+      rowCount: number;
+      jid: string;
+      interest: string;
+    }
+  | { kind: "wait_fulfilled"; eventId: string; timestampMs: number; responderCount: number; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
+  | { kind: "wait_expired"; eventId: string; timestampMs: number; reason: string }
   | { kind: "user_injection"; eventId: string; timestampMs: number; message: string; attachments?: ChatAttachmentChip[] }
   | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string };
 
@@ -162,6 +202,51 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type InterestSummary = {
+  interested: number;
+  notInterested: number;
+  unclear: number;
+  included: number;
+};
+
+function parseInterestSummary(raw: unknown): InterestSummary | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const interested = Number(o.interested ?? 0);
+  const notInterested = Number(o.notInterested ?? 0);
+  const unclear = Number(o.unclear ?? 0);
+  const included = Number(o.included ?? interested + unclear);
+  if (![interested, notInterested, unclear, included].every((n) => Number.isFinite(n))) {
+    return undefined;
+  }
+  return { interested, notInterested, unclear, included };
+}
+
+function formatWaitFulfilledLine(
+  responderCount: number,
+  interestSummary?: InterestSummary,
+): string {
+  const base =
+    responderCount > 1
+      ? `WhatsApp replies received (${responderCount}) — continuing the pipeline`
+      : "WhatsApp reply received — continuing the pipeline";
+  if (!interestSummary) return `${base}.`;
+  const bits: string[] = [];
+  if (interestSummary.interested > 0) {
+    bits.push(
+      `${interestSummary.interested} interested`,
+    );
+  }
+  if (interestSummary.unclear > 0) {
+    bits.push(`${interestSummary.unclear} unclear`);
+  }
+  if (interestSummary.notInterested > 0) {
+    bits.push(`${interestSummary.notInterested} declined`);
+  }
+  if (bits.length === 0) return `${base}.`;
+  return `${base} (${bits.join(" / ")}).`;
 }
 
 /** Agents built from the NL builder default to Exora General when the team has no override. */
@@ -312,6 +397,7 @@ const SESSION_CHAT_JIT_SCOPES = new Set([
   "crm.delete",
   "whatsapp.contact_send",
   "slack.send",
+  "notion.write",
 ]);
 
 function isSessionChatJitScope(scope: string | undefined): boolean {
@@ -794,9 +880,8 @@ function ActivityBody({
             const frame = frames[entry.id];
             const isLast = index === entries.length - 1;
             const isJitPending = entry.kind === "jit_pending";
-            const isJitResolved = entry.kind === "jit_resolved";
             const isRunningStep = entry.status === "running" || isJitPending;
-            const isError = entry.status === "error" || (isJitResolved && entry.status === "error");
+            const isError = entry.status === "error";
             return (
               <li key={entry.id} className="relative flex gap-2.5 pb-3 last:pb-0">
                 {/* rail node */}
@@ -996,7 +1081,7 @@ function CompletedBody({
 function ResultBody({ result }: { readonly result: string }) {
   return (
     <SketchBox className="px-4 py-3.5">
-      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-black">{result}</p>
+      <AgentMessageContent content={result} completed />
     </SketchBox>
   );
 }
@@ -1099,7 +1184,17 @@ function ArtifactRow({
   readonly artifact: TeamRunArtifact;
   readonly agentNameById: (id: string | null) => string;
 }) {
+  const fileContent =
+    artifact.type === "file" && artifact.content && typeof artifact.content === "object"
+      ? (artifact.content as { url?: string; rowCount?: number })
+      : null;
+  const sandboxUrl = typeof fileContent?.url === "string" ? fileContent.url : null;
+
   function download() {
+    if (sandboxUrl) {
+      window.open(sandboxUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
     const content =
       typeof artifact.content === "string"
         ? artifact.content
@@ -1117,14 +1212,16 @@ function ArtifactRow({
     <button
       type="button"
       onClick={download}
-      title="Download"
+      title={sandboxUrl ? "Open download link" : "Download"}
       className="group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-white/60"
     >
       <FileText size={12} className={cn("shrink-0", INK_FAINT)} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] text-black">{artifact.name}</span>
         <span className={cn("block truncate text-[10.5px]", INK_FAINT)}>
-          {agentNameById(artifact.agentId)}
+          {fileContent?.rowCount != null
+            ? `${fileContent.rowCount} row${fileContent.rowCount === 1 ? "" : "s"}`
+            : agentNameById(artifact.agentId)}
         </span>
       </span>
       <Download size={12} className={cn("shrink-0 opacity-0 transition-opacity group-hover:opacity-100", INK_SOFT)} />
@@ -1156,6 +1253,28 @@ type ChatItem =
   | { kind: "completed"; id: string; ts: number; agentId: string | null; summary?: string }
   | { kind: "result"; id: string; ts: number }
   | { kind: "failed"; id: string; ts: number; error: string }
+  | { kind: "wait_armed"; id: string; ts: number; reason: string; contactCount: number }
+  | {
+      kind: "wait_ttl_requested";
+      id: string;
+      ts: number;
+      reason: string;
+      optionsHours: number[];
+      allowCustom: boolean;
+    }
+  | { kind: "wait_ttl_set"; id: string; ts: number; hours: number; expiresAt: string }
+  | { kind: "wait_progress"; id: string; ts: number; received: number; remaining: number; total: number }
+  | {
+      kind: "live_artifact_updated";
+      id: string;
+      ts: number;
+      url: string;
+      rowCount: number;
+      jid: string;
+      interest: string;
+    }
+  | { kind: "wait_fulfilled"; id: string; ts: number; responderCount: number; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
+  | { kind: "wait_expired"; id: string; ts: number; reason: string }
   | { kind: "user"; id: string; ts: number; message: string; attachments?: ChatAttachmentChip[] }
   | { kind: "delivered"; id: string; ts: number; sent: boolean; reason?: string };
 
@@ -1193,7 +1312,12 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [showAgents, setShowAgents] = useState(false);
   const [viewMode, setViewMode] = useState<RunViewMode>("chat");
   const [jitDeciding, setJitDeciding] = useState<Record<string, boolean>>({});
+  const [waitTtlSubmitting, setWaitTtlSubmitting] = useState(false);
+  const [waitTtlError, setWaitTtlError] = useState<string | null>(null);
+  const [customWaitHours, setCustomWaitHours] = useState("2");
   const [jitError, setJitError] = useState<string | null>(null);
+  const [liveSheet, setLiveSheet] = useState<LiveSheetPreview | null>(null);
+  const [liveSheetOpen, setLiveSheetOpen] = useState(true);
   const showChat = viewMode === "chat";
 
   // Browser frames: agentId → frames[]
@@ -1524,6 +1648,76 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         case "run_failed":
           result.push({ kind: "run_failed_event", eventId: e.id, timestampMs: ts, error: (p.error as string | undefined) ?? "Run failed" });
           break;
+        case "wait_armed":
+          result.push({
+            kind: "wait_armed",
+            eventId: e.id,
+            timestampMs: ts,
+            reason: (p.reason as string | undefined) ?? "Waiting for an external response.",
+            contactCount: Number(p.contactCount ?? 0),
+          });
+          break;
+        case "wait_ttl_requested":
+          result.push({
+            kind: "wait_ttl_requested",
+            eventId: e.id,
+            timestampMs: ts,
+            reason:
+              (p.reason as string | undefined) ??
+              "How long should we wait for WhatsApp replies?",
+            optionsHours: Array.isArray(p.optionsHours)
+              ? (p.optionsHours as unknown[]).map((h) => Number(h)).filter((h) => Number.isFinite(h) && h > 0)
+              : [1, 6, 24, 48],
+            allowCustom: p.allowCustom !== false,
+          });
+          break;
+        case "wait_ttl_set":
+          result.push({
+            kind: "wait_ttl_set",
+            eventId: e.id,
+            timestampMs: ts,
+            hours: Number(p.hours ?? 0),
+            expiresAt: typeof p.expiresAt === "string" ? p.expiresAt : "",
+          });
+          break;
+        case "wait_progress":
+          result.push({
+            kind: "wait_progress",
+            eventId: e.id,
+            timestampMs: ts,
+            received: Number(p.received ?? 0),
+            remaining: Number(p.remaining ?? 0),
+            total: Number(p.total ?? 0),
+          });
+          break;
+        case "live_artifact_updated":
+          result.push({
+            kind: "live_artifact_updated",
+            eventId: e.id,
+            timestampMs: ts,
+            url: typeof p.url === "string" ? p.url : "",
+            rowCount: Number(p.rowCount ?? 0),
+            jid: typeof p.jid === "string" ? p.jid : "",
+            interest: typeof p.interest === "string" ? p.interest : "",
+          });
+          break;
+        case "wait_fulfilled":
+          result.push({
+            kind: "wait_fulfilled",
+            eventId: e.id,
+            timestampMs: ts,
+            responderCount: Number(p.responderCount ?? 1),
+            interestSummary: parseInterestSummary(p.interestSummary),
+          });
+          break;
+        case "wait_expired":
+          result.push({
+            kind: "wait_expired",
+            eventId: e.id,
+            timestampMs: ts,
+            reason: (p.reason as string | undefined) ?? "Wait expired.",
+          });
+          break;
         case "user_injection":
           result.push({
             kind: "user_injection",
@@ -1689,6 +1883,67 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         case "run_failed_event":
           items.push({ kind: "failed", id: ev.eventId, ts: ev.timestampMs, error: ev.error });
           break;
+        case "wait_armed":
+          items.push({
+            kind: "wait_armed",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            reason: ev.reason,
+            contactCount: ev.contactCount,
+          });
+          break;
+        case "wait_ttl_requested":
+          items.push({
+            kind: "wait_ttl_requested",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            reason: ev.reason,
+            optionsHours: ev.optionsHours,
+            allowCustom: ev.allowCustom,
+          });
+          break;
+        case "wait_ttl_set":
+          items.push({
+            kind: "wait_ttl_set",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            hours: ev.hours,
+            expiresAt: ev.expiresAt,
+          });
+          break;
+        case "wait_progress":
+          items.push({
+            kind: "wait_progress",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            received: ev.received,
+            remaining: ev.remaining,
+            total: ev.total,
+          });
+          break;
+        case "live_artifact_updated":
+          items.push({
+            kind: "live_artifact_updated",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            url: ev.url,
+            rowCount: ev.rowCount,
+            jid: ev.jid,
+            interest: ev.interest,
+          });
+          break;
+        case "wait_fulfilled":
+          items.push({
+            kind: "wait_fulfilled",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            responderCount: ev.responderCount,
+            interestSummary: ev.interestSummary,
+          });
+          break;
+        case "wait_expired":
+          items.push({ kind: "wait_expired", id: ev.eventId, ts: ev.timestampMs, reason: ev.reason });
+          break;
         case "user_injection":
           items.push({
             kind: "user",
@@ -1730,6 +1985,41 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
   const isPaused = runStatus === "paused" || run?.status === "paused";
   const isRunning = (runStatus === "running" || submitting) && !isPaused;
+  const waitTtlAlreadySet = events.some((e) => e.eventType === "wait_ttl_set");
+
+  const handleWaitTtl = useCallback(
+    async (hours: number) => {
+      if (!run?.id || waitTtlSubmitting || waitTtlAlreadySet) return;
+      setWaitTtlSubmitting(true);
+      setWaitTtlError(null);
+      try {
+        const result = await setTeamRunWaitTtl(team.id, run.id, hours);
+        setEvents((prev) => [
+          ...prev,
+          {
+            id: `local-wait-ttl-${result.expiresAt}`,
+            runId: run.id,
+            teamId: team.id,
+            agentId: null,
+            seq: (prev[prev.length - 1]?.seq ?? 0) + 1,
+            eventType: "wait_ttl_set",
+            payload: {
+              hours: result.hours,
+              expiresAt: result.expiresAt,
+              updatedWaits: result.updatedWaits,
+            },
+            prevHash: "",
+            timestampMs: String(Date.now()),
+          },
+        ]);
+      } catch (err) {
+        setWaitTtlError(err instanceof Error ? err.message : "Failed to set wait duration");
+      } finally {
+        setWaitTtlSubmitting(false);
+      }
+    },
+    [run?.id, team.id, waitTtlAlreadySet, waitTtlSubmitting],
+  );
 
   const handleJitDecision = useCallback(
     async (jitRequestId: string, approved: boolean) => {
@@ -1921,6 +2211,54 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     }
   }
 
+  const processRunStreamEvent = useCallback((event: TeamRunEventDTO) => {
+    processEventForFrames(event);
+    const p = event.payload as Record<string, unknown>;
+
+    if (event.eventType === "artifact_produced" && p.artifact) {
+      const artifact = p.artifact as TeamRunArtifact;
+      setArtifacts((prev) => {
+        const index = prev.findIndex((a) => a.id === artifact.id);
+        if (index >= 0) {
+          return prev.map((a, i) => (i === index ? artifact : a));
+        }
+        return [...prev, artifact];
+      });
+    }
+
+    const sheetUpdate = liveSheetFromEventPayload(event.eventType, event.payload);
+    if (sheetUpdate) {
+      setLiveSheet((prev) => mergeLiveSheet(prev, sheetUpdate));
+      setLiveSheetOpen(true);
+    } else if (event.eventType === "live_artifact_updated") {
+      const artifactId = typeof p.artifactId === "string" ? p.artifactId : "";
+      const url = typeof p.url === "string" ? p.url : "";
+      const rowCount = Number(p.rowCount ?? 0);
+      if (artifactId && url) {
+        setArtifacts((prev) => {
+          const index = prev.findIndex((a) => a.id === artifactId);
+          if (index < 0) return prev;
+          return prev.map((a, i) =>
+            i === index
+              ? {
+                  ...a,
+                  content: {
+                    ...(typeof a.content === "object" && a.content !== null
+                      ? (a.content as Record<string, unknown>)
+                      : {}),
+                    url,
+                    rowCount,
+                    ...(Array.isArray(p.columns) ? { columns: p.columns } : {}),
+                    ...(Array.isArray(p.rows) ? { rows: p.rows } : {}),
+                  },
+                }
+              : a,
+          );
+        });
+      }
+    }
+  }, []);
+
   // ── Start run ──────────────────────────────────────────────────────────────
   async function handleStart(text: string, files: File[] = []) {
     if (submitting) return;
@@ -1929,6 +2267,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setError(null);
     setEvents([]);
     setArtifacts([]);
+    setLiveSheet(null);
+    setLiveSheetOpen(true);
     setFinalResult(null);
     setRunStatus(null);
     setBrowserFrames({});
@@ -1972,14 +2312,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             if (prev.some((e) => e.id === event.id)) return prev;
             return [...prev, event];
           });
-          processEventForFrames(event);
-          const p = event.payload as Record<string, unknown>;
-          if (event.eventType === "artifact_produced" && p.artifact) {
-            const artifact = p.artifact as TeamRunArtifact;
-            setArtifacts((prev) =>
-              prev.some((a) => a.id === artifact.id) ? prev : [...prev, artifact],
-            );
-          }
+          processRunStreamEvent(event);
         },
         onPaused: () => {
           setRunStatus("paused");
@@ -2094,6 +2427,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setRun(null);
     setEvents([]);
     setArtifacts([]);
+    setLiveSheet(null);
+    setLiveSheetOpen(true);
     setFinalResult(null);
     setRunStatus(null);
     setStartedGoal(null);
@@ -2127,7 +2462,14 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         setStartedGoal(detail.run.goal);
         setGoalAttachments(parseAttachmentsFromEnrichedPrompt(detail.run.goal) ?? null);
         setEvents(detail.events);
+        setArtifacts(detail.run.artifacts ?? []);
         setRunStatus("paused");
+        setLiveSheet(
+          replayLiveSheetFromEvents(detail.events) ??
+            liveSheetFromCheckpoint(detail.run.checkpointJson) ??
+            null,
+        );
+        setLiveSheetOpen(true);
 
         const lastSeq =
           detail.events.length > 0 ? detail.events[detail.events.length - 1]!.seq : -1;
@@ -2137,8 +2479,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             setEvents((prev) =>
               prev.some((e) => e.id === event.id) ? prev : [...prev, event],
             );
-            processEventForFrames(event);
-            const p = event.payload as Record<string, unknown>;
+            processRunStreamEvent(event);
           },
           onPaused: () => {
             setRunStatus("paused");
@@ -2162,7 +2503,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [team.id, run]);
+  }, [team.id, run, processRunStreamEvent]);
 
   const supervisorName = agentNameById(team.supervisorAgentId ?? null);
   const goalText = displayGoalText(run?.goal ?? startedGoal ?? "");
@@ -2196,7 +2537,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const statusLabel = isRunning
     ? "Running"
     : isPaused
-      ? "Paused"
+      ? liveSheet
+        ? "Waiting for replies"
+        : "Paused"
       : runStatus === "completed"
         ? "Completed"
         : runStatus === "failed"
@@ -2216,7 +2559,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           : "bg-[color:var(--ink-faint)]";
 
   const placeholder = isPaused
-    ? "Run is paused…"
+    ? "Waiting for WhatsApp replies…"
     : isRunning
       ? "Add guidance while they work…"
       : run
@@ -2299,6 +2642,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         />
       )}
 
+      {/* ── Main: conversation + live sheet ───────────────────────────────── */}
+      <div className="relative flex min-h-0 min-w-0 flex-1">
       {/* ── Conversation ─────────────────────────────────────────────────── */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-2 px-6 py-2">
@@ -2342,6 +2687,22 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           )}
 
           <div className="flex-1" />
+
+          {liveSheet ? (
+            <button
+              type="button"
+              onClick={() => setLiveSheetOpen((open) => !open)}
+              className={cn(
+                quietButton,
+                liveSheetOpen && "bg-black/[0.06] text-black",
+              )}
+              aria-pressed={liveSheetOpen}
+            >
+              <Table2 size={12} />
+              Sheet
+              {liveSheet.rowCount > 0 ? ` (${liveSheet.rowCount})` : ""}
+            </button>
+          ) : null}
 
           {error && (
             <span
@@ -2480,6 +2841,111 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                   return (
                     <SystemLine key={item.id} icon={XCircle} tone="danger">
                       {item.error}
+                    </SystemLine>
+                  );
+                case "wait_armed":
+                  return (
+                    <SystemLine key={item.id} icon={Phone}>
+                      {item.reason}
+                      {item.contactCount > 0 ? ` (${item.contactCount} contact${item.contactCount === 1 ? "" : "s"})` : ""}
+                    </SystemLine>
+                  );
+                case "wait_ttl_requested":
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-xl border border-black/10 bg-[color:var(--sketch-paper)]/80 px-3 py-3"
+                    >
+                      <p className="text-[13px] font-medium text-black/85">{item.reason}</p>
+                      <div className="mt-2.5 flex flex-wrap gap-2">
+                        {item.optionsHours.map((hours) => (
+                          <button
+                            key={hours}
+                            type="button"
+                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
+                            onClick={() => void handleWaitTtl(hours)}
+                            className={cn(sketchButtonPrimary, "disabled:opacity-50")}
+                          >
+                            {waitTtlSubmitting ? (
+                              <Loader2 className="size-3 animate-spin" aria-hidden />
+                            ) : null}
+                            {hours === 1 ? "1 hour" : `${hours} hours`}
+                          </button>
+                        ))}
+                      </div>
+                      {item.allowCustom ? (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                          <input
+                            type="number"
+                            min={0.25}
+                            max={168}
+                            step={0.25}
+                            value={customWaitHours}
+                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
+                            onChange={(e) => setCustomWaitHours(e.target.value)}
+                            className="w-24 rounded-lg border border-black/15 bg-white px-2 py-1.5 text-[12px]"
+                            aria-label="Custom wait hours"
+                          />
+                          <button
+                            type="button"
+                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
+                            onClick={() => {
+                              const hours = Number(customWaitHours);
+                              if (!Number.isFinite(hours)) {
+                                setWaitTtlError("Enter a valid number of hours");
+                                return;
+                              }
+                              void handleWaitTtl(hours);
+                            }}
+                            className={cn(sketchButtonPrimary, "disabled:opacity-50")}
+                          >
+                            Custom
+                          </button>
+                        </div>
+                      ) : null}
+                      {waitTtlAlreadySet ? (
+                        <p className="mt-2 text-[11px] text-black/50">Wait duration set.</p>
+                      ) : null}
+                      {waitTtlError ? (
+                        <p className="mt-2 text-[11px] text-[color:var(--sketch-red)]">{waitTtlError}</p>
+                      ) : null}
+                    </div>
+                  );
+                case "wait_ttl_set":
+                  return (
+                    <SystemLine key={item.id} icon={CheckCircle}>
+                      Waiting up to {item.hours === 1 ? "1 hour" : `${item.hours} hours`}
+                      {item.expiresAt
+                        ? ` (until ${new Date(item.expiresAt).toLocaleString()})`
+                        : ""}
+                      .
+                    </SystemLine>
+                  );
+                case "wait_progress":
+                  return (
+                    <SystemLine key={item.id} icon={Phone}>
+                      WhatsApp replies: {item.received} of {item.total} received
+                      {item.remaining > 0 ? " — still waiting." : "."}
+                    </SystemLine>
+                  );
+                case "live_artifact_updated":
+                  return (
+                    <SystemLine key={item.id} icon={FileText}>
+                      Live sheet updated ({item.rowCount} row{item.rowCount === 1 ? "" : "s"}
+                      {item.jid ? ` · ${item.jid.split("@")[0]}` : ""}
+                      {item.interest ? ` · ${item.interest}` : ""}).
+                    </SystemLine>
+                  );
+                case "wait_fulfilled":
+                  return (
+                    <SystemLine key={item.id} icon={CheckCircle}>
+                      {formatWaitFulfilledLine(item.responderCount, item.interestSummary)}
+                    </SystemLine>
+                  );
+                case "wait_expired":
+                  return (
+                    <SystemLine key={item.id} icon={XCircle} tone="danger">
+                      {item.reason}
                     </SystemLine>
                   );
 
@@ -2665,6 +3131,27 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             </div>
           </div>
         </div>
+      </div>
+
+      {liveSheet && liveSheetOpen ? (
+        <>
+          <button
+            type="button"
+            className="absolute inset-0 z-20 bg-black/20 lg:hidden"
+            onClick={() => setLiveSheetOpen(false)}
+            aria-label="Close spreadsheet overlay"
+          />
+          <LiveSpreadsheetPanel
+            sheet={liveSheet}
+            isLive={isPaused}
+            onClose={() => setLiveSheetOpen(false)}
+            className={cn(
+              "z-30 w-[min(480px,42%)] shrink-0",
+              "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:w-full max-lg:max-w-md max-lg:shadow-2xl",
+            )}
+          />
+        </>
+      ) : null}
       </div>
     </div>
   );

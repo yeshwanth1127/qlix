@@ -169,7 +169,7 @@ export function createTelegramRouter(): Router {
     }
 
     const updateId = parsed.data.update_id;
-    if (!claimTelegramUpdateId(updateId)) {
+    if (!(await claimTelegramUpdateId(updateId))) {
       res.json({ ok: true });
       return;
     }

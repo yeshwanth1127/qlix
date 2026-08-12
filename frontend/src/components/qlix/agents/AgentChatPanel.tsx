@@ -317,7 +317,9 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
     latest.scope === "social.publish" ||
     latest.scope === "crm.write" ||
     latest.scope === "crm.delete" ||
-    latest.scope === "whatsapp.contact_send";
+    latest.scope === "whatsapp.contact_send" ||
+    latest.scope === "slack.send" ||
+    latest.scope === "notion.write";
 
   const step: ActivityStep = {
     id: `jit-pending-${latest.jitRequestId}`,
@@ -1506,7 +1508,9 @@ export function AgentChatPanel({
                                   jitPendingStep.jitScope === "social.publish" ||
                                   jitPendingStep.jitScope === "crm.write" ||
                                   jitPendingStep.jitScope === "crm.delete" ||
-                                  jitPendingStep.jitScope === "whatsapp.contact_send"
+                                  jitPendingStep.jitScope === "whatsapp.contact_send" ||
+                                  jitPendingStep.jitScope === "slack.send" ||
+                                  jitPendingStep.jitScope === "notion.write"
                                     ? " for this chat"
                                     : ""}
                                 </button>
@@ -1640,7 +1644,9 @@ export function AgentChatPanel({
                         stickyJitPending.jitScope === "social.publish" ||
                         stickyJitPending.jitScope === "crm.write" ||
                         stickyJitPending.jitScope === "crm.delete" ||
-                        stickyJitPending.jitScope === "whatsapp.contact_send"
+                        stickyJitPending.jitScope === "whatsapp.contact_send" ||
+                        stickyJitPending.jitScope === "slack.send" ||
+                        stickyJitPending.jitScope === "notion.write"
                           ? " for this chat"
                           : ""}
                       </button>

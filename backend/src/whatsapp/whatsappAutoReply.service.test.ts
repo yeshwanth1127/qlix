@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAutoReplyInboundPrompt,
+  isAutoReplySupersededByWaitAck,
   jidLocalPart,
   normalizeContactJid,
   normalizeReplyInstructions,
@@ -47,5 +48,64 @@ describe('buildAutoReplyInboundPrompt', () => {
     });
     assert.doesNotMatch(prompt, /Your instructions for this conversation/);
     assert.match(prompt, /reply with whatsapp_send_message/);
+  });
+});
+
+describe('isAutoReplySupersededByWaitAck', () => {
+  const fulfilledAt = new Date('2026-08-12T01:00:00.000Z');
+
+  it('is closed after a wait ack with no auto-reply session', () => {
+    assert.equal(
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: false,
+        latestFulfilledAt: fulfilledAt,
+        autoReplyLastOutboundAt: null,
+      }),
+      true,
+    );
+  });
+
+  it('is closed when leftover auto-reply was armed before the ack', () => {
+    assert.equal(
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: false,
+        latestFulfilledAt: fulfilledAt,
+        autoReplyLastOutboundAt: new Date('2026-08-11T10:00:00.000Z'),
+      }),
+      true,
+    );
+  });
+
+  it('re-opens when auto-reply is armed after the ack', () => {
+    assert.equal(
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: false,
+        latestFulfilledAt: fulfilledAt,
+        autoReplyLastOutboundAt: new Date('2026-08-12T02:00:00.000Z'),
+      }),
+      false,
+    );
+  });
+
+  it('stays open while a team wait is still armed', () => {
+    assert.equal(
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: true,
+        latestFulfilledAt: fulfilledAt,
+        autoReplyLastOutboundAt: null,
+      }),
+      false,
+    );
+  });
+
+  it('is not closed when there was never a wait ack', () => {
+    assert.equal(
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: false,
+        latestFulfilledAt: null,
+        autoReplyLastOutboundAt: new Date('2026-08-11T10:00:00.000Z'),
+      }),
+      false,
+    );
   });
 });

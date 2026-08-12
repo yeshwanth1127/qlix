@@ -28,6 +28,11 @@ import {
   parseWhatsAppRunModifiers,
   resolveUseBrainForWhatsAppRun,
 } from './whatsappRunModifiers.js';
+import {
+  autoReplyInferenceOverride,
+  autoReplyOwnerFailureNotice,
+  resolveWhatsAppRunDelivery,
+} from './whatsappDeliveryPolicy.js';
 
 const WHATSAPP_BODY_MAX = 1500;
 const LOW_CONFIDENCE_THRESHOLD = 0.45;
@@ -129,6 +134,19 @@ export async function deliverTextToWorkspaceWhatsApp(
 /**
  * Deliver when user asked for WhatsApp in source text, or run was started from WhatsApp.
  */
+async function runAlreadySentWhatsAppToContact(runId?: string | null): Promise<boolean> {
+  if (!runId) return false;
+  const row = await prisma.actionLog.findFirst({
+    where: {
+      actionType: 'whatsapp.contact_send',
+      status: 'success',
+      payload: { path: ['runId'], equals: runId },
+    },
+    select: { id: true },
+  });
+  return Boolean(row);
+}
+
 export async function deliverRunResultToWhatsAppIfRequested(input: {
   orgId: string;
   title: string;
@@ -143,6 +161,7 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
   /** When set, send the result to this contact JID instead of self-chat. */
   replyToJid?: string | null;
   connectorId?: string | null;
+  runId?: string | null;
 }): Promise<WhatsAppDeliveryResult> {
   const wantsDelivery =
     Boolean(input.replyToJid) ||
@@ -154,7 +173,21 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
   }
 
   const replyToJid = input.replyToJid?.trim() || null;
-  if (replyToJid) {
+  const success = input.success !== false;
+  const alreadySentToContact = replyToJid
+    ? await runAlreadySentWhatsAppToContact(input.runId)
+    : false;
+  const mode = resolveWhatsAppRunDelivery({
+    replyToJid,
+    success,
+    alreadySentToContact,
+  });
+
+  if (mode === 'none') {
+    return { sent: false, reason: 'already_sent_via_tool' };
+  }
+
+  if (mode === 'contact' && replyToJid) {
     if (!isWhatsAppServiceConfigured()) {
       return { sent: false, reason: 'WhatsApp service not configured on backend' };
     }
@@ -166,26 +199,32 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
       return { sent: false, reason: 'WhatsApp not linked' };
     }
 
-    const bodyText =
-      input.success === false
-        ? input.errorMessage ?? 'Run failed'
-        : truncateBody(input.body.trim());
+    const bodyText = truncateBody(input.body.trim());
     if (!bodyText) return { sent: false, reason: 'Empty message body' };
 
     const { sendWhatsAppToRecipient } = await import('../connectors/whatsappServiceClient.js');
     const sent = await sendWhatsAppToRecipient({
       connectorId: connector.id,
       recipient: replyToJid,
-      message:
-        input.success === false
-          ? `⚠️ ${input.title}: ${bodyText}`
-          : truncateBody(`${input.title}\n\n${bodyText}`),
+      message: bodyText,
     });
     if (!sent.ok) return { sent: false, reason: sent.error ?? 'WhatsApp send failed' };
     return { sent: true };
   }
 
-  if (input.success === false) {
+  if (!success && replyToJid) {
+    const notice = autoReplyOwnerFailureNotice({
+      agentName: input.title,
+      contactJid: replyToJid,
+    });
+    return deliverTextToWorkspaceWhatsApp(input.orgId, {
+      title: notice.title,
+      body: notice.body,
+      level: 'error',
+    });
+  }
+
+  if (!success) {
     return deliverTextToWorkspaceWhatsApp(input.orgId, {
       title: input.title,
       body: input.errorMessage ?? 'Run failed',
@@ -248,6 +287,7 @@ async function enqueueWhatsAppAgentRun(
   brainFlag: boolean,
   routeHint?: string | null,
   whatsappReplyToJid?: string | null,
+  inferenceModel?: string | null,
 ): Promise<{ reply: string; deliverTo: 'self' | 'none' | 'contact'; contactJid?: string }> {
   const agentRow = await prisma.agent.findUnique({
     where: { id: agent.id },
@@ -272,6 +312,7 @@ async function enqueueWhatsAppAgentRun(
       body: prompt,
       useBrain,
       whatsappReplyToJid: whatsappReplyToJid ?? null,
+      inferenceModel: inferenceModel ?? null,
       preResolved: {
         targetType: 'agent',
         agentId: agent.id,
@@ -457,6 +498,153 @@ function withSelfReply(reply: string): WhatsAppInboundResult {
   return { reply, deliverTo: 'self' };
 }
 
+/** Fixed ack sent to a lead when their reply fulfills a team pipeline wait. */
+export const TEAM_WAIT_CONTACT_ACK =
+  "Thanks — we'll get back to you shortly.";
+
+/**
+ * Team waits take precedence over standalone auto-reply sessions. A successful
+ * match stores the reply; the pipeline resumes only when every contacted lead
+ * for that run has replied (or the wait TTL fires). Always sends a short fixed ack.
+ */
+async function handleContactTeamWaitInbound(
+  connector: ConnectorAccountDTO,
+  remoteJid: string,
+  text: string,
+  pushName?: string | null,
+): Promise<WhatsAppInboundResult | null> {
+  const { WaitTriggerService } = await import('../teams/waitTrigger.service.js');
+  const waitService = new WaitTriggerService();
+  const consumed = await waitService.consumeWhatsAppInbound({
+    connectorId: connector.id,
+    contactJid: remoteJid,
+    text,
+    pushName,
+  });
+  if (consumed.fulfilled.length === 0 && consumed.progressByTeamRun.length === 0) {
+    return null;
+  }
+
+  const { TeamsRepository } = await import('../teams/teams.repository.js');
+  const teamsRepo = new TeamsRepository();
+  const touchedRunIds = new Set<string>([
+    ...consumed.fulfilled.map((entry) => entry.teamRunId),
+    ...consumed.progressByTeamRun.map((progress) => progress.teamRunId),
+  ]);
+
+  let contactAck: 'fixed' | 'none' | 'auto_reply' = 'fixed';
+
+  for (const teamRunId of touchedRunIds) {
+    try {
+      const run = await teamsRepo.findRun(teamRunId);
+      if (!run || run.status !== 'paused') continue;
+
+      const team = await teamsRepo.findById(run.teamId);
+      let checkpoint = run.checkpointJson as import('../teams/teams.types.js').TeamRunCheckpoint | null;
+      if (!checkpoint) continue;
+
+      if (team && !checkpoint.waitPolicySnapshot) {
+        checkpoint = (
+          await import('../wait/waitPolicy.js')
+        ).ensureCheckpointWaitPolicy(checkpoint, team.config, run.goal);
+        await teamsRepo.updateRunStatus(run.id, 'paused', { checkpointJson: checkpoint });
+      }
+
+      const sideEffectModule = await import('../wait/waitSideEffect.service.js');
+      contactAck = sideEffectModule.resolveWaitContactAck(checkpoint);
+
+      const inbound = {
+        jid: remoteJid,
+        text,
+        timestampMs: Date.now(),
+        pushName: pushName ?? null,
+      };
+
+      const sideEffectResult = await sideEffectModule.applyWaitInboundSideEffects({
+        checkpoint,
+        inbound,
+        runId: run.id,
+        userGoal: run.goal,
+        supervisorAgentId: null,
+      });
+
+      if (sideEffectResult.checkpoint !== checkpoint) {
+        await teamsRepo.updateRunStatus(run.id, 'paused', {
+          checkpointJson: sideEffectResult.checkpoint,
+        });
+      }
+
+      for (const artifact of sideEffectResult.artifacts) {
+        await teamsRepo.upsertArtifactById(run.id, artifact);
+      }
+
+      for (const event of sideEffectResult.events) {
+        if (event.type === 'live_artifact_updated') {
+          await teamsRepo.appendEvent(run.id, run.teamId, null, 'live_artifact_updated', event.payload);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        '[whatsapp-team-wait] side-effect apply failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  for (const progress of consumed.progressByTeamRun) {
+    if (progress.remaining <= 0) continue;
+    try {
+      const run = await teamsRepo.findRun(progress.teamRunId);
+      if (!run || run.status !== 'paused') continue;
+      await teamsRepo.appendEvent(run.id, run.teamId, null, 'wait_progress', {
+        received: progress.received,
+        remaining: progress.remaining,
+        total: progress.total,
+        contactJid: remoteJid,
+      });
+    } catch (err) {
+      console.warn(
+        '[whatsapp-team-wait] wait_progress emit failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (consumed.readyToResumeTeamRunIds.length > 0) {
+    const { resumeTeamRun } = await import('../teams/teamsRunLauncher.js');
+    for (const teamRunId of consumed.readyToResumeTeamRunIds) {
+      await resumeTeamRun(teamRunId);
+    }
+  }
+
+  if (contactAck === 'auto_reply') {
+    const { touchAutoReplySessionOutbound } = await import('./whatsappAutoReply.service.js');
+    await touchAutoReplySessionOutbound(connector.id, remoteJid).catch(() => {});
+    return null;
+  }
+
+  const { stopAutoReplySessionsForContact } = await import('./whatsappAutoReply.service.js');
+  await stopAutoReplySessionsForContact({
+    connectorId: connector.id,
+    contactJid: remoteJid,
+  }).catch((err) => {
+    console.warn(
+      '[whatsapp-team-wait] stop auto-reply after ack failed:',
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+  if (contactAck === 'none') {
+    return { reply: '', deliverTo: 'none', contactJid: remoteJid };
+  }
+
+  return {
+    reply: TEAM_WAIT_CONTACT_ACK,
+    deliverTo: 'contact',
+    contactJid: remoteJid,
+  };
+}
+
 async function handleContactAutoReplyInbound(
   connector: ConnectorAccountDTO,
   remoteJid: string,
@@ -472,7 +660,7 @@ async function handleContactAutoReplyInbound(
 
   const agent = await prisma.agent.findUnique({
     where: { id: session.agentId },
-    select: { id: true, name: true, status: true },
+    select: { id: true, name: true, status: true, llmModel: true, llmProvider: true },
   });
   if (!agent || agent.status === 'suspended') {
     return { reply: '', deliverTo: 'none' };
@@ -496,6 +684,7 @@ async function handleContactAutoReplyInbound(
     false,
     'auto-reply',
     session.contactJid,
+    autoReplyInferenceOverride(agent),
   );
   // Do not echo queue acks into the contact chat.
   return {
@@ -521,6 +710,18 @@ export async function handleWhatsAppInbound(
   }
 
   if (opts?.fromContact && opts.remoteJid) {
+    const teamWaitResult = await handleContactTeamWaitInbound(connector, opts.remoteJid, trimmed);
+    if (teamWaitResult) return teamWaitResult;
+    const { isContactClosedAfterWaitAck, stopAutoReplySessionsForContact } = await import(
+      './whatsappAutoReply.service.js'
+    );
+    if (await isContactClosedAfterWaitAck(connector.id, opts.remoteJid)) {
+      await stopAutoReplySessionsForContact({
+        connectorId: connector.id,
+        contactJid: opts.remoteJid,
+      }).catch(() => {});
+      return { reply: '', deliverTo: 'none' };
+    }
     const contactResult = await handleContactAutoReplyInbound(connector, opts.remoteJid, trimmed);
     if (contactResult) return contactResult;
     return { reply: '', deliverTo: 'none' };
@@ -675,6 +876,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
       success: run.status === 'success',
       errorMessage: run.errorMessage,
       replyToJid: run.whatsappReplyToJid,
+      runId,
     });
     return;
   }
@@ -689,6 +891,7 @@ export async function notifyWhatsappRunComplete(runId: string): Promise<void> {
     success: run.status === 'success',
     errorMessage: run.errorMessage,
     replyToJid: run.whatsappReplyToJid,
+    runId,
   });
   if (!delivery.sent && delivery.reason && delivery.reason !== 'not_requested') {
     console.warn('[whatsapp] agent run delivery skipped:', delivery.reason);

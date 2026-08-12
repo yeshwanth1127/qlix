@@ -59,6 +59,7 @@ export const whatsappAdapter: ChannelAdapter = {
       errorMessage: payload.errorMessage ?? run.errorMessage,
       replyToJid,
       connectorId: target.connectorId ?? null,
+      runId: payload.runId,
     });
   },
 };
@@ -70,6 +71,7 @@ export function buildWhatsAppInbound(input: {
   peerId?: string;
   body: string;
   useBrain?: boolean;
+  inferenceModel?: string | null;
   /** Contact JID when this turn should reply to a contact (auto-reply). */
   whatsappReplyToJid?: string | null;
   preResolved: NonNullable<InboundMessage['preResolved']>;
@@ -82,6 +84,7 @@ export function buildWhatsAppInbound(input: {
     peerId: contactPeer ?? input.peerId ?? input.connectorId,
     body: input.body,
     useBrain: input.useBrain,
+    inferenceModel: input.inferenceModel ?? null,
     deliveryTarget: {
       channel: 'whatsapp',
       connectorId: input.connectorId,

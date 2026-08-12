@@ -54,17 +54,22 @@ function formatQueuedReply(
   return `Queued — ${name} is on it.${suffix}`;
 }
 
-async function ensureGatewayConversation(input: {
+async function ensureAgentConversation(input: {
   agentId: string;
   userId: string;
   orgId: string | null;
   telegramUserId: string;
   chatId: string;
 }): Promise<string> {
-  const [{ getOrCreateGatewayConversation }, { buildSessionKey }] = await Promise.all([
-    import('../agentChat/conversationService.js'),
-    import('../gateway/sessionKey.js'),
-  ]);
+  // Use primary chat so Telegram turns appear in the agent web chat panel
+  // (AgentChatPanel boots via getOrCreatePrimaryConversation).
+  const { getOrCreatePrimaryConversation } = await import('../agentChat/conversationService.js');
+  const { buildSessionKey } = await import('../gateway/sessionKey.js');
+  const convo = await getOrCreatePrimaryConversation({
+    agentId: input.agentId,
+    userId: input.userId,
+    orgId: input.orgId,
+  });
   const sessionKey = buildSessionKey({
     orgId: input.orgId,
     userId: input.userId,
@@ -72,13 +77,9 @@ async function ensureGatewayConversation(input: {
     peerId: input.telegramUserId,
     threadId: input.chatId,
   });
-  const convo = await getOrCreateGatewayConversation({
-    agentId: input.agentId,
-    userId: input.userId,
-    orgId: input.orgId,
-    sessionKey,
-    title: `Telegram ${input.telegramUserId}`,
-  });
+  await prisma.agentConversation
+    .update({ where: { id: convo.id }, data: { sessionKey } })
+    .catch(() => undefined);
   return convo.id;
 }
 
@@ -103,7 +104,7 @@ async function enqueueTelegramAgentRun(input: {
   });
 
   const orgId = agentRow?.orgId ?? input.connector.orgId;
-  const conversationId = await ensureGatewayConversation({
+  const conversationId = await ensureAgentConversation({
     agentId: input.agent.id,
     userId: input.connector.userId,
     orgId,
@@ -375,6 +376,12 @@ export async function handleTelegramInbound(input: {
     chatId: input.chatId,
   });
   if (pendingReply) return pendingReply;
+
+  // Bare number with no open picker — do NOT treat as a new request (stops
+  // double-delivery / late selection from re-showing the agent menu).
+  if (/^\d{1,2}$/.test(trimmed)) {
+    return { reply: 'That selection expired. Send your request again.' };
+  }
 
   if (await getTelegramPendingRoute(connector.id, input.chatId)) {
     await clearTelegramPendingRoute(connector.id, input.chatId);

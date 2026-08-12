@@ -30,7 +30,9 @@ export type BuiltinPermissionScope =
   | 'crm.write'
   | 'crm.delete'
   | 'slack.read'
-  | 'slack.send';
+  | 'slack.send'
+  | 'notion.read'
+  | 'notion.write';
 
 /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
 export type McpPermissionScope = `mcp.${string}`;

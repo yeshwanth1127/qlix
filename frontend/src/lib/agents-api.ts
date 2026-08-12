@@ -38,6 +38,8 @@ export type PermissionScope =
   | "crm.delete"
   | "slack.read"
   | "slack.send"
+  | "notion.read"
+  | "notion.write"
   /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
   | `mcp.${string}`;
 
@@ -73,6 +75,8 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "crm.delete",
   "slack.read",
   "slack.send",
+  "notion.read",
+  "notion.write",
 ];
 
 export const FORCE_JIT_SCOPES: PermissionScope[] = [
@@ -90,6 +94,7 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   "crm.write",
   "crm.delete",
   "slack.send",
+  "notion.write",
   "whatsapp.contact_send",
 ];
 
@@ -125,6 +130,8 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "crm.delete": "Delete CRM records",
   "slack.read": "Read Slack channels & messages",
   "slack.send": "Write to Slack (post, channels, DMs)",
+  "notion.read": "Read Notion pages & databases",
+  "notion.write": "Write to Notion (pages & database rows)",
 };
 
 export type AgentRuntime = "cloud" | "local" | "hybrid";

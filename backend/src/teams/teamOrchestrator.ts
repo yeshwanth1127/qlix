@@ -1,7 +1,22 @@
 import type { PermissionScope } from '../agents/agents.types.js';
-import type { TeamConfig, TeamDTO, TeamMemberDTO, TeamRunArtifact, TeamRunDTO } from './teams.types.js';
+import type {
+  TeamConfig,
+  TeamDTO,
+  TeamMemberDTO,
+  TeamRunArtifact,
+  TeamRunCheckpoint,
+  TeamRunDTO,
+} from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamAgentRunBridge } from './teamAgentRunBridge.js';
+import { WaitTriggerService, type WaitTriggerInbound } from './waitTrigger.service.js';
+import {
+  classifyReplyInterests,
+  formatInterestFindings,
+  INTEREST_STAGE_GOAL_APPEND,
+  summarizeInterestCounts,
+  type ReplyInterestResult,
+} from './replyInterestClassifier.js';
 import { deliverTextToWorkspaceWhatsApp } from '../whatsapp/whatsappChannel.service.js';
 import { goalRequestsWhatsAppDelivery } from '../whatsapp/whatsappDeliveryIntent.js';
 import {
@@ -9,6 +24,16 @@ import {
   notifyTeamChannelProgress,
   teamRunShouldReplyWhatsApp,
 } from './teamChannelNotifier.js';
+import {
+  buildWaitPolicySnapshot,
+  findWaitStepForStage,
+  resolveWaitStepsForTeam,
+} from '../wait/waitPolicy.js';
+import {
+  initializeWaitSideEffects,
+  liveArtifactsForResume,
+} from '../wait/waitSideEffect.service.js';
+import { liveArtifactPreviewPayload } from '../wait/liveArtifact.service.js';
 
 function normalizeFindingsText(findings: unknown): string {
   if (typeof findings === 'string') return findings;
@@ -72,6 +97,7 @@ export function groupSubtasksByStage(plan: SubtaskPlan[]): SubtaskPlan[][] {
 export class TeamOrchestrator {
   private readonly repo = new TeamsRepository();
   private readonly bridge = new TeamAgentRunBridge();
+  private readonly waitTriggers = new WaitTriggerService();
 
   async execute(
     run: TeamRunDTO,
@@ -172,6 +198,17 @@ export class TeamOrchestrator {
             await this.abortPipelineRun(run, team, supervisorId, failed, emit);
             return;
           }
+          if (groupIndex < stageGroups.length - 1) {
+            const paused = await this.pauseForOpenWaits(
+              run,
+              team,
+              plan,
+              results,
+              groupIndex + 1,
+              emit,
+            );
+            if (paused) return;
+          }
 
         }
       } else {
@@ -210,6 +247,262 @@ export class TeamOrchestrator {
       clearNotifierState(run.id);
       emit('error', { message });
     }
+  }
+
+  /**
+   * Resume only the unexecuted pipeline stages after a durable external wait
+   * was fulfilled. It deliberately does not re-plan or replay completed work.
+   */
+  async resume(run: TeamRunDTO, team: TeamDTO, emit: RunEventEmitter): Promise<void> {
+    const checkpoint = run.checkpointJson as TeamRunCheckpoint | null | undefined;
+    if (!checkpoint || !Array.isArray(checkpoint.plan) || !Array.isArray(checkpoint.completedResults)) {
+      throw new Error('Paused team run has no valid continuation checkpoint');
+    }
+    if (run.status !== 'paused') {
+      throw new Error(`Team run ${run.id} is not paused`);
+    }
+
+    const config = team.config as TeamConfig;
+    const supervisorId = team.supervisorAgentId!;
+    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
+    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
+    const plan = checkpoint.plan as SubtaskPlan[];
+    const results = checkpoint.completedResults as WorkerResult[];
+
+    try {
+      const inbound = await this.waitTriggers.loadFulfilledInbound(run.id, checkpoint.waitTriggerIds);
+      const allTerminal = await this.waitTriggers.areAllCheckpointTriggersTerminal(
+        run.id,
+        checkpoint.waitTriggerIds,
+      );
+      if (inbound.length === 0 && !allTerminal) {
+        throw new Error('Wait trigger was resumed without an inbound response');
+      }
+
+      const statuses = await this.waitTriggers.listCheckpointTriggerStatuses(
+        run.id,
+        checkpoint.waitTriggerIds,
+      );
+      const expiredCount = statuses.filter((row) => row.status === 'expired').length;
+      const timedOut = expiredCount > 0;
+      const totalContacts = checkpoint.waitTriggerIds.length;
+
+      const classifications = await classifyReplyInterests(
+        inbound.map((reply) => ({ jid: reply.jid, text: reply.text })),
+        { userGoal: run.goal },
+      );
+      const interestSummary = summarizeInterestCounts(classifications);
+      const liveArtifacts = liveArtifactsForResume(checkpoint);
+      const liveArtifactContext =
+        liveArtifacts.length > 0
+          ? `\n\n--- Live artifacts (use these URLs; do not recreate) ---\n${liveArtifacts
+              .map(
+                (artifact) =>
+                  `- ${artifact.fileName}: ${artifact.url} (${artifact.rowCount} row${artifact.rowCount === 1 ? '' : 's'})`,
+              )
+              .join('\n')}\n--- End live artifacts ---\n`
+          : '';
+
+      results.push(this.externalReplyResult(inbound, classifications, {
+        timedOut,
+        totalContacts,
+        repliedCount: inbound.length,
+        liveArtifactContext,
+      }));
+
+      // Direct the first resumed stage to sheet only included (interested + unclear) leads.
+      const stageGroups = groupSubtasksByStage(plan);
+      const resumeGroup = stageGroups[checkpoint.nextStageIndex];
+      if (resumeGroup) {
+        for (const subtask of resumeGroup) {
+          if (!subtask.goal.includes(INTEREST_STAGE_GOAL_APPEND)) {
+            subtask.goal = `${subtask.goal}\n\n${INTEREST_STAGE_GOAL_APPEND}`;
+          }
+        }
+      }
+
+      await this.repo.updateRunStatus(run.id, 'running', { checkpointJson: null });
+      await this.emitEvent(run, team, supervisorId, 'wait_fulfilled', {
+        triggerIds: checkpoint.waitTriggerIds,
+        responderCount: inbound.length,
+        responders: inbound.map((reply) => ({ jid: reply.jid, text: reply.text })),
+        classifications: classifications.map((row) => ({
+          jid: row.jid,
+          label: row.label,
+          method: row.method,
+        })),
+        interestSummary,
+        timedOut,
+        totalContacts,
+      }, emit);
+
+      for (let groupIndex = checkpoint.nextStageIndex; groupIndex < stageGroups.length; groupIndex++) {
+        const current = await this.repo.findRun(run.id);
+        if (current?.status === 'canceled') {
+          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+          return;
+        }
+
+        const group = stageGroups[groupIndex]!;
+        const groupResults = await this.executeStage(
+          run,
+          team,
+          group,
+          emit,
+          timeoutMs,
+          maxAttempts,
+          [...results],
+          config.maxParallelWorkers,
+          groupIndex + 1,
+          stageGroups.length,
+        );
+        results.push(...groupResults);
+
+        const failed = groupResults.find((result) => result.status === 'failed');
+        if (failed) {
+          await this.abortPipelineRun(run, team, supervisorId, failed, emit);
+          return;
+        }
+        if (groupIndex < stageGroups.length - 1) {
+          const paused = await this.pauseForOpenWaits(
+            run,
+            team,
+            plan,
+            results,
+            groupIndex + 1,
+            emit,
+          );
+          if (paused) return;
+        }
+      }
+
+      await this.finalizeSuccessfulRun(run, team, supervisorId, results, emit, timeoutMs, maxAttempts);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[TeamOrchestrator] resume ${run.id} failed:`, message);
+      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
+      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
+      emit('error', { message });
+    }
+  }
+
+  private externalReplyResult(
+    inbound: WaitTriggerInbound[],
+    classifications: ReplyInterestResult[],
+    meta?: {
+      timedOut?: boolean;
+      totalContacts?: number;
+      repliedCount?: number;
+      liveArtifactContext?: string;
+    },
+  ): WorkerResult {
+    const findingsParts: string[] = [];
+    if (meta?.timedOut) {
+      findingsParts.push(
+        `Wait timed out; ${meta.repliedCount ?? inbound.length} of ${meta.totalContacts ?? '?'} contacted leads replied.`,
+      );
+    } else if (meta?.totalContacts != null) {
+      findingsParts.push(
+        `${meta.repliedCount ?? inbound.length} of ${meta.totalContacts} contacted leads replied.`,
+      );
+    }
+    if (meta?.liveArtifactContext?.trim()) {
+      findingsParts.push(meta.liveArtifactContext.trim());
+    }
+    findingsParts.push(formatInterestFindings(classifications));
+    const interestSummary = summarizeInterestCounts(classifications);
+    return {
+      subtaskId: 'external_whatsapp_reply',
+      agentId: '',
+      agentName: 'WhatsApp replies',
+      summary:
+        `${inbound.length} contact${inbound.length === 1 ? '' : 's'} replied` +
+        (meta?.timedOut ? ' (wait timed out)' : '') +
+        ` (${interestSummary.included} included for sheet, ${interestSummary.notInterested} declined).`,
+      findings: findingsParts.join('\n\n'),
+      artifacts: [],
+      status: 'completed',
+    };
+  }
+
+  private async pauseForOpenWaits(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    plan: SubtaskPlan[],
+    results: WorkerResult[],
+    nextStageIndex: number,
+    emit: RunEventEmitter,
+  ): Promise<boolean> {
+    const waits = await this.waitTriggers.listOpenTeamWaits(run.id);
+    if (waits.length === 0) return false;
+
+    const stageGroups = groupSubtasksByStage(plan);
+    const completedStageOrder =
+      nextStageIndex > 0
+        ? stageGroups[nextStageIndex - 1]?.[0]?.stageOrder ?? nextStageIndex
+        : nextStageIndex;
+
+    let checkpoint: TeamRunCheckpoint = {
+      plan,
+      completedResults: results,
+      nextStageIndex,
+      waitTriggerIds: waits.map((wait) => wait.id),
+      waitReason: `Waiting for a WhatsApp reply from ${waits.length} contacted lead${waits.length === 1 ? '' : 's'}.`,
+      awaitingTtlSelection: true,
+      waitExpiresAt: null,
+      waitTtlHours: null,
+      inferenceModel: (team.config as TeamConfig).defaultModel?.trim() || null,
+    };
+
+    const waitSteps = resolveWaitStepsForTeam(team.config, run.goal, completedStageOrder);
+    const waitStep = findWaitStepForStage(waitSteps, completedStageOrder);
+    let liveArtifactsForEvent: ReturnType<typeof liveArtifactPreviewPayload>[] = [];
+
+    if (waitStep) {
+      const waitPolicy = buildWaitPolicySnapshot(waitSteps, waitStep.id);
+      try {
+        const init = await initializeWaitSideEffects({
+          checkpoint,
+          waitPolicy,
+          runId: run.id,
+          teamName: team.name,
+          supervisorAgentId: team.supervisorAgentId,
+        });
+        checkpoint = init.checkpoint;
+        liveArtifactsForEvent = init.liveArtifacts.map((artifact) => liveArtifactPreviewPayload(artifact));
+        for (const artifact of init.artifacts) {
+          await this.repo.upsertArtifactById(run.id, artifact);
+          await this.emitEvent(run, team, team.supervisorAgentId, 'artifact_produced', { artifact }, emit);
+        }
+      } catch (err) {
+        console.warn(
+          '[TeamOrchestrator] wait side-effect init failed:',
+          err instanceof Error ? err.message : err,
+        );
+        checkpoint = { ...checkpoint, waitPolicySnapshot: waitPolicy };
+      }
+    }
+
+    await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: checkpoint });
+    await this.emitEvent(run, team, team.supervisorAgentId, 'wait_armed', {
+      triggerKind: 'whatsapp_inbound',
+      triggerIds: checkpoint.waitTriggerIds,
+      contactCount: waits.length,
+      expiresAt: waits.map((wait) => wait.expiresAt.toISOString()),
+      reason: checkpoint.waitReason,
+      nextStage: nextStageIndex + 1,
+      awaitingTtlSelection: true,
+      liveArtifacts: liveArtifactsForEvent,
+    }, emit);
+    await this.emitEvent(run, team, team.supervisorAgentId, 'wait_ttl_requested', {
+      optionsHours: [1, 6, 24, 48],
+      allowCustom: true,
+      safetyCapHours: 168,
+      contactCount: waits.length,
+      reason: 'How long should we wait for WhatsApp replies before continuing with whoever has responded?',
+    }, emit);
+    emit('paused', { status: 'paused', teamRunId: run.id, reason: checkpoint.waitReason });
+    return true;
   }
 
   private async finalizeSuccessfulRun(
@@ -599,11 +892,26 @@ User goal: ${run.goal}`;
       subtask.delegatedScopes.includes('brain.query') || agentHasBrain;
 
     const needsBrowser =
-      /\bhttps?:\/\//i.test(subtask.goal) ||
-      /\b(browse|navigate|scrape|visit|open\s+url|website|web\s+page)\b/i.test(subtask.goal);
+      (() => {
+        // Attachment / sandbox download links must not force browser tools.
+        const goalSansSandbox = subtask.goal.replace(
+          /https?:\/\/[^\s)\]]+\/api\/v1\/sandbox\/[^\s)\]]+/gi,
+          '',
+        );
+        return (
+          /\bhttps?:\/\//i.test(goalSansSandbox) ||
+          /\b(browse|navigate|scrape|visit|open\s+url|website|web\s+page)\b/i.test(subtask.goal)
+        );
+      })();
     const browserGuidance = needsBrowser
       ? '- Browser tools are allowed if needed; use at most 3 browser actions, then return your JSON answer.\n'
       : '- Do NOT use browser tools for this subtask unless explicitly required.\n';
+    const replyWaitGuidance =
+      subtask.delegatedScopes.includes('whatsapp.contact_send') &&
+      subtask.delegatedScopes.includes('whatsapp.auto_reply') &&
+      /\b(?:wait\s+(?:for|until)|if|when|once|after)\b[\s\S]{0,120}\b(?:reply|respond)/i.test(subtask.goal)
+        ? '- This stage sends outreach and waits for replies: use whatsapp_send_message, then finish with the contacted JIDs. Do NOT create a responder sheet or deliver anything yet; Qlix pauses this pipeline and resumes the next stage when a contact replies.\n'
+        : '';
 
     const workerPrompt = `You are completing one pipeline stage. Stay inside this stage.
 
@@ -618,6 +926,7 @@ Rules:
   "artifacts": []
 }
 ${browserGuidance}${priorContext}
+${replyWaitGuidance}
 Subtask: ${subtask.goal}`;
 
     const workerSkills: PermissionScope[] = subtask.delegatedScopes;

@@ -487,6 +487,57 @@ export function createTeamsRouter(): Router {
     }
   });
 
+  /** Set how long a paused WhatsApp wait should collect replies before partial resume. */
+  router.post(
+    '/:id/runs/:runId/wait-ttl',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    async (req: Request, res: Response) => {
+      const parsed = z
+        .object({
+          hours: z.number().positive().max(168),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: { code: 'validation_error', message: 'hours is required (0.25–168)' },
+        });
+        return;
+      }
+      try {
+        const result = await service.setWaitTtlHours(
+          req.params.id!,
+          req.params.runId!,
+          req.auth!.orgId,
+          parsed.data.hours,
+        );
+        res.json({ ok: true, ...result });
+      } catch (err) {
+        if (err instanceof TeamNotFoundError) {
+          res.status(404).json({ error: { code: 'not_found', message: err.message } });
+          return;
+        }
+        const status =
+          typeof (err as { status?: number })?.status === 'number'
+            ? (err as { status: number }).status
+            : 500;
+        const code =
+          typeof (err as { code?: string })?.code === 'string'
+            ? (err as { code: string }).code
+            : 'wait_ttl_failed';
+        if (status >= 400 && status < 500) {
+          res.status(status).json({
+            error: { code, message: err instanceof Error ? err.message : 'Failed to set wait duration' },
+          });
+          return;
+        }
+        res.status(500).json({
+          error: { code: 'wait_ttl_failed', message: 'Failed to set wait duration' },
+        });
+      }
+    },
+  );
+
   /** Pending JIT approvals for worker/supervisor agent runs in this team execution. */
   router.get(
     '/:id/runs/:runId/pending-jit',

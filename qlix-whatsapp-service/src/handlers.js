@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as qlix from './qlix-client.js';
-import { sendToConnector } from './sessionManager.js';
+import { sendToConnector, sendToRecipient } from './sessionManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, '..', 'data', 'pending-approvals.json');
@@ -196,11 +196,35 @@ function inboundReplyText(result) {
   return typeof result.reply === 'string' ? result.reply : '';
 }
 
-async function postInboundAck(connectorId, result) {
+async function postInboundAck(connectorId, result, fallbackContactJid = null) {
   const deliverTo = result?.deliverTo ?? (typeof result === 'string' ? 'self' : 'self');
-  if (deliverTo === 'none' || deliverTo === 'contact') return;
+  if (deliverTo === 'none') return;
   const text = inboundReplyText(result);
   if (!text) return;
+
+  if (deliverTo === 'contact') {
+    const contactJid =
+      (typeof result?.contactJid === 'string' && result.contactJid.trim()) ||
+      (typeof fallbackContactJid === 'string' && fallbackContactJid.trim()) ||
+      null;
+    if (!contactJid) {
+      console.warn(
+        `[qlix-whatsapp] contact ack skipped (no contact jid) connector=${connectorId}`,
+      );
+      return;
+    }
+    console.log(
+      `[qlix-whatsapp] contact ack connector=${connectorId} to=${contactJid} preview="${previewText(text)}"`,
+    );
+    const sent = await sendToRecipient(connectorId, contactJid, text);
+    if (sent && sent.ok === false) {
+      console.warn(
+        `[qlix-whatsapp] contact ack send failed connector=${connectorId}: ${sent.error ?? 'unknown'}`,
+      );
+    }
+    return;
+  }
+
   await reply(connectorId, text);
 }
 
@@ -237,7 +261,9 @@ export async function handleInboundMessage(
     });
     if (result?.error) {
       console.warn(`[qlix-whatsapp] contact inbound error: ${result.error}`);
+      return;
     }
+    await postInboundAck(connectorId, result, remoteJid);
     return;
   }
 

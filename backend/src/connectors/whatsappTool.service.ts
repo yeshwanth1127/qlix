@@ -2,6 +2,8 @@ import { ActionsService, JitTokenInvalidError, JitTokenRequiredError } from '../
 import type { PermissionScope } from '../agents/agents.types.js';
 import { prisma } from '../lib/prisma.js';
 import { JitService } from '../jit/jit.service.js';
+import { WaitTriggerService } from '../teams/waitTrigger.service.js';
+import { goalRequestsReplyWait } from '../wait/waitPolicy.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { getWhatsAppConnectorForAgent } from './whatsappConnector.service.js';
 import {
@@ -15,6 +17,42 @@ import {
 
 const actionsService = new ActionsService();
 const jitService = new JitService();
+const waitTriggers = new WaitTriggerService();
+
+async function getTeamReplyWaitContext(runId: string | null): Promise<{
+  teamRunId: string;
+  orgId: string;
+  userId: string;
+} | null> {
+  if (!runId) return null;
+  const agentRun = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: {
+      teamRun: {
+        select: {
+          id: true,
+          orgId: true,
+          startedByUserId: true,
+          status: true,
+          goal: true,
+          team: { select: { config: true } },
+        },
+      },
+    },
+  });
+  const teamRun = agentRun?.teamRun;
+  if (!teamRun || teamRun.status !== 'running') return null;
+  const teamConfig = (teamRun.team?.config ?? {}) as { waitSteps?: unknown[] };
+  const waitsConfigured =
+    goalRequestsReplyWait(teamRun.goal) ||
+    (Array.isArray(teamConfig.waitSteps) && teamConfig.waitSteps.length > 0);
+  if (!waitsConfigured) return null;
+  return {
+    teamRunId: teamRun.id,
+    orgId: teamRun.orgId,
+    userId: teamRun.startedByUserId,
+  };
+}
 
 export class WhatsAppScopeDeniedError extends Error {
   readonly code = 'scope_denied';
@@ -229,6 +267,7 @@ export async function executeWhatsAppContactSend(params: {
   phone?: string | null;
   name?: string | null;
   autoReplyArmed?: boolean;
+  teamWaitArmed?: boolean;
   replyInstructionsSet?: boolean;
 }> {
   const ctx = await loadAgentRunContext(params.agentId);
@@ -281,6 +320,7 @@ export async function executeWhatsAppContactSend(params: {
   }).catch(() => {});
 
   let autoReplyArmed = false;
+  let teamWaitArmed = false;
   let replyInstructionsSet = false;
   if (scopes.has('whatsapp.auto_reply') && result.jid) {
     try {
@@ -288,16 +328,30 @@ export async function executeWhatsAppContactSend(params: {
         '../whatsapp/whatsappAutoReply.service.js'
       );
       const instructions = normalizeReplyInstructions(params.input.replyInstructions);
-      await armAutoReplySession({
-        connectorId: connector.id,
-        agentId: params.agentId,
-        contactJid: result.jid,
-        contactName: result.name ?? null,
-        contactPhone: result.phone ?? null,
-        replyInstructions: instructions,
-        userId: ctx.userId,
-      });
-      autoReplyArmed = true;
+      const teamWait = await getTeamReplyWaitContext(params.runId);
+      if (teamWait) {
+        await waitTriggers.armTeamWhatsAppWait({
+          teamRunId: teamWait.teamRunId,
+          orgId: teamWait.orgId,
+          userId: teamWait.userId,
+          agentId: params.agentId,
+          connectorId: connector.id,
+          contactJid: result.jid,
+          replyInstructions: instructions,
+        });
+        teamWaitArmed = true;
+      } else {
+        await armAutoReplySession({
+          connectorId: connector.id,
+          agentId: params.agentId,
+          contactJid: result.jid,
+          contactName: result.name ?? null,
+          contactPhone: result.phone ?? null,
+          replyInstructions: instructions,
+          userId: ctx.userId,
+        });
+        autoReplyArmed = true;
+      }
       replyInstructionsSet = Boolean(instructions);
     } catch (err) {
       console.warn(
@@ -312,6 +366,7 @@ export async function executeWhatsAppContactSend(params: {
     phone: result.phone,
     name: result.name,
     autoReplyArmed,
+    teamWaitArmed,
     replyInstructionsSet,
   };
 }

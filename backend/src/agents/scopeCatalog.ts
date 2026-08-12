@@ -293,6 +293,22 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     requiresConnector: 'slack',
     runtimes: ['cloud', 'hybrid'],
   },
+  {
+    id: 'notion.read',
+    label: 'Read Notion',
+    description: 'Search Notion pages/databases, read page content, and query databases',
+    forceJit: false,
+    requiresConnector: 'notion',
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'notion.write',
+    label: 'Write to Notion',
+    description: 'Create or update Notion pages and add database rows (JIT)',
+    forceJit: true,
+    requiresConnector: 'notion',
+    runtimes: ['cloud', 'hybrid'],
+  },
 ];
 
 export const SCOPE_CATALOG_BY_ID: Record<BuiltinPermissionScope, ScopeDef> = Object.fromEntries(

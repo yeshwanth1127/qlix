@@ -1,28 +1,42 @@
 /**
- * Prevent obvious duplicate processing of the same Telegram update_id.
- * In-process TTL map (same approach as the WhatsApp sidecar inbound dedupe).
- * Sufficient for a single API instance; Redis multi-instance can replace this later.
+ * Prevent duplicate processing of the same Telegram update_id.
+ * Uses Postgres unique insert so cluster workers share the claim.
  */
+
+import { prisma } from '../lib/prisma.js';
 
 const MEMORY_TTL_MS = 10 * 60 * 1000;
 const seen = new Map<number, number>();
 
-function pruneMemory(now: number): void {
-  if (seen.size < 256) return;
-  for (const [id, at] of seen) {
-    if (now - at > MEMORY_TTL_MS) seen.delete(id);
-  }
-}
-
-/** @returns true if this update should be processed (first sighting). */
-export function claimTelegramUpdateId(updateId: number): boolean {
-  if (!Number.isFinite(updateId)) return true;
+function claimInMemory(updateId: number): boolean {
   const now = Date.now();
-  pruneMemory(now);
+  if (seen.size > 512) {
+    for (const [id, at] of seen) {
+      if (now - at > MEMORY_TTL_MS) seen.delete(id);
+    }
+  }
   const prev = seen.get(updateId);
   if (prev !== undefined && now - prev < MEMORY_TTL_MS) return false;
   seen.set(updateId, now);
   return true;
+}
+
+/** @returns true if this update should be processed (first sighting). */
+export async function claimTelegramUpdateId(updateId: number): Promise<boolean> {
+  if (!Number.isFinite(updateId)) return true;
+
+  // Fast local short-circuit (same worker / same process).
+  if (!claimInMemory(updateId)) return false;
+
+  try {
+    await prisma.telegramUpdateClaim.create({
+      data: { updateId: BigInt(updateId) },
+    });
+    return true;
+  } catch {
+    // Unique violation or DB race — already claimed elsewhere.
+    return false;
+  }
 }
 
 /** Test helper */

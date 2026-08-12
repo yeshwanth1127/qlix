@@ -9,6 +9,11 @@ import type {
   StreamDeltaHandler,
 } from './providers/types.js';
 import { InferenceConfigError } from './providers/types.js';
+import {
+  exoraFallbackEnabled,
+  isTransientInferenceFailure,
+  openrouterFallbackModel,
+} from './inferenceFallback.js';
 
 export const LLM_APPLICATION_IDS = {
   agentInference: 'qlix-agent-inference',
@@ -16,6 +21,7 @@ export const LLM_APPLICATION_IDS = {
   nlBuilder: 'qlix-nl-builder',
   agentMemory: 'qlix-agent-memory',
   whatsappRouter: 'qlix-whatsapp-router',
+  replyInterest: 'qlix-reply-interest',
 } as const;
 
 const providers: Record<LlmProviderId, InferenceProvider> = {
@@ -73,16 +79,43 @@ export interface RoutedChatOptions extends Omit<ChatCompletionOptions, 'applicat
   applicationId: string;
 }
 
+async function withOpenRouterFallback<T>(
+  provider: LlmProviderId,
+  request: InferenceChatRequest,
+  run: (activeProvider: LlmProviderId, model: string) => Promise<T>,
+): Promise<T> {
+  const model = modelForProvider(request.model, provider);
+  try {
+    return await run(provider, model);
+  } catch (error) {
+    if (
+      provider !== 'exora' ||
+      !exoraFallbackEnabled() ||
+      !isLlmProviderConfigured('openrouter') ||
+      !isTransientInferenceFailure(error)
+    ) {
+      throw error;
+    }
+    const fallbackModel = openrouterFallbackModel(request.model);
+    const detail =
+      error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[inference] exora failed (${detail}); falling back to openrouter model=${fallbackModel}`,
+    );
+    return run('openrouter', fallbackModel);
+  }
+}
+
 export async function chatCompletion(
   request: InferenceChatRequest,
   options: RoutedChatOptions,
 ): Promise<ChatCompletionResult> {
   const provider = options.provider ?? defaultLlmProvider();
   assertLlmProviderConfigured(provider);
-  return providers[provider].chatCompletion(
-    { ...request, model: modelForProvider(request.model, provider) },
-    options,
-  );
+  return withOpenRouterFallback(provider, request, (active, model) => {
+    if (active !== provider) assertLlmProviderConfigured(active);
+    return providers[active].chatCompletion({ ...request, model }, options);
+  });
 }
 
 export async function chatCompletionStream(
@@ -92,11 +125,14 @@ export async function chatCompletionStream(
 ): Promise<{ content: string; finishReason: string | null }> {
   const provider = options.provider ?? defaultLlmProvider();
   assertLlmProviderConfigured(provider);
-  return providers[provider].chatCompletionStream(
-    { ...request, model: modelForProvider(request.model, provider) },
-    onDelta,
-    options,
-  );
+  return withOpenRouterFallback(provider, request, (active, model) => {
+    if (active !== provider) assertLlmProviderConfigured(active);
+    return providers[active].chatCompletionStream(
+      { ...request, model },
+      onDelta,
+      options,
+    );
+  });
 }
 
 export type {

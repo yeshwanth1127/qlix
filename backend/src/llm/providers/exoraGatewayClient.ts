@@ -75,8 +75,8 @@ async function chatCompletion(
   request: InferenceChatRequest,
   options: ChatCompletionOptions,
 ): Promise<ChatCompletionResult> {
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const retries = options.retries ?? 2;
+  const timeoutMs = options.timeoutMs ?? 45_000;
+  const retries = options.retries ?? 1;
   const url = `${exoraBaseUrl().replace(/\/$/, '')}/chat/completions`;
   let lastError: Error | null = null;
 

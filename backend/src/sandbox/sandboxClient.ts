@@ -38,6 +38,35 @@ export interface StoredSandboxFile {
   expiresAt: number | null;
 }
 
+/** Overwrite an existing sandbox object in place (stable download URL). */
+export async function replaceSandboxFile(
+  id: string,
+  bytes: Buffer,
+  fileName: string,
+  contentType = 'application/octet-stream',
+): Promise<StoredSandboxFile> {
+  const resp = await fetch(`${mcpBase()}/sandbox/${id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': contentType,
+      'X-Content-Type': contentType,
+      'X-Service-Secret': serviceSecret(),
+      'X-File-Name': sanitizeFileName(fileName),
+    },
+    body: new Uint8Array(bytes),
+  });
+  if (!resp.ok) {
+    throw new Error(`sandbox replace failed: HTTP ${resp.status}`);
+  }
+  const data = (await resp.json()) as { id?: string; expiresAt?: number };
+  if (!data.id) throw new Error('sandbox replace returned no id');
+  return {
+    id: data.id,
+    url: `${publicApiBase()}/api/v1/sandbox/${data.id}`,
+    expiresAt: data.expiresAt ?? null,
+  };
+}
+
 /** Upload bytes to the sandbox store; returns a browser-facing download URL. */
 export async function storeSandboxFile(
   bytes: Buffer,

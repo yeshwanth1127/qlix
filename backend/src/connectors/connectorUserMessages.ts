@@ -138,3 +138,22 @@ export const SLACK_CONNECT_SHORT =
 export function slackConnectorNotConnectedMessage(): string {
   return `Slack is not connected for this workspace. ${SLACK_CONNECT_SHORT}`;
 }
+
+/** User-facing steps when Notion is required but not linked. */
+export const NOTION_CONNECT_INSTRUCTIONS = `Notion is not connected for this workspace. The user must connect Notion before you can read or write pages.
+
+Tell the user clearly — do not retry until they connect:
+
+1. Open **Connectors** in the Qlix sidebar (plug icon).
+2. Under **Notion**, click **Connect**.
+3. Sign in to Notion and select the workspace (and pages) to share with Qlix.
+4. Return to this chat and ask you to try again.
+
+Connectors URL path: /individual/connectors or /organization/connectors.`;
+
+export const NOTION_CONNECT_SHORT =
+  'Connect Notion first: sidebar → Connectors → Notion → Connect, then retry.';
+
+export function notionConnectorNotConnectedMessage(): string {
+  return `Notion is not connected for this workspace. ${NOTION_CONNECT_SHORT}`;
+}

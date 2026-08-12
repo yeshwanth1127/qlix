@@ -118,6 +118,7 @@ import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
 import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
 import { storeSandboxFile } from '../sandbox/sandboxClient.js';
 import { registerCrmToolRoutes } from './registerCrmToolRoutes.js';
+import { registerNotionToolRoutes } from './registerNotionToolRoutes.js';
 import { registerSlackToolRoutes } from './registerSlackToolRoutes.js';
 import {
   AgentNotFoundError,
@@ -3137,6 +3138,7 @@ export function createAgentChatRouter(): Router {
   );
 
   registerCrmToolRoutes(router);
+  registerNotionToolRoutes(router);
   registerSlackToolRoutes(router);
 
   const jitService = new JitService();

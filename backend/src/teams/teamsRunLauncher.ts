@@ -77,3 +77,43 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
 
   return { run, team: effectiveTeam };
 }
+
+/** Resume a paused run after a durable external wait trigger is fulfilled. */
+export async function resumeTeamRun(runId: string): Promise<void> {
+  const run = await teamsRepo.findRun(runId);
+  if (!run) throw new Error(`Team run ${runId} was not found`);
+  if (run.status !== 'paused') return;
+
+  const team = await teamsService.getTeam(run.teamId, run.orgId);
+  const checkpoint = run.checkpointJson as {
+    inferenceModel?: string | null;
+  } | null;
+  // Prefer: (1) model saved at pause, (2) model used by an earlier successful
+  // worker in this run, (3) team default. Do not let team default short-circuit
+  // recovery — that caused post-pause stages to fall onto Exora after OpenRouter runs.
+  let recoveredModel = checkpoint?.inferenceModel?.trim() || null;
+  if (!recoveredModel) {
+    recoveredModel = await teamsRepo.findLatestSuccessfulAgentInferenceModel(run.id);
+  }
+  if (!recoveredModel) {
+    recoveredModel = (team.config as TeamConfig).defaultModel?.trim() || null;
+  }
+
+  const effectiveTeam: TeamDTO = recoveredModel
+    ? {
+        ...team,
+        config: {
+          ...(team.config as TeamConfig),
+          defaultModel: recoveredModel,
+        },
+      }
+    : team;
+
+  if (recoveredModel) {
+    console.info(`[team-run] resume=${run.id} inferenceModel=${recoveredModel}`);
+  }
+
+  void orchestrator.resume(run, effectiveTeam, () => {}).catch((err) => {
+    console.error(`[TeamOrchestrator] resume ${run.id} failed:`, err);
+  });
+}

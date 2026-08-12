@@ -119,6 +119,202 @@ function normalizeLid(jid) {
   return local ? `${local}@lid` : null;
 }
 
+/** Normalize any PN jid to bare user@s.whatsapp.net (drop device suffix). Never invent a PN from @lid. */
+function normalizePnJid(jid) {
+  if (!jid || typeof jid !== 'string') return null;
+  if (jid.endsWith('@lid') || jid.endsWith('@g.us')) return null;
+  if (jid.includes('@s.whatsapp.net')) {
+    return phoneJidFromUserId(jid);
+  }
+  if (jid.endsWith('@hosted') || jid.includes('@hosted')) {
+    const digits = normalizePhoneDigits(jid.split('@')[0].split(':')[0]);
+    return jidFromPhoneDigits(digits);
+  }
+  // Bare numeric PN from Baileys LID mapping.
+  if (/^\d{8,15}$/.test(jid)) return jidFromPhoneDigits(jid);
+  return null;
+}
+
+function rememberLidPnMapping(entry, lidJid, pnJid) {
+  if (!entry.lidToPn) entry.lidToPn = new Map();
+  if (!entry.pnToLid) entry.pnToLid = new Map();
+  const lid = normalizeLid(lidJid);
+  const pn = normalizePnJid(pnJid);
+  if (!lid || !pn) return;
+  entry.lidToPn.set(lid, pn);
+  entry.pnToLid.set(pn, lid);
+}
+
+/**
+ * Contact chats often arrive as @lid while waits are armed on phone JIDs.
+ * Collect remoteJid + Baileys alt keys + Signal LID↔PN mapping candidates.
+ */
+async function collectContactArmedCandidates(entry, msg, remoteJid) {
+  const candidates = [];
+  const push = (raw) => {
+    if (!raw || typeof raw !== 'string') return;
+    const jid = raw.trim();
+    if (!jid || candidates.includes(jid)) return;
+    candidates.push(jid);
+    const pn = normalizePnJid(jid);
+    if (pn && !candidates.includes(pn)) candidates.push(pn);
+    const lid = normalizeLid(jid);
+    if (lid && !candidates.includes(lid)) candidates.push(lid);
+  };
+
+  push(remoteJid);
+  push(msg?.key?.remoteJidAlt);
+  push(msg?.key?.participantAlt);
+
+  const lids = candidates.filter((j) => j.endsWith('@lid')).map((j) => normalizeLid(j)).filter(Boolean);
+  for (const lid of lids) {
+    const cached = entry.lidToPn?.get(lid);
+    if (cached) push(cached);
+    try {
+      const mapped = await entry.sock?.signalRepository?.lidMapping?.getPNForLID?.(lid);
+      if (mapped) {
+        rememberLidPnMapping(entry, lid, mapped);
+        push(mapped);
+      }
+    } catch (err) {
+      console.warn(
+        `[qlix-whatsapp] getPNForLID failed for ${lid}:`,
+        err?.message ?? err,
+      );
+    }
+  }
+
+  // If we only have a phone jid so far, also try reverse mapping for completeness.
+  const pns = candidates
+    .map((j) => normalizePnJid(j))
+    .filter(Boolean)
+    .filter((v, i, a) => a.indexOf(v) === i);
+  for (const pn of pns) {
+    const cachedLid = entry.pnToLid?.get(pn);
+    if (cachedLid) push(cachedLid);
+  }
+
+  return candidates;
+}
+
+/**
+ * Returns the JID to forward to Qlix when any candidate is armed.
+ * Prefers the phone (@s.whatsapp.net) form so WaitTrigger / auto-reply rows match.
+ */
+async function resolveArmedContactJid(entry, connectorId, msg, remoteJid) {
+  const candidates = await collectContactArmedCandidates(entry, msg, remoteJid);
+  for (const candidate of candidates) {
+    let armed = false;
+    try {
+      armed = await qlix.isAutoReplyArmed(connectorId, candidate);
+    } catch {
+      armed = false;
+    }
+    if (!armed) continue;
+    const pn =
+      normalizePnJid(candidate) ||
+      (candidate.endsWith('@lid') ? entry.lidToPn?.get(normalizeLid(candidate)) : null);
+    return {
+      armedJid: pn || candidate,
+      remoteJid,
+      candidates,
+    };
+  }
+
+  // Reverse path: inbound @lid often has no reverse mapping yet. Compare against
+  // LIDs for every phone currently armed on this connector.
+  if (remoteJid.endsWith('@lid')) {
+    const inboundLid = normalizeLid(remoteJid);
+    try {
+      const armedPhones = await qlix.listArmedContacts(connectorId);
+      for (const phone of armedPhones) {
+        const pn = normalizePnJid(phone) || phone;
+        let lid = entry.pnToLid?.get(pn) || null;
+        if (!lid) {
+          try {
+            lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(pn);
+            if (lid) rememberLidPnMapping(entry, lid, pn);
+          } catch {
+            lid = null;
+          }
+        }
+        if (inboundLid && lid && normalizeLid(lid) === inboundLid) {
+          candidates.push(pn);
+          return { armedJid: pn, remoteJid, candidates };
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[qlix-whatsapp] armed-contacts reverse lookup failed connector=${connectorId}:`,
+        err?.message ?? err,
+      );
+    }
+  }
+
+  return { armedJid: null, remoteJid, candidates };
+}
+
+const MUTED_JIDS_TTL_MS = 5_000;
+
+async function getMutedContactJids(entry, connectorId) {
+  if (
+    entry.mutedJids instanceof Set &&
+    typeof entry.mutedJidsAt === 'number' &&
+    Date.now() - entry.mutedJidsAt < MUTED_JIDS_TTL_MS
+  ) {
+    return entry.mutedJids;
+  }
+  try {
+    const { muted } = await qlix.listArmedAndMutedContacts(connectorId);
+    entry.mutedJids = new Set(
+      (Array.isArray(muted) ? muted : []).map((j) => String(j).trim().toLowerCase()).filter(Boolean),
+    );
+  } catch {
+    entry.mutedJids = entry.mutedJids instanceof Set ? entry.mutedJids : new Set();
+  }
+  entry.mutedJidsAt = Date.now();
+  return entry.mutedJids;
+}
+
+function phoneLocalFromJid(jid) {
+  if (!jid || typeof jid !== 'string') return '';
+  const pn = normalizePnJid(jid);
+  return (pn || jid).split('@')[0]?.split(':')[0] ?? '';
+}
+
+/** True when remoteJid (phone or @lid) matches a post-ack muted lead. */
+export function isRemoteJidMuted(entry, remoteJid, mutedSet) {
+  if (!mutedSet?.size || !remoteJid) return false;
+  const lower = String(remoteJid).trim().toLowerCase();
+  if (mutedSet.has(lower)) return true;
+  const pn = normalizePnJid(remoteJid);
+  if (pn && mutedSet.has(pn.toLowerCase())) return true;
+  const lid = normalizeLid(remoteJid);
+  if (lid) {
+    if (mutedSet.has(lid.toLowerCase())) return true;
+    const mappedPn = entry.lidToPn?.get(lid);
+    if (mappedPn && mutedSet.has(String(mappedPn).toLowerCase())) return true;
+  }
+  if (pn) {
+    const mappedLid = entry.pnToLid?.get(pn);
+    if (mappedLid && mutedSet.has(String(mappedLid).toLowerCase())) return true;
+  }
+  const remoteLocal = phoneLocalFromJid(remoteJid);
+  if (remoteLocal.length < 8) return false;
+  for (const muted of mutedSet) {
+    const mutedLocal = phoneLocalFromJid(muted);
+    if (!mutedLocal) continue;
+    if (
+      mutedLocal === remoteLocal ||
+      mutedLocal.endsWith(remoteLocal) ||
+      remoteLocal.endsWith(mutedLocal)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Only the logged-in account (QR-linked), never a contact's remoteJid. */
 function rememberSelfJid(entry, jid) {
   if (!jid) return;
@@ -346,6 +542,12 @@ export async function startSession(connectorId) {
     lastOutboundAt: 0,
     /** Phonebook contacts learned from Baileys sync + inbound push names. */
     contacts: new Map(),
+    /** Learned LID (privacy) → phone JID mappings for contact wait matching. */
+    lidToPn: new Map(),
+    pnToLid: new Map(),
+    /** Post-ack muted phone JIDs (sidecar skip forward + buffer). */
+    mutedJids: new Set(),
+    mutedJidsAt: 0,
     /** Recent 1:1 chat messages buffered for agent read tools. */
     messagesByJid: new Map(),
     inboundLock: false,
@@ -444,19 +646,27 @@ export async function startSession(connectorId) {
       if (!Array.isArray(updates)) return;
       for (const c of updates) rememberContact(entry, c);
     });
-    entry.sock.ev.on('messaging-history.set', ({ contacts: histContacts, messages: histMessages }) => {
+    entry.sock.ev.on('messaging-history.set', async ({ contacts: histContacts, messages: histMessages }) => {
       if (Array.isArray(histContacts)) {
         for (const c of histContacts) rememberContact(entry, c);
       }
       if (Array.isArray(histMessages)) {
-        for (const m of histMessages) rememberChatMessage(entry, m);
+        const mutedSet = await getMutedContactJids(entry, connectorId);
+        for (const m of histMessages) {
+          const remote = m?.key?.remoteJid;
+          if (remote && isRemoteJidMuted(entry, remote, mutedSet)) continue;
+          rememberChatMessage(entry, m);
+        }
       }
     });
 
     entry.sock.ev.on('messages.upsert', async ({ messages, type }) => {
       // Buffer messages for agent read tools (notify + append history).
       if (type === 'notify' || type === 'append') {
+        const mutedSet = await getMutedContactJids(entry, connectorId);
         for (const msg of messages ?? []) {
+          const remote = msg?.key?.remoteJid;
+          if (remote && isRemoteJidMuted(entry, remote, mutedSet)) continue;
           rememberChatMessage(entry, msg);
         }
       }
@@ -483,14 +693,20 @@ export async function startSession(connectorId) {
         const now = Date.now();
         const fromMe = Boolean(msg.key.fromMe);
 
-        // Self-chat: trigger agent runs. Contact chats: only when auto-reply is armed.
+        // Self-chat: trigger agent runs. Contact chats: only when auto-reply / team wait is armed.
+        // Contact replies often arrive as @lid while waits are armed on phone JIDs — resolve both.
         const selfChat = isAllowedInboundChat(entry, remoteJid, fromMe);
         let contactArmed = false;
+        let forwardJid = remoteJid;
         if (!selfChat && !fromMe) {
-          try {
-            contactArmed = await qlix.isAutoReplyArmed(connectorId, remoteJid);
-          } catch {
-            contactArmed = false;
+          const armed = await resolveArmedContactJid(entry, connectorId, msg, remoteJid);
+          contactArmed = Boolean(armed.armedJid);
+          if (contactArmed) {
+            forwardJid = armed.armedJid;
+          } else {
+            console.log(
+              `[qlix-whatsapp] inbound skipped (not-armed) connector=${connectorId} remote=${remoteJid} candidates=${armed.candidates.join(',') || 'none'}`,
+            );
           }
         }
         if (!selfChat && !contactArmed) {
@@ -519,12 +735,12 @@ export async function startSession(connectorId) {
         entry.inboundLock = true;
         try {
           console.log(
-            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${fromMe} remote=${remoteJid} contactArmed=${contactArmed}`,
+            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${fromMe} remote=${remoteJid} forward=${forwardJid} contactArmed=${contactArmed}`,
           );
           await handleInboundMessage(
             connectorId,
             selfJid,
-            remoteJid,
+            forwardJid,
             trimmed,
             allowedSelfJidsForEntry(entry),
             { fromContact: contactArmed && !selfChat },
@@ -796,6 +1012,16 @@ export async function sendToRecipient(connectorId, recipient, text) {
         message: { conversation: message },
         messageTimestamp: Math.floor(Date.now() / 1000),
       });
+      // Warm LID↔PN cache so inbound @lid replies can match phone-armed waits.
+      try {
+        const lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(resolved.jid);
+        if (lid) rememberLidPnMapping(entry, lid, resolved.jid);
+      } catch (err) {
+        console.warn(
+          `[qlix-whatsapp] getLIDForPN failed for ${resolved.jid}:`,
+          err?.message ?? err,
+        );
+      }
       console.log(
         `[qlix-whatsapp] sent-to-contact connector=${connectorId} to=${resolved.jid} name=${resolved.name ?? 'n/a'}`,
       );

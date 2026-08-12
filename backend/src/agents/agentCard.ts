@@ -58,6 +58,8 @@ const SCOPE_SKILL_MAP: Record<string, { name: string; description: string }> = {
   'crm.delete': { name: 'CRM Delete', description: 'Delete CRM records (JIT)' },
   'slack.read': { name: 'Slack Read', description: 'Channels, search, history, and Slack List items' },
   'slack.send': { name: 'Slack Write', description: 'Post, channels, DMs, and create/update Slack List task rows (JIT)' },
+  'notion.read': { name: 'Notion Read', description: 'Search and read Notion pages and databases' },
+  'notion.write': { name: 'Notion Write', description: 'Create or update Notion pages and database rows (JIT)' },
 };
 
 export function buildAgentCard(agent: AgentDTO, backendBaseUrl: string): A2AAgentCard {

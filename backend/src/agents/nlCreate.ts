@@ -21,6 +21,7 @@ import {
 } from './hybridStarterPack.js';
 import type { AgentCreationPlan, NLAgentSpec, NLWorkerSpec } from './nlTypes.js';
 import { wireAgentMcpFromScopes } from './agentMcpWire.js';
+import { inferTeamWaitStepsFromSpec } from '../wait/waitPolicy.js';
 
 /** Minimal subset of Express Request that resolvers need. */
 export type RequestLike = { protocol?: string; get(name: string): string | undefined; headers: Record<string, string | string[] | undefined> };
@@ -66,6 +67,22 @@ export class NLCreationService {
       return { type: 'single', output };
     }
 
+    // A reply-driven outreach pipeline must arm the listener on the same worker
+    // that sends the contact message. LLM plans otherwise often grant the scope
+    // only to the supervisor, which cannot arm the worker's outbound contact send.
+    const replyWaitRequested = /\b(?:wait\s+(?:for|until)|if|when|once|after)\b[\s\S]{0,120}\b(?:reply|respond)/i.test(
+      [plan.team.name, plan.team.description, ...plan.team.workers.map((worker) => worker.description)].join('\n'),
+    );
+    if (replyWaitRequested) {
+      for (const worker of plan.team.workers) {
+        if (worker.permissionScopes.includes('whatsapp.contact_send')) {
+          worker.permissionScopes = Array.from(
+            new Set([...worker.permissionScopes, 'whatsapp.auto_reply']),
+          );
+        }
+      }
+    }
+
     // Team: supervisor first, then workers sequentially
     const supervisorOutput = await this.createOneAgent({
       userId, orgId, spec: plan.team.supervisor, request, clientPlatform,
@@ -80,6 +97,11 @@ export class NLCreationService {
     // orgId required for teams
     const teamOrgId = orgId ?? '';
     const backendUrl = resolvePublicBackendUrl(request);
+    const inferredWaitSteps = inferTeamWaitStepsFromSpec({
+      name: plan.team.name,
+      description: plan.team.description,
+      workers: plan.team.workers,
+    });
 
     const team = await this.teamsService.createTeam(
       userId,
@@ -100,9 +122,8 @@ export class NLCreationService {
           humanInLoopTriggers: ['web.transaction', 'finance.spend_50', 'finance.spend_100'],
           pipelineMode: true,
           autoSequence: false,
-          // Pinned at creation so the stage goals a team runs never change under it when
-          // members or delegated scopes are later edited.
           playbook: detectPlaybookFromScopeSets(plan.team.workers.map((w) => w.permissionScopes)),
+          ...(inferredWaitSteps.length > 0 ? { waitSteps: inferredWaitSteps } : {}),
         },
       },
       backendUrl,

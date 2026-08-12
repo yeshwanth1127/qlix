@@ -59,6 +59,21 @@ export function jidLocalPart(jid: string): string {
   return jid.split('@')[0]?.split(':')[0] ?? '';
 }
 
+/**
+ * After a team-wait ack, ignore leftover auto-reply until a newer outbound re-arms.
+ * Open waits always keep the contact open. A session armed after fulfill re-opens.
+ */
+export function isAutoReplySupersededByWaitAck(input: {
+  hasOpenWait: boolean;
+  latestFulfilledAt: Date | null;
+  autoReplyLastOutboundAt: Date | null;
+}): boolean {
+  if (input.hasOpenWait) return false;
+  if (!input.latestFulfilledAt) return false;
+  if (!input.autoReplyLastOutboundAt) return true;
+  return input.autoReplyLastOutboundAt.getTime() <= input.latestFulfilledAt.getTime();
+}
+
 function expiresFromNow(ttlHours = AUTO_REPLY_TTL_HOURS): Date {
   return new Date(Date.now() + ttlHours * 60 * 60 * 1000);
 }
@@ -398,7 +413,210 @@ export async function stopAutoReplySessions(input: {
   return { stopped: result.count };
 }
 
-export async function isContactArmed(connectorId: string, remoteJid: string): Promise<boolean> {
+/** Bump lastOutboundAt so a wait-ack does not mute an intentional auto-reply continuation. */
+export async function touchAutoReplySessionOutbound(
+  connectorId: string,
+  contactJid: string,
+): Promise<void> {
+  const normalized = normalizeContactJid(contactJid);
+  const local = jidLocalPart(normalized);
+  await prisma.whatsAppAutoReplySession.updateMany({
+    where: {
+      connectorId,
+      status: 'active',
+      OR: [
+        { contactJid: normalized },
+        ...(local.length >= 8 ? [{ contactJid: { contains: local } }] : []),
+      ],
+    },
+    data: { lastOutboundAt: new Date() },
+  });
+}
+
+/** Stop every active auto-reply session for this connector + contact (any agent). */
+export async function stopAutoReplySessionsForContact(input: {
+  connectorId: string;
+  contactJid: string;
+}): Promise<{ stopped: number }> {
+  const normalized = normalizeContactJid(input.contactJid);
+  const local = jidLocalPart(normalized);
+  const result = await prisma.whatsAppAutoReplySession.updateMany({
+    where: {
+      connectorId: input.connectorId,
+      status: 'active',
+      OR: [
+        { contactJid: normalized },
+        ...(local.length >= 8
+          ? [
+              { contactJid: { contains: local } },
+              { contactPhone: { contains: local.replace(/\D/g, '') || local } },
+            ]
+          : []),
+      ],
+    },
+    data: { status: 'stopped' },
+  });
+  return { stopped: result.count };
+}
+
+async function latestFulfilledWaitAt(
+  connectorId: string,
+  remoteJid: string,
+): Promise<Date | null> {
+  const row = await prisma.waitTrigger.findFirst({
+    where: {
+      connectorId,
+      kind: 'whatsapp_inbound',
+      status: 'fulfilled',
+      OR: [
+        { contactJid: normalizeContactJid(remoteJid) },
+        ...(jidLocalPart(remoteJid).length >= 8
+          ? [{ contactJid: { contains: jidLocalPart(normalizeContactJid(remoteJid)) } }]
+          : []),
+      ],
+    },
+    orderBy: { fulfilledAt: 'desc' },
+    select: { fulfilledAt: true },
+  });
+  return row?.fulfilledAt ?? null;
+}
+
+/** True when this lead already got a wait ack and has not been re-armed. */
+export async function isContactClosedAfterWaitAck(
+  connectorId: string,
+  remoteJid: string,
+): Promise<boolean> {
+  const { WaitTriggerService } = await import('../teams/waitTrigger.service.js');
+  const hasOpenWait = await new WaitTriggerService().isContactWaitArmed(connectorId, remoteJid);
+  if (hasOpenWait) return false;
+  const latestFulfilledAt = await latestFulfilledWaitAt(connectorId, remoteJid);
+  if (!latestFulfilledAt) return false;
   const session = await findActiveAutoReplySession(connectorId, remoteJid);
-  return session != null;
+  return isAutoReplySupersededByWaitAck({
+    hasOpenWait: false,
+    latestFulfilledAt,
+    autoReplyLastOutboundAt: session ? new Date(session.lastOutboundAt) : null,
+  });
+}
+
+export async function isContactArmed(connectorId: string, remoteJid: string): Promise<boolean> {
+  const { WaitTriggerService } = await import('../teams/waitTrigger.service.js');
+  if (await new WaitTriggerService().isContactWaitArmed(connectorId, remoteJid)) {
+    return true;
+  }
+  const session = await findActiveAutoReplySession(connectorId, remoteJid);
+  const latestFulfilledAt = await latestFulfilledWaitAt(connectorId, remoteJid);
+  if (
+    isAutoReplySupersededByWaitAck({
+      hasOpenWait: false,
+      latestFulfilledAt,
+      autoReplyLastOutboundAt: session ? new Date(session.lastOutboundAt) : null,
+    })
+  ) {
+    return false;
+  }
+  return Boolean(session);
+}
+
+/**
+ * Phone JIDs currently armed / muted for this connector.
+ * Used by the WhatsApp sidecar to reverse-map inbound @lid addresses and skip closed leads.
+ */
+export async function listArmedAndMutedContactJids(connectorId: string): Promise<{
+  contacts: string[];
+  muted: string[];
+}> {
+  const now = new Date();
+  const [sessions, openWaits, fulfilledWaits] = await Promise.all([
+    prisma.whatsAppAutoReplySession.findMany({
+      where: { connectorId, status: 'active', expiresAt: { gt: now } },
+      select: { contactJid: true, lastOutboundAt: true },
+      take: 50,
+    }),
+    prisma.waitTrigger.findMany({
+      where: {
+        connectorId,
+        kind: 'whatsapp_inbound',
+        status: 'open',
+        expiresAt: { gt: now },
+        contactJid: { not: null },
+      },
+      select: { contactJid: true },
+      take: 50,
+    }),
+    prisma.waitTrigger.findMany({
+      where: {
+        connectorId,
+        kind: 'whatsapp_inbound',
+        status: 'fulfilled',
+        contactJid: { not: null },
+      },
+      select: { contactJid: true, fulfilledAt: true },
+      orderBy: { fulfilledAt: 'desc' },
+      take: 100,
+    }),
+  ]);
+
+  const openSet = new Set<string>();
+  for (const row of openWaits) {
+    if (!row.contactJid) continue;
+    const jid = normalizeContactJid(row.contactJid);
+    if (jid) openSet.add(jid);
+  }
+
+  const latestFulfill = new Map<string, Date>();
+  for (const row of fulfilledWaits) {
+    if (!row.contactJid || !row.fulfilledAt) continue;
+    const jid = normalizeContactJid(row.contactJid);
+    if (!jid || latestFulfill.has(jid)) continue;
+    latestFulfill.set(jid, row.fulfilledAt);
+  }
+
+  const sessionByJid = new Map<string, Date>();
+  for (const row of sessions) {
+    const jid = normalizeContactJid(row.contactJid);
+    if (!jid) continue;
+    sessionByJid.set(jid, row.lastOutboundAt);
+  }
+
+  const contacts = new Set<string>();
+  const muted = new Set<string>();
+
+  for (const jid of openSet) contacts.add(jid);
+
+  for (const [jid, lastOutboundAt] of sessionByJid) {
+    if (openSet.has(jid)) continue;
+    const superseded = isAutoReplySupersededByWaitAck({
+      hasOpenWait: false,
+      latestFulfilledAt: latestFulfill.get(jid) ?? null,
+      autoReplyLastOutboundAt: lastOutboundAt,
+    });
+    if (superseded) muted.add(jid);
+    else contacts.add(jid);
+  }
+
+  for (const [jid, fulfilledAt] of latestFulfill) {
+    if (openSet.has(jid) || contacts.has(jid) || muted.has(jid)) continue;
+    if (
+      isAutoReplySupersededByWaitAck({
+        hasOpenWait: false,
+        latestFulfilledAt: fulfilledAt,
+        autoReplyLastOutboundAt: sessionByJid.get(jid) ?? null,
+      })
+    ) {
+      muted.add(jid);
+    }
+  }
+
+  return { contacts: [...contacts], muted: [...muted] };
+}
+
+export async function listArmedContactJids(connectorId: string): Promise<string[]> {
+  const { contacts } = await listArmedAndMutedContactJids(connectorId);
+  return contacts;
+}
+
+export async function listMutedContactJids(connectorId: string): Promise<string[]> {
+  const { muted } = await listArmedAndMutedContactJids(connectorId);
+  return muted;
 }

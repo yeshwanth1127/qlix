@@ -188,6 +188,15 @@ model TelegramPendingRoute {
   @@map("telegram_pending_routes")
 }
 
+/// Shared claim log so cluster workers do not double-process the same Update.
+model TelegramUpdateClaim {
+  updateId  BigInt   @id @map("update_id")
+  claimedAt DateTime @default(now()) @map("claimed_at")
+
+  @@index([claimedAt])
+  @@map("telegram_update_claims")
+}
+
 /// Active listen session: contact replies auto-route to the agent that messaged them.
 model WhatsAppAutoReplySession {
   id            String    @id @default(cuid())
@@ -1303,6 +1312,8 @@ model TeamRun {
   artifacts              Json      @default("[]")
   /// JIT scope escalation requests made during this run.
   scopeEscalations       Json      @default("[]") @map("scope_escalations")
+  /// Durable pipeline state saved while this run is waiting for an external trigger.
+  checkpointJson         Json?     @map("checkpoint_json")
   /// Final synthesized result from the supervisor.
   result                 Json?
   errorMessage           String?   @map("error_message")
@@ -1315,6 +1326,7 @@ model TeamRun {
   events         TeamRunEvent[]
   a2aTasks       A2ATask[]
   agentRuns      AgentRun[]
+  waitTriggers   WaitTrigger[]
   channelSession TeamRunChannelSession?
 
   @@index([teamId, createdAt])
@@ -1322,6 +1334,41 @@ model TeamRun {
   @@index([status, createdAt])
   @@index([sourceConnectorId, status])
   @@map("team_runs")
+}
+
+/// Durable external-event wait for an agent or a paused team pipeline.
+/// V1 matches an inbound WhatsApp message by connector + contact JID.
+model WaitTrigger {
+  id               String    @id @default(cuid())
+  orgId            String    @map("org_id") @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  /// `whatsapp_inbound` now; schema leaves room for webhook, timeout and human approval.
+  kind             String
+  /// `open` | `fulfilled` | `expired` | `canceled`
+  status           String    @default("open")
+  /// `first_match` | `collect_until_timeout`
+  fulfillment      String    @default("first_match")
+  connectorId      String?   @map("connector_id") @db.Uuid
+  contactJid       String?   @map("contact_jid")
+  agentId          String?   @map("agent_id")
+  /// `resume_team_run` | `spawn_agent_run`
+  continuationKind String    @map("continuation_kind")
+  teamRunId        String?   @map("team_run_id")
+  replyInstructions String?  @map("reply_instructions") @db.Text
+  /// Matched events ({jid, text, timestampMs, pushName}[]).
+  inboundJson      Json      @default("[]") @map("inbound_json")
+  armedAt          DateTime  @default(now()) @map("armed_at")
+  expiresAt        DateTime  @map("expires_at")
+  fulfilledAt      DateTime? @map("fulfilled_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  teamRun TeamRun? @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+
+  @@index([connectorId, contactJid, status, expiresAt])
+  @@index([teamRunId, status])
+  @@index([status, kind, expiresAt])
+  @@map("wait_triggers")
 }
 
 /// Binds an active WhatsApp connector to a team run for inject/status/cancel.

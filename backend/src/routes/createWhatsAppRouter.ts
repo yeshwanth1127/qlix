@@ -111,6 +111,24 @@ export function createWhatsAppRouter(): Router {
     }
   });
 
+  router.get('/auto-reply/armed-contacts', async (request: Request, response: Response) => {
+    const connectorId = typeof request.query.connector_id === 'string' ? request.query.connector_id : '';
+    if (!connectorId) {
+      response.status(400).json({
+        error: { code: 'invalid_query', message: 'connector_id required' },
+      });
+      return;
+    }
+    try {
+      const { listArmedAndMutedContactJids } = await import('../whatsapp/whatsappAutoReply.service.js');
+      const { contacts, muted } = await listArmedAndMutedContactJids(connectorId);
+      response.json({ ok: true, contacts, muted });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Armed contacts list failed';
+      response.status(500).json({ error: { code: 'armed_contacts_failed', message } });
+    }
+  });
+
   return router;
 }
 

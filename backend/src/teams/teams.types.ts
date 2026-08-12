@@ -1,4 +1,9 @@
 import type { PermissionScope } from '../agents/agents.types.js';
+import type {
+  LiveArtifactState,
+  WaitPolicySnapshot,
+  WaitStep,
+} from '../wait/waitPolicy.types.js';
 
 export type TeamStatus = 'draft' | 'active' | 'archived';
 export type TeamRunStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled';
@@ -26,7 +31,14 @@ export type TeamRunEventType =
   | 'run_completed'
   | 'run_failed'
   | 'result_delivered'
-  | 'user_injection';
+  | 'user_injection'
+  | 'wait_armed'
+  | 'wait_ttl_requested'
+  | 'wait_ttl_set'
+  | 'wait_progress'
+  | 'live_artifact_updated'
+  | 'wait_fulfilled'
+  | 'wait_expired';
 
 /**
  * Which deterministic stage-goal playbook the orchestrator applies to a run.
@@ -58,6 +70,8 @@ export interface TeamConfig {
   autoSequence?: boolean;
   /** Override model for all agents in this team (supervisor + all workers). */
   defaultModel?: string;
+  /** Declarative external-event waits (WhatsApp inbound + side effects). */
+  waitSteps?: WaitStep[];
 }
 
 export interface TeamMemberDTO {
@@ -136,11 +150,55 @@ export interface TeamRunDTO {
   supervisorTrace: unknown[];
   artifacts: TeamRunArtifact[];
   scopeEscalations: ScopeEscalation[];
+  /** Durable state used to continue a paused external-event wait. */
+  checkpointJson?: TeamRunCheckpoint | null;
   result: unknown | null;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+}
+
+export interface TeamRunCheckpoint {
+  plan: SubtaskCheckpoint[];
+  completedResults: WorkerResultCheckpoint[];
+  nextStageIndex: number;
+  waitTriggerIds: string[];
+  waitReason: string;
+  /** True until the user picks a wait duration in team chat. */
+  awaitingTtlSelection?: boolean;
+  /** Chosen wait deadline (ISO), after TTL is set. */
+  waitExpiresAt?: string | null;
+  /** Chosen wait duration in hours. */
+  waitTtlHours?: number | null;
+  /** Model override for this run (survives pause/resume). */
+  inferenceModel?: string | null;
+  /** Immutable wait policy for this pause/resume cycle. */
+  waitPolicySnapshot?: WaitPolicySnapshot;
+  /** Live sandbox artifacts updated while waiting. */
+  liveArtifacts?: LiveArtifactState[];
+}
+
+export interface SubtaskCheckpoint {
+  subtaskId: string;
+  agentId: string;
+  agentName: string;
+  agentDescription?: string;
+  role: string;
+  goal: string;
+  delegatedScopes: PermissionScope[];
+  stageOrder: number;
+}
+
+export interface WorkerResultCheckpoint {
+  subtaskId: string;
+  agentId: string;
+  agentName: string;
+  summary: string;
+  findings: string;
+  artifacts: TeamRunArtifact[];
+  status: 'completed' | 'failed';
+  errorMessage?: string;
 }
 
 export interface TeamRunEventDTO {

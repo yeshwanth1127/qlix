@@ -6,6 +6,8 @@ import { pruneOrphanedRunnerStateDirs, pruneStaleRunnerImages } from '../cloudRu
 import { pruneExpiredEphemeralGrants } from '../lib/ephemeralGrants.js';
 import { tickEmployeeSchedules } from '../employees/employeeSchedule.service.js';
 import { scheduleService } from '../schedules/schedule.service.js';
+import { WaitTriggerService } from '../teams/waitTrigger.service.js';
+import { TeamsRepository } from '../teams/teams.repository.js';
 
 /**
  * In-process interval scheduler for jobs that previously had to be triggered by hand
@@ -17,6 +19,8 @@ import { scheduleService } from '../schedules/schedule.service.js';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
+const waitTriggers = new WaitTriggerService();
+const teamsRepo = new TeamsRepository();
 
 function intervalMs(envVar: string, defaultHours: number): number {
   const raw = process.env[envVar]?.trim();
@@ -61,6 +65,51 @@ async function runPruneJobs(): Promise<void> {
   }
 }
 
+async function expireWaitTriggers(): Promise<void> {
+  try {
+    const expired = await waitTriggers.expireDue();
+    if (expired.length === 0) return;
+
+    const teamRunIds = [...new Set(expired.map((t) => t.teamRunId).filter(Boolean))] as string[];
+    for (const teamRunId of teamRunIds) {
+      const run = await teamsRepo.findRun(teamRunId);
+      if (!run || run.status !== 'paused') continue;
+
+      const checkpoint = run.checkpointJson as {
+        awaitingTtlSelection?: boolean;
+      } | null;
+      // While waiting for the user to pick a duration, ignore expiry unless the
+      // provisional safety-cap wait itself is due (expireDue already selected it).
+      if (checkpoint?.awaitingTtlSelection) {
+        // Still expire siblings and resume — the provisional 7d cap was hit.
+      }
+
+      await waitTriggers.expireOpenWaitsForTeamRun(teamRunId);
+      await teamsRepo.appendEvent(run.id, run.teamId, null, 'wait_expired', {
+        reason:
+          'Wait duration ended — continuing with whoever has replied so far.',
+        teamRunId,
+      });
+
+      try {
+        const { resumeTeamRun } = await import('../teams/teamsRunLauncher.js');
+        await resumeTeamRun(teamRunId);
+      } catch (err) {
+        console.error(
+          `[scheduler] resume after wait expiry failed run=${teamRunId}`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    if (expired.length > 0) {
+      console.log(`[scheduler] expired ${expired.length} wait trigger(s); resumed ${teamRunIds.length} paused run(s)`);
+    }
+  } catch (err) {
+    console.error('[scheduler] wait trigger expiry failed', err);
+  }
+}
+
 function every(fn: () => Promise<void>, ms: number, initialDelayMs: number): void {
   const kickoff = setTimeout(function tick() {
     void fn();
@@ -79,6 +128,7 @@ export function startBackgroundScheduler(): void {
   every(runBillingCycleJobs, billingIntervalMs, 60_000);
   every(reconcileStaleRuns, runReconcileIntervalMs, 90_000);
   every(runPruneJobs, pruneIntervalMs, 3 * MINUTE_MS);
+  every(expireWaitTriggers, MINUTE_MS, 55_000);
   every(async () => {
     try {
       const n = await tickEmployeeSchedules();

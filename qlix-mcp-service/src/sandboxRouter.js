@@ -81,6 +81,44 @@ export function createSandboxRouter() {
     res.json({ ok: true, id, fileName, expiresAt });
   });
 
+  // Replace bytes in place (stable id / download URL for live artifacts).
+  router.put('/:id', requireServiceSecret, express.raw({ type: () => true, limit: '60mb' }), async (req, res) => {
+    const id = String(req.params.id);
+    if (!/^[a-f0-9]{32}$/.test(id)) {
+      res.status(404).json({ ok: false, error: 'not found' });
+      return;
+    }
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      res.status(400).json({ ok: false, error: 'empty body' });
+      return;
+    }
+    if (body.length > MAX_BYTES) {
+      res.status(413).json({ ok: false, error: 'file too large' });
+      return;
+    }
+    const meta = await readMeta(id);
+    if (!meta) {
+      res.status(404).json({ ok: false, error: 'not found' });
+      return;
+    }
+    const fileName = safeName(req.header('X-File-Name') || meta.fileName);
+    const contentType = req.header('X-Content-Type') || meta.contentType || 'application/octet-stream';
+    const expiresAt = Date.now() + TTL_HOURS * 3600 * 1000;
+    try {
+      await fsp.writeFile(path.join(SANDBOX_DIR, id), body);
+      await fsp.writeFile(
+        path.join(SANDBOX_DIR, `${id}.json`),
+        JSON.stringify({ id, fileName, contentType, size: body.length, expiresAt }),
+      );
+    } catch (err) {
+      console.error('[qlix-mcp] sandbox replace failed', err);
+      res.status(500).json({ ok: false, error: 'replace failed' });
+      return;
+    }
+    res.json({ ok: true, id, fileName, expiresAt });
+  });
+
   // Download (backend proxy -> here). Secret-guarded: the mcp service is internal-only.
   router.get('/:id', requireServiceSecret, async (req, res) => {
     const id = String(req.params.id);
