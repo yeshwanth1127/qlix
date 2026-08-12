@@ -40,7 +40,11 @@ export function createSandboxRouter(): Router {
       }
       console.log(`[sandbox-audit] download id=${id} file=${file.fileName} ip=${request.ip}`);
       response.setHeader('Content-Type', file.contentType);
-      response.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+      const inline = request.query.inline === '1' || request.query.inline === 'true';
+      response.setHeader(
+        'Content-Disposition',
+        `${inline ? 'inline' : 'attachment'}; filename="${file.fileName}"`,
+      );
       response.setHeader('Cache-Control', 'private, no-store');
       response.send(file.body);
     } catch (err) {

@@ -477,7 +477,7 @@ export class TeamsService {
     runId: string,
     orgId: string,
     hours: number,
-  ): Promise<{ expiresAt: string; hours: number; updatedWaits: number }> {
+  ): Promise<{ expiresAt: string; hours: number; updatedWaits: number; sentCount: number }> {
     const {
       WaitTriggerService,
       clampWaitTtlHours,
@@ -503,25 +503,68 @@ export class TeamsService {
 
     const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
     const waitTriggers = new WaitTriggerService();
+
+    // Deliver queued outreach only now — wait mode + duration are set, live sheet is ready.
+    const { flushPendingWaitOutbounds } = await import('../wait/pendingWaitOutbound.js');
+    const activeStep = checkpoint.waitPolicySnapshot
+      ? (await import('../wait/waitPolicy.js')).getActiveWaitStep(checkpoint.waitPolicySnapshot)
+      : null;
+    const fulfillment = activeStep?.trigger.fulfillment ?? 'collect_until_timeout';
+    const flush = await flushPendingWaitOutbounds({
+      teamRunId: run.id,
+      orgId: run.orgId,
+      userId: run.startedByUserId,
+      fulfillment,
+      ttlHours,
+    });
+
     const updatedWaits = await waitTriggers.setExpiresAtForOpenTeamWaits(run.id, expiresAt);
+    const contactCount = Math.max(
+      flush.triggerIds.length,
+      checkpoint.waitTriggerIds?.length ?? 0,
+      flush.sent.filter((row) => row.ok).length,
+    );
     const nextCheckpoint: TeamRunCheckpoint = {
-      ...checkpoint,
+      ...flush.checkpoint,
       awaitingTtlSelection: false,
       waitExpiresAt: expiresAt.toISOString(),
       waitTtlHours: ttlHours,
+      waitTriggerIds: flush.triggerIds.length > 0 ? flush.triggerIds : checkpoint.waitTriggerIds,
+      pendingWaitOutbounds: [],
       waitReason:
-        `Waiting for WhatsApp replies from ${checkpoint.waitTriggerIds.length} contacted lead` +
-        `${checkpoint.waitTriggerIds.length === 1 ? '' : 's'} ` +
+        `Waiting for WhatsApp replies from ${contactCount} contacted lead` +
+        `${contactCount === 1 ? '' : 's'} ` +
         `(up to ${formatWaitHours(ttlHours)}, until ${expiresAt.toISOString()}).`,
     };
     await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: nextCheckpoint });
+
+    const sentOk = flush.sent.filter((row) => row.ok).length;
+    if (flush.sent.length > 0) {
+      await this.repo.appendEvent(run.id, teamId, null, 'wait_progress', {
+        phase: 'messages_sent',
+        sent: sentOk,
+        failed: flush.sent.length - sentOk,
+        recipients: flush.sent,
+        reason:
+          sentOk > 0
+            ? `Sent ${sentOk} WhatsApp message${sentOk === 1 ? '' : 's'} — now listening for replies.`
+            : 'Failed to send queued WhatsApp messages.',
+      });
+    }
+
     await this.repo.appendEvent(run.id, teamId, null, 'wait_ttl_set', {
       hours: ttlHours,
       expiresAt: expiresAt.toISOString(),
       updatedWaits,
+      sentCount: sentOk,
       reason: nextCheckpoint.waitReason,
     });
-    return { expiresAt: expiresAt.toISOString(), hours: ttlHours, updatedWaits };
+    return {
+      expiresAt: expiresAt.toISOString(),
+      hours: ttlHours,
+      updatedWaits,
+      sentCount: sentOk,
+    };
   }
 
   // ─── Internal helpers ───────────────────────────────────────────────────────

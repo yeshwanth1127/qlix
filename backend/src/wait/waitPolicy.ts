@@ -3,8 +3,6 @@ import type { WaitPolicySnapshot, WaitSideEffect, WaitStep } from './waitPolicy.
 export const WHATSAPP_REPLY_LIVE_SHEET_EFFECT: WaitSideEffect = {
   id: 'live_reply_sheet',
   kind: 'live_sandbox_artifact',
-  format: 'xlsx',
-  columns: ['Name', 'Phone', 'JID', 'Reply', 'Interest', 'Replied at'],
   title: 'WhatsApp responders',
   dedupeBy: 'contact_jid',
   filter: { classifier: 'reply_interest', include: ['interested', 'unclear'] },
@@ -20,14 +18,16 @@ export function goalRequestsReplyWait(goal: string): boolean {
 }
 
 export function goalRequestsLiveArtifact(goal: string): boolean {
-  return /\b(sheet|spreadsheet|excel|xlsx|workbook)\b/i.test(goal);
+  return /\b(sheet|spreadsheet|excel|xlsx|workbook|pdf|ppt|pptx|powerpoint|slides?|deck|document|docx|word|csv|json|markdown|\bmd\b|html|report|file)\b/i.test(
+    goal,
+  );
 }
 
 export function buildWhatsAppReplyWaitStep(afterStageOrder: number): WaitStep {
   return {
     id: 'whatsapp_reply_wait',
     afterStageOrder,
-    trigger: { kind: 'whatsapp_inbound', fulfillment: 'first_match' },
+    trigger: { kind: 'whatsapp_inbound', fulfillment: 'collect_until_timeout' },
     sideEffects: [{ ...WHATSAPP_REPLY_LIVE_SHEET_EFFECT }],
     resume: { injectAs: 'whatsapp_responses' },
   };

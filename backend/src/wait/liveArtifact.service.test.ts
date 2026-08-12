@@ -9,8 +9,8 @@ import {
 import type { LiveArtifactState } from './waitPolicy.types.js';
 
 describe('materializeArtifactBytes', () => {
-  it('writes xlsx bytes with header row', () => {
-    const { bytes, contentType } = materializeArtifactBytes(
+  it('writes xlsx bytes with header row', async () => {
+    const { bytes, contentType } = await materializeArtifactBytes(
       'xlsx',
       ['Name', 'Phone'],
       [{ Name: 'Ada', Phone: '123' }],
@@ -23,15 +23,17 @@ describe('materializeArtifactBytes', () => {
 describe('buildWhatsAppReplyRow', () => {
   it('maps inbound fields to configured columns', () => {
     const row = buildWhatsAppReplyRow({
-      columns: ['Name', 'Phone', 'JID', 'Reply', 'Interest', 'Replied at'],
+      columns: ['Name', 'Phone', 'Reply', 'Interest', 'Replied at'],
       jid: '918000000000@s.whatsapp.net',
       text: 'yes interested',
       pushName: 'Ada',
       interest: 'interested',
+      contactHint: { name: 'Ada Lovelace', phone: '918000000000' },
     });
-    assert.equal(row.Name, 'Ada');
-    assert.equal(row.Phone, '918000000000');
+    assert.equal(row.Name, 'Ada Lovelace');
+    assert.equal(row.Phone, '+91 80000 00000');
     assert.equal(row.Interest, 'interested');
+    assert.equal(row._jid, '918000000000@s.whatsapp.net');
   });
 });
 
@@ -43,19 +45,19 @@ describe('isDuplicateRow', () => {
     url: 'https://example.com/sandbox/abc',
     fileName: 'sheet.xlsx',
     format: 'xlsx',
-    columns: ['JID'],
-    rows: [{ JID: '918000000000@s.whatsapp.net' }],
+    columns: ['Phone'],
+    rows: [{ _jid: '918000000000@s.whatsapp.net', Phone: '+91 80000 00000' }],
     rowCount: 1,
     updatedAt: new Date().toISOString(),
   };
 
   it('dedupes by contact jid', () => {
     assert.equal(
-      isDuplicateRow(artifact, { JID: '918000000000@s.whatsapp.net' }, 'contact_jid'),
+      isDuplicateRow(artifact, { _jid: '918000000000@s.whatsapp.net', Phone: '+91 80000 00000' }, 'contact_jid'),
       true,
     );
     assert.equal(
-      isDuplicateRow(artifact, { JID: '919999999999@s.whatsapp.net' }, 'contact_jid'),
+      isDuplicateRow(artifact, { _jid: '919999999999@s.whatsapp.net', Phone: '+91 99999 99999' }, 'contact_jid'),
       false,
     );
   });

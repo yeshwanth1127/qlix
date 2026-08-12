@@ -8,6 +8,7 @@ import {
   isSessionConnected,
   listContacts,
   listSessions,
+  resolveRecipientJid,
   sendDocumentToConnector,
   sendToConnector,
   sendToRecipient,
@@ -240,6 +241,27 @@ export function createApiRouter() {
     const resolvedName = file_name || path.basename(file_path);
     const result = await sendDocumentToConnector(connector_id, file_path, resolvedName, resolvedMime);
     res.status(result.ok ? 200 : 503).json(result);
+  });
+
+  /** Resolve a contact / phone to a JID without sending a message. */
+  router.post('/resolve-recipient', async (req, res) => {
+    const connectorId = req.body?.connector_id;
+    const recipient = req.body?.recipient;
+    if (!connectorId || typeof recipient !== 'string' || !recipient.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and recipient required' });
+      return;
+    }
+    if (!isSessionConnected(connectorId)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const result = await resolveRecipientJid(connectorId, recipient);
+    if (result.ok) {
+      res.json(result);
+      return;
+    }
+    const status = result.matches ? 409 : 400;
+    res.status(result.error?.includes('not connected') ? 503 : status).json(result);
   });
 
   /** Send a text message to a contact (phone / jid / contact name) — not self-chat. */

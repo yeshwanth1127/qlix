@@ -149,11 +149,21 @@ export class WaitTriggerService {
         continuationKind: 'resume_team_run',
         status: { in: ['open', 'fulfilled', 'expired'] },
       },
-      select: { status: true },
+      select: { status: true, inboundJson: true },
     });
     const total = rows.length;
-    const received = rows.filter((row) => row.status === 'fulfilled').length;
-    const remaining = rows.filter((row) => row.status === 'open').length;
+    let received = 0;
+    let remaining = 0;
+    for (const row of rows) {
+      const hasInbound = inboundEvents(row.inboundJson).length > 0;
+      if (row.status === 'fulfilled' || hasInbound) {
+        received += 1;
+      }
+      // Still waiting only if open and no reply captured yet.
+      if (row.status === 'open' && !hasInbound) {
+        remaining += 1;
+      }
+    }
     return { teamRunId, received, remaining, total };
   }
 
@@ -250,15 +260,57 @@ export class WaitTriggerService {
   }
 
   async loadFulfilledInbound(teamRunId: string, triggerIds: string[]): Promise<WaitTriggerInbound[]> {
+    return this.loadCapturedInbound(teamRunId, triggerIds);
+  }
+
+  /**
+   * All replies stored on wait triggers for this run — including ones that arrived
+   * while the run was still running (before pause/TTL) or while the trigger stayed
+   * `open` under collect_until_timeout.
+   */
+  async loadCapturedInbound(
+    teamRunId: string,
+    triggerIds?: string[],
+  ): Promise<WaitTriggerInbound[]> {
     const triggers = await prisma.waitTrigger.findMany({
       where: {
         teamRunId,
-        id: { in: triggerIds },
-        status: 'fulfilled',
+        ...(triggerIds?.length ? { id: { in: triggerIds } } : {}),
+        status: { in: ['open', 'fulfilled', 'expired'] },
       },
-      select: { inboundJson: true },
+      select: { inboundJson: true, contactJid: true },
     });
-    return triggers.flatMap((trigger) => inboundEvents(trigger.inboundJson));
+    // Deduplicate by contact JID — keep the latest reply text per contact.
+    const byJid = new Map<string, WaitTriggerInbound>();
+    for (const trigger of triggers) {
+      for (const event of inboundEvents(trigger.inboundJson)) {
+        const key = normalizeContactJid(event.jid || trigger.contactJid || '');
+        if (!key) continue;
+        const prev = byJid.get(key);
+        if (!prev || (event.timestampMs ?? 0) >= (prev.timestampMs ?? 0)) {
+          byJid.set(key, { ...event, jid: key });
+        }
+      }
+    }
+    return [...byJid.values()];
+  }
+
+  /** Mark open waits that already have inbound as fulfilled (all-replied early resume). */
+  async fulfillOpenWaitsWithInbound(teamRunId: string): Promise<number> {
+    const open = await prisma.waitTrigger.findMany({
+      where: { teamRunId, status: 'open', continuationKind: 'resume_team_run' },
+      select: { id: true, inboundJson: true },
+    });
+    let count = 0;
+    for (const trigger of open) {
+      if (inboundEvents(trigger.inboundJson).length === 0) continue;
+      const updated = await prisma.waitTrigger.updateMany({
+        where: { id: trigger.id, status: 'open' },
+        data: { status: 'fulfilled', fulfilledAt: new Date() },
+      });
+      count += updated.count;
+    }
+    return count;
   }
 
   async listCheckpointTriggerStatuses(

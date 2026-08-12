@@ -4,7 +4,7 @@ export type WaitTriggerKind = 'whatsapp_inbound';
 
 export type WaitFulfillment = 'collect_until_timeout' | 'first_match';
 
-export type LiveArtifactFormat = 'xlsx' | 'csv' | 'json';
+export type LiveArtifactFormat = 'xlsx' | 'csv' | 'json' | 'pdf' | 'pptx' | 'md' | 'html';
 
 export type ReplyInterestLabel = 'interested' | 'unclear' | 'not_interested';
 
@@ -28,7 +28,8 @@ export type WaitDeliveryPolicy = {
 export type WaitSideEffect = {
   id: string;
   kind: 'live_sandbox_artifact';
-  format: LiveArtifactFormat;
+  /** When omitted, inferred from the run goal at wait start (xlsx, pdf, pptx, …). */
+  format?: LiveArtifactFormat;
   /** Column headers for tabular formats. */
   columns?: string[];
   title?: string;

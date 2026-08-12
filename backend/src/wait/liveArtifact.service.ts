@@ -1,7 +1,14 @@
 import { Buffer } from 'node:buffer';
-import * as XLSX from 'xlsx';
 import { replaceSandboxFile, storeSandboxFile } from '../sandbox/sandboxClient.js';
 import { jidLocalPart } from '../whatsapp/whatsappAutoReply.service.js';
+import {
+  extensionForFormat,
+  inferFormatFromFileName,
+  inferLiveArtifactFormatFromGoal,
+  previewKindForFormat,
+} from './liveArtifactFormat.js';
+import { materializeLiveArtifactBytes } from './liveArtifactMaterialize.js';
+import { resolveLiveSheetField, type LiveSheetField } from './liveSheetColumns.js';
 import type {
   LiveArtifactFormat,
   LiveArtifactRow,
@@ -14,74 +21,82 @@ function slugify(text: string): string {
 }
 
 function defaultColumns(): string[] {
-  return ['Name', 'Phone', 'JID', 'Reply', 'Interest', 'Replied at'];
+  return ['Name', 'Phone', 'Reply', 'Interest', 'Replied at'];
+}
+
+export function formatDisplayPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
+  }
+  if (digits.length === 10) {
+    return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  }
+  return digits.startsWith('+') ? digits : `+${digits}`;
+}
+
+function semanticValues(input: {
+  jid: string;
+  text: string;
+  pushName?: string | null;
+  interest: string;
+  repliedAt: string;
+  contactHint?: { name?: string | null; phone?: string | null };
+}): Record<LiveSheetField, string | null> {
+  const rawPhone = input.contactHint?.phone?.replace(/\D/g, '') || jidLocalPart(input.jid);
+  return {
+    name: input.contactHint?.name?.trim() || input.pushName?.trim() || null,
+    phone: formatDisplayPhone(rawPhone),
+    reply: input.text,
+    interest: input.interest,
+    repliedAt: input.repliedAt,
+  };
 }
 
 export function defaultFileName(title: string | undefined, format: LiveArtifactFormat): string {
   const base = slugify(title ?? 'live-artifact');
-  if (format === 'json') return `${base}.json`;
-  if (format === 'csv') return `${base}.csv`;
-  return `${base}.xlsx`;
+  return `${base}.${extensionForFormat(format)}`;
 }
 
-function rowsToAoA(columns: string[], rows: LiveArtifactRow[]): unknown[][] {
-  return [columns, ...rows.map((row) => columns.map((col) => row[col] ?? ''))];
+export function resolveLiveArtifactFormat(
+  sideEffect: WaitSideEffect,
+  runGoal?: string | null,
+  fileName?: string,
+): LiveArtifactFormat {
+  if (sideEffect.format) return sideEffect.format;
+  if (runGoal?.trim()) return inferLiveArtifactFormatFromGoal(runGoal);
+  if (fileName) {
+    const fromName = inferFormatFromFileName(fileName);
+    if (fromName) return fromName;
+  }
+  return 'xlsx';
 }
 
-export function materializeArtifactBytes(
+/** @deprecated Use materializeLiveArtifactBytes — kept for tests importing materializeArtifactBytes */
+export async function materializeArtifactBytes(
   format: LiveArtifactFormat,
   columns: string[],
   rows: LiveArtifactRow[],
-): { bytes: Buffer; contentType: string } {
-  const table = rowsToAoA(columns, rows);
-  if (format === 'json') {
-    const objects = rows.map((row) => {
-      const obj: Record<string, string | null> = {};
-      for (const col of columns) obj[col] = row[col] ?? null;
-      return obj;
-    });
-    return {
-      bytes: Buffer.from(JSON.stringify(objects, null, 2), 'utf8'),
-      contentType: 'application/json',
-    };
-  }
-  if (format === 'csv') {
-    const lines = table.map((row) =>
-      row
-        .map((cell) => {
-          const text = String(cell ?? '');
-          if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-          return text;
-        })
-        .join(','),
-    );
-    return { bytes: Buffer.from(lines.join('\n'), 'utf8'), contentType: 'text/csv' };
-  }
-
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(table);
-  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-  const bytes = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  return {
-    bytes,
-    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  };
+  title?: string,
+): Promise<{ bytes: Buffer; contentType: string }> {
+  return materializeLiveArtifactBytes(format, columns, rows, title);
 }
 
 export async function createLiveArtifact(input: {
   sideEffect: WaitSideEffect;
   runId: string;
   teamName?: string;
+  runGoal?: string | null;
 }): Promise<LiveArtifactState> {
   const columns = input.sideEffect.columns?.length
     ? input.sideEffect.columns
     : defaultColumns();
-  const format = input.sideEffect.format;
-  const fileName = defaultFileName(
-    input.sideEffect.title ?? input.teamName ?? `run-${input.runId.slice(0, 8)}`,
-    format,
-  );
-  const { bytes, contentType } = materializeArtifactBytes(format, columns, []);
+  const format = resolveLiveArtifactFormat(input.sideEffect, input.runGoal);
+  const title = input.sideEffect.title ?? input.teamName ?? `run-${input.runId.slice(0, 8)}`;
+  const fileName = defaultFileName(title, format);
+  const { bytes, contentType } = await materializeLiveArtifactBytes(format, columns, [], title);
   const stored = await storeSandboxFile(bytes, fileName, contentType);
   const now = new Date().toISOString();
   return {
@@ -105,22 +120,32 @@ export function buildWhatsAppReplyRow(input: {
   pushName?: string | null;
   interest: string;
   repliedAt?: string;
+  contactHint?: { name?: string | null; phone?: string | null };
 }): LiveArtifactRow {
-  const phone = jidLocalPart(input.jid);
   const repliedAt = input.repliedAt ?? new Date().toISOString();
-  const values: Record<string, string | null> = {
-    Name: input.pushName?.trim() || null,
-    Phone: phone || null,
-    JID: input.jid,
-    Reply: input.text,
-    Interest: input.interest,
-    'Replied at': repliedAt,
-  };
-  const row: LiveArtifactRow = {};
+  const values = semanticValues({ ...input, repliedAt });
+  const row: LiveArtifactRow = { _jid: input.jid };
   for (const col of input.columns) {
-    row[col] = values[col] ?? null;
+    const field = resolveLiveSheetField(col);
+    row[col] = field ? values[field] : null;
   }
   return row;
+}
+
+export function rowContactJid(row: LiveArtifactRow): string | null {
+  const hidden = row._jid;
+  if (typeof hidden === 'string' && hidden.includes('@')) return hidden;
+  for (const col of Object.keys(row)) {
+    if (col === '_jid') continue;
+    const field = resolveLiveSheetField(col);
+    if (field !== 'phone') continue;
+    const phone = row[col];
+    if (typeof phone !== 'string') continue;
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length >= 10) return `${digits}@s.whatsapp.net`;
+  }
+  const legacy = row.JID ?? row.jid;
+  return typeof legacy === 'string' ? legacy : null;
 }
 
 export function isDuplicateRow(
@@ -129,9 +154,9 @@ export function isDuplicateRow(
   dedupeBy: WaitSideEffect['dedupeBy'],
 ): boolean {
   if (dedupeBy !== 'contact_jid') return false;
-  const jid = row.JID ?? row.jid ?? null;
+  const jid = rowContactJid(row);
   if (!jid) return false;
-  return artifact.rows.some((existing) => (existing.JID ?? existing.jid) === jid);
+  return artifact.rows.some((existing) => rowContactJid(existing) === jid);
 }
 
 export async function appendLiveArtifactRow(input: {
@@ -144,10 +169,12 @@ export async function appendLiveArtifactRow(input: {
   }
 
   const rows = [...input.artifact.rows, input.row];
-  const { bytes, contentType } = materializeArtifactBytes(
+  const title = input.artifact.fileName.replace(/\.[^.]+$/, '') || 'Live artifact';
+  const { bytes, contentType } = await materializeLiveArtifactBytes(
     input.artifact.format,
     input.artifact.columns,
     rows,
+    title,
   );
   const stored = await replaceSandboxFile(
     input.artifact.sandboxId,
@@ -184,12 +211,14 @@ export function upsertLiveArtifactList(
   return list;
 }
 
-/** SSE / UI payload for live spreadsheet preview (rows stay in sync with sandbox file). */
+/** SSE / UI payload for live artifact preview (rows stay in sync with sandbox file). */
 export function liveArtifactPreviewPayload(artifact: LiveArtifactState): {
   artifactId: string;
   sideEffectId: string;
   url: string;
   fileName: string;
+  format: LiveArtifactFormat;
+  previewKind: ReturnType<typeof previewKindForFormat>;
   rowCount: number;
   columns: string[];
   rows: LiveArtifactRow[];
@@ -199,6 +228,8 @@ export function liveArtifactPreviewPayload(artifact: LiveArtifactState): {
     sideEffectId: artifact.sideEffectId,
     url: artifact.url,
     fileName: artifact.fileName,
+    format: artifact.format,
+    previewKind: previewKindForFormat(artifact.format),
     rowCount: artifact.rowCount,
     columns: artifact.columns,
     rows: artifact.rows,

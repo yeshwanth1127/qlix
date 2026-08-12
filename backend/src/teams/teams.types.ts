@@ -177,7 +177,27 @@ export interface TeamRunCheckpoint {
   waitPolicySnapshot?: WaitPolicySnapshot;
   /** Live sandbox artifacts updated while waiting. */
   liveArtifacts?: LiveArtifactState[];
+  /** Contact metadata captured when outreach messages are sent (name/phone for sheet rows). */
+  waitContacts?: Record<string, { name?: string | null; phone?: string | null; recipient?: string | null }>;
+  /**
+   * WhatsApp contact messages queued during outreach. Delivered only after the run
+   * enters wait mode and the user sets a wait TTL — prevents replies arriving before capture is ready.
+   */
+  pendingWaitOutbounds?: PendingWaitOutbound[];
 }
+
+export type PendingWaitOutbound = {
+  id: string;
+  agentId: string;
+  connectorId: string;
+  recipient: string;
+  message: string;
+  replyInstructions?: string | null;
+  jid?: string | null;
+  phone?: string | null;
+  name?: string | null;
+  queuedAt: string;
+};
 
 export interface SubtaskCheckpoint {
   subtaskId: string;

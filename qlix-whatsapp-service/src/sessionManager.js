@@ -785,8 +785,13 @@ function digitsOnly(value) {
 }
 
 function normalizePhoneDigits(value) {
-  const d = digitsOnly(value);
-  return d || null;
+  let d = digitsOnly(value);
+  if (!d) return null;
+  // Indian mobiles are often passed as 10 digits without the 91 country code.
+  if (d.length === 10 && /^[6-9]/.test(d)) {
+    d = `91${d}`;
+  }
+  return d;
 }
 
 function jidFromPhoneDigits(digits) {

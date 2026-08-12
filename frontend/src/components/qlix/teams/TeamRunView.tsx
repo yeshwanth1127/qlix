@@ -81,14 +81,14 @@ import {
   type AgentState as GraphAgentState,
   type AgentStatus as GraphAgentStatus,
 } from "@/components/qlix/teams/TeamRunGraph";
-import { LiveSpreadsheetPanel } from "@/components/qlix/teams/LiveSpreadsheetPanel";
+import { LiveArtifactPanel } from "@/components/qlix/teams/LiveArtifactPanel";
 import {
-  liveSheetFromCheckpoint,
-  liveSheetFromEventPayload,
-  mergeLiveSheet,
-  replayLiveSheetFromEvents,
-  type LiveSheetPreview,
-} from "@/components/qlix/teams/liveSheetState";
+  liveArtifactFromCheckpoint,
+  liveArtifactFromEventPayload,
+  mergeLiveArtifact,
+  replayLiveArtifactFromEvents,
+  type LiveArtifactPreview,
+} from "@/components/qlix/teams/liveArtifactState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1316,8 +1316,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [waitTtlError, setWaitTtlError] = useState<string | null>(null);
   const [customWaitHours, setCustomWaitHours] = useState("2");
   const [jitError, setJitError] = useState<string | null>(null);
-  const [liveSheet, setLiveSheet] = useState<LiveSheetPreview | null>(null);
-  const [liveSheetOpen, setLiveSheetOpen] = useState(true);
+  const [liveArtifact, setLiveArtifact] = useState<LiveArtifactPreview | null>(null);
+  const [liveArtifactOpen, setLiveArtifactOpen] = useState(true);
   const showChat = viewMode === "chat";
 
   // Browser frames: agentId → frames[]
@@ -2226,10 +2226,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       });
     }
 
-    const sheetUpdate = liveSheetFromEventPayload(event.eventType, event.payload);
-    if (sheetUpdate) {
-      setLiveSheet((prev) => mergeLiveSheet(prev, sheetUpdate));
-      setLiveSheetOpen(true);
+    const artifactUpdate = liveArtifactFromEventPayload(event.eventType, event.payload);
+    if (artifactUpdate) {
+      setLiveArtifact((prev) => mergeLiveArtifact(prev, artifactUpdate));
+      setLiveArtifactOpen(true);
     } else if (event.eventType === "live_artifact_updated") {
       const artifactId = typeof p.artifactId === "string" ? p.artifactId : "";
       const url = typeof p.url === "string" ? p.url : "";
@@ -2267,8 +2267,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setError(null);
     setEvents([]);
     setArtifacts([]);
-    setLiveSheet(null);
-    setLiveSheetOpen(true);
+    setLiveArtifact(null);
+    setLiveArtifactOpen(true);
     setFinalResult(null);
     setRunStatus(null);
     setBrowserFrames({});
@@ -2427,8 +2427,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setRun(null);
     setEvents([]);
     setArtifacts([]);
-    setLiveSheet(null);
-    setLiveSheetOpen(true);
+    setLiveArtifact(null);
+    setLiveArtifactOpen(true);
     setFinalResult(null);
     setRunStatus(null);
     setStartedGoal(null);
@@ -2464,12 +2464,12 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         setEvents(detail.events);
         setArtifacts(detail.run.artifacts ?? []);
         setRunStatus("paused");
-        setLiveSheet(
-          replayLiveSheetFromEvents(detail.events) ??
-            liveSheetFromCheckpoint(detail.run.checkpointJson) ??
+        setLiveArtifact(
+          replayLiveArtifactFromEvents(detail.events) ??
+            liveArtifactFromCheckpoint(detail.run.checkpointJson) ??
             null,
         );
-        setLiveSheetOpen(true);
+        setLiveArtifactOpen(true);
 
         const lastSeq =
           detail.events.length > 0 ? detail.events[detail.events.length - 1]!.seq : -1;
@@ -2537,7 +2537,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const statusLabel = isRunning
     ? "Running"
     : isPaused
-      ? liveSheet
+      ? liveArtifact
         ? "Waiting for replies"
         : "Paused"
       : runStatus === "completed"
@@ -2688,19 +2688,19 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
           <div className="flex-1" />
 
-          {liveSheet ? (
+          {liveArtifact ? (
             <button
               type="button"
-              onClick={() => setLiveSheetOpen((open) => !open)}
+              onClick={() => setLiveArtifactOpen((open) => !open)}
               className={cn(
                 quietButton,
-                liveSheetOpen && "bg-black/[0.06] text-black",
+                liveArtifactOpen && "bg-black/[0.06] text-black",
               )}
-              aria-pressed={liveSheetOpen}
+              aria-pressed={liveArtifactOpen}
             >
               <Table2 size={12} />
-              Sheet
-              {liveSheet.rowCount > 0 ? ` (${liveSheet.rowCount})` : ""}
+              {liveArtifact.previewKind === "table" ? "Sheet" : "File"}
+              {liveArtifact.rowCount > 0 ? ` (${liveArtifact.rowCount})` : ""}
             </button>
           ) : null}
 
@@ -3133,18 +3133,18 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
         </div>
       </div>
 
-      {liveSheet && liveSheetOpen ? (
+      {liveArtifact && liveArtifactOpen ? (
         <>
           <button
             type="button"
             className="absolute inset-0 z-20 bg-black/20 lg:hidden"
-            onClick={() => setLiveSheetOpen(false)}
-            aria-label="Close spreadsheet overlay"
+            onClick={() => setLiveArtifactOpen(false)}
+            aria-label="Close document overlay"
           />
-          <LiveSpreadsheetPanel
-            sheet={liveSheet}
+          <LiveArtifactPanel
+            artifact={liveArtifact}
             isLive={isPaused}
-            onClose={() => setLiveSheetOpen(false)}
+            onClose={() => setLiveArtifactOpen(false)}
             className={cn(
               "z-30 w-[min(480px,42%)] shrink-0",
               "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:w-full max-lg:max-w-md max-lg:shadow-2xl",

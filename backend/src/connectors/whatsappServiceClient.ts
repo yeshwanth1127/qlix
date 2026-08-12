@@ -156,6 +156,38 @@ export async function sendWhatsAppNotification(
   return { ok: true };
 }
 
+export async function resolveWhatsAppRecipient(input: {
+  connectorId: string;
+  recipient: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}> {
+  const res = await waFetch('POST', '/resolve-recipient', {
+    connector_id: input.connectorId,
+    recipient: input.recipient,
+  });
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(res.data.error ?? 'Resolve failed'),
+      matches: Array.isArray(res.data.matches)
+        ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
+        : undefined,
+    };
+  }
+  return {
+    ok: true,
+    jid: typeof res.data.jid === 'string' ? res.data.jid : undefined,
+    phone: typeof res.data.phone === 'string' ? res.data.phone : null,
+    name: typeof res.data.name === 'string' ? res.data.name : null,
+  };
+}
+
 export async function sendWhatsAppToRecipient(input: {
   connectorId: string;
   recipient: string;

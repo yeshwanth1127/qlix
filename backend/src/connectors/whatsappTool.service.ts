@@ -2,7 +2,6 @@ import { ActionsService, JitTokenInvalidError, JitTokenRequiredError } from '../
 import type { PermissionScope } from '../agents/agents.types.js';
 import { prisma } from '../lib/prisma.js';
 import { JitService } from '../jit/jit.service.js';
-import { WaitTriggerService } from '../teams/waitTrigger.service.js';
 import { goalRequestsReplyWait } from '../wait/waitPolicy.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { getWhatsAppConnectorForAgent } from './whatsappConnector.service.js';
@@ -11,18 +10,19 @@ import {
   getWhatsAppSessionStatus,
   isWhatsAppServiceConfigured,
   listWhatsAppContacts,
+  resolveWhatsAppRecipient,
   sendWhatsAppToRecipient,
   startWhatsAppSession,
 } from './whatsappServiceClient.js';
 
 const actionsService = new ActionsService();
 const jitService = new JitService();
-const waitTriggers = new WaitTriggerService();
 
 async function getTeamReplyWaitContext(runId: string | null): Promise<{
   teamRunId: string;
   orgId: string;
   userId: string;
+  fulfillment: 'first_match' | 'collect_until_timeout';
 } | null> {
   if (!runId) return null;
   const agentRun = await prisma.agentRun.findUnique({
@@ -35,7 +35,12 @@ async function getTeamReplyWaitContext(runId: string | null): Promise<{
           startedByUserId: true,
           status: true,
           goal: true,
-          team: { select: { config: true } },
+          team: {
+            select: {
+              config: true,
+              members: { select: { stageOrder: true, delegatedScopes: true } },
+            },
+          },
         },
       },
     },
@@ -47,10 +52,26 @@ async function getTeamReplyWaitContext(runId: string | null): Promise<{
     goalRequestsReplyWait(teamRun.goal) ||
     (Array.isArray(teamConfig.waitSteps) && teamConfig.waitSteps.length > 0);
   if (!waitsConfigured) return null;
+
+  const { resolveWaitStepsForTeam, findWaitStepForStage, inferOutreachStageOrderFromWorkers } =
+    await import('../wait/waitPolicy.js');
+  const workers = (teamRun.team?.members ?? []).map((member) => ({
+    stageOrder: member.stageOrder,
+    permissionScopes: member.delegatedScopes as string[],
+  }));
+  const outreachStage =
+    workers.length > 0
+      ? inferOutreachStageOrderFromWorkers(workers)
+      : 2;
+  const waitSteps = resolveWaitStepsForTeam(teamConfig as import('../teams/teams.types.js').TeamConfig, teamRun.goal, outreachStage);
+  const waitStep = findWaitStepForStage(waitSteps, outreachStage);
+  const fulfillment = waitStep?.trigger.fulfillment ?? 'collect_until_timeout';
+
   return {
     teamRunId: teamRun.id,
     orgId: teamRun.orgId,
     userId: teamRun.startedByUserId,
+    fulfillment,
   };
 }
 
@@ -269,6 +290,10 @@ export async function executeWhatsAppContactSend(params: {
   autoReplyArmed?: boolean;
   teamWaitArmed?: boolean;
   replyInstructionsSet?: boolean;
+  /** True when the message is held until wait mode + TTL are set. */
+  deferredUntilWait?: boolean;
+  queued?: boolean;
+  note?: string;
 }> {
   const ctx = await loadAgentRunContext(params.agentId);
   const scopes = new Set([
@@ -287,6 +312,81 @@ export async function executeWhatsAppContactSend(params: {
   });
 
   const connector = await ensureLiveWhatsApp(params.agentId);
+
+  // Team reply-wait runs: queue the message and send only after wait mode + TTL.
+  // That closes the race where contacts reply before the run is paused / sheet is ready.
+  if (scopes.has('whatsapp.auto_reply')) {
+    const teamWait = await getTeamReplyWaitContext(params.runId);
+    if (teamWait) {
+      const resolved = await resolveWhatsAppRecipient({
+        connectorId: connector.id,
+        recipient: params.input.recipient,
+      });
+      if (!resolved.ok || !resolved.jid) {
+        if (resolved.matches?.length) {
+          throw new WhatsAppToolError(
+            `${resolved.error ?? 'Ambiguous recipient'}: ${resolved.matches
+              .map((m) => `${m.name ?? 'unknown'} (${m.phone ?? m.jid})`)
+              .join(', ')}`,
+          );
+        }
+        throw new WhatsAppToolError(resolved.error ?? 'Failed to resolve WhatsApp recipient');
+      }
+
+      const { normalizeReplyInstructions } = await import('../whatsapp/whatsappAutoReply.service.js');
+      const { persistPendingWaitOutbound } = await import('../wait/pendingWaitOutbound.js');
+      const displayName =
+        resolved.name ??
+        (params.input.recipient && !/^[\d+\s()-]+$/.test(params.input.recipient.trim())
+          ? params.input.recipient.trim()
+          : null);
+
+      await persistPendingWaitOutbound({
+        teamRunId: teamWait.teamRunId,
+        outbound: {
+          agentId: params.agentId,
+          connectorId: connector.id,
+          recipient: params.input.recipient,
+          message: params.input.message,
+          replyInstructions: normalizeReplyInstructions(params.input.replyInstructions),
+          jid: resolved.jid,
+          phone: resolved.phone ?? null,
+          name: displayName,
+        },
+      });
+
+      await appendEmailActionLog({
+        agentId: params.agentId,
+        userId: ctx.userId,
+        actionType: 'whatsapp.contact_send',
+        payload: {
+          tool: 'whatsapp_send_message',
+          recipient: params.input.recipient,
+          jid: resolved.jid,
+          name: displayName,
+          messagePreview: params.input.message.slice(0, 200),
+          runId: params.runId,
+          deferredUntilWait: true,
+        },
+        status: 'success',
+        riskLevel: 'high',
+      }).catch(() => {});
+
+      return {
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: displayName,
+        autoReplyArmed: false,
+        teamWaitArmed: false,
+        replyInstructionsSet: Boolean(normalizeReplyInstructions(params.input.replyInstructions)),
+        deferredUntilWait: true,
+        queued: true,
+        note:
+          'Message queued. Qlix will send it after this stage finishes and the wait duration is set — so replies are captured live.',
+      };
+    }
+  }
+
   const result = await sendWhatsAppToRecipient({
     connectorId: connector.id,
     recipient: params.input.recipient,
@@ -328,30 +428,16 @@ export async function executeWhatsAppContactSend(params: {
         '../whatsapp/whatsappAutoReply.service.js'
       );
       const instructions = normalizeReplyInstructions(params.input.replyInstructions);
-      const teamWait = await getTeamReplyWaitContext(params.runId);
-      if (teamWait) {
-        await waitTriggers.armTeamWhatsAppWait({
-          teamRunId: teamWait.teamRunId,
-          orgId: teamWait.orgId,
-          userId: teamWait.userId,
-          agentId: params.agentId,
-          connectorId: connector.id,
-          contactJid: result.jid,
-          replyInstructions: instructions,
-        });
-        teamWaitArmed = true;
-      } else {
-        await armAutoReplySession({
-          connectorId: connector.id,
-          agentId: params.agentId,
-          contactJid: result.jid,
-          contactName: result.name ?? null,
-          contactPhone: result.phone ?? null,
-          replyInstructions: instructions,
-          userId: ctx.userId,
-        });
-        autoReplyArmed = true;
-      }
+      await armAutoReplySession({
+        connectorId: connector.id,
+        agentId: params.agentId,
+        contactJid: result.jid,
+        contactName: result.name ?? null,
+        contactPhone: result.phone ?? null,
+        replyInstructions: instructions,
+        userId: ctx.userId,
+      });
+      autoReplyArmed = true;
       replyInstructionsSet = Boolean(instructions);
     } catch (err) {
       console.warn(

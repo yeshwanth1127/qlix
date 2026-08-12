@@ -2,7 +2,7 @@
 
 import { Download, ExternalLink, Table2, X } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import type { LiveSheetPreview } from "@/components/qlix/teams/liveSheetState";
+import type { LiveArtifactPreview } from "@/components/qlix/teams/liveArtifactState";
 
 const HAIRLINE = "border-black/10";
 const INK_SOFT = "text-black/55";
@@ -13,7 +13,7 @@ function formatCell(value: string | null | undefined): string {
 }
 
 interface LiveSpreadsheetPanelProps {
-  readonly sheet: LiveSheetPreview;
+  readonly sheet: LiveArtifactPreview;
   readonly isLive: boolean;
   readonly onClose?: () => void;
   readonly className?: string;
@@ -27,9 +27,9 @@ export function LiveSpreadsheetPanel({
 }: LiveSpreadsheetPanelProps) {
   const displayColumns =
     sheet.columns.length > 0
-      ? sheet.columns
+      ? sheet.columns.filter((column) => !column.startsWith('_'))
       : sheet.rows.length > 0
-        ? Object.keys(sheet.rows[0] ?? {})
+        ? Object.keys(sheet.rows[0] ?? {}).filter((key) => !key.startsWith('_'))
         : [];
 
   return (

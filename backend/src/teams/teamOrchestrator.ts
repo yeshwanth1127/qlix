@@ -434,8 +434,13 @@ export class TeamOrchestrator {
     emit: RunEventEmitter,
   ): Promise<boolean> {
     const waits = await this.waitTriggers.listOpenTeamWaits(run.id);
-    if (waits.length === 0) return false;
+    const freshRun = await this.repo.findRun(run.id);
+    const priorCheckpoint =
+      ((freshRun?.checkpointJson ?? run.checkpointJson) as TeamRunCheckpoint | null) ?? null;
+    const pendingOutbounds = priorCheckpoint?.pendingWaitOutbounds ?? [];
+    if (waits.length === 0 && pendingOutbounds.length === 0) return false;
 
+    const contactCount = Math.max(waits.length, pendingOutbounds.length);
     const stageGroups = groupSubtasksByStage(plan);
     const completedStageOrder =
       nextStageIndex > 0
@@ -447,11 +452,16 @@ export class TeamOrchestrator {
       completedResults: results,
       nextStageIndex,
       waitTriggerIds: waits.map((wait) => wait.id),
-      waitReason: `Waiting for a WhatsApp reply from ${waits.length} contacted lead${waits.length === 1 ? '' : 's'}.`,
+      waitReason:
+        pendingOutbounds.length > 0
+          ? `Ready to message ${pendingOutbounds.length} lead${pendingOutbounds.length === 1 ? '' : 's'} — pick a wait duration, then Qlix will send and listen for replies.`
+          : `Waiting for a WhatsApp reply from ${waits.length} contacted lead${waits.length === 1 ? '' : 's'}.`,
       awaitingTtlSelection: true,
       waitExpiresAt: null,
       waitTtlHours: null,
       inferenceModel: (team.config as TeamConfig).defaultModel?.trim() || null,
+      ...(priorCheckpoint?.waitContacts ? { waitContacts: priorCheckpoint.waitContacts } : {}),
+      ...(pendingOutbounds.length > 0 ? { pendingWaitOutbounds: pendingOutbounds } : {}),
     };
 
     const waitSteps = resolveWaitStepsForTeam(team.config, run.goal, completedStageOrder);
@@ -467,6 +477,7 @@ export class TeamOrchestrator {
           runId: run.id,
           teamName: team.name,
           supervisorAgentId: team.supervisorAgentId,
+          runGoal: run.goal,
         });
         checkpoint = init.checkpoint;
         liveArtifactsForEvent = init.liveArtifacts.map((artifact) => liveArtifactPreviewPayload(artifact));
@@ -487,19 +498,25 @@ export class TeamOrchestrator {
     await this.emitEvent(run, team, team.supervisorAgentId, 'wait_armed', {
       triggerKind: 'whatsapp_inbound',
       triggerIds: checkpoint.waitTriggerIds,
-      contactCount: waits.length,
+      contactCount,
+      pendingSendCount: pendingOutbounds.length,
       expiresAt: waits.map((wait) => wait.expiresAt.toISOString()),
       reason: checkpoint.waitReason,
       nextStage: nextStageIndex + 1,
       awaitingTtlSelection: true,
       liveArtifacts: liveArtifactsForEvent,
+      messagesDeferred: pendingOutbounds.length > 0,
     }, emit);
     await this.emitEvent(run, team, team.supervisorAgentId, 'wait_ttl_requested', {
       optionsHours: [1, 6, 24, 48],
       allowCustom: true,
       safetyCapHours: 168,
-      contactCount: waits.length,
-      reason: 'How long should we wait for WhatsApp replies before continuing with whoever has responded?',
+      contactCount,
+      pendingSendCount: pendingOutbounds.length,
+      reason:
+        pendingOutbounds.length > 0
+          ? 'How long should we wait for WhatsApp replies? Messages are sent only after you pick a duration.'
+          : 'How long should we wait for WhatsApp replies before continuing with whoever has responded?',
     }, emit);
     emit('paused', { status: 'paused', teamRunId: run.id, reason: checkpoint.waitReason });
     return true;
@@ -910,7 +927,7 @@ User goal: ${run.goal}`;
       subtask.delegatedScopes.includes('whatsapp.contact_send') &&
       subtask.delegatedScopes.includes('whatsapp.auto_reply') &&
       /\b(?:wait\s+(?:for|until)|if|when|once|after)\b[\s\S]{0,120}\b(?:reply|respond)/i.test(subtask.goal)
-        ? '- This stage sends outreach and waits for replies: use whatsapp_send_message, then finish with the contacted JIDs. Do NOT create a responder sheet or deliver anything yet; Qlix pauses this pipeline and resumes the next stage when a contact replies.\n'
+        ? '- This stage queues WhatsApp outreach (whatsapp_send_message) with the **full phone number including country code** from prior stage context — one number per lead, never reuse. Messages are NOT delivered yet; Qlix enters wait mode, you pick a duration, then messages go out and replies are captured live. Do NOT create a responder sheet or deliver anything yet.\n'
         : '';
 
     const workerPrompt = `You are completing one pipeline stage. Stay inside this stage.

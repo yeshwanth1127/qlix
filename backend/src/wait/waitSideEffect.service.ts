@@ -13,6 +13,8 @@ import {
   liveArtifactPreviewPayload,
   upsertLiveArtifactList,
 } from './liveArtifact.service.js';
+import { inferLiveSheetColumnsFromGoal } from './liveSheetColumns.js';
+import { lookupWaitContact } from './waitContacts.js';
 import {
   getActiveWaitStep,
   liveArtifactSideEffects,
@@ -113,6 +115,7 @@ export async function initializeWaitSideEffects(input: {
   runId: string;
   teamName: string;
   supervisorAgentId: string | null;
+  runGoal?: string | null;
 }): Promise<WaitSideEffectInitResult> {
   const step = getActiveWaitStep(input.waitPolicy);
   const effects = liveArtifactSideEffects(step);
@@ -122,10 +125,19 @@ export async function initializeWaitSideEffects(input: {
   for (const effect of effects) {
     if (findLiveArtifact(liveArtifacts, effect.id)) continue;
     try {
+      const legacyPreset =
+        effect.columns?.includes('JID') &&
+        effect.columns?.includes('Phone') &&
+        effect.columns?.includes('Name');
+      const columns =
+        effect.columns?.length && !legacyPreset
+          ? effect.columns
+          : await inferLiveSheetColumnsFromGoal(input.runGoal ?? '');
       const created = await createLiveArtifact({
-        sideEffect: effect,
+        sideEffect: { ...effect, columns },
         runId: input.runId,
         teamName: input.teamName,
+        runGoal: input.runGoal,
       });
       liveArtifacts = upsertLiveArtifactList(liveArtifacts, created);
       artifacts.push(toRunArtifact(created, input.supervisorAgentId));
@@ -181,6 +193,7 @@ export async function applyWaitInboundSideEffects(input: {
           sideEffect: effect,
           runId: input.runId,
           teamName: effect.title,
+          runGoal: input.userGoal,
         });
         liveArtifacts = upsertLiveArtifactList(liveArtifacts, artifact);
       } catch (err) {
@@ -198,6 +211,7 @@ export async function applyWaitInboundSideEffects(input: {
       text: input.inbound.text,
       pushName: input.inbound.pushName,
       interest: classification.label,
+      contactHint: lookupWaitContact(input.checkpoint, input.inbound.jid) ?? undefined,
     });
 
     try {
