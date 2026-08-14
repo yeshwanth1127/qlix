@@ -22,6 +22,7 @@ export const LLM_APPLICATION_IDS = {
   agentMemory: 'qlix-agent-memory',
   whatsappRouter: 'qlix-whatsapp-router',
   replyInterest: 'qlix-reply-interest',
+  lunaTeams: 'qlix-luna-teams',
 } as const;
 
 const providers: Record<LlmProviderId, InferenceProvider> = {

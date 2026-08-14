@@ -15,6 +15,14 @@ const DRIVE_SCOPES = new Set(["drive.read", "drive.write"]);
  * CRM / email / drive scopes resolve dynamically to whichever platform is connected.
  */
 const SCOPE_REQUIRES_CONNECTOR: Readonly<Partial<Record<string, ConnectorProvider>>> = {
+  "docs.read": "google",
+  "docs.write": "google",
+  "sheets.read": "google",
+  "sheets.write": "google",
+  "slides.read": "google",
+  "slides.write": "google",
+  "forms.read": "google",
+  "forms.write": "google",
   "calendar.read": "google",
   "calendar.write": "google",
   "meet.manage": "google",
@@ -41,7 +49,8 @@ export interface RequiredConnectorInfo {
 const CONNECTOR_INFO: Readonly<Record<ConnectorProvider, Omit<RequiredConnectorInfo, "provider">>> = {
   google: {
     name: "Google",
-    description: "Gmail, Drive, Calendar, Meet, and YouTube through your Google account",
+    description:
+      "Gmail, Drive, Docs, Sheets, Slides, Forms, Calendar, Meet, and YouTube through your Google account",
   },
   whatsapp_baileys: {
     name: "WhatsApp",

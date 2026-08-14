@@ -101,7 +101,18 @@ export class WaitTriggerService {
       },
       select: { id: true, expiresAt: true },
     });
-    if (existing) return existing;
+    if (existing) {
+      // Later outbounds in an ordered multi-send (e.g. poll after greeting) may carry
+      // the real reply instructions — update when provided.
+      const instructions = input.replyInstructions?.trim() || null;
+      if (instructions) {
+        await prisma.waitTrigger.update({
+          where: { id: existing.id },
+          data: { replyInstructions: instructions },
+        });
+      }
+      return existing;
+    }
 
     const ttlHours = input.ttlHours ?? WAIT_TRIGGER_PROVISIONAL_TTL_HOURS;
     const trigger = await prisma.waitTrigger.create({

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { addInjection } from '../teams/runInjectionStore.js';
@@ -12,6 +13,7 @@ import { permissionScopeSchema } from '../agents/scopeValidation.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest } from '../lib/stepUpOrGuest.js';
+import { inboundChannelFromRequest } from '../lib/runOrigin.js';
 import {
   buildPromptWithAttachments,
   CHAT_ATTACHMENT_MAX_BYTES,
@@ -24,6 +26,7 @@ import {
   ModelPolicyError,
   normalizeQlixInferenceModelId,
 } from '../llm/modelPolicy.js';
+import { parseReasoningEffort } from '../llm/routing/reasoningBudget.js';
 import {
   AgentConfirmNameMismatchError,
   AgentDeleteForbiddenError,
@@ -43,9 +46,12 @@ import {
   TeamScopeExceedsAgentError,
   TeamsService,
   TeamEmailConnectorRequiredError,
+  TeamContinuesRunError,
 } from '../teams/teams.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
 import { JitService } from '../jit/jit.service.js';
+import { stopInFlightTeamRunWorkers } from '../teams/teamRunCancel.js';
+import type { TeamRunInputPurpose } from '../teams/teams.types.js';
 
 /** Team-run uploads allow slightly more files than agent chat (8). */
 const TEAM_INJECT_MAX_FILES = 10;
@@ -91,6 +97,27 @@ function parseTeamFileUpload(req: Request, res: Response, next: NextFunction): v
     }
     next();
   });
+}
+
+function parseInputPurposes(raw: unknown, count: number): TeamRunInputPurpose[] {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return Array.from({ length: count }, () => 'authoritative_input');
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== count) throw new Error('invalid count');
+    return parsed.map((purpose) => {
+      if (purpose !== 'authoritative_input' && purpose !== 'reference_asset') {
+        throw new Error('invalid purpose');
+      }
+      return purpose;
+    });
+  } catch {
+    throw Object.assign(new Error('inputPurposes must classify every file'), {
+      code: 'invalid_input_purposes',
+      status: 400,
+    });
+  }
 }
 
 const createTeamSchema = z.object({
@@ -145,6 +172,10 @@ const patchMemberSchema = z.object({
 const startRunSchema = z.object({
   goal: z.string().trim().min(1).max(4000),
   model: z.string().trim().min(1).max(200).optional(),
+  reasoningEffort: z
+    .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .optional(),
+  continuesRunId: z.string().trim().min(1).max(64).optional(),
 });
 
 const deleteTeamBodySchema = z.object({
@@ -580,9 +611,15 @@ export function createTeamsRouter(): Router {
       const files = (req.files as Express.Multer.File[] | undefined) ?? [];
       let goal = '';
       let modelRaw = '';
+      let reasoningEffortRaw = '';
+      let continuesRunId = '';
       if (isMultipart) {
         goal = typeof req.body?.goal === 'string' ? req.body.goal.trim() : '';
         modelRaw = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+        reasoningEffortRaw =
+          typeof req.body?.reasoningEffort === 'string' ? req.body.reasoningEffort.trim() : '';
+        continuesRunId =
+          typeof req.body?.continuesRunId === 'string' ? req.body.continuesRunId.trim() : '';
       } else {
         const parsed = startRunSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -591,6 +628,8 @@ export function createTeamsRouter(): Router {
         }
         goal = parsed.data.goal;
         modelRaw = parsed.data.model?.trim() ?? '';
+        reasoningEffortRaw = parsed.data.reasoningEffort ?? '';
+        continuesRunId = parsed.data.continuesRunId?.trim() ?? '';
       }
 
       if (goal.length > TEAM_RUN_GOAL_MAX) {
@@ -623,9 +662,12 @@ export function createTeamsRouter(): Router {
         }
       }
 
+      const reasoningEffort = parseReasoningEffort(reasoningEffortRaw);
+
       console.info(
         `[team-run-start] team=${req.params.id} multipart=${String(isMultipart)} files=${String(files.length)} ` +
           `goalChars=${String(goal.length)} model=${inferenceModel ?? '(agent/team default)'} ` +
+          `reasoningEffort=${reasoningEffort ?? '(default)'} ` +
           `contentType=${JSON.stringify(req.headers['content-type'] ?? null)}`,
       );
 
@@ -640,7 +682,19 @@ export function createTeamsRouter(): Router {
         );
       }
       const attachments = storedChatAttachments(processed);
-      const agentGoal = buildPromptWithAttachments(goal, processed);
+      const purposes = parseInputPurposes(req.body?.inputPurposes, processed.length);
+      const inputs = processed.map((attachment, index) => ({
+        id: attachment.id,
+        ref: `team-input:${attachment.id}`,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        url: attachment.url,
+        sizeBytes: attachment.sizeBytes,
+        ...(attachment.extractedText ? { extractedText: attachment.extractedText } : {}),
+        sha256: createHash('sha256').update(files[index]!.buffer).digest('hex'),
+        purpose: purposes[index]!,
+      }));
+      const agentGoal = goal.trim() || 'Process the attached input files.';
       if (agentGoal.length > 100_000) {
         res.status(400).json({
           error: {
@@ -656,7 +710,7 @@ export function createTeamsRouter(): Router {
       const backendUrl = resolveDockerBackendUrl(req);
       const turn = await gatewayService.handleInbound(
         buildTeamInbound({
-          channel: 'web',
+          channel: inboundChannelFromRequest(req),
           teamId: team.id,
           teamName: team.name,
           orgId: auth.orgId,
@@ -665,6 +719,9 @@ export function createTeamsRouter(): Router {
           goal: agentGoal,
           backendUrl,
           inferenceModel: inferenceModel ?? null,
+          reasoningEffort: reasoningEffort ?? null,
+          continuesRunId: continuesRunId || null,
+          inputs,
         }),
       );
       if (turn.status !== 'accepted') {
@@ -695,6 +752,7 @@ export function createTeamsRouter(): Router {
       if (err instanceof TeamNoSupervisorError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamRunnersNotReadyError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamEmailConnectorRequiredError) { res.status(409).json({ error: { code: err.code, message: err.message } }); return; }
+      if (err instanceof TeamContinuesRunError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof ModelPolicyError) {
         res.status(400).json({ error: { code: 'invalid_model', message: err.message } });
         return;
@@ -815,6 +873,9 @@ export function createTeamsRouter(): Router {
         res.status(409).json({ error: { code: 'run_not_cancelable', message: `Run is already ${run.status}` } });
         return;
       }
+      // Stop workers before flipping TeamRun status so WhatsApp tools cannot
+      // fall through from wait-queue to live send.
+      await stopInFlightTeamRunWorkers(run.id);
       await repo.updateRunStatus(run.id, 'canceled', { completedAt: new Date() });
       if (run.sourceConnectorId) {
         await repo.clearChannelSession(run.sourceConnectorId);

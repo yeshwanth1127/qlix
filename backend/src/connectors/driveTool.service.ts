@@ -65,6 +65,7 @@ export async function executeDriveRead(params: {
     fileId?: string;
     pageSize?: number;
     pageToken?: string | null;
+    parentId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
   const ctx = await loadGoogleAgentRunContext(params.agentId, params.runId);
@@ -86,6 +87,7 @@ export async function executeDriveRead(params: {
             query: params.input.query,
             pageSize: params.input.pageSize,
             pageToken: params.input.pageToken,
+            parentId: params.input.parentId,
           }),
         );
       } else if (params.input.action === 'get') {

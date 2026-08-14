@@ -16,8 +16,12 @@ import {
 } from './googleServices.js';
 import {
   calendarConnectorNotConnectedMessage,
+  docsConnectorNotConnectedMessage,
   driveConnectorNotConnectedMessage,
+  formsConnectorNotConnectedMessage,
   meetConnectorNotConnectedMessage,
+  sheetsConnectorNotConnectedMessage,
+  slidesConnectorNotConnectedMessage,
 } from './connectorUserMessages.js';
 
 const repo = new ConnectorsRepository();
@@ -47,6 +51,14 @@ export class GoogleToolError extends Error {
 export type GoogleWorkspaceActionType =
   | 'drive.read'
   | 'drive.write'
+  | 'docs.read'
+  | 'docs.write'
+  | 'sheets.read'
+  | 'sheets.write'
+  | 'slides.read'
+  | 'slides.write'
+  | 'forms.read'
+  | 'forms.write'
   | 'calendar.read'
   | 'calendar.write'
   | 'meet.manage';
@@ -116,6 +128,10 @@ export async function loadGoogleAgentRunContext(
 
 function notConnectedMessage(serviceId: GoogleServiceId): string {
   if (serviceId === 'drive') return driveConnectorNotConnectedMessage();
+  if (serviceId === 'docs') return docsConnectorNotConnectedMessage();
+  if (serviceId === 'sheets') return sheetsConnectorNotConnectedMessage();
+  if (serviceId === 'slides') return slidesConnectorNotConnectedMessage();
+  if (serviceId === 'forms') return formsConnectorNotConnectedMessage();
   if (serviceId === 'calendar') return calendarConnectorNotConnectedMessage();
   if (serviceId === 'meet') return meetConnectorNotConnectedMessage();
   return 'Google service is not connected for this workspace.';

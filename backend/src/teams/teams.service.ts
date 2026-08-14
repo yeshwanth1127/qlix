@@ -88,6 +88,14 @@ export class TeamEmailConnectorRequiredError extends Error {
   }
 }
 
+export class TeamContinuesRunError extends Error {
+  readonly code = 'invalid_continues_run';
+  readonly status = 400;
+  constructor(message = 'continuesRunId is not a finished run on this team') {
+    super(message);
+  }
+}
+
 export class TeamConfirmNameMismatchError extends Error {
   readonly code = 'confirm_name_mismatch';
   constructor(expected: 'team' | 'agent') {
@@ -137,13 +145,34 @@ export class TeamsService {
       }),
     );
 
-    // Team starts as 'draft'; becomes 'active' once a supervisor is assigned
-    return this.repo.createTeam({
+    // Draft until a supervisor exists. NL/API create often passes supervisorAgentId
+    // up front — those teams must be active, same as PATCH /supervisor.
+    const team = await this.repo.createTeam({
       ...input,
       members: membersWithCards,
       did,
       createdByUserId: userId,
     });
+
+    if (input.supervisorAgentId) {
+      const supervisor = await this.agentsRepo.findById(input.supervisorAgentId);
+      if (supervisor) {
+        await this.applyMemberTeamContext(
+          supervisor,
+          team.id,
+          team.name,
+          'supervisor',
+          backendBaseUrl,
+        );
+      }
+    }
+    for (const member of input.members ?? []) {
+      const worker = await this.agentsRepo.findById(member.agentId);
+      if (!worker) continue;
+      await this.applyMemberTeamContext(worker, team.id, team.name, 'worker', backendBaseUrl);
+    }
+
+    return team;
   }
 
   async setSupervisor(
@@ -156,20 +185,7 @@ export class TeamsService {
     if (!team) throw new TeamNotFoundError();
     const agent = await this.assertCloudAgentInOrg(agentId, orgId);
     const updated = await this.repo.setSupervisor(teamId, agentId);
-    const teamContext: DockerTeamContext = {
-      id: teamId,
-      name: team.name,
-      role: 'supervisor',
-    };
-    if (!(await this.deferTeamContextIfNeeded(agent, teamContext))) {
-      this.cloudProvisioner.scheduleApplyTeamContext({
-        agentId,
-        teamId,
-        teamName: team.name,
-        role: 'supervisor',
-        backendUrl,
-      });
-    }
+    await this.applyMemberTeamContext(agent, teamId, team.name, 'supervisor', backendUrl);
     // Activate the team once it has a supervisor
     if (updated.status === 'draft') {
       await this.repo.updateStatus(teamId, 'active');
@@ -179,13 +195,14 @@ export class TeamsService {
   }
 
   async listTeams(orgId: string): Promise<TeamDTO[]> {
-    return this.repo.listTeams(orgId);
+    const teams = await this.repo.listTeams(orgId);
+    return Promise.all(teams.map((team) => this.activateIfSupervisorAssigned(team)));
   }
 
   async getTeam(id: string, orgId: string): Promise<TeamDTO> {
     const team = await this.repo.findByIdAndOrg(id, orgId);
     if (!team) throw new TeamNotFoundError();
-    return team;
+    return this.activateIfSupervisorAssigned(team);
   }
 
   async deleteTeam(
@@ -296,20 +313,7 @@ export class TeamsService {
 
     const agentCardSnapshot = buildAgentCard(agent, backendBaseUrl);
     const member = await this.repo.addMember(teamId, { ...input, agentCardSnapshot });
-    const teamContext: DockerTeamContext = {
-      id: teamId,
-      name: team.name,
-      role: 'worker',
-    };
-    if (!(await this.deferTeamContextIfNeeded(agent, teamContext))) {
-      this.cloudProvisioner.scheduleApplyTeamContext({
-        agentId: input.agentId,
-        teamId,
-        teamName: team.name,
-        role: 'worker',
-        backendUrl: backendBaseUrl,
-      });
-    }
+    await this.applyMemberTeamContext(agent, teamId, team.name, 'worker', backendBaseUrl);
     return member;
   }
 
@@ -389,6 +393,8 @@ export class TeamsService {
       sourceChannel?: TeamRunSourceChannel;
       sourceConnectorId?: string | null;
       replyChannel?: TeamRunReplyChannel;
+      continuesRunId?: string | null;
+      inputs?: import('./teams.types.js').TeamRunInput[];
     },
     backendUrl?: string,
   ): Promise<TeamRunDTO> {
@@ -519,10 +525,13 @@ export class TeamsService {
     });
 
     const updatedWaits = await waitTriggers.setExpiresAtForOpenTeamWaits(run.id, expiresAt);
+    const uniqueSentContacts = new Set(
+      flush.sent.filter((row) => row.ok).map((row) => row.jid).filter(Boolean),
+    );
     const contactCount = Math.max(
       flush.triggerIds.length,
       checkpoint.waitTriggerIds?.length ?? 0,
-      flush.sent.filter((row) => row.ok).length,
+      uniqueSentContacts.size,
     );
     const nextCheckpoint: TeamRunCheckpoint = {
       ...flush.checkpoint,
@@ -530,7 +539,8 @@ export class TeamsService {
       waitExpiresAt: expiresAt.toISOString(),
       waitTtlHours: ttlHours,
       waitTriggerIds: flush.triggerIds.length > 0 ? flush.triggerIds : checkpoint.waitTriggerIds,
-      pendingWaitOutbounds: [],
+      // Keep any failed outbounds from flush; clear only when empty.
+      pendingWaitOutbounds: flush.checkpoint.pendingWaitOutbounds ?? [],
       waitReason:
         `Waiting for WhatsApp replies from ${contactCount} contacted lead` +
         `${contactCount === 1 ? '' : 's'} ` +
@@ -545,10 +555,25 @@ export class TeamsService {
         sent: sentOk,
         failed: flush.sent.length - sentOk,
         recipients: flush.sent,
+        // Same fields as reply-progress events so the chat UI can show "0 of N received".
+        received: 0,
+        remaining: contactCount,
+        total: contactCount,
         reason:
           sentOk > 0
             ? `Sent ${sentOk} WhatsApp message${sentOk === 1 ? '' : 's'} — now listening for replies.`
             : 'Failed to send queued WhatsApp messages.',
+      });
+    }
+
+    // Explicit listening baseline when waits were already armed (nothing deferred to flush).
+    if (flush.sent.length === 0 && contactCount > 0) {
+      await this.repo.appendEvent(run.id, teamId, null, 'wait_progress', {
+        phase: 'listening',
+        received: 0,
+        remaining: contactCount,
+        total: contactCount,
+        reason: `Listening for WhatsApp replies from ${contactCount} contact${contactCount === 1 ? '' : 's'}.`,
       });
     }
 
@@ -568,6 +593,30 @@ export class TeamsService {
   }
 
   // ─── Internal helpers ───────────────────────────────────────────────────────
+
+  private async activateIfSupervisorAssigned(team: TeamDTO): Promise<TeamDTO> {
+    if (team.status !== 'draft' || !team.supervisorAgentId) return team;
+    await this.repo.updateStatus(team.id, 'active');
+    return { ...team, status: 'active' };
+  }
+
+  private async applyMemberTeamContext(
+    agent: AgentDTO,
+    teamId: string,
+    teamName: string,
+    role: 'supervisor' | 'worker',
+    backendUrl: string,
+  ): Promise<void> {
+    const teamContext: DockerTeamContext = { id: teamId, name: teamName, role };
+    if (await this.deferTeamContextIfNeeded(agent, teamContext)) return;
+    this.cloudProvisioner.scheduleApplyTeamContext({
+      agentId: agent.id,
+      teamId,
+      teamName,
+      role,
+      backendUrl,
+    });
+  }
 
   private async deferTeamContextIfNeeded(
     agent: AgentDTO,

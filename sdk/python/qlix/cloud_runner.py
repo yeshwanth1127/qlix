@@ -302,9 +302,11 @@ def _build_run_guidance(
     """
     from .tool_router import (
         has_crm_scope,
+        has_forms_scope,
         is_crm_mutation_intent,
         crm_jit_run_guidance,
         crm_no_invent_guidance,
+        forms_reuse_guidance,
     )
     from .cloud_crm_runtime import crm_jit_needs_sdk
 
@@ -316,6 +318,8 @@ def _build_run_guidance(
             parts.append(crm_jit_run_guidance())
         else:
             parts.append(crm_no_invent_guidance())
+    if has_forms_scope(identity):
+        parts.append(forms_reuse_guidance())
     # plan_run's guidance last so run-specific playbooks read after the advisories.
     if base_guidance.strip():
         parts.append(base_guidance.strip())
@@ -382,6 +386,7 @@ async def _run_backend_proxy_inference(
     mcp_servers: Any = None,
     tool_profile: str = "full",
     askable_agents: list[dict[str, Any]] | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email/MCP tools."""
     import hashlib
@@ -524,6 +529,7 @@ async def _run_backend_proxy_inference(
         system_prompt=system_prompt,
         live_view_enabled=live_view_enabled,
         subagent_context=subagent_context,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -640,6 +646,9 @@ async def _poll_and_execute_loop() -> None:
                 run_inference_model = str(
                     run.get("inferenceModel") or run.get("inference_model") or ""
                 ).strip()
+                run_reasoning_effort = str(
+                    run.get("reasoningEffort") or run.get("reasoning_effort") or ""
+                ).strip() or None
                 skills = run.get("skills") or []
                 selected_skills = [str(s).strip() for s in skills if str(s).strip()]
                 allowed_tools = set(selected_skills) if selected_skills else None
@@ -755,6 +764,7 @@ async def _poll_and_execute_loop() -> None:
                         mcp_servers=run.get("mcpServers") or [],
                         tool_profile=tool_profile,
                         askable_agents=run.get("askableAgents") or [],
+                        reasoning_effort=run_reasoning_effort,
                     )
                 )
                 seq = await _emit_event(
@@ -772,8 +782,6 @@ async def _poll_and_execute_loop() -> None:
                         "tool_calls_executed": tool_calls,
                     },
                 )
-                if not content.strip():
-                    content = "No response generated."
                 from .runner_common import stream_assistant_deltas
 
                 seq = await stream_assistant_deltas(

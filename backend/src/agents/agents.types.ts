@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from '../llm/routing/reasoningBudget.js';
+
 /** Built-in SDK / connector scopes (static catalog). */
 export type BuiltinPermissionScope =
   | 'web.read'
@@ -15,6 +17,14 @@ export type BuiltinPermissionScope =
   | 'email.send'
   | 'drive.read'
   | 'drive.write'
+  | 'docs.read'
+  | 'docs.write'
+  | 'sheets.read'
+  | 'sheets.write'
+  | 'slides.read'
+  | 'slides.write'
+  | 'forms.read'
+  | 'forms.write'
   | 'calendar.read'
   | 'calendar.write'
   | 'meet.manage'
@@ -62,6 +72,8 @@ export type LlmMode = 'direct' | 'proxy';
 
 export type LlmProvider = 'exora' | 'openrouter';
 
+export type { ReasoningEffort };
+
 /** `standard` | `org_brain` — enforced uniquely per org in brain agent service. */
 export type AgentKind = 'standard' | 'org_brain';
 
@@ -94,6 +106,11 @@ export interface AgentDTO {
   localInferenceMode: LocalInferenceMode | null;
   llmMode: LlmMode;
   llmProvider: LlmProvider;
+  /**
+   * How much of the completion budget a thinking model may spend reasoning.
+   * Null means Qlix picks a small share, which keeps room for the visible answer.
+   */
+  reasoningEffort: ReasoningEffort | null;
   permissionScopes: PermissionScope[];
   jitScopes: PermissionScope[];
   alwaysScopes: PermissionScope[];

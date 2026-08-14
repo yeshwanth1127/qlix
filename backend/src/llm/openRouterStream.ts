@@ -4,6 +4,7 @@ import {
   resolveOpenRouterApiModel,
   type ResolveOpenRouterModelOptions,
 } from './routing/resolveOpenRouterModel.js';
+import { resolveReasoning } from './routing/reasoningBudget.js';
 
 function openRouterApiKey(): string {
   const key = process.env.OPENROUTER_API_KEY?.trim();
@@ -31,11 +32,18 @@ export async function openRouterChatCompletionStream(
 ): Promise<{ content: string; finishReason: string | null }> {
   const timeoutMs = options?.timeoutMs ?? 180_000;
   const url = `${openRouterBaseUrl().replace(/\/$/, '')}/chat/completions`;
+  const apiModel = resolveOpenRouterApiModel(request, options);
+  const thinking = resolveReasoning({
+    modelId: apiModel,
+    purpose: request.reasoning_purpose ?? 'agent',
+    maxTokens: request.max_tokens,
+    requestedEffort: request.reasoning_effort ?? null,
+  });
   const body: Record<string, unknown> = {
-    model: resolveOpenRouterApiModel(request, options),
+    model: apiModel,
     messages: request.messages,
     temperature: request.temperature,
-    max_tokens: request.max_tokens,
+    max_tokens: thinking.maxTokens,
     stream: true,
   };
   if (request.tools != null && request.tools.length > 0) {
@@ -43,6 +51,9 @@ export async function openRouterChatCompletionStream(
   }
   if (request.tool_choice !== undefined) {
     body.tool_choice = request.tool_choice;
+  }
+  if (thinking.reasoning) {
+    body.reasoning = thinking.reasoning;
   }
 
   const controller = new AbortController();

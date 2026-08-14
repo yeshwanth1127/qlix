@@ -84,7 +84,7 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     { href: `${routePrefix}/connectors`, label: "Connectors", icon: Plug },
     { href: `${routePrefix}/skills`, label: "Skills", icon: Hammer },
     { href: `${routePrefix}/credentials`, label: "Credentials", icon: ShieldCheck },
-    { href: `${routePrefix}/api-keys`, label: "API keys", icon: KeyRound },
+    { href: `${routePrefix}/api-keys`, label: "API", icon: KeyRound },
   ];
   const usageItem: ConsoleNavItem = {
     href: `${routePrefix}/usage`,
@@ -102,6 +102,7 @@ export function getConsoleNavItems(routePrefix: string, billingExempt = false): 
     icon: CreditCard,
   };
   const legalItems: ConsoleNavItem[] = [
+    { href: "/docs", label: "Docs", icon: BookOpen },
     { href: "/privacy", label: "Privacy", icon: Shield },
     { href: "/terms", label: "Terms", icon: FileText },
   ];

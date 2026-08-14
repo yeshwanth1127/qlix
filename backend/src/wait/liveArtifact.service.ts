@@ -8,7 +8,8 @@ import {
   previewKindForFormat,
 } from './liveArtifactFormat.js';
 import { materializeLiveArtifactBytes } from './liveArtifactMaterialize.js';
-import { resolveLiveSheetField, type LiveSheetField } from './liveSheetColumns.js';
+import { resolveLiveSheetField, inferNameFromOutreachMessage } from './liveSheetColumns.js';
+import type { LiveSheetField } from './liveSheetColumns.js';
 import type {
   LiveArtifactFormat,
   LiveArtifactRow,

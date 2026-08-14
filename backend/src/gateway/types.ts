@@ -5,6 +5,7 @@
 
 export type GatewayChannel =
   | 'web'
+  | 'api'
   | 'whatsapp'
   | 'slack'
   | 'telegram'
@@ -55,6 +56,7 @@ export interface InboundMessage {
   attachments?: InboundAttachment[];
   skills?: string[];
   inferenceModel?: string | null;
+  reasoningEffort?: string | null;
   useBrain?: boolean;
   deliveryTarget: DeliveryTarget;
   /** Pre-resolved route (web chat already knows agent + conversation). */

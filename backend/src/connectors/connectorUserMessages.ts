@@ -63,6 +63,34 @@ export function driveConnectorNotConnectedMessage(): string {
   return `No Google Drive or OneDrive is connected for this workspace. ${DRIVE_CONNECT_SHORT}`;
 }
 
+export const DOCS_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Docs');
+export const DOCS_CONNECT_SHORT =
+  'Connect Docs first: sidebar → Connectors → Google → Docs → Connect, then retry.';
+export function docsConnectorNotConnectedMessage(): string {
+  return `Google Docs is not connected for this workspace. ${DOCS_CONNECT_SHORT}`;
+}
+
+export const SHEETS_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Sheets');
+export const SHEETS_CONNECT_SHORT =
+  'Connect Sheets first: sidebar → Connectors → Google → Sheets → Connect, then retry.';
+export function sheetsConnectorNotConnectedMessage(): string {
+  return `Google Sheets is not connected for this workspace. ${SHEETS_CONNECT_SHORT}`;
+}
+
+export const SLIDES_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Slides');
+export const SLIDES_CONNECT_SHORT =
+  'Connect Slides first: sidebar → Connectors → Google → Slides → Connect, then retry.';
+export function slidesConnectorNotConnectedMessage(): string {
+  return `Google Slides is not connected for this workspace. ${SLIDES_CONNECT_SHORT}`;
+}
+
+export const FORMS_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Forms');
+export const FORMS_CONNECT_SHORT =
+  'Connect Forms first: sidebar → Connectors → Google → Forms → Connect, then retry.';
+export function formsConnectorNotConnectedMessage(): string {
+  return `Google Forms is not connected for this workspace. ${FORMS_CONNECT_SHORT}`;
+}
+
 export const CALENDAR_CONNECT_INSTRUCTIONS = googleServiceConnectInstructions('Calendar');
 export const CALENDAR_CONNECT_SHORT =
   'Connect Calendar first: sidebar → Connectors → Google → Calendar → Connect, then retry.';

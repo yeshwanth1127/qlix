@@ -28,9 +28,11 @@ import { getPlanConfig } from '../billings/lib/subscriptionPlans.js';
 import {
   isModelRoutingEnabled,
   isQlixAutoModelId,
+  parseReasoningEffort,
   selectInferenceModel,
   TIER_RANK,
   tierForModelId,
+  type ReasoningEffort,
   type RouteDecision,
 } from '../llm/routing/index.js';
 
@@ -82,6 +84,7 @@ async function assertProxyAgent(agentId: string): Promise<{
   llmProvider: LlmProviderId;
   orgId: string | null;
   planAllowedTiers: string[];
+  reasoningEffort: ReasoningEffort | null;
 }> {
   const agent = await prisma.agent.findUnique({
     where: { id: agentId },
@@ -91,6 +94,7 @@ async function assertProxyAgent(agentId: string): Promise<{
       llmMode: true,
       llmModel: true,
       llmProvider: true,
+      reasoningEffort: true,
       orgId: true,
       organization: { select: { plan: true } },
     },
@@ -113,6 +117,7 @@ async function assertProxyAgent(agentId: string): Promise<{
     llmProvider: parseLlmProvider(agent.llmProvider),
     orgId: agent.orgId,
     planAllowedTiers,
+    reasoningEffort: parseReasoningEffort(agent.reasoningEffort),
   };
 }
 
@@ -125,11 +130,16 @@ function logInferenceSuccess(input: {
   latencyMs: number;
   streaming: boolean;
   cacheHit?: boolean;
+  finishReason?: string | null;
+  maxTokens?: number | null;
 }): void {
   const usage =
     input.usage && typeof input.usage === 'object'
       ? (input.usage as Record<string, unknown>)
       : {};
+  const completionTokens = Number(usage.completion_tokens) || 0;
+  const details = usage.completion_tokens_details as { reasoning_tokens?: unknown } | undefined;
+  const reasoningTokens = Number(details?.reasoning_tokens) || 0;
   console.log(
     '[inference] %s',
     JSON.stringify({
@@ -139,8 +149,10 @@ function logInferenceSuccess(input: {
       model: input.model,
       status: 200,
       promptTokens: Number(usage.prompt_tokens) || 0,
-      completionTokens: Number(usage.completion_tokens) || 0,
+      completionTokens,
+      reasoningTokens,
       totalTokens: Number(usage.total_tokens) || 0,
+      finishReason: input.finishReason ?? null,
       latencyMs: input.latencyMs,
       streaming: input.streaming,
       cacheHit: input.cacheHit ?? false,
@@ -148,6 +160,15 @@ function logInferenceSuccess(input: {
       orgId: input.orgId,
     }),
   );
+  // A truncated completion is billed in full and may carry no visible answer at
+  // all, so it must not hide inside a "success" line.
+  if (input.finishReason === 'length') {
+    console.warn(
+      `[inference] truncated agentId=${input.agentId} model=${input.model} ` +
+        `maxTokens=${input.maxTokens ?? 'default'} completionTokens=${completionTokens} ` +
+        `reasoningTokens=${reasoningTokens}`,
+    );
+  }
 }
 
 function resolveRoute(
@@ -191,15 +212,20 @@ function executionProviderForRoutedModel(
 function applyRouteToRequest(
   request: InferenceChatRequest,
   decision: RouteDecision,
+  agentEffort?: ReasoningEffort | null,
 ): InferenceChatRequest {
-  const maxTokens =
-    request.max_tokens == null
-      ? decision.suggestedMaxTokens
-      : Math.min(request.max_tokens, decision.suggestedMaxTokens);
+  // Complexity tiers size an Auto request; they are not a ceiling on a caller that
+  // asked for a specific budget. Clamping a runner's 8192 down to a 4096 tier is
+  // what let hidden reasoning consume the whole completion and return nothing.
+  const maxTokens = request.max_tokens ?? decision.suggestedMaxTokens;
   return {
     ...request,
     model: decision.routedModel,
-    max_tokens: maxTokens,
+    max_tokens: decision.isAuto ? Math.min(maxTokens, decision.suggestedMaxTokens) : maxTokens,
+    // An explicit per-request effort wins over the agent's saved preference.
+    ...(request.reasoning_effort == null && agentEffort
+      ? { reasoning_effort: agentEffort }
+      : {}),
   };
 }
 
@@ -264,7 +290,7 @@ export function createInferenceProxyRouter(): Router {
           `${execProvider === 'exora' ? 'EXORA_LLM_API_KEY' : 'OPENROUTER_API_KEY'} is required to run model "${decision.routedModel}"`,
         );
       }
-      const inferenceRequest = applyRouteToRequest(withTools, decision);
+      const inferenceRequest = applyRouteToRequest(withTools, decision, agent.reasoningEffort);
 
       console.log(
         `[inference] route agentProvider=${agent.llmProvider} execProvider=${execProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
@@ -313,6 +339,8 @@ export function createInferenceProxyRouter(): Router {
           model: decision.routedModel,
           latencyMs: Date.now() - t0,
           streaming: true,
+          finishReason: result.finishReason,
+          maxTokens: inferenceRequest.max_tokens ?? null,
         });
         response.end();
         return;
@@ -396,6 +424,8 @@ export function createInferenceProxyRouter(): Router {
           usage: result.usage,
           latencyMs: Date.now() - t0,
           streaming: false,
+          finishReason: result.finishReason,
+          maxTokens: inferenceRequest.max_tokens ?? null,
         });
         response.json(body);
         return;
@@ -415,6 +445,8 @@ export function createInferenceProxyRouter(): Router {
         usage: result.usage,
         latencyMs: Date.now() - t0,
         streaming: false,
+        finishReason: result.finishReason,
+        maxTokens: inferenceRequest.max_tokens ?? null,
       });
       response.json({
         content: result.content,
@@ -500,7 +532,7 @@ export function createInferenceProxyRouter(): Router {
           `${execProvider === 'exora' ? 'EXORA_LLM_API_KEY' : 'OPENROUTER_API_KEY'} is required to run model "${decision.routedModel}"`,
         );
       }
-      const inferenceRequest = applyRouteToRequest(baseRequest, decision);
+      const inferenceRequest = applyRouteToRequest(baseRequest, decision, agent.reasoningEffort);
 
       const result = await chatCompletion(inferenceRequest, {
         provider: execProvider,

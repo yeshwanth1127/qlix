@@ -3,11 +3,59 @@ import { describe, it } from 'node:test';
 import {
   buildWhatsAppReplyWaitStep,
   completedStageOrderFromPlan,
+  goalRequestsReplyWait,
   inferWaitStepsFromGoal,
   inferTeamWaitStepsFromSpec,
+  resolveTeamWhatsAppWaitMode,
   resolveWaitStepsForTeam,
   WHATSAPP_REPLY_LIVE_SHEET_EFFECT,
 } from './waitPolicy.js';
+
+describe('goalRequestsReplyWait', () => {
+  it('matches collect-the-response-via-the-poll language', () => {
+    assert.equal(
+      goalRequestsReplyWait(
+        'send a greeting, brochure, yes or no poll. then collect the response via the poll and put those contacts in a excel sheet',
+      ),
+      true,
+    );
+  });
+
+  it('matches wait-for-the-response (poll) language', () => {
+    assert.equal(
+      goalRequestsReplyWait(
+        'send a greeting, brochure, yes or no poll. then wait for the response via the poll and put those contacts in a excel sheet',
+      ),
+      true,
+    );
+  });
+
+  it('does not match wait without a reply/response', () => {
+    assert.equal(goalRequestsReplyWait('wait for the file to finish downloading'), false);
+  });
+});
+
+describe('resolveTeamWhatsAppWaitMode', () => {
+  it('blocks outbound after the team run is no longer active', () => {
+    assert.equal(
+      resolveTeamWhatsAppWaitMode({
+        teamRunStatus: 'canceled',
+        goal: 'wait for the reply and put them in a sheet',
+      }),
+      'blocked',
+    );
+  });
+
+  it('queues when the run is active and the goal asks to wait', () => {
+    assert.equal(
+      resolveTeamWhatsAppWaitMode({
+        teamRunStatus: 'running',
+        goal: 'wait for the response via the poll and put them in excel',
+      }),
+      'queue',
+    );
+  });
+});
 
 describe('inferWaitStepsFromGoal', () => {
   it('returns a wait step when reply-wait and sheet language match', () => {

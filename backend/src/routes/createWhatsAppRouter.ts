@@ -15,6 +15,7 @@ const inboundBody = z.object({
   text: z.string().trim().min(1).max(20_000),
   remote_jid: z.string().trim().min(3).max(120).optional(),
   from_contact: z.boolean().optional(),
+  push_name: z.string().trim().min(1).max(120).optional().nullable(),
 });
 
 const linkedBody = z.object({
@@ -35,6 +36,7 @@ export function createWhatsAppRouter(): Router {
       const result = await handleWhatsAppInbound(parsed.data.connector_id, parsed.data.text, {
         remoteJid: parsed.data.remote_jid ?? null,
         fromContact: parsed.data.from_contact === true,
+        pushName: parsed.data.push_name ?? null,
       });
       response.json({
         ok: true,

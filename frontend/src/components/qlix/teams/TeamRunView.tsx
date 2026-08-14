@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ArrowRight,
   Brain,
   CheckCircle,
   ChevronDown,
@@ -19,11 +18,14 @@ import {
   Globe,
   Loader2,
   Mail,
+  MessageSquarePlus,
   Paperclip,
+  PanelLeft,
   Phone,
   Search,
   Send,
   ShieldCheck,
+  ShieldAlert,
   Square,
   Table2,
   Terminal,
@@ -49,12 +51,16 @@ import {
   type ChatAttachmentChip,
   type TeamRunPendingJit,
 } from "@/lib/teams-api";
-import { decideJit } from "@/lib/jit-api";
+import { decideJit, isSessionChatJitScope } from "@/lib/jit-api";
+import { JitApprovalCard } from "@/components/qlix/agents/JitApprovalCard";
 import {
-  CLOUD_MODELS,
-  EXORA_MODELS,
+  buildTeamRunModelGroups,
+  fetchModelCatalog,
   formatModelOptionLabel,
+  type ModelCatalogEntry,
+  type ReasoningEffort,
 } from "@/lib/agents-api";
+import { ReasoningEffortPicker } from "@/components/qlix/agents/ReasoningEffortPicker";
 import {
   AgentBrowserLiveView,
   type BrowserFrame,
@@ -70,11 +76,7 @@ import {
   type TeamReasoningStep,
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
-import { SketchBox } from "@/components/qlix/sketch";
-import {
-  sketchButtonPrimary,
-  sketchButtonSecondary,
-} from "@/components/qlix/sketch/tokens";
+import { SketchBox, sketchButtonPrimary } from "@/components/qlix/sketch";
 import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
 import {
   TeamRunGraph,
@@ -89,6 +91,12 @@ import {
   replayLiveArtifactFromEvents,
   type LiveArtifactPreview,
 } from "@/components/qlix/teams/liveArtifactState";
+import {
+  conversationRunsFor,
+  conversationTitle,
+  groupTeamConversations,
+  type TeamConversation,
+} from "@/components/qlix/teams/teamConversations";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -145,6 +153,7 @@ type ProcessedEvent =
       jitRequestId?: string;
       jitChannel: "dashboard" | "whatsapp";
       jitScope: string;
+      jitContext?: string;
       jitWhatsappExpected?: boolean;
       jitWhatsappStatus?: "disconnected" | "not_linked";
     }
@@ -158,7 +167,7 @@ type ProcessedEvent =
       decision: "approved" | "denied" | "expired";
     }
   | { kind: "subtask_completed"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
-  | { kind: "run_result"; eventId: string; timestampMs: number }
+  | { kind: "run_result"; eventId: string; timestampMs: number; synthesis?: string }
   | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string }
   | { kind: "wait_armed"; eventId: string; timestampMs: number; reason: string; contactCount: number }
   | {
@@ -168,6 +177,7 @@ type ProcessedEvent =
       reason: string;
       optionsHours: number[];
       allowCustom: boolean;
+      runId: string;
     }
   | { kind: "wait_ttl_set"; eventId: string; timestampMs: number; hours: number; expiresAt: string }
   | {
@@ -177,6 +187,10 @@ type ProcessedEvent =
       received: number;
       remaining: number;
       total: number;
+      phase?: string;
+      reason?: string;
+      sent?: number;
+      failed?: number;
     }
   | {
       kind: "live_artifact_updated";
@@ -187,10 +201,11 @@ type ProcessedEvent =
       jid: string;
       interest: string;
     }
-  | { kind: "wait_fulfilled"; eventId: string; timestampMs: number; responderCount: number; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
+  | { kind: "wait_fulfilled"; eventId: string; timestampMs: number; responderCount: number; continuePipeline: boolean; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
   | { kind: "wait_expired"; eventId: string; timestampMs: number; reason: string }
   | { kind: "user_injection"; eventId: string; timestampMs: number; message: string; attachments?: ChatAttachmentChip[] }
-  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string };
+  | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string; boundary?: string; channel?: string }
+  | { kind: "outbound_blocked"; eventId: string; timestampMs: number; message: string };
 
 const TEAM_CHAT_MAX_FILES = 10;
 const TEAM_CHAT_MAX_FILE_MB = 50;
@@ -202,6 +217,22 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatWaitDuration(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) return "the selected duration";
+  if (hours < 1) {
+    const minutes = Math.round(hours * 60);
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  if (Number.isInteger(hours)) {
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  const whole = Math.floor(hours);
+  const minutes = Math.round((hours - whole) * 60);
+  if (minutes === 0) return whole === 1 ? "1 hour" : `${whole} hours`;
+  if (whole === 0) return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  return `${whole}h ${minutes}m`;
 }
 
 type InterestSummary = {
@@ -227,12 +258,16 @@ function parseInterestSummary(raw: unknown): InterestSummary | undefined {
 function formatWaitFulfilledLine(
   responderCount: number,
   interestSummary?: InterestSummary,
+  continuePipeline = true,
 ): string {
   const base =
     responderCount > 1
-      ? `WhatsApp replies received (${responderCount}) — continuing the pipeline`
-      : "WhatsApp reply received — continuing the pipeline";
-  if (!interestSummary) return `${base}.`;
+      ? `Replies collected (${responderCount})`
+      : "Reply collected";
+  const next = continuePipeline
+    ? " — continuing with the next specialist"
+    : " — preparing the result";
+  if (!interestSummary) return `${base}${next}.`;
   const bits: string[] = [];
   if (interestSummary.interested > 0) {
     bits.push(
@@ -245,30 +280,57 @@ function formatWaitFulfilledLine(
   if (interestSummary.notInterested > 0) {
     bits.push(`${interestSummary.notInterested} declined`);
   }
-  if (bits.length === 0) return `${base}.`;
-  return `${base} (${bits.join(" / ")}).`;
+  if (bits.length === 0) return `${base}${next}.`;
+  return `${base} (${bits.join(" / ")})${next}.`;
 }
 
 /** Agents built from the NL builder default to Exora General when the team has no override. */
 const TEAM_RUN_AGENT_DEFAULT_MODEL = "exora/exora-general";
 
-const TEAM_RUN_MODEL_OPTIONS: readonly string[] = Array.from(
-  new Set<string>([...EXORA_MODELS, ...CLOUD_MODELS]),
-);
-
 /** Strip embedded attachment dumps from stored run.goal for chat display. */
+const FOLLOW_UP_NOTE_START = "--- Previous team conversation (main note) ---";
+const FOLLOW_UP_NOTE_END = "--- End previous ---";
+const FOLLOW_UP_LABEL = "Follow-up:";
+
+const RETRY_ONLY_GOAL_RE =
+  /^(try again|retry|again|please retry|re-?run(?: it)?|re-?try|proceed with the original intent)\.?!?$/i;
+
+function extractFollowUpUserText(goal: string): string {
+  const startIdx = goal.indexOf(FOLLOW_UP_NOTE_START);
+  const endIdx = goal.indexOf(FOLLOW_UP_NOTE_END);
+  if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) return goal;
+  let rest = goal.slice(endIdx + FOLLOW_UP_NOTE_END.length).trim();
+  if (rest.toLowerCase().startsWith(FOLLOW_UP_LABEL.toLowerCase())) {
+    rest = rest.slice(FOLLOW_UP_LABEL.length).trim();
+  }
+  return rest || goal;
+}
+
+function intentFromEnvelope(goal: string): string | null {
+  const startIdx = goal.indexOf(FOLLOW_UP_NOTE_START);
+  const endIdx = goal.indexOf(FOLLOW_UP_NOTE_END);
+  if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) return null;
+  const body = goal.slice(startIdx + FOLLOW_UP_NOTE_START.length, endIdx);
+  const match = body.match(/^(?:Intent|Goal):\s*(.+)$/m);
+  const intent = match?.[1]?.trim() ?? "";
+  return intent || null;
+}
+
 function displayGoalText(goal: string): string {
+  const unwrapped = extractFollowUpUserText(goal);
   const marker = "\n\n---\nAttached files";
-  const idx = goal.indexOf(marker);
-  if (idx >= 0) {
-    const head = goal.slice(0, idx).trim();
-    return head || "Attached files";
+  const idx = unwrapped.indexOf(marker);
+  const head =
+    idx >= 0
+      ? unwrapped.slice(0, idx).trim() || "Attached files"
+      : unwrapped.startsWith("Attached files (")
+        ? unwrapped.split("\n")[0]?.trim() || unwrapped
+        : unwrapped;
+  if (RETRY_ONLY_GOAL_RE.test(head)) {
+    const intent = intentFromEnvelope(goal);
+    if (intent && !RETRY_ONLY_GOAL_RE.test(intent)) return intent;
   }
-  if (goal.startsWith("Attached files (")) {
-    const firstLine = goal.split("\n")[0]?.trim();
-    return firstLine || goal;
-  }
-  return goal;
+  return head;
 }
 
 /**
@@ -387,23 +449,6 @@ const STATE_LABEL: Record<AgentState, string> = {
   failed: "Stopped",
 };
 
-const SESSION_CHAT_JIT_SCOPES = new Set([
-  "email.send",
-  "drive.write",
-  "calendar.write",
-  "meet.manage",
-  "social.publish",
-  "crm.write",
-  "crm.delete",
-  "whatsapp.contact_send",
-  "slack.send",
-  "notion.write",
-]);
-
-function isSessionChatJitScope(scope: string | undefined): boolean {
-  return Boolean(scope && SESSION_CHAT_JIT_SCOPES.has(scope));
-}
-
 function jitPendingFromPayload(
   eventId: string,
   timestampMs: number,
@@ -438,6 +483,7 @@ function jitPendingFromPayload(
       typeof p.jitRequestId === "string" && p.jitRequestId ? p.jitRequestId : undefined,
     jitChannel: channel === "whatsapp" ? "whatsapp" : "dashboard",
     jitScope: scope,
+    jitContext: context || undefined,
     jitWhatsappExpected: whatsappExpected || undefined,
     jitWhatsappStatus: whatsappStatus,
   };
@@ -590,8 +636,12 @@ function statusStepLabel(message: string, payload: Record<string, unknown>): str
     return null;
   }
   if (msg.startsWith("Retrying ")) return msg;
-  if (msg.includes(" is working on:")) return msg;
-  if (msg.startsWith("Pipeline order locked")) return msg;
+  if (msg.includes(" is working on:")) return null;
+  if (msg.startsWith("Pipeline order locked")) return null;
+  if (msg.startsWith("Luna-Teams is preparing dispatches")) return null;
+  if (msg.startsWith("Luna-Teams is selecting")) return null;
+  if (msg === "Luna-Teams is preparing the final result…") return null;
+  if (/ started$/.test(msg)) return null;
   if (msg.startsWith("Supervisor retry")) return msg;
   if (typeof payload.error === "string" && payload.error.trim()) {
     return payload.error.trim();
@@ -724,9 +774,6 @@ function UserMessage({
                   {typeof a.sizeBytes === "number" ? (
                     <span className="shrink-0 opacity-50">{formatFileSize(a.sizeBytes)}</span>
                   ) : null}
-                  <span className="shrink-0 font-medium opacity-80">
-                    {pending ? "Uploading…" : reached ? "Reached agents" : "Not delivered"}
-                  </span>
                 </span>
               );
               return (
@@ -785,19 +832,16 @@ function PlanBody({
   return (
     <div className="space-y-2">
       <p className={cn("text-[13px] leading-relaxed", INK_SOFT)}>
-        Split this into {subtasks.length} step{subtasks.length === 1 ? "" : "s"}.
+        {subtasks.length} step{subtasks.length === 1 ? "" : "s"}
       </p>
       {subtasks.length > 0 && (
-        <ol className="space-y-1.5">
+        <ol className="space-y-1">
           {subtasks.map((st, i) => (
             <li key={st.subtaskId ?? i} className="flex gap-2.5 text-[12.5px] leading-relaxed">
               <span className={cn("mt-[3px] font-mono text-[10px] tabular-nums", INK_FAINT)}>
                 {i + 1}
               </span>
-              <span className="min-w-0">
-                <span className="font-medium text-black">{agentNameById(st.agentId ?? null)}</span>
-                {st.goal && <span className={INK_SOFT}> — {st.goal}</span>}
-              </span>
+              <span className="font-medium text-black">{agentNameById(st.agentId ?? null)}</span>
             </li>
           ))}
         </ol>
@@ -806,24 +850,10 @@ function PlanBody({
   );
 }
 
-function HandoffLine({ to, goal }: { readonly to: string; readonly goal?: string }) {
-  return (
-    <div className={cn("flex items-start gap-2.5 pl-9 text-[11.5px] leading-relaxed", INK_FAINT)}>
-      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-black/20" aria-hidden />
-      <ArrowRight size={11} className="mt-[3px] shrink-0 opacity-60" />
-      <p className="min-w-0">
-        <span className="font-medium text-black/70">{to}</span>
-        {goal ? <span className="opacity-80"> · {goal}</span> : null}
-      </p>
-    </div>
-  );
-}
-
-/** Dulled vertical execution rail — every tool / status step, default open. */
 function ActivityBody({
   entries,
   frames,
-  running,
+  running: _running,
   jitDeciding,
   jitError,
   onJitDecision,
@@ -835,223 +865,102 @@ function ActivityBody({
   readonly jitError?: string | null;
   readonly onJitDecision?: (jitRequestId: string, approved: boolean) => void;
 }) {
-  const [open, setOpen] = useState(true);
-  const runningCount = entries.filter(
-    (e) => e.status === "running" || e.kind === "jit_pending",
-  ).length;
-  const doneCount = entries.filter(
-    (e) => e.status !== "running" && e.kind !== "jit_pending",
-  ).length;
-  const last = entries[entries.length - 1];
-  const headerLabel =
-    running && runningCount > 0
-      ? last?.label ?? "Working…"
-      : `${entries.length} step${entries.length === 1 ? "" : "s"}`;
-
   return (
-    <div className="min-w-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:bg-black/[0.03]"
-      >
-        {running && runningCount > 0 ? (
-          <Loader2 size={12} className={cn("shrink-0 animate-spin", INK_FAINT)} />
-        ) : (
-          <CheckCircle size={12} className={cn("shrink-0 opacity-60", INK_FAINT)} />
-        )}
-        <span className={cn("min-w-0 flex-1 truncate text-[11.5px] font-medium tracking-wide", INK_FAINT)}>
-          Execution · {headerLabel}
-        </span>
-        <span className={cn("shrink-0 text-[10.5px] tabular-nums", INK_FAINT)}>
-          {doneCount}
-          {runningCount > 0 ? ` · ${runningCount} live` : ""}
-        </span>
-        <ChevronDown
-          size={12}
-          className={cn("shrink-0 transition-transform opacity-60", INK_FAINT, open && "rotate-180")}
-        />
-      </button>
-
-      {open ? (
-        <ol className="relative mt-2 ml-1 space-y-0 border-l border-black/10 pl-0">
-          {entries.map((entry, index) => {
-            const frame = frames[entry.id];
-            const isLast = index === entries.length - 1;
-            const isJitPending = entry.kind === "jit_pending";
-            const isRunningStep = entry.status === "running" || isJitPending;
-            const isError = entry.status === "error";
-            return (
-              <li key={entry.id} className="relative flex gap-2.5 pb-3 last:pb-0">
-                {/* rail node */}
-                <span
-                  className={cn(
-                    "absolute -left-[5px] top-1.5 size-2.5 shrink-0 rounded-full border bg-[color:var(--console-surface,#fafafa)]",
-                    isJitPending
-                      ? "border-amber-700/45 bg-amber-500/20"
-                      : isRunningStep
-                        ? "border-[color:var(--sketch-purple)]/50 bg-[color:var(--sketch-purple)]/15"
-                        : isError
-                          ? "border-[color:var(--sketch-red)]/40 bg-[color:var(--sketch-red)]/10"
-                          : "border-black/20 bg-black/[0.04]",
-                  )}
-                  aria-hidden
+    <ol className="space-y-1.5">
+      {entries.map((entry) => {
+        const frame = frames[entry.id];
+        const isJitPending = entry.kind === "jit_pending";
+        const isRunningStep = entry.status === "running" || isJitPending;
+        const isError = entry.status === "error";
+        if (isJitPending) {
+          return (
+            <li key={entry.id} className="min-w-0">
+              <JitApprovalCard
+                step={{
+                  label: entry.label,
+                  detail: entry.detail,
+                  jitRequestId: entry.jitRequestId,
+                  jitChannel: entry.jitChannel,
+                  jitScope: entry.jitScope,
+                  jitContext: entry.jitContext,
+                  jitWhatsappExpected: entry.jitWhatsappExpected,
+                  jitWhatsappStatus: entry.jitWhatsappStatus,
+                }}
+                deciding={Boolean(entry.jitRequestId && jitDeciding?.[entry.jitRequestId])}
+                error={jitError}
+                onDecide={(approved) => {
+                  if (!entry.jitRequestId || !onJitDecision) return;
+                  onJitDecision(entry.jitRequestId, approved);
+                }}
+              />
+            </li>
+          );
+        }
+        return (
+          <li key={entry.id} className="min-w-0">
+            <div className="flex items-start gap-2">
+              {isRunningStep ? (
+                <Loader2 size={11} className={cn("mt-0.5 shrink-0 animate-spin", INK_FAINT)} />
+              ) : isError ? (
+                <XCircle size={11} className="mt-0.5 shrink-0 text-[color:var(--sketch-red)]/80" />
+              ) : (
+                <ToolGlyph
+                  kind={entry.kind}
+                  tool={entry.tool}
+                  size={11}
+                  className={cn("mt-0.5 shrink-0 opacity-55", INK_FAINT)}
                 />
-                {!isLast ? (
-                  <span className="pointer-events-none absolute -left-px top-4 bottom-0 w-px bg-transparent" aria-hidden />
-                ) : null}
-
-                <div
-                  className={cn(
-                    "ml-3 min-w-0 flex-1 rounded-xl border px-2.5 py-2",
-                    isJitPending
-                      ? "border-amber-800/25 bg-amber-50/50"
-                      : isRunningStep
-                        ? "border-black/10 bg-black/[0.02]"
-                        : isError
-                          ? "border-[color:var(--sketch-red)]/15 bg-[color:var(--sketch-red)]/[0.03]"
-                          : "border-black/[0.06] bg-black/[0.015]",
-                  )}
-                >
-                  <div className="flex items-start gap-2">
-                    {isRunningStep && !isJitPending ? (
-                      <Loader2 size={11} className={cn("mt-0.5 shrink-0 animate-spin", INK_FAINT)} />
-                    ) : (
-                      <ToolGlyph
-                        kind={entry.kind}
-                        tool={entry.tool}
-                        size={11}
-                        className={cn(
-                          "mt-0.5 shrink-0 opacity-55",
-                          isJitPending ? "text-amber-900 opacity-80" : INK_FAINT,
-                        )}
-                      />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span
+                    className={cn(
+                      "text-[12.5px] leading-snug",
+                      isError ? "text-[color:var(--sketch-red)]/80" : "text-black/80",
                     )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        <span
+                  >
+                    {entry.label}
+                  </span>
+                  <span className={cn("ml-auto shrink-0 text-[10px]", INK_FAINT)}>
+                    {isRunningStep ? "…" : isError ? "failed" : ""}
+                  </span>
+                </div>
+                {entry.detail ? (
+                  <p className={cn("mt-0.5 text-[11px] leading-relaxed", INK_FAINT)}>{entry.detail}</p>
+                ) : null}
+                {entry.sources && entry.sources.length > 0 ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {entry.sources.slice(0, 3).map((s) => (
+                      <li key={s.url} className="min-w-0">
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noreferrer"
                           className={cn(
-                            "text-[12px] leading-snug",
-                            isError
-                              ? "text-[color:var(--sketch-red)]/80"
-                              : isJitPending
-                                ? "font-semibold text-black"
-                                : INK_SOFT,
-                          )}
-                        >
-                          {entry.label}
-                        </span>
-                        {entry.kind === "tool" && entry.tool ? (
-                          <span className={cn("truncate font-mono text-[10px] opacity-70", INK_FAINT)}>
-                            {entry.tool}
-                          </span>
-                        ) : null}
-                        <span
-                          className={cn(
-                            "ml-auto shrink-0 text-[10px] uppercase tracking-[0.08em]",
+                            "block truncate text-[10.5px] underline decoration-black/15 underline-offset-2 hover:decoration-black/40",
                             INK_FAINT,
                           )}
                         >
-                          {isJitPending
-                            ? "approval"
-                            : isRunningStep
-                              ? "running"
-                              : isError
-                                ? "failed"
-                                : entry.kind === "status"
-                                  ? "step"
-                                  : "done"}
-                        </span>
-                      </div>
-                      {entry.detail ? (
-                        <p className={cn("mt-0.5 text-[11px] leading-relaxed", INK_FAINT)}>{entry.detail}</p>
-                      ) : null}
-                      {entry.sources && entry.sources.length > 0 ? (
-                        <ul className="mt-1.5 space-y-0.5">
-                          {entry.sources.slice(0, 3).map((s) => (
-                            <li key={s.url} className="min-w-0">
-                              <a
-                                href={s.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className={cn(
-                                  "block truncate text-[10.5px] underline decoration-black/15 underline-offset-2 hover:decoration-black/40",
-                                  INK_FAINT,
-                                )}
-                              >
-                                {s.title || s.url}
-                              </a>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      {isJitPending ? (
-                        <div className="mt-2.5">
-                          {entry.jitWhatsappExpected ? (
-                            <p className="mb-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
-                              {entry.jitWhatsappStatus === "not_linked"
-                                ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
-                                : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
-                            </p>
-                          ) : null}
-                          {entry.jitRequestId && onJitDecision ? (
-                            <>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  disabled={Boolean(jitDeciding?.[entry.jitRequestId])}
-                                  onClick={() => onJitDecision(entry.jitRequestId!, true)}
-                                  className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
-                                >
-                                  {jitDeciding?.[entry.jitRequestId] ? (
-                                    <Loader2 className="size-3 animate-spin" aria-hidden />
-                                  ) : null}
-                                  Approve
-                                  {isSessionChatJitScope(entry.jitScope) ? " for this chat" : ""}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={Boolean(jitDeciding?.[entry.jitRequestId])}
-                                  onClick={() => onJitDecision(entry.jitRequestId!, false)}
-                                  className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
-                                >
-                                  Deny
-                                </button>
-                              </div>
-                              {entry.jitChannel === "whatsapp" ? (
-                                <p className="mt-2 text-[11px] font-medium text-black/60">
-                                  Or reply Approve or Deny on WhatsApp.
-                                </p>
-                              ) : null}
-                            </>
-                          ) : entry.jitChannel === "whatsapp" ? (
-                            <p className="mt-2 text-[11px] font-medium text-black/70">
-                              Reply Approve or Deny on WhatsApp to continue.
-                            </p>
-                          ) : null}
-                          {jitError ? (
-                            <p className="mt-1.5 text-[10px] text-black">{jitError}</p>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                  {frame ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`data:${frame.mime};base64,${frame.imageBase64}`}
-                      alt={frame.label}
-                      className={cn("mt-2 max-h-56 w-full rounded-lg border object-contain opacity-90", HAIRLINE)}
-                    />
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
-    </div>
+                          {s.title || s.url}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            </div>
+            {frame ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`data:${frame.mime};base64,${frame.imageBase64}`}
+                alt={frame.label}
+                className={cn("mt-2 max-h-56 w-full rounded-lg border object-contain opacity-90", HAIRLINE)}
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -1242,16 +1151,18 @@ interface ActivityEntry {
   jitRequestId?: string;
   jitChannel?: "dashboard" | "whatsapp";
   jitScope?: string;
+  jitContext?: string;
   jitWhatsappExpected?: boolean;
   jitWhatsappStatus?: "disconnected" | "not_linked";
 }
 
 type ChatItem =
+  | { kind: "started"; id: string; ts: number }
   | { kind: "plan"; id: string; ts: number; payload: Record<string, unknown> }
-  | { kind: "handoff"; id: string; ts: number; agentName: string; goal?: string }
+  | { kind: "handoff"; id: string; ts: number; agentName: string }
   | { kind: "activity"; id: string; ts: number; agentId: string; entries: ActivityEntry[] }
   | { kind: "completed"; id: string; ts: number; agentId: string | null; summary?: string }
-  | { kind: "result"; id: string; ts: number }
+  | { kind: "result"; id: string; ts: number; synthesis?: string }
   | { kind: "failed"; id: string; ts: number; error: string }
   | { kind: "wait_armed"; id: string; ts: number; reason: string; contactCount: number }
   | {
@@ -1261,9 +1172,21 @@ type ChatItem =
       reason: string;
       optionsHours: number[];
       allowCustom: boolean;
+      runId: string;
     }
   | { kind: "wait_ttl_set"; id: string; ts: number; hours: number; expiresAt: string }
-  | { kind: "wait_progress"; id: string; ts: number; received: number; remaining: number; total: number }
+  | {
+      kind: "wait_progress";
+      id: string;
+      ts: number;
+      received: number;
+      remaining: number;
+      total: number;
+      phase?: string;
+      reason?: string;
+      sent?: number;
+      failed?: number;
+    }
   | {
       kind: "live_artifact_updated";
       id: string;
@@ -1273,21 +1196,25 @@ type ChatItem =
       jid: string;
       interest: string;
     }
-  | { kind: "wait_fulfilled"; id: string; ts: number; responderCount: number; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
+  | { kind: "wait_fulfilled"; id: string; ts: number; responderCount: number; continuePipeline: boolean; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
   | { kind: "wait_expired"; id: string; ts: number; reason: string }
   | { kind: "user"; id: string; ts: number; message: string; attachments?: ChatAttachmentChip[] }
-  | { kind: "delivered"; id: string; ts: number; sent: boolean; reason?: string };
+  | { kind: "delivered"; id: string; ts: number; sent: boolean; reason?: string; boundary?: string; channel?: string }
+  | { kind: "blocked"; id: string; ts: number; message: string };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface TeamRunViewProps {
   readonly team: TeamDTO;
-  readonly onRunStarted?: (runId: string) => void;
+  readonly canSend?: boolean;
 }
 
-export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
+export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const [composer, setComposer] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [pendingFilePurposes, setPendingFilePurposes] = useState<
+    Record<string, "authoritative_input" | "reference_asset">
+  >({});
   const [fileError, setFileError] = useState<string | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
   const [startedGoal, setStartedGoal] = useState<string | null>(null);
@@ -1299,6 +1226,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [selectedModel, setSelectedModel] = useState(
     () => team.config?.defaultModel?.trim() || TEAM_RUN_AGENT_DEFAULT_MODEL,
   );
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<ReasoningEffort | null>(
+    () => (team.config?.defaultReasoningEffort as ReasoningEffort | undefined) ?? null,
+  );
+  const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
   const [runModelLabel, setRunModelLabel] = useState<string | null>(null);
   const [run, setRun] = useState<TeamRunDTO | null>(null);
   const [events, setEvents] = useState<TeamRunEventDTO[]>([]);
@@ -1314,11 +1245,18 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   const [jitDeciding, setJitDeciding] = useState<Record<string, boolean>>({});
   const [waitTtlSubmitting, setWaitTtlSubmitting] = useState(false);
   const [waitTtlError, setWaitTtlError] = useState<string | null>(null);
-  const [customWaitHours, setCustomWaitHours] = useState("2");
+  const [customWaitValue, setCustomWaitValue] = useState("30");
+  const [customWaitUnit, setCustomWaitUnit] = useState<"minutes" | "hours">("minutes");
   const [jitError, setJitError] = useState<string | null>(null);
   const [liveArtifact, setLiveArtifact] = useState<LiveArtifactPreview | null>(null);
   const [liveArtifactOpen, setLiveArtifactOpen] = useState(true);
+  const [hydrating, setHydrating] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [conversations, setConversations] = useState<TeamConversation[]>([]);
+  const [activeRootId, setActiveRootId] = useState<string | null>(null);
   const showChat = viewMode === "chat";
+  const hydrateGen = useRef(0);
 
   // Browser frames: agentId → frames[]
   const [browserFrames, setBrowserFrames] = useState<Record<string, BrowserFrame[]>>({});
@@ -1376,6 +1314,26 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     if (fromTeam) setSelectedModel(fromTeam);
   }, [team.id, team.config?.defaultModel]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelCatalog("openrouter").then((result) => {
+      if (cancelled || !result.ok) return;
+      setOpenrouterCatalog(result.models);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const modelGroups = useMemo(
+    () => buildTeamRunModelGroups(openrouterCatalog),
+    [openrouterCatalog],
+  );
+  const modelOptionIds = useMemo(
+    () => new Set(modelGroups.flatMap((g) => g.options.map((o) => o.id))),
+    [modelGroups],
+  );
+
   // ── Derive live agent states from events ───────────────────────────────────
   const agentStates = useMemo<Map<string, AgentStatus>>(() => {
     const states = new Map<string, AgentStatus>();
@@ -1421,7 +1379,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           states.set(aid, {
             ...s,
             state: "thinking",
-            currentAction: step === "decompose" ? "Planning the work…" : "Pulling results together…",
+            currentAction:
+              step === "decompose" || step === "dispatch_plan"
+                ? "Preparing specialist dispatches…"
+                : "Preparing the result…",
           });
         }
       } else if (e.eventType === "task_delegated") {
@@ -1569,7 +1530,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           result.push({ kind: "run_started", eventId: e.id, timestampMs: ts });
           break;
         case "supervisor_step":
-          if ((p.step as string) === "decompose") {
+          if ((p.step as string) === "decompose" || (p.step as string) === "dispatch_plan") {
             result.push({ kind: "supervisor_plan", eventId: e.id, timestampMs: ts, payload: p });
           }
           // synthesize step surfaces as final result card, not a separate entry
@@ -1643,7 +1604,12 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           result.push({ kind: "subtask_completed", eventId: e.id, timestampMs: ts, payload: p, agentId: e.agentId });
           break;
         case "run_completed":
-          result.push({ kind: "run_result", eventId: e.id, timestampMs: ts });
+          result.push({
+            kind: "run_result",
+            eventId: e.id,
+            timestampMs: ts,
+            synthesis: typeof p.synthesis === "string" ? p.synthesis : undefined,
+          });
           break;
         case "run_failed":
           result.push({ kind: "run_failed_event", eventId: e.id, timestampMs: ts, error: (p.error as string | undefined) ?? "Run failed" });
@@ -1662,6 +1628,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             kind: "wait_ttl_requested",
             eventId: e.id,
             timestampMs: ts,
+            runId: e.runId,
             reason:
               (p.reason as string | undefined) ??
               "How long should we wait for WhatsApp replies?",
@@ -1688,6 +1655,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             received: Number(p.received ?? 0),
             remaining: Number(p.remaining ?? 0),
             total: Number(p.total ?? 0),
+            phase: typeof p.phase === "string" ? p.phase : undefined,
+            reason: typeof p.reason === "string" ? p.reason : undefined,
+            sent: p.sent != null ? Number(p.sent) : undefined,
+            failed: p.failed != null ? Number(p.failed) : undefined,
           });
           break;
         case "live_artifact_updated":
@@ -1707,6 +1678,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             eventId: e.id,
             timestampMs: ts,
             responderCount: Number(p.responderCount ?? 1),
+            continuePipeline: p.continuePipeline !== false,
             interestSummary: parseInterestSummary(p.interestSummary),
           });
           break;
@@ -1734,6 +1706,16 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             timestampMs: ts,
             sent: (p.sent as boolean | undefined) ?? false,
             reason: typeof p.reason === "string" ? p.reason : undefined,
+            boundary: typeof p.boundary === "string" ? p.boundary : undefined,
+            channel: typeof p.channel === "string" ? p.channel : undefined,
+          });
+          break;
+        case "outbound_blocked":
+          result.push({
+            kind: "outbound_blocked",
+            eventId: e.id,
+            timestampMs: ts,
+            message: typeof p.message === "string" ? p.message : "Blocked: target not found in source data",
           });
           break;
       }
@@ -1785,10 +1767,17 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             jitRequestId: ev.jitRequestId,
             jitChannel: ev.jitChannel,
             jitScope: ev.jitScope,
+            jitContext: ev.jitContext,
             jitWhatsappExpected: ev.jitWhatsappExpected,
             jitWhatsappStatus: ev.jitWhatsappStatus,
           };
         } else if (ev.kind === "jit_resolved") {
+          if (
+            ev.label === "Approved for this conversation" ||
+            ev.label === "Pre-approved for this run"
+          ) {
+            continue;
+          }
           entry = {
             id: ev.eventId,
             kind: "jit_resolved",
@@ -1856,6 +1845,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       }
 
       switch (ev.kind) {
+        case "run_started":
+          items.push({ kind: "started", id: ev.eventId, ts: ev.timestampMs });
+          break;
         case "supervisor_plan":
           items.push({ kind: "plan", id: ev.eventId, ts: ev.timestampMs, payload: ev.payload });
           break;
@@ -1864,8 +1856,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             kind: "handoff",
             id: ev.eventId,
             ts: ev.timestampMs,
-            agentName: (ev.payload.agentName as string | undefined) ?? "Agent",
-            goal: ev.payload.goal as string | undefined,
+            agentName:
+              typeof ev.payload.agentName === "string"
+                ? ev.payload.agentName
+                : agentNameById((ev.payload.agentId as string | undefined) ?? ev.agentId),
           });
           break;
         case "subtask_completed":
@@ -1878,19 +1872,17 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           });
           break;
         case "run_result":
-          items.push({ kind: "result", id: ev.eventId, ts: ev.timestampMs });
+          items.push({
+            kind: "result",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            synthesis: ev.synthesis,
+          });
           break;
         case "run_failed_event":
           items.push({ kind: "failed", id: ev.eventId, ts: ev.timestampMs, error: ev.error });
           break;
         case "wait_armed":
-          items.push({
-            kind: "wait_armed",
-            id: ev.eventId,
-            ts: ev.timestampMs,
-            reason: ev.reason,
-            contactCount: ev.contactCount,
-          });
           break;
         case "wait_ttl_requested":
           items.push({
@@ -1900,6 +1892,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             reason: ev.reason,
             optionsHours: ev.optionsHours,
             allowCustom: ev.allowCustom,
+            runId: ev.runId,
           });
           break;
         case "wait_ttl_set":
@@ -1911,33 +1904,46 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             expiresAt: ev.expiresAt,
           });
           break;
-        case "wait_progress":
-          items.push({
-            kind: "wait_progress",
+        case "wait_progress": {
+          const next = {
+            kind: "wait_progress" as const,
             id: ev.eventId,
             ts: ev.timestampMs,
             received: ev.received,
             remaining: ev.remaining,
             total: ev.total,
-          });
+            phase: ev.phase,
+            reason: ev.reason,
+            sent: ev.sent,
+            failed: ev.failed,
+          };
+          const idx = items.findLastIndex((item) => item.kind === "wait_progress");
+          if (idx >= 0) items[idx] = next;
+          else items.push(next);
           break;
-        case "live_artifact_updated":
-          items.push({
-            kind: "live_artifact_updated",
+        }
+        case "live_artifact_updated": {
+          const next = {
+            kind: "live_artifact_updated" as const,
             id: ev.eventId,
             ts: ev.timestampMs,
             url: ev.url,
             rowCount: ev.rowCount,
             jid: ev.jid,
             interest: ev.interest,
-          });
+          };
+          const idx = items.findLastIndex((item) => item.kind === "live_artifact_updated");
+          if (idx >= 0) items[idx] = next;
+          else items.push(next);
           break;
+        }
         case "wait_fulfilled":
           items.push({
             kind: "wait_fulfilled",
             id: ev.eventId,
             ts: ev.timestampMs,
             responderCount: ev.responderCount,
+            continuePipeline: ev.continuePipeline,
             interestSummary: ev.interestSummary,
           });
           break;
@@ -1960,6 +1966,16 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             ts: ev.timestampMs,
             sent: ev.sent,
             reason: ev.reason,
+            boundary: ev.boundary,
+            channel: ev.channel,
+          });
+          break;
+        case "outbound_blocked":
+          items.push({
+            kind: "blocked",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            message: ev.message,
           });
           break;
         default:
@@ -1968,7 +1984,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     }
 
     return items;
-  }, [processedEvents]);
+  }, [processedEvents, agentNameById]);
 
   const reasoningState = useMemo(
     () => collectTeamReasoningSteps(events, agentNameById),
@@ -1985,7 +2001,9 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
   const isPaused = runStatus === "paused" || run?.status === "paused";
   const isRunning = (runStatus === "running" || submitting) && !isPaused;
-  const waitTtlAlreadySet = events.some((e) => e.eventType === "wait_ttl_set");
+  const waitTtlAlreadySet = events.some(
+    (e) => e.eventType === "wait_ttl_set" && e.runId === run?.id,
+  );
 
   const handleWaitTtl = useCallback(
     async (hours: number) => {
@@ -2260,26 +2278,28 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   }, []);
 
   // ── Start run ──────────────────────────────────────────────────────────────
-  async function handleStart(text: string, files: File[] = []) {
+  async function handleStart(
+    text: string,
+    files: File[] = [],
+    inputPurposes: Array<"authoritative_input" | "reference_asset"> = files.map(
+      () => "authoritative_input",
+    ),
+  ) {
     if (submitting) return;
     if (!text.trim() && files.length === 0) return;
+    const finishedStatuses = new Set(["completed", "failed", "canceled"]);
+    const isFollowUp = Boolean(
+      run &&
+      (finishedStatuses.has(runStatus ?? "") || finishedStatuses.has(run.status)),
+    );
+    const continuesRunId = isFollowUp && run ? run.id : null;
+    const localFollowUpId = isFollowUp ? `followup-local-${Date.now()}` : null;
     setSubmitting(true);
     setError(null);
-    setEvents([]);
-    setArtifacts([]);
-    setLiveArtifact(null);
-    setLiveArtifactOpen(true);
-    setFinalResult(null);
-    setRunStatus(null);
-    setBrowserFrames({});
-    setToolFrames({});
     const display =
       text.trim() ||
       (files.length === 1 ? `Attached ${files[0]!.name}` : `Attached ${files.length} files`);
-    setStartedGoal(display);
-    // Only confirm chips after backend ack — show uploading state until then.
-    setGoalAttachments(null);
-    setUploadingAttachments(
+    const followUpAttachments =
       files.length > 0
         ? files.map((f, i) => ({
             id: `uploading-${i}`,
@@ -2287,24 +2307,69 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             sizeBytes: f.size,
             mimeType: f.type || undefined,
           }))
-        : null,
-    );
+        : null;
+
+    if (isFollowUp && localFollowUpId && run) {
+      setEvents((prev) => [
+        ...prev,
+        {
+          id: localFollowUpId,
+          runId: run.id,
+          teamId: team.id,
+          agentId: null,
+          seq: (prev[prev.length - 1]?.seq ?? 0) + 1,
+          eventType: "user_injection",
+          payload: {
+            message: display,
+            ...(followUpAttachments ? { attachments: followUpAttachments } : {}),
+          },
+          prevHash: "local",
+          timestampMs: String(Date.now()),
+        },
+      ]);
+    } else {
+      setEvents([]);
+      setArtifacts([]);
+      setLiveArtifact(null);
+      setLiveArtifactOpen(true);
+      setFinalResult(null);
+      setRunStatus(null);
+      setBrowserFrames({});
+      setToolFrames({});
+      setStartedGoal(display);
+      setGoalAttachments(null);
+      pendingToolEventByAgent.current = {};
+    }
+    setUploadingAttachments(isFollowUp ? null : followUpAttachments);
     setComposer("");
     setPendingFiles([]);
+    setPendingFilePurposes({});
     setFileError(null);
     setFileInputKey((k) => k + 1);
-    pendingToolEventByAgent.current = {};
     streamCleanup.current?.();
 
     try {
-      const started = await startTeamRun(team.id, text.trim(), files, selectedModel);
+      const started = await startTeamRun(
+        team.id,
+        text.trim(),
+        files,
+        inputPurposes,
+        selectedModel,
+        continuesRunId,
+        selectedReasoningEffort,
+      );
       setRun(started.run);
-      setStartedGoal(started.displayGoal || display);
-      setGoalAttachments(started.attachments ?? null);
-      setUploadingAttachments(null);
+      if (!isFollowUp) {
+        setStartedGoal(started.displayGoal || display);
+        setGoalAttachments(started.attachments ?? null);
+        setUploadingAttachments(null);
+      }
       setRunModelLabel(started.model ?? selectedModel);
       setRunStatus("running");
-      onRunStarted?.(started.run.id);
+      void refreshConversations().then((grouped) => {
+        const match = grouped.find((item) => item.runs.some((row) => row.id === started.run.id));
+        if (match) setActiveRootId(match.rootId);
+      });
 
       const cleanup = streamTeamRun(team.id, started.run.id, {
         onEvent: (event) => {
@@ -2331,10 +2396,14 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       streamCleanup.current = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run");
-      setRunStatus("failed");
-      setStartedGoal(null);
-      setGoalAttachments(null);
-      setUploadingAttachments(null);
+      setRunStatus(isFollowUp ? (run?.status ?? "failed") : "failed");
+      if (isFollowUp && localFollowUpId) {
+        setEvents((prev) => prev.filter((e) => e.id !== localFollowUpId));
+      } else {
+        setStartedGoal(null);
+        setGoalAttachments(null);
+        setUploadingAttachments(null);
+      }
       setComposer(text);
       setPendingFiles(files);
     } finally {
@@ -2364,6 +2433,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setInjecting(true);
     setComposer("");
     setPendingFiles([]);
+    setPendingFilePurposes({});
     setFileError(null);
     setFileInputKey((k) => k + 1);
     try {
@@ -2413,15 +2483,19 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
   function handleSend() {
     const text = composer.trim();
     const files = [...pendingFiles];
+    const inputPurposes = files.map(
+      (file) => pendingFilePurposes[`${file.name}:${file.size}`] ?? "authoritative_input",
+    );
     if (!text && files.length === 0) return;
-    if (isRunning && run) {
+    if (!canSend && !(isRunning && run)) return;
+    if (isRunning && run && !submitting) {
       void handleInject(text, files);
       return;
     }
-    void handleStart(text, files);
+    void handleStart(text, files, inputPurposes);
   }
 
-  function handleNewRun() {
+  function resetConversationState() {
     streamCleanup.current?.();
     streamCleanup.current = null;
     setRun(null);
@@ -2437,6 +2511,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     setRunModelLabel(null);
     setError(null);
     setPendingFiles([]);
+    setPendingFilePurposes({});
     setFileError(null);
     setFileInputKey((k) => k + 1);
     setBrowserFrames({});
@@ -2444,75 +2519,152 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
     pendingToolEventByAgent.current = {};
   }
 
-  // Reconnect stream + hydrate when opening a team with an in-progress paused run.
-  useEffect(() => {
-    if (run) return;
-    let cancelled = false;
+  function startNewChat() {
+    hydrateGen.current += 1;
+    resetConversationState();
+    setActiveRootId(null);
+    setHydrating(false);
+    setHistoryOpen(false);
+  }
 
-    void (async () => {
-      try {
-        const runs = await listTeamRuns(team.id);
-        const paused = runs.find((r) => r.status === "paused");
-        if (!paused || cancelled) return;
+  async function refreshConversations(): Promise<TeamConversation[]> {
+    setHistoryLoading(true);
+    try {
+      const runs = await listTeamRuns(team.id);
+      const grouped = groupTeamConversations(runs);
+      setConversations(grouped);
+      return grouped;
+    } catch {
+      return conversations;
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
 
-        const detail = await getTeamRun(team.id, paused.id);
-        if (cancelled) return;
-
-        setRun(detail.run);
-        setStartedGoal(detail.run.goal);
-        setGoalAttachments(parseAttachmentsFromEnrichedPrompt(detail.run.goal) ?? null);
-        setEvents(detail.events);
-        setArtifacts(detail.run.artifacts ?? []);
-        setRunStatus("paused");
-        setLiveArtifact(
-          replayLiveArtifactFromEvents(detail.events) ??
-            liveArtifactFromCheckpoint(detail.run.checkpointJson) ??
-            null,
-        );
-        setLiveArtifactOpen(true);
-
-        const lastSeq =
-          detail.events.length > 0 ? detail.events[detail.events.length - 1]!.seq : -1;
-        streamCleanup.current?.();
-        streamCleanup.current = streamTeamRun(team.id, paused.id, {
-          onEvent: (event) => {
-            setEvents((prev) =>
-              prev.some((e) => e.id === event.id) ? prev : [...prev, event],
-            );
-            processRunStreamEvent(event);
-          },
-          onPaused: () => {
-            setRunStatus("paused");
-          },
-          onComplete: (data) => {
-            setRunStatus(data.status);
-            if (typeof data.result === "object" && data.result !== null) {
-              const r = data.result as Record<string, unknown>;
-              if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
-            }
-          },
-          onError: () => {
-            /* EventSource errors on reconnect; paused runs stay open */
-          },
-        }, lastSeq);
-      } catch {
-        // ignore — user can start a fresh run
+  async function loadConversation(runId: string) {
+    const gen = ++hydrateGen.current;
+    setHydrating(true);
+    setError(null);
+    setHistoryOpen(false);
+    streamCleanup.current?.();
+    streamCleanup.current = null;
+    try {
+      const runs = await listTeamRuns(team.id);
+      const grouped = groupTeamConversations(runs);
+      setConversations(grouped);
+      const chain = conversationRunsFor(runs, runId);
+      const ids = chain.length > 0 ? chain.map((item) => item.id) : [runId];
+      const details = await Promise.all(ids.map((id) => getTeamRun(team.id, id)));
+      if (gen !== hydrateGen.current || details.length === 0) {
+        setHydrating(false);
+        return;
       }
-    })();
+      const root = details[0]!;
+      const latest = details[details.length - 1]!;
+      const mergedEvents: TeamRunEventDTO[] = [];
+      for (const [index, detail] of details.entries()) {
+        if (index > 0) {
+          mergedEvents.push({
+            id: `conversation-turn-${detail.run.id}`,
+            runId: detail.run.id,
+            teamId: team.id,
+            agentId: null,
+            seq: (mergedEvents[mergedEvents.length - 1]?.seq ?? 0) + 1,
+            eventType: "user_injection",
+            payload: { message: displayGoalText(detail.run.goal) },
+            prevHash: "conversation",
+            timestampMs: String(new Date(detail.run.createdAt).getTime()),
+          });
+        }
+        mergedEvents.push(...detail.events);
+      }
+      const match = grouped.find((item) => item.runs.some((row) => row.id === latest.run.id));
+      setActiveRootId(match?.rootId ?? root.run.id);
+      setRun(latest.run);
+      setStartedGoal(root.run.goal);
+      setGoalAttachments(parseAttachmentsFromEnrichedPrompt(root.run.goal) ?? null);
+      setEvents(mergedEvents);
+      setArtifacts(latest.run.artifacts ?? []);
+      setRunStatus(latest.run.status);
+      setFinalResult(
+        typeof (latest.run.result as { synthesis?: unknown } | null)?.synthesis === "string"
+          ? String((latest.run.result as { synthesis: string }).synthesis)
+          : null,
+      );
+      setLiveArtifact(
+        replayLiveArtifactFromEvents(mergedEvents) ??
+          liveArtifactFromCheckpoint(latest.run.checkpointJson) ??
+          null,
+      );
+      setLiveArtifactOpen(true);
+      setHydrating(false);
+      if (
+        latest.run.status === "running" ||
+        latest.run.status === "queued" ||
+        latest.run.status === "paused"
+      ) {
+        const lastSeq =
+          latest.events.length > 0 ? latest.events[latest.events.length - 1]!.seq : -1;
+        attachRunStream(latest.run.id, lastSeq);
+      }
+    } catch (err) {
+      if (gen === hydrateGen.current) {
+        setHydrating(false);
+        setError(err instanceof Error ? err.message : "Failed to open conversation");
+      }
+    }
+  }
 
+  function attachRunStream(runId: string, afterSeq: number) {
+    streamCleanup.current?.();
+    streamCleanup.current = streamTeamRun(team.id, runId, {
+      onEvent: (event) => {
+        setEvents((prev) => (prev.some((e) => e.id === event.id) ? prev : [...prev, event]));
+        processRunStreamEvent(event);
+      },
+      onPaused: () => {
+        setRunStatus("paused");
+      },
+      onComplete: (data) => {
+        setRunStatus(data.status);
+        if (typeof data.result === "object" && data.result !== null) {
+          const r = data.result as Record<string, unknown>;
+          if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
+        }
+      },
+      onError: () => {
+        /* EventSource errors on reconnect; paused runs stay open */
+      },
+    }, afterSeq);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const grouped = await refreshConversations();
+      if (cancelled) return;
+      const paused = grouped.find((item) => item.latest.status === "paused");
+      if (paused) {
+        await loadConversation(paused.latest.id);
+        return;
+      }
+      setHydrating(false);
+    })();
     return () => {
       cancelled = true;
     };
-  }, [team.id, run, processRunStreamEvent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load chats once per team
+  }, [team.id]);
 
   const supervisorName = agentNameById(team.supervisorAgentId ?? null);
-  const goalText = displayGoalText(run?.goal ?? startedGoal ?? "");
+  const goalText = displayGoalText(startedGoal ?? run?.goal ?? "");
   const displayGoalAttachments = useMemo(() => {
     if (uploadingAttachments && uploadingAttachments.length > 0) return uploadingAttachments;
     if (goalAttachments && goalAttachments.length > 0) return goalAttachments;
-    const fromGoal = run?.goal ? parseAttachmentsFromEnrichedPrompt(run.goal) : undefined;
+    const fromGoal =
+      !startedGoal && run?.goal ? parseAttachmentsFromEnrichedPrompt(run.goal) : undefined;
     return fromGoal ?? undefined;
-  }, [uploadingAttachments, goalAttachments, run?.goal]);
+  }, [uploadingAttachments, goalAttachments, run?.goal, startedGoal]);
   const goalAttachmentDelivery =
     uploadingAttachments && uploadingAttachments.length > 0 ? "uploading" : "confirmed";
   const hasConversation = Boolean(goalText) || chatItems.length > 0;
@@ -2558,12 +2710,14 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
           ? "bg-[color:var(--sketch-red)]"
           : "bg-[color:var(--ink-faint)]";
 
-  const placeholder = isPaused
+  const placeholder = !canSend
+    ? "Agents are still getting ready…"
+    : isPaused
     ? "Waiting for WhatsApp replies…"
     : isRunning
       ? "Add guidance while they work…"
       : run
-        ? "Start another run…"
+        ? "Continue this conversation…"
         : `What should ${team.name} do?`;
 
   return (
@@ -2645,8 +2799,101 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
       {/* ── Main: conversation + live sheet ───────────────────────────────── */}
       <div className="relative flex min-h-0 min-w-0 flex-1">
       {/* ── Conversation ─────────────────────────────────────────────────── */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {historyOpen ? (
+          <>
+            <button
+              type="button"
+              aria-label="Close recent chats"
+              onClick={() => setHistoryOpen(false)}
+              className="absolute inset-0 z-30 bg-black/10"
+            />
+            <aside
+              className="absolute inset-y-0 left-0 z-40 flex w-[min(17rem,82%)] flex-col border-r bg-white shadow-[5px_0_0_rgba(0,0,0,0.08)]"
+              style={{ borderColor: "var(--ink-border)" }}
+              aria-label="Recent chats"
+            >
+              <div className={cn("flex items-center justify-between border-b px-3 py-3", HAIRLINE)}>
+                <span className="font-serif text-[11px] uppercase tracking-widest text-black">
+                  Recent chats
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label="Start a new chat"
+                    onClick={startNewChat}
+                    className="flex size-7 items-center justify-center text-black/50 hover:text-black"
+                  >
+                    <MessageSquarePlus className="size-4" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Close recent chats"
+                    onClick={() => setHistoryOpen(false)}
+                    className="flex size-7 items-center justify-center text-black/50 hover:text-black"
+                  >
+                    <X className="size-4" aria-hidden />
+                  </button>
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">
+                {historyLoading && conversations.length === 0 ? (
+                  <div className={cn("flex items-center gap-2 px-2 py-3 text-[11px]", INK_SOFT)}>
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    Loading chats…
+                  </div>
+                ) : conversations.length === 0 ? (
+                  <p className={cn("px-2 py-3 text-[11px]", INK_SOFT)}>No recent chats yet.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {conversations.map((conversation) => {
+                      const selected = conversation.rootId === activeRootId;
+                      return (
+                        <button
+                          key={conversation.rootId}
+                          type="button"
+                          onClick={() => void loadConversation(conversation.latest.id)}
+                          className={cn(
+                            "w-full truncate px-2.5 py-2 text-left text-[11.5px] transition-colors",
+                            selected
+                              ? "border border-black bg-black text-white"
+                              : "border border-transparent text-black hover:border-black/20 hover:bg-black/[0.03]",
+                          )}
+                        >
+                          {conversationTitle(conversation.root.goal)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </aside>
+          </>
+        ) : null}
+
         <div className="flex shrink-0 items-center gap-2 px-6 py-2">
+          <button
+            type="button"
+            onClick={() => {
+              setHistoryOpen(true);
+              void refreshConversations();
+            }}
+            className={quietButton}
+            aria-label="Recent chats"
+            title="Recent chats"
+          >
+            <PanelLeft size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={startNewChat}
+            className={quietButton}
+            aria-label="New chat"
+            title="New chat"
+          >
+            <MessageSquarePlus size={12} />
+          </button>
+
           <button
             type="button"
             onClick={() => setShowAgents(true)}
@@ -2725,11 +2972,6 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
             </button>
           )}
 
-          {!isRunning && !isPaused && hasConversation && (
-            <button type="button" onClick={handleNewRun} className={quietButton}>
-              New run
-            </button>
-          )}
         </div>
 
         <div
@@ -2741,14 +2983,21 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               <TeamRunGraph team={team} agentStates={agentStates} goal={goalText} />
             )}
 
-            {showChat && !hasConversation && (
+            {showChat && hydrating && (
+              <div className="flex flex-col items-center gap-2 py-20 text-center">
+                <Loader2 size={16} className="animate-spin text-black/35" />
+                <p className={cn("text-[12.5px]", INK_SOFT)}>Opening conversation…</p>
+              </div>
+            )}
+
+            {showChat && !hydrating && !hasConversation && (
               <div className="flex flex-col items-center gap-2 py-20 text-center">
                 <p className="text-[15px] font-medium text-black">
                   What should {team.name} work on?
                 </p>
                 <p className={cn("max-w-sm text-[12.5px] leading-relaxed", INK_SOFT)}>
-                  Describe the outcome you want. {supervisorName} plans the steps and hands them to
-                  your agents.
+                  Describe the outcome you want. Luna-Teams coordinates the right specialists and
+                  keeps each handoff focused.
                 </p>
               </div>
             )}
@@ -2770,11 +3019,17 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
 
             {showChat && chatItems.map((item) => {
               switch (item.kind) {
+                case "started":
+                  return (
+                    <SystemLine key={item.id} icon={Zap}>
+                      Luna-Teams started · preparing specialist dispatches
+                    </SystemLine>
+                  );
                 case "plan":
                   return (
                     <ChatMessage
                       key={item.id}
-                      name={supervisorName}
+                      name="Luna-Teams"
                       role="supervisor"
                       timestampMs={item.ts}
                     >
@@ -2783,7 +3038,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                   );
 
                 case "handoff":
-                  return <HandoffLine key={item.id} to={item.agentName} goal={item.goal} />;
+                  return (
+                    <SystemLine key={item.id} icon={Send}>
+                      Dispatched focused work to {item.agentName}
+                    </SystemLine>
+                  );
 
                 case "activity":
                   return (
@@ -2825,17 +3084,19 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                     </ChatMessage>
                   );
 
-                case "result":
-                  return finalResult ? (
+                case "result": {
+                  const resultText = item.synthesis || finalResult;
+                  return resultText ? (
                     <ChatMessage
                       key={item.id}
-                      name={supervisorName}
+                      name="Luna-Teams"
                       role="supervisor"
                       timestampMs={item.ts}
                     >
-                      <ResultBody result={finalResult} />
+                      <ResultBody result={resultText} />
                     </ChatMessage>
                   ) : null;
+                }
 
                 case "failed":
                   return (
@@ -2844,13 +3105,10 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                     </SystemLine>
                   );
                 case "wait_armed":
-                  return (
-                    <SystemLine key={item.id} icon={Phone}>
-                      {item.reason}
-                      {item.contactCount > 0 ? ` (${item.contactCount} contact${item.contactCount === 1 ? "" : "s"})` : ""}
-                    </SystemLine>
-                  );
-                case "wait_ttl_requested":
+                  return null;
+                case "wait_ttl_requested": {
+                  const ttlPickerActive = isPaused && item.runId === run?.id;
+                  const ttlDisabled = waitTtlSubmitting || waitTtlAlreadySet || !ttlPickerActive;
                   return (
                     <div
                       key={item.id}
@@ -2862,11 +3120,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                           <button
                             key={hours}
                             type="button"
-                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
+                            disabled={ttlDisabled}
                             onClick={() => void handleWaitTtl(hours)}
                             className={cn(sketchButtonPrimary, "disabled:opacity-50")}
                           >
-                            {waitTtlSubmitting ? (
+                            {waitTtlSubmitting && ttlPickerActive ? (
                               <Loader2 className="size-3 animate-spin" aria-hidden />
                             ) : null}
                             {hours === 1 ? "1 hour" : `${hours} hours`}
@@ -2877,22 +3135,46 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                         <div className="mt-2.5 flex flex-wrap items-center gap-2">
                           <input
                             type="number"
-                            min={0.25}
-                            max={168}
-                            step={0.25}
-                            value={customWaitHours}
-                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
-                            onChange={(e) => setCustomWaitHours(e.target.value)}
+                            min={customWaitUnit === "minutes" ? 15 : 0.25}
+                            max={customWaitUnit === "minutes" ? 10080 : 168}
+                            step={customWaitUnit === "minutes" ? 5 : 0.25}
+                            value={customWaitValue}
+                            disabled={ttlDisabled}
+                            onChange={(e) => setCustomWaitValue(e.target.value)}
                             className="w-24 rounded-lg border border-black/15 bg-white px-2 py-1.5 text-[12px]"
-                            aria-label="Custom wait hours"
+                            aria-label={`Custom wait ${customWaitUnit}`}
                           />
+                          <select
+                            value={customWaitUnit}
+                            disabled={ttlDisabled}
+                            onChange={(e) => {
+                              const next = e.target.value === "hours" ? "hours" : "minutes";
+                              setCustomWaitUnit(next);
+                              setCustomWaitValue(next === "minutes" ? "30" : "2");
+                            }}
+                            className="rounded-lg border border-black/15 bg-white px-2 py-1.5 text-[12px]"
+                            aria-label="Custom wait unit"
+                          >
+                            <option value="minutes">minutes</option>
+                            <option value="hours">hours</option>
+                          </select>
                           <button
                             type="button"
-                            disabled={waitTtlSubmitting || waitTtlAlreadySet}
+                            disabled={ttlDisabled}
                             onClick={() => {
-                              const hours = Number(customWaitHours);
-                              if (!Number.isFinite(hours)) {
-                                setWaitTtlError("Enter a valid number of hours");
+                              const amount = Number(customWaitValue);
+                              if (!Number.isFinite(amount) || amount <= 0) {
+                                setWaitTtlError("Enter a valid wait duration");
+                                return;
+                              }
+                              const hours =
+                                customWaitUnit === "minutes" ? amount / 60 : amount;
+                              if (hours < 0.25) {
+                                setWaitTtlError("Minimum wait is 15 minutes");
+                                return;
+                              }
+                              if (hours > 168) {
+                                setWaitTtlError("Maximum wait is 168 hours (7 days)");
                                 return;
                               }
                               void handleWaitTtl(hours);
@@ -2903,31 +3185,50 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                           </button>
                         </div>
                       ) : null}
-                      {waitTtlAlreadySet ? (
+                      {waitTtlAlreadySet && ttlPickerActive ? (
                         <p className="mt-2 text-[11px] text-black/50">Wait duration set.</p>
                       ) : null}
-                      {waitTtlError ? (
+                      {waitTtlError && ttlPickerActive ? (
                         <p className="mt-2 text-[11px] text-[color:var(--sketch-red)]">{waitTtlError}</p>
                       ) : null}
                     </div>
                   );
+                }
                 case "wait_ttl_set":
                   return (
                     <SystemLine key={item.id} icon={CheckCircle}>
-                      Waiting up to {item.hours === 1 ? "1 hour" : `${item.hours} hours`}
+                      Waiting up to {formatWaitDuration(item.hours)}
                       {item.expiresAt
                         ? ` (until ${new Date(item.expiresAt).toLocaleString()})`
                         : ""}
                       .
                     </SystemLine>
                   );
-                case "wait_progress":
+                case "wait_progress": {
+                  if (item.phase === "messages_sent") {
+                    const sent = item.sent ?? item.received;
+                    const failed = item.failed ?? 0;
+                    const listening =
+                      item.total > 0
+                        ? ` Listening for replies (0 of ${item.total} received).`
+                        : "";
+                    return (
+                      <SystemLine key={item.id} icon={Phone}>
+                        {item.reason?.trim() ||
+                          `Sent ${sent ?? 0} WhatsApp message${(sent ?? 0) === 1 ? "" : "s"}${failed > 0 ? ` (${failed} failed)` : ""}.`}
+                        {listening}
+                      </SystemLine>
+                    );
+                  }
+                  const total = item.total > 0 ? item.total : item.received + item.remaining;
                   return (
                     <SystemLine key={item.id} icon={Phone}>
-                      WhatsApp replies: {item.received} of {item.total} received
-                      {item.remaining > 0 ? " — still waiting." : "."}
+                      {item.reason?.trim() && item.phase === "listening"
+                        ? item.reason
+                        : `WhatsApp replies: ${item.received} of ${total} received${item.remaining > 0 ? " — still waiting." : "."}`}
                     </SystemLine>
                   );
+                }
                 case "live_artifact_updated":
                   return (
                     <SystemLine key={item.id} icon={FileText}>
@@ -2939,7 +3240,11 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 case "wait_fulfilled":
                   return (
                     <SystemLine key={item.id} icon={CheckCircle}>
-                      {formatWaitFulfilledLine(item.responderCount, item.interestSummary)}
+                      {formatWaitFulfilledLine(
+                        item.responderCount,
+                        item.interestSummary,
+                        item.continuePipeline,
+                      )}
                     </SystemLine>
                   );
                 case "wait_expired":
@@ -2962,8 +3267,17 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                   return (
                     <SystemLine key={item.id} icon={Phone}>
                       {item.sent
-                        ? "Result sent to your WhatsApp"
-                        : `Couldn't send to WhatsApp${item.reason ? ` — ${item.reason}` : ""}`}
+                        ? item.boundary === "wait_resume"
+                          ? "Live result file sent to your WhatsApp"
+                          : `Result sent to your ${item.channel === "whatsapp" ? "WhatsApp" : "delivery channel"}`
+                        : `Couldn't deliver the result${item.reason ? ` — ${item.reason}` : ""}`}
+                    </SystemLine>
+                  );
+
+                case "blocked":
+                  return (
+                    <SystemLine key={item.id} icon={ShieldAlert}>
+                      {item.message}
                     </SystemLine>
                   );
 
@@ -3000,7 +3314,34 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                       type="button"
                       disabled={injecting || submitting}
                       onClick={() => {
+                        const key = `${f.name}:${f.size}`;
+                        setPendingFilePurposes((prev) => ({
+                          ...prev,
+                          [key]:
+                            (prev[key] ?? "authoritative_input") === "authoritative_input"
+                              ? "reference_asset"
+                              : "authoritative_input",
+                        }));
+                      }}
+                      className="ml-1 rounded-full bg-black/5 px-1.5 py-0.5 text-[10px] font-medium text-black/55 hover:bg-black/10"
+                      title="Source data may drive actions; reference files provide context only"
+                    >
+                      {(pendingFilePurposes[`${f.name}:${f.size}`] ?? "authoritative_input") ===
+                      "authoritative_input"
+                        ? "Source"
+                        : "Reference"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={injecting || submitting}
+                      onClick={() => {
                         setPendingFiles((prev) => prev.filter((_, idx) => idx !== i));
+                        const key = `${f.name}:${f.size}`;
+                        setPendingFilePurposes((prev) => {
+                          const next = { ...prev };
+                          delete next[key];
+                          return next;
+                        });
                         setFileError(null);
                       }}
                       className="ml-0.5 shrink-0 rounded-full p-0.5 text-black/40 transition-colors hover:bg-black/5 hover:text-black disabled:opacity-40"
@@ -3028,7 +3369,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 multiple
                 accept={TEAM_CHAT_FILE_ACCEPT}
                 className="sr-only"
-                disabled={injecting || submitting || isPaused || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
+                disabled={injecting || submitting || isPaused || !canSend || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
                 onChange={(e) => {
                   addPendingFiles(Array.from(e.target.files ?? []));
                   e.target.value = "";
@@ -3036,7 +3377,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
               />
               <button
                 type="button"
-                disabled={injecting || submitting || isPaused || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
+                disabled={injecting || submitting || isPaused || !canSend || pendingFiles.length >= TEAM_CHAT_MAX_FILES}
                 onClick={() => fileInputRef.current?.click()}
                 title={
                   isPaused
@@ -3062,7 +3403,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 }}
                 rows={1}
                 placeholder={placeholder}
-                disabled={isPaused}
+                disabled={isPaused || !canSend}
                 className="max-h-40 min-h-[26px] flex-1 resize-none bg-transparent py-1.5 text-[13px] leading-relaxed text-black outline-none disabled:opacity-50"
               />
               <button
@@ -3072,7 +3413,8 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                   (!composer.trim() && pendingFiles.length === 0) ||
                   submitting ||
                   injecting ||
-                  isPaused
+                  isPaused ||
+                  !canSend
                 }
                 aria-label={isRunning ? "Send guidance" : "Start run"}
                 className="mb-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-black text-white transition-colors hover:bg-[color:var(--sketch-purple)] disabled:opacity-20"
@@ -3089,7 +3431,7 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                 <span className="shrink-0">Model</span>
                 <select
                   value={
-                    TEAM_RUN_MODEL_OPTIONS.includes(selectedModel)
+                    modelOptionIds.has(selectedModel)
                       ? selectedModel
                       : TEAM_RUN_AGENT_DEFAULT_MODEL
                   }
@@ -3100,29 +3442,28 @@ export function TeamRunView({ team, onRunStarted }: TeamRunViewProps) {
                       ? "Model applies to the next new run"
                       : "LLM used by all agents in this team run"
                   }
-                  className="max-w-[16rem] truncate rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/80 outline-none disabled:opacity-50"
+                  className="max-w-[20rem] truncate rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/80 outline-none disabled:opacity-50"
                 >
-                  {!TEAM_RUN_MODEL_OPTIONS.includes(selectedModel) ? (
+                  {!modelOptionIds.has(selectedModel) ? (
                     <option value={selectedModel}>{formatModelOptionLabel(selectedModel)}</option>
                   ) : null}
-                  <optgroup label="Exora">
-                    {EXORA_MODELS.map((m) => (
-                      <option key={m} value={m}>
-                        {formatModelOptionLabel(m)}
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="OpenRouter">
-                    {CLOUD_MODELS.map((m) => (
-                      <option key={m} value={m}>
-                        {m === "openrouter/qlix/auto"
-                          ? "Auto (Qlix picks ≤ your plan)"
-                          : formatModelOptionLabel(m)}
-                      </option>
-                    ))}
-                  </optgroup>
+                  {modelGroups.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </label>
+              <ReasoningEffortPicker
+                size="compact"
+                value={selectedReasoningEffort}
+                onChange={setSelectedReasoningEffort}
+                disabled={isRunning || submitting}
+              />
               <p className={cn("text-[10.5px]", INK_FAINT)}>
                 {isRunning
                   ? `Enter to send · attach up to ${TEAM_CHAT_MAX_FILES} files · they'll pick it up on the next step`

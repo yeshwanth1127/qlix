@@ -13,12 +13,34 @@ export type LiveSheetField = 'name' | 'phone' | 'reply' | 'interest' | 'repliedA
 export function resolveLiveSheetField(column: string): LiveSheetField | null {
   const c = column.trim().toLowerCase();
   if (!c) return null;
-  if (/\b(name|lead|contact|person|candidate|prospect)\b/.test(c)) return 'name';
+  // Time columns first — "Reply Time" / "Replied at" must not match the reply field.
+  if (
+    /\b(replied\s*at|reply\s*time|timestamp|date\s*\/?\s*time)\b/.test(c) ||
+    (/\b(time|date|when|timestamp)\b/.test(c) && !/\b(reply|response|message|text|answer)\b/.test(c))
+  ) {
+    return 'repliedAt';
+  }
+  if (/\b(name|lead|contact|person|candidate|prospect)\b/.test(c) && !/\b(user|file)\b/.test(c)) {
+    return 'name';
+  }
   if (/\b(phone|mobile|number|whatsapp|cell)\b/.test(c)) return 'phone';
-  if (/\b(reply|response|message|text|answer)\b/.test(c)) return 'reply';
   if (/\b(interest|sentiment|status|classification|intent)\b/.test(c)) return 'interest';
-  if (/\b(time|date|when|replied|timestamp|at)\b/.test(c)) return 'repliedAt';
+  if (/\b(reply|response|message|text|answer)\b/.test(c)) return 'reply';
+  if (/\b(replied|at)\b/.test(c)) return 'repliedAt';
   return null;
+}
+
+/** Best-effort name from outreach copy like "Hi Karthik, …". */
+export function inferNameFromOutreachMessage(message: string): string | null {
+  const text = String(message ?? '').trim();
+  if (!text) return null;
+  const match = text.match(
+    /^(?:hi|hey|hello|dear|namaste|greetings)[,\s]+([A-Za-z][A-Za-z.'-]{1,40}(?:\s+[A-Za-z][A-Za-z.'-]{1,40})?)\b/i,
+  );
+  const name = match?.[1]?.trim();
+  if (!name) return null;
+  if (/^(there|friend|all|team|sir|madam)$/i.test(name)) return null;
+  return name.replace(/\s+/g, ' ');
 }
 
 function parseColumnsFromLlm(raw: string): string[] | null {

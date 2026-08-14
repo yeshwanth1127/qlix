@@ -33,6 +33,7 @@ export type TeamRunEventType =
   | "run_completed"
   | "run_failed"
   | "result_delivered"
+  | "outbound_blocked"
   | "user_injection"
   | "wait_armed"
   | "wait_ttl_requested"
@@ -65,6 +66,7 @@ export interface TeamConfig {
   autoSequence?: boolean;
   /** Default model for all agents in this team (overrides each agent's own model). */
   defaultModel?: string;
+  defaultReasoningEffort?: string;
   /** Declarative external-event waits (WhatsApp inbound + side effects). */
   waitSteps?: unknown[];
 }
@@ -129,7 +131,7 @@ export interface ScopeEscalation {
   resolvedAt: string | null;
 }
 
-export type TeamRunSourceChannel = "web" | "whatsapp";
+export type TeamRunSourceChannel = "web" | "whatsapp" | "api" | "slack" | "telegram";
 export type TeamRunReplyChannel = "whatsapp" | "none";
 
 export interface TeamRunCheckpoint {
@@ -165,6 +167,7 @@ export interface TeamRunDTO {
   checkpointJson?: TeamRunCheckpoint | null;
   result: unknown | null;
   errorMessage: string | null;
+  continuesRunId?: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -535,15 +538,23 @@ export async function startTeamRun(
   teamId: string,
   goal: string,
   files: File[] = [],
+  inputPurposes: Array<"authoritative_input" | "reference_asset"> = files.map(() => "authoritative_input"),
   model?: string | null,
+  continuesRunId?: string | null,
+  reasoningEffort?: string | null,
 ): Promise<{ run: TeamRunDTO; displayGoal: string; attachments?: ChatAttachmentChip[]; model?: string | null }> {
   const url = `${apiBase()}/api/v1/teams/${teamId}/runs`;
   const modelValue = model?.trim() || "";
+  const continuesValue = continuesRunId?.trim() || "";
+  const effortValue = reasoningEffort?.trim() || "";
   let res: Response;
   if (files.length > 0) {
     const form = new FormData();
     form.append("goal", goal);
+    form.append("inputPurposes", JSON.stringify(inputPurposes));
     if (modelValue) form.append("model", modelValue);
+    if (effortValue) form.append("reasoningEffort", effortValue);
+    if (continuesValue) form.append("continuesRunId", continuesValue);
     for (const file of files) {
       form.append("files", file, file.name || "upload");
     }
@@ -557,7 +568,12 @@ export async function startTeamRun(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, ...(modelValue ? { model: modelValue } : {}) }),
+      body: JSON.stringify({
+        goal,
+        ...(modelValue ? { model: modelValue } : {}),
+        ...(effortValue ? { reasoningEffort: effortValue } : {}),
+        ...(continuesValue ? { continuesRunId: continuesValue } : {}),
+      }),
     });
   }
   if (!res.ok) {

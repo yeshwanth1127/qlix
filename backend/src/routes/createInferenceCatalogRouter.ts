@@ -46,6 +46,14 @@ export function createInferenceCatalogRouter(): Router {
           completionUsdPerToken: m.completionUsdPerToken ?? null,
           blendUsdPer1M: m.blendUsdPer1M ?? null,
           supportsTools: m.supportsTools ?? null,
+          reasoning: m.reasoning
+            ? {
+                supportedEfforts: m.reasoning.supportedEfforts,
+                defaultEffort: m.reasoning.defaultEffort,
+                supportsMaxTokens: m.reasoning.supportsMaxTokens,
+                mandatory: m.reasoning.mandatory,
+              }
+            : null,
         })),
       });
     } catch (err) {

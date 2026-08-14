@@ -75,7 +75,7 @@ export async function resolveRoute(
 }
 
 function channelTeamRole(channel: InboundMessage['channel']): string | null {
-  if (channel === 'web' || channel === 'system' || channel === 'cron' || channel === 'local') {
+  if (channel === 'web' || channel === 'api' || channel === 'system' || channel === 'cron' || channel === 'local') {
     return null;
   }
   return channel;

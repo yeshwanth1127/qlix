@@ -22,6 +22,14 @@ export type PermissionScope =
   | "email.send"
   | "drive.read"
   | "drive.write"
+  | "docs.read"
+  | "docs.write"
+  | "sheets.read"
+  | "sheets.write"
+  | "slides.read"
+  | "slides.write"
+  | "forms.read"
+  | "forms.write"
   | "calendar.read"
   | "calendar.write"
   | "meet.manage"
@@ -59,6 +67,14 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "email.send",
   "drive.read",
   "drive.write",
+  "docs.read",
+  "docs.write",
+  "sheets.read",
+  "sheets.write",
+  "slides.read",
+  "slides.write",
+  "forms.read",
+  "forms.write",
   "calendar.read",
   "calendar.write",
   "meet.manage",
@@ -87,6 +103,10 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
   "finance.spend_100",
   "email.send",
   "drive.write",
+  "docs.write",
+  "sheets.write",
+  "slides.write",
+  "forms.write",
   "calendar.write",
   "meet.manage",
   "youtube.publish",
@@ -114,6 +134,14 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "email.send": "Send or draft email via connected mailbox",
   "drive.read": "Read Google Drive / OneDrive",
   "drive.write": "Write to Google Drive / OneDrive",
+  "docs.read": "Read Google Docs",
+  "docs.write": "Write Google Docs",
+  "sheets.read": "Read Google Sheets",
+  "sheets.write": "Write Google Sheets",
+  "slides.read": "Read Google Slides",
+  "slides.write": "Write Google Slides",
+  "forms.read": "Read Google Forms",
+  "forms.write": "Write Google Forms",
   "calendar.read": "Read Google Calendar",
   "calendar.write": "Write to Google Calendar",
   "meet.manage": "Google Meet",
@@ -143,6 +171,22 @@ export type LocalInferenceMode = "local_llm" | "cloud_api";
 export type LlmMode = "direct" | "proxy";
 export type LlmProvider = "exora" | "openrouter";
 
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export const REASONING_EFFORT_OPTIONS: Array<{
+  value: ReasoningEffort | "";
+  label: string;
+}> = [
+  { value: "", label: "Auto (small share)" },
+  { value: "none", label: "Off" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Very high" },
+  { value: "max", label: "Max" },
+];
+
 export type AgentKind = "standard" | "org_brain";
 
 export interface AgentDTO {
@@ -159,6 +203,7 @@ export interface AgentDTO {
   localInferenceMode: LocalInferenceMode | null;
   llmMode: LlmMode;
   llmProvider: LlmProvider;
+  reasoningEffort?: ReasoningEffort | null;
   permissionScopes: PermissionScope[];
   jitScopes: PermissionScope[];
   alwaysScopes: PermissionScope[];
@@ -279,6 +324,16 @@ export type ModelCatalogEntry = {
   name: string;
   contextLength: number | null;
   qlixModelId: string;
+  promptUsdPerToken?: number | null;
+  completionUsdPerToken?: number | null;
+  blendUsdPer1M?: number | null;
+  supportsTools?: boolean | null;
+  reasoning?: {
+    supportedEfforts: string[] | null;
+    defaultEffort: string | null;
+    supportsMaxTokens: boolean;
+    mandatory: boolean;
+  } | null;
 };
 export type OpenRouterCatalogEntry = ModelCatalogEntry;
 
@@ -314,6 +369,202 @@ export function formatModelOptionLabel(modelId: string): string {
   if (lower === "exora/exora-general" || lower === "exora-general") return "General";
   if (lower === "exora/exora-coder" || lower === "exora-coder") return "Coder";
   return modelId.replace(/^(openrouter|exora)\//i, "");
+}
+
+export function isNvidiaModelId(modelId: string): boolean {
+  return /(^|\/)nvidia\//i.test(modelId);
+}
+
+export function isDeepseekModelId(modelId: string): boolean {
+  return /(^|\/)deepseek\//i.test(modelId);
+}
+
+export function isFreeModelId(modelId: string): boolean {
+  return modelId.toLowerCase().includes(":free");
+}
+
+export function isFreeCatalogEntry(
+  entry: Pick<
+    ModelCatalogEntry,
+    "qlixModelId" | "promptUsdPerToken" | "completionUsdPerToken" | "blendUsdPer1M"
+  >,
+): boolean {
+  if (isFreeModelId(entry.qlixModelId)) return true;
+  if (entry.promptUsdPerToken === 0 && entry.completionUsdPerToken === 0) return true;
+  if (entry.blendUsdPer1M === 0) return true;
+  return false;
+}
+
+/** Latest NVIDIA OpenRouter ids when the live catalog has not loaded yet. */
+export const NVIDIA_FALLBACK_MODELS = [
+  "openrouter/nvidia/nemotron-3.5-lightning",
+  "openrouter/nvidia/nemotron-3-ultra-550b-a55b",
+  "openrouter/nvidia/nemotron-3-super",
+  "openrouter/nvidia/nemotron-3-nano-30b-a3b",
+  "openrouter/nvidia/nemotron-3.5-lightning:free",
+  "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+  "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+  "openrouter/nvidia/nemotron-nano-9b-v2:free",
+] as const;
+
+/** Latest DeepSeek OpenRouter ids when the live catalog has not loaded yet. */
+export const DEEPSEEK_FALLBACK_MODELS = [
+  "openrouter/deepseek/deepseek-v3.2",
+  "openrouter/deepseek/deepseek-chat",
+  "openrouter/deepseek/deepseek-r1",
+  "openrouter/deepseek/deepseek-r1-0528",
+  "openrouter/deepseek/deepseek-v3.2:free",
+  "openrouter/deepseek/deepseek-chat:free",
+  "openrouter/deepseek/deepseek-r1:free",
+] as const;
+
+/** Popular OpenRouter `:free` models (vendor-specific free ids live in NVIDIA / DeepSeek fallbacks). */
+export const FREE_FALLBACK_MODELS = [
+  "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+  "openrouter/google/gemma-3-27b-it:free",
+  "openrouter/qwen/qwen3-32b:free",
+  "openrouter/mistralai/mistral-small-3.1-24b-instruct:free",
+  "openrouter/openai/gpt-oss-20b:free",
+] as const;
+
+export type TeamRunModelOption = {
+  id: string;
+  label: string;
+};
+
+export type TeamRunModelGroup = {
+  label: string;
+  options: TeamRunModelOption[];
+};
+
+function isTeamRunChatModel(entry: ModelCatalogEntry): boolean {
+  const id = entry.qlixModelId.toLowerCase();
+  return !id.includes("embed") && !id.includes("rerank") && !id.includes("content-safety");
+}
+
+function stripVendorDisplayPrefix(name: string, vendor: string): string {
+  const colon = name.indexOf(":");
+  if (colon <= 0) return name;
+  const head = name.slice(0, colon).trim().toLowerCase();
+  if (
+    head === vendor.toLowerCase() ||
+    head === "nvidia" ||
+    head === "deepseek"
+  ) {
+    return name.slice(colon + 1).trim();
+  }
+  return name;
+}
+
+function teamRunOptionLabel(
+  id: string,
+  name: string | undefined,
+  opts: { stripVendor?: string; markFree?: boolean },
+): string {
+  let label = name?.trim() || formatModelOptionLabel(id);
+  if (opts.stripVendor) label = stripVendorDisplayPrefix(label, opts.stripVendor);
+  if ((opts.markFree || isFreeModelId(id)) && !/\bfree\b/i.test(label)) {
+    label = `${label} · Free`;
+  }
+  return label;
+}
+
+function stubCatalogEntry(id: string): ModelCatalogEntry {
+  return { id, name: "", contextLength: null, qlixModelId: id };
+}
+
+function sortCatalogByName(entries: ModelCatalogEntry[]): ModelCatalogEntry[] {
+  return [...entries].sort((a, b) => {
+    const an = (a.name || a.qlixModelId).toLowerCase();
+    const bn = (b.name || b.qlixModelId).toLowerCase();
+    return an.localeCompare(bn, undefined, { numeric: true });
+  });
+}
+
+function paidVendorEntries(
+  usable: readonly ModelCatalogEntry[],
+  isVendor: (id: string) => boolean,
+  fallbacks: readonly string[],
+): ModelCatalogEntry[] {
+  const fromCatalog = usable.filter((e) => isVendor(e.qlixModelId));
+  const all = fromCatalog.length > 0 ? fromCatalog : fallbacks.map(stubCatalogEntry);
+  const paid = sortCatalogByName(
+    all.filter((e) => !isFreeCatalogEntry(e) && !isFreeModelId(e.qlixModelId)),
+  );
+  if (paid.length > 0) return paid;
+  return fallbacks.filter((id) => !isFreeModelId(id)).map(stubCatalogEntry);
+}
+
+function vendorGroupOptions(
+  entries: readonly ModelCatalogEntry[],
+  vendorLabel: string,
+): TeamRunModelOption[] {
+  return entries.map((e) => ({
+    id: e.qlixModelId,
+    label: teamRunOptionLabel(e.qlixModelId, e.name || undefined, {
+      stripVendor: vendorLabel,
+      markFree: isFreeCatalogEntry(e),
+    }),
+  }));
+}
+
+/**
+ * Team-run picker groups: Exora, NVIDIA, DeepSeek, Free, then the curated OpenRouter list.
+ * NVIDIA, DeepSeek, and Free come from the live catalog when available.
+ */
+export function buildTeamRunModelGroups(
+  catalog: readonly ModelCatalogEntry[] = [],
+): TeamRunModelGroup[] {
+  const usable = catalog.filter(isTeamRunChatModel);
+  const nvidiaEntries = paidVendorEntries(usable, isNvidiaModelId, NVIDIA_FALLBACK_MODELS);
+  const deepseekEntries = paidVendorEntries(usable, isDeepseekModelId, DEEPSEEK_FALLBACK_MODELS);
+
+  const freeFromCatalog = usable.filter((e) => isFreeCatalogEntry(e));
+  const freeEntries = sortCatalogByName(
+    freeFromCatalog.length > 0
+      ? freeFromCatalog
+      : [
+          ...NVIDIA_FALLBACK_MODELS.filter(isFreeModelId),
+          ...DEEPSEEK_FALLBACK_MODELS.filter(isFreeModelId),
+          ...FREE_FALLBACK_MODELS,
+        ].map(stubCatalogEntry),
+  );
+
+  const groups: TeamRunModelGroup[] = [
+    {
+      label: "Exora",
+      options: EXORA_MODELS.map((id) => ({
+        id,
+        label: formatModelOptionLabel(id),
+      })),
+    },
+    {
+      label: "NVIDIA",
+      options: vendorGroupOptions(nvidiaEntries, "NVIDIA"),
+    },
+    {
+      label: "DeepSeek",
+      options: vendorGroupOptions(deepseekEntries, "DeepSeek"),
+    },
+    {
+      label: "Free",
+      options: freeEntries.map((e) => ({
+        id: e.qlixModelId,
+        label: teamRunOptionLabel(e.qlixModelId, e.name || undefined, { markFree: true }),
+      })),
+    },
+    {
+      label: "OpenRouter",
+      options: CLOUD_MODELS.map((id) => ({
+        id,
+        label:
+          id === QLIX_AUTO_MODEL
+            ? "Auto (Qlix picks ≤ your plan)"
+            : formatModelOptionLabel(id),
+      })),
+    },
+  ];
+  return groups.filter((g) => g.options.length > 0);
 }
 
 function sortExoraModelIds(ids: Iterable<string>): string[] {
@@ -769,6 +1020,7 @@ export async function updateAgentInference(
   agentId: string,
   llmProvider: LlmProvider,
   model: string,
+  reasoningEffort?: ReasoningEffort | null,
 ): Promise<{ ok: true; agent: AgentDTO } | { ok: false; error: string }> {
   const res = await fetch(
     `${apiBase()}/api/v1/agents/${encodeURIComponent(agentId)}/inference`,
@@ -776,7 +1028,11 @@ export async function updateAgentInference(
       method: "PATCH",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ llmProvider, model }),
+      body: JSON.stringify({
+        llmProvider,
+        model,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      }),
     },
   );
   if (!res.ok) {

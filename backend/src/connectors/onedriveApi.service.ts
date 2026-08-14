@@ -70,19 +70,69 @@ export async function oneDriveListFiles(params: {
   query?: string;
   pageSize?: number;
   pageToken?: string | null;
+  parentId?: string | null;
 }): Promise<{ files: DriveFileSummary[]; nextPageToken: string | null }> {
-  const top = Math.min(50, Math.max(1, params.pageSize ?? 20));
-  let url: string;
-  if (params.pageToken?.startsWith('https://')) {
-    url = params.pageToken;
-  } else if (params.query?.trim()) {
-    const q = encodeURIComponent(params.query.trim());
-    url = `${GRAPH}/me/drive/root/search(q='${q}')?$top=${top}&$select=id,name,size,webUrl,lastModifiedDateTime,file,folder,parentReference`;
-  } else {
-    url = `${GRAPH}/me/drive/root/children?$top=${top}&$select=id,name,size,webUrl,lastModifiedDateTime,file,folder,parentReference`;
+  const top = Math.min(50, Math.max(1, params.pageSize ?? 50));
+  const query = params.query?.trim() ?? '';
+  const parentId = params.parentId?.trim() || null;
+
+  const childrenUrl = (pageToken?: string | null): string => {
+    if (pageToken?.startsWith('https://')) return pageToken;
+    const base = parentId
+      ? `${GRAPH}/me/drive/items/${encodeURIComponent(parentId)}/children`
+      : `${GRAPH}/me/drive/root/children`;
+    return `${base}?$top=${top}&$select=id,name,size,webUrl,lastModifiedDateTime,file,folder,parentReference`;
+  };
+
+  // Graph search is eventually consistent and often misses personal OneDrive files
+  // (observed: exact filename present in root/children but search(q=…) returns []).
+  // Prefer search when it works; fall back to scanning children + client-side name match.
+  if (query && !params.pageToken) {
+    const q = encodeURIComponent(query);
+    const searchUrl = `${GRAPH}/me/drive/root/search(q='${q}')?$top=${top}&$select=id,name,size,webUrl,lastModifiedDateTime,file,folder,parentReference`;
+    try {
+      const searched = await graphFetch(params.accessToken, searchUrl);
+      const values = Array.isArray(searched.value)
+        ? (searched.value as Record<string, unknown>[])
+        : [];
+      const files = values.map(toSummary);
+      if (files.length > 0) {
+        const next =
+          typeof searched['@odata.nextLink'] === 'string'
+            ? (searched['@odata.nextLink'] as string)
+            : null;
+        return { files, nextPageToken: next };
+      }
+    } catch {
+      // Fall through to children scan.
+    }
+
+    const needle = query.toLowerCase();
+    const matched: DriveFileSummary[] = [];
+    let pageToken: string | null = null;
+    // Cap pages so a huge drive cannot hang a tool call.
+    for (let page = 0; page < 10 && matched.length < top; page += 1) {
+      const result = await graphFetch(params.accessToken, childrenUrl(pageToken));
+      const values = Array.isArray(result.value)
+        ? (result.value as Record<string, unknown>[])
+        : [];
+      for (const item of values) {
+        const summary = toSummary(item);
+        if (summary.name.toLowerCase().includes(needle)) {
+          matched.push(summary);
+          if (matched.length >= top) break;
+        }
+      }
+      pageToken =
+        typeof result['@odata.nextLink'] === 'string'
+          ? (result['@odata.nextLink'] as string)
+          : null;
+      if (!pageToken) break;
+    }
+    return { files: matched, nextPageToken: null };
   }
 
-  const result = await graphFetch(params.accessToken, url);
+  const result = await graphFetch(params.accessToken, childrenUrl(params.pageToken));
   const values = Array.isArray(result.value) ? (result.value as Record<string, unknown>[]) : [];
   const next =
     typeof result['@odata.nextLink'] === 'string' ? (result['@odata.nextLink'] as string) : null;

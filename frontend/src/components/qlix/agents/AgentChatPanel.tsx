@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bot,
@@ -13,7 +13,6 @@ import {
   Pencil,
   SendHorizonal,
   ShieldAlert,
-  ShieldCheck,
   Square,
   Sparkles,
   Trash2,
@@ -29,12 +28,14 @@ import {
   fetchModelCatalog,
   getAgent,
   getRuntimeStatus,
+  listActiveRuns,
   normalizeQlixInferenceModelId,
   resendEditedConversationMessage,
   type ConversationMessageDTO,
   type InferenceCapabilities,
 } from "@/lib/agents-api";
-import { decideJit, listPendingJit, type PendingJitDTO } from "@/lib/jit-api";
+import { decideJit, isSessionChatJitScope, listPendingJit, type PendingJitDTO } from "@/lib/jit-api";
+import { JitApprovalCard } from "@/components/qlix/agents/JitApprovalCard";
 import { useSession } from "@/components/qlix/session-context";
 import { agentStatusHint, deriveAgentDisplayStatus } from "@/components/qlix/agents/agentStatus";
 import {
@@ -43,7 +44,6 @@ import {
   sketchButtonDanger,
   sketchButtonGhost,
   sketchButtonPrimary,
-  sketchButtonSecondary,
   sketchLabel,
   sketchToneBg,
   type SketchTone,
@@ -62,6 +62,11 @@ import {
 } from "@/components/qlix/agents/AgentBrowserLiveView";
 import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
 import { safeModelOutputUrl } from "@/lib/safe-model-output";
+import {
+  clearPendingChatFiles,
+  loadPendingChatFiles,
+  savePendingChatFiles,
+} from "@/lib/agent-chat-draft-files";
 
 function statusBadgeTone(status: string): SketchTone {
   const s = status.toLowerCase();
@@ -235,6 +240,266 @@ async function apiBase(): Promise<string> {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000").replace(/\/$/, "");
 }
 
+type ChatDraft = {
+  input: string;
+  editingMessageId: string | null;
+};
+
+function chatDraftKey(agentId: string): string {
+  return `qlix:agent-chat-draft:${agentId}`;
+}
+
+function loadChatDraft(agentId: string): ChatDraft {
+  try {
+    const raw = sessionStorage.getItem(chatDraftKey(agentId));
+    if (!raw) return { input: "", editingMessageId: null };
+    const parsed = JSON.parse(raw) as Partial<ChatDraft>;
+    return {
+      input: typeof parsed.input === "string" ? parsed.input : "",
+      editingMessageId:
+        typeof parsed.editingMessageId === "string" ? parsed.editingMessageId : null,
+    };
+  } catch {
+    return { input: "", editingMessageId: null };
+  }
+}
+
+function saveChatDraft(agentId: string, draft: ChatDraft): void {
+  try {
+    if (!draft.input && !draft.editingMessageId) {
+      sessionStorage.removeItem(chatDraftKey(agentId));
+      return;
+    }
+    sessionStorage.setItem(chatDraftKey(agentId), JSON.stringify(draft));
+  } catch {
+    // sessionStorage may be unavailable (private mode / quota)
+  }
+}
+
+function clearChatDraft(agentId: string): void {
+  try {
+    sessionStorage.removeItem(chatDraftKey(agentId));
+  } catch {
+    // ignore
+  }
+}
+
+type AttachChatStreamArgs = {
+  agentId: string;
+  conversationId: string;
+  runId: string;
+  streamRef: { current: EventSource | null };
+  streamingActivityRef: { current: ActivityStep[] };
+  streamingContentRef: { current: string };
+  streamingBrowserFramesRef: { current: BrowserFrame[] };
+  textareaRef: { current: HTMLTextAreaElement | null };
+  setMessages: Dispatch<SetStateAction<ChatMsg[]>>;
+  setSending: Dispatch<SetStateAction<boolean>>;
+  setCurrentRunId: Dispatch<SetStateAction<string | null>>;
+  setBrowserFrames: Dispatch<SetStateAction<BrowserFrame[]>>;
+  setError: Dispatch<SetStateAction<string | null>>;
+  /** When false, skip creating the empty assistant bubble (caller already did). */
+  appendAssistantBubble?: boolean;
+};
+
+/** Open (or re-open) the SSE stream for a dashboard chat run. Safe for late joiners — backend replays backlog. */
+function attachAgentChatStream(args: AttachChatStreamArgs): void {
+  const {
+    agentId,
+    conversationId,
+    runId,
+    streamRef,
+    streamingActivityRef,
+    streamingContentRef,
+    streamingBrowserFramesRef,
+    textareaRef,
+    setMessages,
+    setSending,
+    setCurrentRunId,
+    setBrowserFrames,
+    setError,
+    appendAssistantBubble = true,
+  } = args;
+
+  const base =
+    (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000").replace(/\/$/, "");
+
+  streamRef.current?.close();
+  const es = new EventSource(
+    `${base}/api/v1/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/stream`,
+    { withCredentials: true },
+  );
+  streamRef.current = es;
+
+  const assistantId = `run-${runId}`;
+  streamingActivityRef.current = [];
+  streamingContentRef.current = "";
+  streamingBrowserFramesRef.current = [];
+  setBrowserFrames([]);
+  if (appendAssistantBubble) {
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === assistantId)) return prev;
+      return [...prev, { id: assistantId, role: "agent", content: "", activity: [] }];
+    });
+  }
+
+  es.addEventListener("delta", (evt) => {
+    try {
+      const payload = JSON.parse((evt as MessageEvent).data) as { data?: { text?: string } };
+      const t = payload?.data?.text ?? "";
+      if (!t) return;
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === assistantId ? { ...m, content: m.content + t } : m,
+        );
+        const stream = next.find((m) => m.id === assistantId);
+        if (stream) streamingContentRef.current = stream.content;
+        return next;
+      });
+    } catch {
+      // ignore
+    }
+  });
+
+  es.addEventListener("log", (evt) => {
+    try {
+      const payload = JSON.parse((evt as MessageEvent).data) as { seq?: number; data?: unknown };
+      const raw = payload.data;
+      if (raw && typeof raw === "object") {
+        const d = raw as Record<string, unknown>;
+        if (d.message === "browser_frame" && typeof d.image_base64 === "string") {
+          const frame: BrowserFrame = {
+            id: `frame-${payload.seq ?? streamingBrowserFramesRef.current.length}`,
+            tool: String(d.tool ?? "browser"),
+            label: String(d.label ?? "Browser action"),
+            mime: String(d.mime ?? "image/png"),
+            imageBase64: d.image_base64,
+          };
+          streamingBrowserFramesRef.current = [...streamingBrowserFramesRef.current, frame];
+          setBrowserFrames(streamingBrowserFramesRef.current);
+          return;
+        }
+      }
+      const step = summarizeRunnerLog(payload.seq ?? 0, payload.data);
+      if (!step) return;
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === assistantId ? { ...m, activity: [...(m.activity ?? []), step] } : m,
+        );
+        const stream = next.find((m) => m.id === assistantId);
+        if (stream?.activity) streamingActivityRef.current = stream.activity;
+        return next;
+      });
+    } catch {
+      // ignore
+    }
+  });
+
+  es.addEventListener("done", (evt) => {
+    setSending(false);
+    setCurrentRunId(null);
+    es.close();
+    if (streamRef.current === es) streamRef.current = null;
+    let runStatus: string | undefined;
+    try {
+      const raw = (evt as MessageEvent).data;
+      if (typeof raw === "string" && raw.length > 0) {
+        const parsed = JSON.parse(raw) as { status?: string };
+        runStatus = parsed.status;
+      }
+    } catch {
+      // ignore
+    }
+    void (async () => {
+      if (runStatus !== "failed") {
+        setError(null);
+      }
+      const preservedActivity = [...streamingActivityRef.current];
+      const preservedContent = streamingContentRef.current;
+      const preservedFrames = [...streamingBrowserFramesRef.current];
+      streamingActivityRef.current = [];
+      streamingContentRef.current = "";
+      streamingBrowserFramesRef.current = [];
+
+      const rows = await fetchMessagesAfterRun(agentId, conversationId, runStatus);
+      if (rows) {
+        const merged = mergeServerMessages(rows, {
+          preservedContent,
+          preservedActivity,
+          preservedFrames,
+          runStatus,
+        });
+        setMessages(merged);
+        if (preservedFrames.length > 0) {
+          setBrowserFrames(preservedFrames);
+        }
+        const pending = await listPendingJit(conversationId, agentId);
+        if (pending.length > 0) {
+          setMessages((prev) => mergePendingJitIntoMessages(prev, pending));
+        }
+      } else if (preservedContent.trim()) {
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === assistantId);
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            content: preservedContent,
+            activity: preservedActivity.length > 0 ? preservedActivity : next[idx].activity,
+            browserFrames: preservedFrames.length > 0 ? preservedFrames : next[idx].browserFrames,
+          };
+          return next;
+        });
+        if (preservedFrames.length > 0) setBrowserFrames(preservedFrames);
+      }
+      if (runStatus === "failed") {
+        setError(
+          "The agent run failed. Check the system line in the thread for the error details.",
+        );
+      }
+    })();
+    textareaRef.current?.focus();
+  });
+
+  es.onerror = () => {
+    setSending(false);
+    setCurrentRunId(null);
+    es.close();
+    if (streamRef.current === es) streamRef.current = null;
+    const preservedActivity = [...streamingActivityRef.current];
+    const preservedContent = streamingContentRef.current;
+    const preservedFrames = [...streamingBrowserFramesRef.current];
+    void fetchMessagesAfterRun(agentId, conversationId, undefined).then((rows) => {
+      if (rows) {
+        setMessages(
+          mergeServerMessages(rows, {
+            preservedContent,
+            preservedActivity,
+            preservedFrames,
+          }),
+        );
+        if (preservedFrames.length > 0) setBrowserFrames(preservedFrames);
+      } else if (preservedContent.trim()) {
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === assistantId);
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            content: preservedContent,
+            activity: preservedActivity,
+            browserFrames: preservedFrames,
+          };
+          return next;
+        });
+      }
+    });
+    setError(
+      "Lost connection to the live reply stream. If the bubble stayed empty, open DevTools → Network and inspect the EventSource request for this run.",
+    );
+  };
+}
+
 async function fetchMessagesAfterRun(
   agentId: string,
   conversationId: string,
@@ -309,17 +574,7 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
   if (existing.some((s) => s.jitRequestId === latest.jitRequestId)) return messages;
   if (getPendingJitStep(existing)) return messages;
 
-  const sessionScoped =
-    latest.scope === "email.send" ||
-    latest.scope === "drive.write" ||
-    latest.scope === "calendar.write" ||
-    latest.scope === "meet.manage" ||
-    latest.scope === "social.publish" ||
-    latest.scope === "crm.write" ||
-    latest.scope === "crm.delete" ||
-    latest.scope === "whatsapp.contact_send" ||
-    latest.scope === "slack.send" ||
-    latest.scope === "notion.write";
+  const sessionScoped = isSessionChatJitScope(latest.scope);
 
   const step: ActivityStep = {
     id: `jit-pending-${latest.jitRequestId}`,
@@ -338,6 +593,7 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
     jitRequestId: latest.jitRequestId,
     jitChannel: "dashboard",
     jitScope: latest.scope,
+    jitContext: latest.context?.trim() || undefined,
   };
 
   const next = [...messages];
@@ -370,6 +626,12 @@ export function AgentChatPanel({
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   /** When set, composer edits this prior user message and resend truncates later turns. */
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  /** Skip one draft write after agent switch so we don't clobber the newly loaded draft. */
+  const skipDraftSaveRef = useRef(false);
+  /** Skip one pending-files write after agent switch / hydrate. */
+  const skipFileSaveRef = useRef(false);
+  /** Ignore stale async file restores after agent switches quickly. */
+  const draftFilesAgentRef = useRef(agentId);
 
   const streamRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -401,6 +663,42 @@ export function AgentChatPanel({
   useEffect(() => {
     selectedModelRef.current = selectedQlixModelId;
   }, [selectedQlixModelId]);
+
+  /** Restore composer draft when entering (or switching) an agent chat. */
+  useEffect(() => {
+    skipDraftSaveRef.current = true;
+    skipFileSaveRef.current = true;
+    draftFilesAgentRef.current = agentId;
+    const draft = loadChatDraft(agentId);
+    setInput(draft.input);
+    setEditingMessageId(draft.editingMessageId);
+    setPendingFiles([]);
+    setFileError(null);
+    void loadPendingChatFiles(agentId).then((files) => {
+      if (draftFilesAgentRef.current !== agentId) return;
+      skipFileSaveRef.current = true;
+      setPendingFiles(files);
+    });
+  }, [agentId]);
+
+  /** Persist unsent composer text across navigation. */
+  useEffect(() => {
+    if (skipDraftSaveRef.current) {
+      skipDraftSaveRef.current = false;
+      return;
+    }
+    saveChatDraft(agentId, { input, editingMessageId });
+  }, [agentId, input, editingMessageId]);
+
+  /** Persist unsent attachments (IndexedDB — files can be large). Skip while editing so IDB stays intact. */
+  useEffect(() => {
+    if (skipFileSaveRef.current) {
+      skipFileSaveRef.current = false;
+      return;
+    }
+    if (editingMessageId != null) return;
+    void savePendingChatFiles(agentId, pendingFiles);
+  }, [agentId, pendingFiles, editingMessageId]);
 
   const handleJitDecision = async (jitRequestId: string, approved: boolean) => {
     if (jitDeciding[jitRequestId]) return;
@@ -524,7 +822,6 @@ export function AgentChatPanel({
     selectedModelRef.current = "";
     setUseBrain(false);
     setBrowserFrames([]);
-    setPendingFiles([]);
     setFileInputKey((k) => k + 1);
     setFileError(null);
   }, [agentId]);
@@ -612,6 +909,10 @@ export function AgentChatPanel({
     const boot = async () => {
       setConversationId(null);
       setMessages([]);
+      setSending(false);
+      setCurrentRunId(null);
+      streamRef.current?.close();
+      streamRef.current = null;
       const base = await apiBase();
       const res = await fetch(`${base}/api/v1/agents/${encodeURIComponent(agentId)}/conversations`, {
         method: "POST",
@@ -631,7 +932,54 @@ export function AgentChatPanel({
       if (!mres.ok || cancelled) return;
       const mbody = (await mres.json()) as { messages?: ConversationMessageDTO[] };
       const ms = mbody.messages?.map(toChatMsg) ?? [];
-      setMessages(ms);
+
+      // Drop edit mode if the target message no longer exists (e.g. chat was cleared elsewhere).
+      const draft = loadChatDraft(agentId);
+      if (
+        draft.editingMessageId &&
+        !ms.some((m) => m.id === draft.editingMessageId && m.role === "user")
+      ) {
+        setEditingMessageId(null);
+      }
+
+      // Re-attach to an in-flight dashboard run so leaving the page doesn't look like a stop.
+      const orgId =
+        (session?.user.workspaceKind ?? session?.organization.workspaceKind) === "organization"
+          ? (session?.organization.id ?? null)
+          : null;
+      const activeRuns = await listActiveRuns(orgId);
+      if (cancelled) return;
+      const active = activeRuns?.find(
+        (r) => r.agentId === agentId && r.source === "dashboard",
+      );
+
+      if (active) {
+        const assistantId = `run-${active.id}`;
+        const withStream = ms.some((m) => m.id === assistantId)
+          ? ms
+          : [...ms, { id: assistantId, role: "agent" as const, content: "", activity: [] as ActivityStep[] }];
+        setMessages(withStream);
+        setSending(true);
+        setCurrentRunId(active.id);
+        attachAgentChatStream({
+          agentId,
+          conversationId: body.conversationId,
+          runId: active.id,
+          streamRef,
+          streamingActivityRef,
+          streamingContentRef,
+          streamingBrowserFramesRef,
+          textareaRef,
+          setMessages,
+          setSending,
+          setCurrentRunId,
+          setBrowserFrames,
+          setError,
+          appendAssistantBubble: false,
+        });
+      } else {
+        setMessages(ms);
+      }
     };
     void boot();
     return () => {
@@ -640,6 +988,7 @@ export function AgentChatPanel({
     // Depend on the agent's identity only — the heartbeat poll replaces the `agent`
     // object every few seconds, and re-booting the conversation on each tick nulls
     // conversationId, which disables (and blurs) the composer while the user types.
+    // session is read for org scope of active-runs; identity changes remount via agentId.
   }, [agentId, agent?.id, agent?.agentKind]);
 
   useEffect(() => {
@@ -724,6 +1073,12 @@ export function AgentChatPanel({
   const cancelEditMessage = () => {
     setEditingMessageId(null);
     setInput("");
+    skipFileSaveRef.current = true;
+    void loadPendingChatFiles(agentId).then((files) => {
+      if (draftFilesAgentRef.current !== agentId) return;
+      skipFileSaveRef.current = true;
+      setPendingFiles(files);
+    });
   };
 
   const send = async () => {
@@ -781,6 +1136,7 @@ export function AgentChatPanel({
     setSending(true);
     setError(null);
     setEditingMessageId(null);
+    void clearPendingChatFiles(agentId);
 
     const priorAttachments = editingId
       ? messages.find((m) => m.id === editingId)?.attachments
@@ -936,177 +1292,22 @@ export function AgentChatPanel({
 
     setCurrentRunId(body.runId);
 
-    streamRef.current?.close();
-    const es = new EventSource(
-      `${base}/api/v1/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(body.runId)}/stream`,
-      { withCredentials: true },
-    );
-    streamRef.current = es;
-
-    const assistantId = `run-${body.runId}`;
-    streamingActivityRef.current = [];
-    streamingContentRef.current = "";
-    streamingBrowserFramesRef.current = [];
-    setBrowserFrames([]);
-    setMessages((prev) => [...prev, { id: assistantId, role: "agent", content: "", activity: [] }]);
-
-    es.addEventListener("delta", (evt) => {
-      try {
-        const payload = JSON.parse((evt as MessageEvent).data) as { data?: { text?: string } };
-        const t = payload?.data?.text ?? "";
-        if (!t) return;
-        setMessages((prev) => {
-          const next = prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + t } : m,
-          );
-          const stream = next.find((m) => m.id === assistantId);
-          if (stream) streamingContentRef.current = stream.content;
-          return next;
-        });
-      } catch {
-        // ignore
-      }
+    attachAgentChatStream({
+      agentId,
+      conversationId,
+      runId: body.runId,
+      streamRef,
+      streamingActivityRef,
+      streamingContentRef,
+      streamingBrowserFramesRef,
+      textareaRef,
+      setMessages,
+      setSending,
+      setCurrentRunId,
+      setBrowserFrames,
+      setError,
     });
-
-    es.addEventListener("log", (evt) => {
-      try {
-        const payload = JSON.parse((evt as MessageEvent).data) as { seq?: number; data?: unknown };
-        const raw = payload.data;
-        if (raw && typeof raw === "object") {
-          const d = raw as Record<string, unknown>;
-          if (d.message === "browser_frame" && typeof d.image_base64 === "string") {
-            const frame: BrowserFrame = {
-              id: `frame-${payload.seq ?? streamingBrowserFramesRef.current.length}`,
-              tool: String(d.tool ?? "browser"),
-              label: String(d.label ?? "Browser action"),
-              mime: String(d.mime ?? "image/png"),
-              imageBase64: d.image_base64,
-            };
-            streamingBrowserFramesRef.current = [...streamingBrowserFramesRef.current, frame];
-            setBrowserFrames(streamingBrowserFramesRef.current);
-            return;
-          }
-        }
-        const step = summarizeRunnerLog(payload.seq ?? 0, payload.data);
-        if (!step) return;
-        setMessages((prev) => {
-          const next = prev.map((m) =>
-            m.id === assistantId ? { ...m, activity: [...(m.activity ?? []), step] } : m,
-          );
-          const stream = next.find((m) => m.id === assistantId);
-          if (stream?.activity) streamingActivityRef.current = stream.activity;
-          return next;
-        });
-      } catch {
-        // ignore
-      }
-    });
-
-    es.addEventListener("done", (evt) => {
-      setSending(false);
-      setCurrentRunId(null);
-      es.close();
-      if (streamRef.current === es) streamRef.current = null;
-      let runStatus: string | undefined;
-      try {
-        const raw = (evt as MessageEvent).data;
-        if (typeof raw === "string" && raw.length > 0) {
-          const parsed = JSON.parse(raw) as { status?: string };
-          runStatus = parsed.status;
-        }
-      } catch {
-        // ignore
-      }
-      void (async () => {
-        if (runStatus !== "failed") {
-          setError(null);
-        }
-        const preservedActivity = [...streamingActivityRef.current];
-        const preservedContent = streamingContentRef.current;
-        const preservedFrames = [...streamingBrowserFramesRef.current];
-        streamingActivityRef.current = [];
-        streamingContentRef.current = "";
-        streamingBrowserFramesRef.current = [];
-
-        const rows = await fetchMessagesAfterRun(agentId, conversationId, runStatus);
-        if (rows) {
-          const merged = mergeServerMessages(rows, {
-            preservedContent,
-            preservedActivity,
-            preservedFrames,
-            runStatus,
-          });
-          setMessages(merged);
-          if (preservedFrames.length > 0) {
-            setBrowserFrames(preservedFrames);
-          }
-          const pending = await listPendingJit(conversationId, agentId);
-          if (pending.length > 0) {
-            setMessages((prev) => mergePendingJitIntoMessages(prev, pending));
-          }
-        } else if (preservedContent.trim()) {
-          setMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === assistantId);
-            if (idx < 0) return prev;
-            const next = [...prev];
-            next[idx] = {
-              ...next[idx],
-              content: preservedContent,
-              activity: preservedActivity.length > 0 ? preservedActivity : next[idx].activity,
-              browserFrames: preservedFrames.length > 0 ? preservedFrames : next[idx].browserFrames,
-            };
-            return next;
-          });
-          if (preservedFrames.length > 0) setBrowserFrames(preservedFrames);
-        }
-        if (runStatus === "failed") {
-          setError(
-            "The agent run failed. Check the system line in the thread for the error details.",
-          );
-        }
-      })();
-      textareaRef.current?.focus();
-    });
-
-    es.onerror = () => {
-      setSending(false);
-      setCurrentRunId(null);
-      es.close();
-      if (streamRef.current === es) streamRef.current = null;
-      const preservedActivity = [...streamingActivityRef.current];
-      const preservedContent = streamingContentRef.current;
-      const preservedFrames = [...streamingBrowserFramesRef.current];
-      void fetchMessagesAfterRun(agentId, conversationId, undefined).then((rows) => {
-        if (rows) {
-          setMessages(
-            mergeServerMessages(rows, {
-              preservedContent,
-              preservedActivity,
-              preservedFrames,
-            }),
-          );
-          if (preservedFrames.length > 0) setBrowserFrames(preservedFrames);
-        } else if (preservedContent.trim()) {
-          setMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === assistantId);
-            if (idx < 0) return prev;
-            const next = [...prev];
-            next[idx] = {
-              ...next[idx],
-              content: preservedContent,
-              activity: preservedActivity,
-              browserFrames: preservedFrames,
-            };
-            return next;
-          });
-        }
-      });
-      setError(
-        "Lost connection to the live reply stream. If the bubble stayed empty, open DevTools → Network and inspect the EventSource request for this run.",
-      );
-    };
   };
-
   const stopRun = async () => {
     if (!currentRunId || !sending) return;
     setSending(false);
@@ -1145,6 +1346,11 @@ export function AgentChatPanel({
     }
     setMessages([]);
     setBrowserFrames([]);
+    setInput("");
+    setEditingMessageId(null);
+    setPendingFiles([]);
+    clearChatDraft(agentId);
+    void clearPendingChatFiles(agentId);
   };
 
   const lastAgentStreaming =
@@ -1392,9 +1598,6 @@ export function AgentChatPanel({
                 messages.map((m, msgIndex) => {
                   const isLast = m.id === messages[messages.length - 1]?.id;
                   const thisStreaming = sending && m.role === "agent" && isLast;
-                  // Show approval UI whenever a request is outstanding — not only while
-                  // the SSE stream is open (hybrid runs often pause for JIT after logs land).
-                  const jitPendingStep = m.activity ? getPendingJitStep(m.activity) : null;
                   return (
                   <div
                     key={m.id}
@@ -1455,89 +1658,6 @@ export function AgentChatPanel({
                             className="mb-3"
                           />
                         </>
-                      ) : null}
-                      {jitPendingStep ? (
-                        <div
-                          role="status"
-                          aria-live="polite"
-                          className={cn(
-                            "mb-3 rounded-xl border-2 border-amber-700/40 px-3 py-3 shadow-[inset_3px_0_0_rgb(180,83,9)]",
-                            sketchToneBg.amber,
-                          )}
-                        >
-                          <div className="flex items-start gap-2">
-                            <ShieldCheck
-                              className="mt-0.5 size-4 shrink-0 text-amber-900"
-                              aria-hidden
-                            />
-                            <div className="min-w-0 text-[12px] leading-snug text-black">
-                              <span className="font-semibold tracking-tight">
-                                {jitPendingStep.label}
-                              </span>
-                              {jitPendingStep.detail ? (
-                                <span className="mt-0.5 block text-[11px] text-black/65">
-                                  {jitPendingStep.detail}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                          {jitPendingStep.jitWhatsappExpected ? (
-                            <p className="mt-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
-                              {jitPendingStep.jitWhatsappStatus === "not_linked"
-                                ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
-                                : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
-                            </p>
-                          ) : null}
-                          {jitPendingStep.jitRequestId ? (
-                            <>
-                              <div className="mt-2.5 flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  disabled={Boolean(jitDeciding[jitPendingStep.jitRequestId])}
-                                  onClick={() => handleJitDecision(jitPendingStep.jitRequestId!, true)}
-                                  className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
-                                >
-                                  {jitDeciding[jitPendingStep.jitRequestId] ? (
-                                    <Loader2 className="size-3 animate-spin" aria-hidden />
-                                  ) : null}
-                                  Approve
-                                  {jitPendingStep.jitScope === "email.send" ||
-                                  jitPendingStep.jitScope === "drive.write" ||
-                                  jitPendingStep.jitScope === "calendar.write" ||
-                                  jitPendingStep.jitScope === "meet.manage" ||
-                                  jitPendingStep.jitScope === "social.publish" ||
-                                  jitPendingStep.jitScope === "crm.write" ||
-                                  jitPendingStep.jitScope === "crm.delete" ||
-                                  jitPendingStep.jitScope === "whatsapp.contact_send" ||
-                                  jitPendingStep.jitScope === "slack.send" ||
-                                  jitPendingStep.jitScope === "notion.write"
-                                    ? " for this chat"
-                                    : ""}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={Boolean(jitDeciding[jitPendingStep.jitRequestId])}
-                                  onClick={() => handleJitDecision(jitPendingStep.jitRequestId!, false)}
-                                  className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
-                                >
-                                  Deny
-                                </button>
-                              </div>
-                              {jitPendingStep.jitChannel === "whatsapp" ? (
-                                <p className="mt-2 text-[11px] font-medium text-black/60">
-                                  Or reply Approve or Deny on WhatsApp.
-                                </p>
-                              ) : null}
-                            </>
-                          ) : jitPendingStep.jitChannel === "whatsapp" ? (
-                            <p className="mt-2 text-[11px] font-medium text-black/70">
-                              Reply Approve or Deny on WhatsApp to continue.
-                            </p>
-                          ) : null}
-                          {jitError ? (
-                            <p className="mt-1.5 text-[10px] text-black">{jitError}</p>
-                          ) : null}
-                        </div>
                       ) : null}
                       {m.role === "agent" && (!m.content || m.content.trim() === "") && lastAgentStreaming && m.id === messages[messages.length - 1]?.id ? (
                         <div className="flex items-center gap-2 py-1 text-black/50">
@@ -1600,78 +1720,16 @@ export function AgentChatPanel({
         <div className="relative z-10 shrink-0 overflow-visible border-t border-black/8 px-3 py-3 sm:px-5 sm:py-4">
           <div className="mx-auto w-full max-w-3xl overflow-visible">
             {stickyJitPending ? (
-              <div
-                role="status"
-                aria-live="polite"
-                className={cn(
-                  "mb-3 rounded-xl border-2 border-amber-700/45 px-3 py-3 shadow-[0_8px_24px_-12px_rgba(180,83,9,0.45)]",
-                  sketchToneBg.amber,
-                )}
-              >
-                <div className="flex items-start gap-2">
-                  <ShieldCheck className="mt-0.5 size-4 shrink-0 text-amber-900" aria-hidden />
-                  <div className="min-w-0 flex-1 text-[12px] leading-snug text-black">
-                    <p className="font-semibold tracking-tight">{stickyJitPending.label}</p>
-                    {stickyJitPending.detail ? (
-                      <p className="mt-0.5 text-[11px] text-black/65">{stickyJitPending.detail}</p>
-                    ) : null}
-                  </div>
-                </div>
-                {stickyJitPending.jitWhatsappExpected ? (
-                  <p className="mt-2 rounded-lg border border-amber-800/35 bg-white/45 px-2 py-1.5 text-[11px] font-medium leading-snug text-amber-950">
-                    {stickyJitPending.jitWhatsappStatus === "not_linked"
-                      ? "Your WhatsApp isn't connected, so this couldn't be sent to your phone. Connect it in Connectors — or just approve below."
-                      : "Your WhatsApp isn't connected right now, so this couldn't be sent to your phone. Reconnect it in Connectors — or just approve below."}
-                  </p>
-                ) : null}
-                {stickyJitPending.jitRequestId ? (
-                  <>
-                    <div className="mt-2.5 flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={Boolean(jitDeciding[stickyJitPending.jitRequestId])}
-                        onClick={() => handleJitDecision(stickyJitPending.jitRequestId!, true)}
-                        className={cn(sketchButtonPrimary, "gap-1 disabled:opacity-50")}
-                      >
-                        {jitDeciding[stickyJitPending.jitRequestId] ? (
-                          <Loader2 className="size-3 animate-spin" aria-hidden />
-                        ) : null}
-                        Approve
-                        {stickyJitPending.jitScope === "email.send" ||
-                        stickyJitPending.jitScope === "drive.write" ||
-                        stickyJitPending.jitScope === "calendar.write" ||
-                        stickyJitPending.jitScope === "meet.manage" ||
-                        stickyJitPending.jitScope === "social.publish" ||
-                        stickyJitPending.jitScope === "crm.write" ||
-                        stickyJitPending.jitScope === "crm.delete" ||
-                        stickyJitPending.jitScope === "whatsapp.contact_send" ||
-                        stickyJitPending.jitScope === "slack.send" ||
-                        stickyJitPending.jitScope === "notion.write"
-                          ? " for this chat"
-                          : ""}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(jitDeciding[stickyJitPending.jitRequestId])}
-                        onClick={() => handleJitDecision(stickyJitPending.jitRequestId!, false)}
-                        className={cn(sketchButtonSecondary, "gap-1 disabled:opacity-50")}
-                      >
-                        Deny
-                      </button>
-                    </div>
-                    {stickyJitPending.jitChannel === "whatsapp" ? (
-                      <p className="mt-2 text-[11px] font-medium text-black/60">
-                        Or reply Approve or Deny on WhatsApp.
-                      </p>
-                    ) : null}
-                  </>
-                ) : stickyJitPending.jitChannel === "whatsapp" ? (
-                  <p className="mt-2 text-[11px] font-medium text-black/70">
-                    Reply Approve or Deny on WhatsApp to continue.
-                  </p>
-                ) : null}
-                {jitError ? <p className="mt-1.5 text-[10px] text-black">{jitError}</p> : null}
-              </div>
+              <JitApprovalCard
+                className="qlix-msg-in mb-2.5"
+                step={stickyJitPending}
+                deciding={Boolean(stickyJitPending.jitRequestId && jitDeciding[stickyJitPending.jitRequestId])}
+                error={jitError}
+                onDecide={(approved) => {
+                  if (!stickyJitPending.jitRequestId) return;
+                  void handleJitDecision(stickyJitPending.jitRequestId, approved);
+                }}
+              />
             ) : null}
             {fileError ? (
               <p className={cn("mb-2 rounded-lg border border-black px-3 py-2 text-[12px] text-black", sketchToneBg.rose)}>

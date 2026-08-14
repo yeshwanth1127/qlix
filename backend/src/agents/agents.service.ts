@@ -3,7 +3,7 @@ import type { VerifiableCredentialDTO } from '../credentials/vc.types.js';
 import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { roleCan } from '../lib/orgPermissions.js';
 import { AgentsRepository, OrgMembershipError } from './agents.repository.js';
-import type { AgentDTO, CreateAgentInput, LlmProvider } from './agents.types.js';
+import type { AgentDTO, CreateAgentInput, LlmProvider, ReasoningEffort } from './agents.types.js';
 import { reconcileRuntimeWithScopes } from './scopeCatalog.js';
 import { generateDID } from './did.js';
 import { enforceJitRules } from './jit.js';
@@ -258,7 +258,7 @@ export class AgentsService {
     userId: string,
     authOrgId: string | null,
     agentId: string,
-    input: { llmProvider: LlmProvider; model: string },
+    input: { llmProvider: LlmProvider; model: string; reasoningEffort?: ReasoningEffort | null },
   ): Promise<AgentDTO> {
     const agent = await this.repo.findById(agentId);
     if (!agent) throw new AgentNotFoundError();
@@ -270,7 +270,12 @@ export class AgentsService {
     if (agent.llmMode !== 'proxy') {
       throw new AgentScopeUpdateError('Provider selection is only available for proxy inference');
     }
-    return this.repo.updateInferenceProvider(agentId, input.llmProvider, input.model);
+    return this.repo.updateInferenceProvider(
+      agentId,
+      input.llmProvider,
+      input.model,
+      input.reasoningEffort,
+    );
   }
 
   /**

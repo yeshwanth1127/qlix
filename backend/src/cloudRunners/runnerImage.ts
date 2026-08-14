@@ -19,6 +19,7 @@ const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/cloud_slack_runtime.py',
   'sdk/python/qlix/cloud_notion_runtime.py',
   'sdk/python/qlix/cloud_whatsapp_runtime.py',
+  'sdk/python/qlix/cloud_brain_file_runtime.py',
   'sdk/python/qlix/jit.py',
   'sdk/python/qlix/cloud_research_runtime.py',
   'sdk/python/qlix/cloud_document_runtime.py',

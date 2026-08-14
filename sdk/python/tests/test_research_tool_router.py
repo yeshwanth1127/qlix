@@ -88,6 +88,17 @@ def test_spreadsheet_prompt_loads_research_group() -> None:
     assert "research" in groups
 
 
+def test_team_dispatch_skill_loads_always_only() -> None:
+    ident = _id(permission_scopes=("crm.write", "web.research"))
+    groups = classify_groups(
+        "Filter leads by city Bangalore. Delegated scopes: crm.write, web.research",
+        ident,
+        runner_runtime="cloud",
+        skill_filter=["team.dispatch"],
+    )
+    assert groups == ("always",)
+
+
 def test_delegated_web_research_scope_only() -> None:
     ident = _id(permission_scopes=("web.research",))
     groups = classify_groups(

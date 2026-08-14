@@ -3,19 +3,21 @@
   "info": {
     "title": "Qlix Developer API",
     "version": "1.0.0",
-    "description": "Account-scoped programmatic access to Qlix Layer 3 (agent identity), Layer 5 (audit ledger), agent/team executions, and AI Brain.\n\nAuthenticate with `Authorization: Bearer qlix_live_…` or `X-Api-Key: qlix_live_…`. Create keys in the console under API keys. Keys are scoped; session JWT (console) is not restricted by these scopes.\n\nAgent-signed actions (`/actions/*`, `/jit/request`) and runner tokens remain separate auth modes."
+    "description": "Account-scoped programmatic access to Qlix Layer 3 (agent identity), Layer 5 (audit ledger), agent/team executions, AI Brain, and AI Builder (natural-language parse/create plus visual canvases).\n\n## Authentication\nCreate keys in the console under **API**. Send `Authorization: Bearer qlix_live_…` (recommended) or `X-Api-Key: qlix_live_…`. Keys are hashed at rest; the secret is shown once.\n\nAPI keys are scoped. Session JWT (the console cookie) is not restricted by these scopes. A key acts as the **creating user** (same org and role) — for example `GET /compliance/export` still requires owner/admin even with `audit:read`. The key is stored with that organization at creation; writes (create agent, NL create, teams, brain) use it automatically. Do not send `orgId` in request bodies.\n\nFour auth modes exist in Qlix. Only the first is this API:\n1. **API key** (`qlix_live_*`) — this Developer API.\n2. **Session JWT** — console browser cookie; also accepted as Bearer, but not for key management from scripts.\n3. **Agent-signed** Ed25519 payloads — `POST /actions/*` and `POST /jit/request` (Python agent SDK).\n4. **Runner token** (`X-QLIX-Runner-Token`) — cloud/hybrid agent runtime, not account scripts.\n\nKey CRUD (`/api-keys`) is session-only (`403 session_required` if you use an API key).\n\n## Rate limits\n- API keys: **300 requests/minute** per key (override `API_KEY_RATE_LIMIT_PER_MINUTE`).\n- Other clients: **600 requests/minute** per IP (`GLOBAL_RATE_LIMIT_PER_MINUTE`).\n- `429` body: `{ \"error\": { \"code\": \"rate_limited\", \"message\": \"…\" } }`.\n\n## Subscription\nMutating routes (create agent, NL create, enqueue runs, team runs, brain writes, canvas writes) require an active workspace subscription, same as the console.\n\n## Errors\nAll errors use `{ \"error\": { \"code\": string, \"message\": string } }`. Common codes: `unauthorized`, `insufficient_scope`, `api_key_not_allowed`, `session_required`, `rate_limited`, `invalid_body`, `not_found`.\n\n## Documented vs allowlisted\nThis spec covers first-class Developer API operations. Some additional mutations under `/teams/{id}/*` (`teams:write`) and `/ai-brain/*` (`brain:write`) are allowlisted but not listed individually."
   },
   "servers": [
     { "url": "/api/v1", "description": "Versioned API root" }
   ],
   "tags": [
+    { "name": "Account", "description": "Caller identity and workspace" },
     { "name": "Agents", "description": "Layer 3 — agent identity lifecycle" },
     { "name": "Credentials", "description": "DIDs, VCs, passports" },
     { "name": "Audit", "description": "Layer 5 — audit read and compliance export" },
     { "name": "Runs", "description": "Agent chat executions" },
     { "name": "Teams", "description": "Team registry and multi-agent runs" },
     { "name": "Brain", "description": "AI Brain knowledge and query" },
-    { "name": "JIT", "description": "Just-in-time human approvals" },
+    { "name": "Builder", "description": "AI Builder — NL parse/create, builder sessions, visual canvases" },
+    { "name": "JIT", "description": "Just-in-time human approvals. The request is delivered to the channel that started the run; that same source sends approve/deny (API: POST /jit/decide, console card, WhatsApp yes/no). Pending requests expire if unanswered; some scopes become a conversation grant after one yes." },
     { "name": "Usage", "description": "Usage and subscription reads" }
   ],
   "components": {
@@ -35,21 +37,492 @@
     "schemas": {
       "Error": {
         "type": "object",
+        "required": ["error"],
         "properties": {
           "error": {
             "type": "object",
+            "required": ["code", "message"],
             "properties": {
-              "code": { "type": "string" },
+              "code": { "type": "string", "example": "insufficient_scope" },
               "message": { "type": "string" }
-            },
-            "required": ["code", "message"]
+            }
+          }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "userId": { "type": "string" },
+          "orgId": { "type": "string", "nullable": true },
+          "did": { "type": "string" },
+          "publicKey": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "status": { "type": "string" },
+          "runtime": { "type": "string", "enum": ["cloud", "local", "hybrid"] },
+          "model": { "type": "string" },
+          "localInferenceMode": { "type": "string", "nullable": true, "enum": ["local_llm", "cloud_api"] },
+          "llmMode": { "type": "string", "enum": ["direct", "proxy"] },
+          "llmProvider": { "type": "string", "enum": ["exora", "openrouter"] },
+          "permissionScopes": { "type": "array", "items": { "type": "string" } },
+          "jitScopes": { "type": "array", "items": { "type": "string" } },
+          "alwaysScopes": { "type": "array", "items": { "type": "string" } },
+          "agentKind": { "type": "string", "enum": ["standard", "org_brain"] },
+          "toolProfile": { "type": "string", "enum": ["minimal", "coding", "lean", "full"] },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "lastActive": { "type": "string", "nullable": true }
+        }
+      },
+      "CreateAgentRequest": {
+        "type": "object",
+        "required": ["name", "permissionScopes", "runtime", "model", "localInferenceMode"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "description": { "type": "string", "nullable": true, "maxLength": 10000 },
+          "permissionScopes": { "type": "array", "items": { "type": "string" } },
+          "jitScopes": { "type": "array", "items": { "type": "string" } },
+          "runtime": { "type": "string", "enum": ["cloud", "local", "hybrid"] },
+          "model": { "type": "string", "example": "openrouter/openai/gpt-4.1-mini" },
+          "llmMode": { "type": "string", "enum": ["direct", "proxy"], "default": "proxy" },
+          "llmProvider": { "type": "string", "enum": ["exora", "openrouter"] },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Optional. API keys ignore this field and always use the org bound to the key at creation. Session (console) callers may omit it to use the signed-in org, or pass null for individual-workspace agent rows."
+          },
+          "localInferenceMode": { "type": "string", "nullable": true, "enum": ["local_llm", "cloud_api"] },
+          "clientPlatform": { "type": "string", "enum": ["windows", "macos", "linux"] }
+        }
+      },
+      "AgentList": {
+        "type": "object",
+        "properties": {
+          "agents": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } }
+        }
+      },
+      "Conversation": {
+        "type": "object",
+        "properties": {
+          "conversationId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "EnqueueRunRequest": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": { "type": "string", "maxLength": 20000 },
+          "skills": { "type": "array", "items": { "type": "string" } },
+          "model": { "type": "string" },
+          "useBrain": { "type": "boolean", "default": false }
+        }
+      },
+      "EnqueueRunResponse": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+          "content": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InjectRunRequest": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string", "maxLength": 8000 }
+        }
+      },
+      "UpdateScopesRequest": {
+        "type": "object",
+        "required": ["permissionScopes"],
+        "properties": {
+          "permissionScopes": { "type": "array", "items": { "type": "string" } },
+          "jitScopes": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "UpdateDescriptionRequest": {
+        "type": "object",
+        "required": ["description"],
+        "properties": {
+          "description": { "type": "string", "nullable": true, "maxLength": 10000 }
+        }
+      },
+      "UpdateToolProfileRequest": {
+        "type": "object",
+        "required": ["toolProfile"],
+        "properties": {
+          "toolProfile": { "type": "string", "enum": ["minimal", "coding", "lean", "full"] }
+        }
+      },
+      "ConfirmNameRequest": {
+        "type": "object",
+        "required": ["confirmName"],
+        "properties": {
+          "confirmName": { "type": "string" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "timestampMs": { "type": "number" },
+          "timeUtc": { "type": "string" },
+          "dateUtc": { "type": "string" },
+          "actionType": { "type": "string" },
+          "action": { "type": "string", "enum": ["READ", "WRITE", "AUTH"] },
+          "result": { "type": "string", "enum": ["Success", "Blocked", "Flagged"] },
+          "riskLevel": { "type": "string", "enum": ["low", "medium", "high"] },
+          "description": { "type": "string" }
+        }
+      },
+      "AuditGroup": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "agentName": { "type": "string" },
+          "didShort": { "type": "string" },
+          "agentKind": { "type": "string" },
+          "latestTimestampMs": { "type": "number" },
+          "events": { "type": "array", "items": { "$ref": "#/components/schemas/AuditEvent" } }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "did": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      },
+      "Passport": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "did": { "type": "string" },
+          "name": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      },
+      "OrgMember": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "email": { "type": "string" },
+          "displayName": { "type": "string", "nullable": true },
+          "role": { "type": "string", "enum": ["owner", "admin", "member"] }
+        }
+      },
+      "Team": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "orgId": { "type": "string" },
+          "did": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "status": { "type": "string", "enum": ["draft", "active", "archived"] },
+          "supervisorAgentId": { "type": "string", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateTeamRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "description": { "type": "string", "maxLength": 500 },
+          "config": {
+            "type": "object",
+            "properties": {
+              "maxParallelWorkers": { "type": "integer" },
+              "pipelineMode": { "type": "boolean" },
+              "autoSequence": { "type": "boolean" },
+              "defaultModel": { "type": "string" }
+            }
+          }
+        }
+      },
+      "TeamRun": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "teamId": { "type": "string" },
+          "goal": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "running", "paused", "completed", "failed", "canceled"] },
+          "result": {},
+          "errorMessage": { "type": "string", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "startedAt": { "type": "string", "format": "date-time", "nullable": true },
+          "completedAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "StartTeamRunRequest": {
+        "type": "object",
+        "required": ["goal"],
+        "properties": {
+          "goal": { "type": "string", "maxLength": 4000 },
+          "model": { "type": "string" },
+          "continuesRunId": { "type": "string" }
+        }
+      },
+      "BrainQueryRequest": {
+        "type": "object",
+        "required": ["question"],
+        "properties": {
+          "question": { "type": "string", "maxLength": 4000 },
+          "conversationId": { "type": "string" },
+          "model": { "type": "string" }
+        }
+      },
+      "AgentBrainQueryRequest": {
+        "type": "object",
+        "required": ["question"],
+        "properties": {
+          "question": { "type": "string", "maxLength": 4000 },
+          "collectionIds": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "BrainQueryResult": {
+        "type": "object",
+        "properties": {
+          "answer": { "type": "string" },
+          "citations": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "BrainCollection": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true }
+        }
+      },
+      "CreateCollectionRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 200 },
+          "description": { "type": "string", "maxLength": 2000 },
+          "retentionDays": { "type": "integer", "nullable": true }
+        }
+      },
+      "BrainDocument": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "collectionId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "JitDecideRequest": {
+        "type": "object",
+        "required": ["jitRequestId", "approved"],
+        "properties": {
+          "jitRequestId": { "type": "string", "format": "uuid" },
+          "approved": { "type": "boolean" }
+        }
+      },
+      "JitGrant": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "scope": { "type": "string" },
+          "agentId": { "type": "string" },
+          "expiresAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "JitPending": {
+        "type": "object",
+        "properties": {
+          "jitRequestId": { "type": "string", "format": "uuid" },
+          "agentId": { "type": "string" },
+          "scope": { "type": "string" },
+          "scopeLabel": { "type": "string" },
+          "context": { "type": "string" },
+          "runId": { "type": "string", "nullable": true },
+          "conversationId": { "type": "string", "nullable": true },
+          "sourceChannel": {
+            "type": "string",
+            "description": "Where the run started: api, web, whatsapp, slack, telegram, local, cron"
+          },
+          "requestedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "properties": {
+          "billingCycle": { "type": "string", "example": "2026-08" },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agentId": { "type": "string" },
+                "agentName": { "type": "string" },
+                "totalRuns": { "type": "integer" },
+                "totalTokens": { "type": "integer" },
+                "totalCostUsd": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "Subscription": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "planName": { "type": "string" },
+          "currentPeriodEnd": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "NlParseRequest": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "maxLength": 5000 },
+          "model": { "type": "string" }
+        }
+      },
+      "NlAgentSpec": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "permissionScopes": { "type": "array", "items": { "type": "string" } },
+          "jitScopes": { "type": "array", "items": { "type": "string" } },
+          "runtime": { "type": "string", "enum": ["cloud", "hybrid", "local"] },
+          "model": { "type": "string" },
+          "llmMode": { "type": "string", "enum": ["proxy", "direct"] },
+          "localInferenceMode": { "type": "string", "nullable": true, "enum": ["local_llm", "cloud_api"] },
+          "rationale": { "type": "string" }
+        }
+      },
+      "AgentCreationPlan": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string", "enum": ["single", "team"] },
+          "rationale": { "type": "string" },
+          "agent": { "$ref": "#/components/schemas/NlAgentSpec" },
+          "team": { "type": "object" }
+        }
+      },
+      "NlCreateRequest": {
+        "type": "object",
+        "required": ["plan"],
+        "properties": {
+          "plan": { "$ref": "#/components/schemas/AgentCreationPlan" },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Optional. API keys ignore this field and always use the org bound to the key. Session callers may omit it to use the signed-in org."
+          },
+          "clientPlatform": { "type": "string", "enum": ["windows", "macos", "linux"] },
+          "model": { "type": "string" }
+        }
+      },
+      "BuilderSession": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "createdAgentIds": { "type": "array", "items": { "type": "string" } },
+          "teamId": { "type": "string", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateBuilderSessionRequest": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "maxLength": 160 }
+        }
+      },
+      "UpdateBuilderSessionRequest": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "maxLength": 160 },
+          "transcript": { "type": "array", "items": {} },
+          "createdAgentIds": { "type": "array", "items": { "type": "string" } },
+          "teamId": { "type": "string", "nullable": true }
+        }
+      },
+      "BuilderHistoryEntry": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "prompt": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SaveBuilderHistoryRequest": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "maxLength": 2000 }
+        }
+      },
+      "BuilderCanvas": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "createdByUserId": { "type": "string" },
+          "graph": { "type": "object" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateCanvasRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 }
+        }
+      },
+      "PatchCanvasRequest": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "graph": {
+            "type": "object",
+            "required": ["version", "nodes", "edges"],
+            "properties": {
+              "version": { "type": "integer", "minimum": 1 },
+              "nodes": { "type": "array", "items": { "type": "object" } },
+              "edges": { "type": "array", "items": { "type": "object" } },
+              "groups": { "type": "array", "items": { "type": "object" } },
+              "viewport": {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" },
+                  "zoom": { "type": "number" }
+                }
+              }
+            }
           }
         }
       }
     },
     "responses": {
       "Unauthorized": {
-        "description": "Missing or invalid API key / session",
+        "description": "Missing, invalid, or revoked API key / session",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/Error" }
@@ -57,26 +530,142 @@
         }
       },
       "Forbidden": {
-        "description": "Missing scope or not in Developer API surface",
+        "description": "Missing scope, role, or route not in the Developer API",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too many requests",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/Error" }
           }
         }
       }
+    },
+    "parameters": {
+      "AgentId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "AgentIdAlt": {
+        "name": "agentId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "ConversationId": {
+        "name": "conversationId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "RunId": {
+        "name": "runId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "TeamId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "GrantId": {
+        "name": "grantId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "SessionId": {
+        "name": "sessionId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "CanvasId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      }
     }
   },
   "security": [{ "ApiKeyBearer": [] }, { "ApiKeyHeader": [] }],
   "paths": {
+    "/auth/me": {
+      "get": {
+        "tags": ["Account"],
+        "summary": "Read the user and organization bound to this API key",
+        "operationId": "getCallerIdentity",
+        "description": "Returns the user and organization already bound to this API key (`user.orgId` and `organization.id` are the same UUID). Create and other writes infer the workspace from the key — you do not pass `orgId` in request bodies.",
+        "responses": {
+          "200": {
+            "description": "Caller identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "email": { "type": "string" },
+                        "orgId": { "type": "string", "format": "uuid" },
+                        "role": { "type": "string" },
+                        "workspaceKind": { "type": "string", "enum": ["individual", "organization"] }
+                      }
+                    },
+                    "organization": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "name": { "type": "string" },
+                        "slug": { "type": "string" },
+                        "workspaceKind": { "type": "string", "enum": ["individual", "organization"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        },
+        "x-qlix-scopes": []
+      }
+    },
     "/agents": {
       "get": {
         "tags": ["Agents"],
         "summary": "List agents",
         "operationId": "listAgents",
+        "parameters": [
+          { "name": "orgId", "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Optional. Omit to use the workspace bound to the API key. Session callers may pass this to filter; it must match the signed-in org." }
+        ],
         "responses": {
-          "200": { "description": "Agent list for the workspace" },
+          "200": {
+            "description": "Agent list for the workspace",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentList" } } }
+          },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         },
         "x-qlix-scopes": ["agents:read"]
       },
@@ -84,10 +673,33 @@
         "tags": ["Agents"],
         "summary": "Create agent",
         "operationId": "createAgent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateAgentRequest" }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Created agent" },
+          "200": {
+            "description": "Created agent plus one-time sdkAgentFile (private key / runner token as applicable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": { "$ref": "#/components/schemas/Agent" },
+                    "sdkAgentFile": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         },
         "x-qlix-scopes": ["agents:write"]
       },
@@ -98,7 +710,8 @@
         "responses": {
           "200": { "description": "Deletion result" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         },
         "x-qlix-scopes": ["agents:write"]
       }
@@ -108,8 +721,93 @@
         "tags": ["Agents"],
         "summary": "List available permission scopes",
         "operationId": "getScopeCatalog",
-        "responses": { "200": { "description": "Scope catalog" } },
+        "responses": {
+          "200": { "description": "Scope catalog" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["agents:read"]
+      }
+    },
+    "/agents/active-runs": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "List in-flight runs",
+        "operationId": "listActiveRuns",
+        "responses": {
+          "200": { "description": "Active runs" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/run-history": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "Recent finished runs",
+        "operationId": "listRunHistory",
+        "responses": {
+          "200": { "description": "Run history" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["runs:write"]
+      }
+    },
+    "/agents/nl-parse": {
+      "post": {
+        "tags": ["Builder"],
+        "summary": "Parse a natural-language prompt into an agent or team plan",
+        "operationId": "nlParse",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/NlParseRequest" },
+              "example": { "prompt": "Build a research agent that can search the web and draft a briefing" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Parsed plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "plan": { "$ref": "#/components/schemas/AgentCreationPlan" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "description": "Could not parse prompt" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      }
+    },
+    "/agents/nl-create": {
+      "post": {
+        "tags": ["Builder"],
+        "summary": "Create agent(s) or a team from a parsed plan",
+        "operationId": "nlCreate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/NlCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created agent or team (includes one-time sdkAgentFile where applicable)" },
+          "400": { "description": "Invalid body" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:write"]
       }
     },
     "/agents/{id}": {
@@ -117,32 +815,37 @@
         "tags": ["Agents"],
         "summary": "Get agent detail",
         "operationId": "getAgent",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Agent detail" } },
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "responses": {
+          "200": {
+            "description": "Agent detail",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "agent": { "$ref": "#/components/schemas/Agent" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
         "x-qlix-scopes": ["agents:read"]
       },
       "delete": {
         "tags": ["Agents"],
         "summary": "Delete agent",
         "operationId": "deleteAgent",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["confirmName"],
-                "properties": { "confirmName": { "type": "string" } }
-              }
+              "schema": { "$ref": "#/components/schemas/ConfirmNameRequest" }
             }
           }
         },
-        "responses": { "204": { "description": "Deleted" } },
+        "responses": {
+          "204": { "description": "Deleted" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
         "x-qlix-scopes": ["agents:write"]
       }
     },
@@ -151,10 +854,64 @@
         "tags": ["Agents"],
         "summary": "Update agent permission scopes",
         "operationId": "updateAgentScopes",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Updated scopes" } },
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateScopesRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated scopes" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["agents:write"]
+      }
+    },
+    "/agents/{id}/description": {
+      "patch": {
+        "tags": ["Agents"],
+        "summary": "Update agent description",
+        "operationId": "updateAgentDescription",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateDescriptionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated agent" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["agents:write"]
+      }
+    },
+    "/agents/{id}/tool-profile": {
+      "patch": {
+        "tags": ["Agents"],
+        "summary": "Update agent tool profile",
+        "operationId": "updateAgentToolProfile",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateToolProfileRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated tool profile" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["agents:write"]
       }
     },
@@ -163,23 +920,86 @@
         "tags": ["Runs"],
         "summary": "Create or get primary conversation",
         "operationId": "createConversation",
-        "parameters": [
-          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Conversation" } },
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdAlt" }],
+        "responses": {
+          "200": {
+            "description": "Conversation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Conversation" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["runs:write"]
       }
     },
     "/agents/{agentId}/conversations/{conversationId}/messages": {
+      "get": {
+        "tags": ["Runs"],
+        "summary": "List conversation messages",
+        "operationId": "listConversationMessages",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/ConversationId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messages": { "type": "array", "items": { "$ref": "#/components/schemas/ChatMessage" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["runs:write"]
+      },
       "post": {
         "tags": ["Runs"],
         "summary": "Enqueue a chat run",
         "operationId": "enqueueAgentRun",
         "parameters": [
-          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "conversationId", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/ConversationId" }
         ],
-        "responses": { "200": { "description": "Run enqueued" } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EnqueueRunRequest" },
+              "example": { "content": "Hello — summarize my inbox" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run enqueued",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EnqueueRunResponse" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["runs:write"]
+      },
+      "delete": {
+        "tags": ["Runs"],
+        "summary": "Delete conversation messages",
+        "operationId": "deleteConversationMessages",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/ConversationId" }
+        ],
+        "responses": {
+          "200": { "description": "Deleted" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["runs:write"]
       }
     },
@@ -189,10 +1009,14 @@
         "summary": "SSE stream for a run",
         "operationId": "streamAgentRun",
         "parameters": [
-          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/RunId" }
         ],
-        "responses": { "200": { "description": "text/event-stream" } },
+        "responses": {
+          "200": { "description": "text/event-stream" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["runs:write"]
       }
     },
@@ -202,28 +1026,40 @@
         "summary": "Stop a run",
         "operationId": "stopAgentRun",
         "parameters": [
-          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/RunId" }
         ],
-        "responses": { "200": { "description": "Stopped" } },
+        "responses": {
+          "200": { "description": "Stopped" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["runs:write"]
       }
     },
-    "/agents/active-runs": {
-      "get": {
+    "/agents/{agentId}/runs/{runId}/inject": {
+      "post": {
         "tags": ["Runs"],
-        "summary": "List in-flight runs",
-        "operationId": "listActiveRuns",
-        "responses": { "200": { "description": "Active runs" } },
-        "x-qlix-scopes": ["runs:write"]
-      }
-    },
-    "/agents/run-history": {
-      "get": {
-        "tags": ["Runs"],
-        "summary": "Recent finished runs",
-        "operationId": "listRunHistory",
-        "responses": { "200": { "description": "Run history" } },
+        "summary": "Inject mid-run guidance",
+        "operationId": "injectAgentRun",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdAlt" },
+          { "$ref": "#/components/parameters/RunId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InjectRunRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Injected" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "description": "Run already finished" }
+        },
         "x-qlix-scopes": ["runs:write"]
       }
     },
@@ -232,10 +1068,23 @@
         "tags": ["Brain"],
         "summary": "Query org brain as an agent",
         "operationId": "agentBrainQuery",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Brain answer" } },
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentBrainQueryRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Brain answer",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrainQueryResult" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["brain:read"]
       }
     },
@@ -244,7 +1093,23 @@
         "tags": ["Credentials"],
         "summary": "List workspace credentials / platform DID",
         "operationId": "listCredentials",
-        "responses": { "200": { "description": "Credentials" } },
+        "responses": {
+          "200": {
+            "description": "Credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credentials": { "type": "array", "items": { "$ref": "#/components/schemas/Credential" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["credentials:read"]
       }
     },
@@ -253,7 +1118,23 @@
         "tags": ["Credentials"],
         "summary": "List workspace passports",
         "operationId": "listPassports",
-        "responses": { "200": { "description": "Passports" } },
+        "responses": {
+          "200": {
+            "description": "Passports",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "passports": { "type": "array", "items": { "$ref": "#/components/schemas/Passport" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["credentials:read"]
       }
     },
@@ -262,7 +1143,26 @@
         "tags": ["Audit"],
         "summary": "Read org audit log",
         "operationId": "getAuditLog",
-        "responses": { "200": { "description": "Audit events" } },
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 1000 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit events grouped by agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "groups": { "type": "array", "items": { "$ref": "#/components/schemas/AuditGroup" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["audit:read"]
       }
     },
@@ -276,7 +1176,11 @@
           { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" } },
           { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["json", "csv"] } }
         ],
-        "responses": { "200": { "description": "Export payload" } },
+        "responses": {
+          "200": { "description": "Export payload" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["audit:read"]
       }
     },
@@ -285,22 +1189,20 @@
         "tags": ["JIT"],
         "summary": "Approve or deny a JIT request",
         "operationId": "decideJit",
+        "description": "Decide a pending JIT request created by a running agent. Use this when the run was started with this API key (or from the console). WhatsApp/Slack-originated runs are decided in those chats instead.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["jitRequestId", "approved"],
-                "properties": {
-                  "jitRequestId": { "type": "string", "format": "uuid" },
-                  "approved": { "type": "boolean" }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/JitDecideRequest" }
             }
           }
         },
-        "responses": { "200": { "description": "Decision recorded" } },
+        "responses": {
+          "200": { "description": "Decision recorded" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["jit:decide"]
       }
     },
@@ -309,7 +1211,68 @@
         "tags": ["JIT"],
         "summary": "List active session grants",
         "operationId": "listJitGrants",
-        "responses": { "200": { "description": "Grants" } },
+        "responses": {
+          "200": {
+            "description": "Grants",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "grants": { "type": "array", "items": { "$ref": "#/components/schemas/JitGrant" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["jit:decide"]
+      }
+    },
+    "/jit/grants/{grantId}": {
+      "delete": {
+        "tags": ["JIT"],
+        "summary": "Revoke a session grant",
+        "operationId": "revokeJitGrant",
+        "parameters": [{ "$ref": "#/components/parameters/GrantId" }],
+        "responses": {
+          "200": { "description": "Revoked" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["jit:decide"]
+      }
+    },
+    "/jit/pending": {
+      "get": {
+        "tags": ["JIT"],
+        "summary": "List pending JIT requests",
+        "operationId": "listPendingJit",
+        "description": "Lists pending JIT approvals for the key's user. Omit filters to see every waiting request. Pass `runId` to scope to one run, or `conversationId`+`agentId` for a chat thread. Approvals for API-started runs appear here and as `jit_approval_pending` on `GET /agents/{id}/runs/{runId}/stream`.",
+        "parameters": [
+          { "name": "runId", "in": "query", "schema": { "type": "string" } },
+          { "name": "agentId", "in": "query", "schema": { "type": "string" } },
+          { "name": "conversationId", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pending": { "type": "array", "items": { "$ref": "#/components/schemas/JitPending" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["jit:decide"]
       }
     },
@@ -318,14 +1281,45 @@
         "tags": ["Teams"],
         "summary": "List teams",
         "operationId": "listTeams",
-        "responses": { "200": { "description": "Teams" } },
+        "responses": {
+          "200": {
+            "description": "Teams",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "teams": { "type": "array", "items": { "$ref": "#/components/schemas/Team" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:read"]
       },
       "post": {
         "tags": ["Teams"],
         "summary": "Create team",
         "operationId": "createTeam",
-        "responses": { "200": { "description": "Created team" } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTeamRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created team",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Team" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:write"]
       }
     },
@@ -334,10 +1328,30 @@
         "tags": ["Teams"],
         "summary": "Get team",
         "operationId": "getTeam",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Team detail" } },
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "responses": {
+          "200": {
+            "description": "Team detail",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Team" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["teams:read"]
+      }
+    },
+    "/teams/{id}/runners-status": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "Team runner status",
+        "operationId": "getTeamRunnersStatus",
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "responses": {
+          "200": { "description": "Runner status" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:read"]
       }
     },
@@ -346,21 +1360,70 @@
         "tags": ["Teams"],
         "summary": "List team runs",
         "operationId": "listTeamRuns",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Team runs" } },
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "responses": {
+          "200": {
+            "description": "Team runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": { "type": "array", "items": { "$ref": "#/components/schemas/TeamRun" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:read"]
       },
       "post": {
         "tags": ["Teams"],
         "summary": "Start a team run",
         "operationId": "startTeamRun",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Team run started" } },
+        "parameters": [{ "$ref": "#/components/parameters/TeamId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/StartTeamRunRequest" },
+              "example": { "goal": "Research competitors and draft a summary" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Team run started",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamRun" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:write"]
+      }
+    },
+    "/teams/{id}/runs/{runId}": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "Get a team run",
+        "operationId": "getTeamRun",
+        "parameters": [
+          { "$ref": "#/components/parameters/TeamId" },
+          { "$ref": "#/components/parameters/RunId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Team run",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamRun" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["teams:read"]
       }
     },
     "/teams/{id}/runs/{runId}/stream": {
@@ -369,10 +1432,14 @@
         "summary": "SSE stream for a team run",
         "operationId": "streamTeamRun",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "runId", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "$ref": "#/components/parameters/TeamId" },
+          { "$ref": "#/components/parameters/RunId" }
         ],
-        "responses": { "200": { "description": "text/event-stream" } },
+        "responses": {
+          "200": { "description": "text/event-stream" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["teams:read"]
       }
     },
@@ -382,16 +1449,22 @@
         "summary": "RAG / retrieval query",
         "operationId": "brainQuery",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": { "query": { "type": "string" } }
-              }
+              "schema": { "$ref": "#/components/schemas/BrainQueryRequest" },
+              "example": { "question": "What is our refund policy?" }
             }
           }
         },
-        "responses": { "200": { "description": "Query result" } },
+        "responses": {
+          "200": {
+            "description": "Query result",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrainQueryResult" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["brain:read"]
       }
     },
@@ -400,7 +1473,49 @@
         "tags": ["Brain"],
         "summary": "Brain status",
         "operationId": "brainStatus",
-        "responses": { "200": { "description": "Status" } },
+        "responses": {
+          "200": { "description": "Status" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["brain:read"]
+      }
+    },
+    "/ai-brain/documents": {
+      "get": {
+        "tags": ["Brain"],
+        "summary": "List knowledge documents",
+        "operationId": "listBrainDocuments",
+        "responses": {
+          "200": {
+            "description": "Documents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "documents": { "type": "array", "items": { "$ref": "#/components/schemas/BrainDocument" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["brain:read"]
+      }
+    },
+    "/ai-brain/policy-signals": {
+      "get": {
+        "tags": ["Brain"],
+        "summary": "List brain policy signals",
+        "operationId": "listBrainPolicySignals",
+        "responses": {
+          "200": { "description": "Policy signals" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["brain:read"]
       }
     },
@@ -409,14 +1524,42 @@
         "tags": ["Brain"],
         "summary": "List knowledge collections",
         "operationId": "listBrainCollections",
-        "responses": { "200": { "description": "Collections" } },
+        "responses": {
+          "200": {
+            "description": "Collections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "collections": { "type": "array", "items": { "$ref": "#/components/schemas/BrainCollection" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["brain:read"]
       },
       "post": {
         "tags": ["Brain"],
         "summary": "Create knowledge collection",
         "operationId": "createBrainCollection",
-        "responses": { "200": { "description": "Created collection" } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateCollectionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created collection" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["brain:write"]
       }
     },
@@ -425,7 +1568,23 @@
         "tags": ["Agents"],
         "summary": "List organization members",
         "operationId": "listOrgMembers",
-        "responses": { "200": { "description": "Members" } },
+        "responses": {
+          "200": {
+            "description": "Members",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "members": { "type": "array", "items": { "$ref": "#/components/schemas/OrgMember" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["agents:read"]
       }
     },
@@ -434,7 +1593,31 @@
         "tags": ["Usage"],
         "summary": "Usage summary",
         "operationId": "usageSummary",
-        "responses": { "200": { "description": "Usage summary" } },
+        "parameters": [
+          { "name": "billingCycle", "in": "query", "schema": { "type": "string", "example": "2026-08" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage summary",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UsageSummary" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["usage:read"]
+      }
+    },
+    "/usage/agents/{agentId}": {
+      "get": {
+        "tags": ["Usage"],
+        "summary": "Per-agent usage breakdown",
+        "operationId": "usageForAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdAlt" }],
+        "responses": {
+          "200": { "description": "Per-run usage" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["usage:read"]
       }
     },
@@ -443,8 +1626,273 @@
         "tags": ["Usage"],
         "summary": "Subscription status",
         "operationId": "getSubscription",
-        "responses": { "200": { "description": "Subscription" } },
+        "responses": {
+          "200": {
+            "description": "Subscription",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Subscription" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
         "x-qlix-scopes": ["usage:read"]
+      }
+    },
+    "/nl-builder/sessions": {
+      "get": {
+        "tags": ["Builder"],
+        "summary": "List AI Builder chat sessions",
+        "operationId": "listBuilderSessions",
+        "responses": {
+          "200": {
+            "description": "Sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": { "type": "array", "items": { "$ref": "#/components/schemas/BuilderSession" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:read"]
+      },
+      "post": {
+        "tags": ["Builder"],
+        "summary": "Create an AI Builder chat session",
+        "operationId": "createBuilderSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateBuilderSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "session": { "$ref": "#/components/schemas/BuilderSession" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      }
+    },
+    "/nl-builder/sessions/{sessionId}": {
+      "get": {
+        "tags": ["Builder"],
+        "summary": "Get an AI Builder chat session",
+        "operationId": "getBuilderSession",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "200": {
+            "description": "Session including transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "session": { "$ref": "#/components/schemas/BuilderSession" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:read"]
+      },
+      "patch": {
+        "tags": ["Builder"],
+        "summary": "Update an AI Builder chat session",
+        "operationId": "updateBuilderSession",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateBuilderSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated session" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      },
+      "delete": {
+        "tags": ["Builder"],
+        "summary": "Delete an AI Builder chat session",
+        "operationId": "deleteBuilderSession",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      }
+    },
+    "/nl-builder/history": {
+      "get": {
+        "tags": ["Builder"],
+        "summary": "List recent builder prompts",
+        "operationId": "listBuilderHistory",
+        "responses": {
+          "200": {
+            "description": "Prompt history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": { "type": "array", "items": { "$ref": "#/components/schemas/BuilderHistoryEntry" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:read"]
+      },
+      "post": {
+        "tags": ["Builder"],
+        "summary": "Save a builder prompt to history",
+        "operationId": "saveBuilderHistory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SaveBuilderHistoryRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Saved" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      }
+    },
+    "/builder/canvases": {
+      "get": {
+        "tags": ["Builder"],
+        "summary": "List visual builder canvases",
+        "operationId": "listBuilderCanvases",
+        "responses": {
+          "200": {
+            "description": "Canvases (without graph payloads)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "canvases": { "type": "array", "items": { "$ref": "#/components/schemas/BuilderCanvas" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:read"]
+      },
+      "post": {
+        "tags": ["Builder"],
+        "summary": "Create a visual builder canvas",
+        "operationId": "createBuilderCanvas",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateCanvasRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created canvas" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      }
+    },
+    "/builder/canvases/{id}": {
+      "get": {
+        "tags": ["Builder"],
+        "summary": "Get a visual builder canvas",
+        "operationId": "getBuilderCanvas",
+        "parameters": [{ "$ref": "#/components/parameters/CanvasId" }],
+        "responses": {
+          "200": {
+            "description": "Canvas including graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "canvas": { "$ref": "#/components/schemas/BuilderCanvas" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:read"]
+      },
+      "patch": {
+        "tags": ["Builder"],
+        "summary": "Update a visual builder canvas",
+        "operationId": "updateBuilderCanvas",
+        "parameters": [{ "$ref": "#/components/parameters/CanvasId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PatchCanvasRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated canvas" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:write"]
+      },
+      "delete": {
+        "tags": ["Builder"],
+        "summary": "Delete a visual builder canvas",
+        "operationId": "deleteBuilderCanvas",
+        "parameters": [{ "$ref": "#/components/parameters/CanvasId" }],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        },
+        "x-qlix-scopes": ["builder:write"]
       }
     }
   }

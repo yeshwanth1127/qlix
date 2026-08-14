@@ -1,0 +1,2 @@
+ALTER TABLE "team_runs"
+ADD COLUMN "inputs" JSONB NOT NULL DEFAULT '[]';

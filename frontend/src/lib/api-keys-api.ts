@@ -14,6 +14,8 @@ export const API_KEY_SCOPE_OPTIONS = [
   { id: "teams:write", label: "Teams — write" },
   { id: "brain:read", label: "AI Brain — read" },
   { id: "brain:write", label: "AI Brain — write" },
+  { id: "builder:read", label: "AI Builder — read" },
+  { id: "builder:write", label: "AI Builder — write" },
   { id: "jit:decide", label: "JIT — decide" },
   { id: "usage:read", label: "Usage — read" },
 ] as const;

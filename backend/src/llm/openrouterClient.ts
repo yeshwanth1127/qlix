@@ -4,6 +4,7 @@ import {
   resolveOpenRouterApiModel,
   type ResolveOpenRouterModelOptions,
 } from './routing/resolveOpenRouterModel.js';
+import { resolveReasoning } from './routing/reasoningBudget.js';
 
 export class OpenRouterConfigError extends Error {
   constructor(message = 'OPENROUTER_API_KEY is required for proxy inference') {
@@ -39,6 +40,8 @@ export interface OpenRouterChatResult {
     total_cost?: number;
     /** `cached_tokens` here is the prefix-cache hit — how much of the prompt was free/discounted. */
     prompt_tokens_details?: { cached_tokens?: number };
+    /** `reasoning_tokens` is billed as output; a value near `max_tokens` means a starved answer. */
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
   provider?: string | null;
 }
@@ -93,11 +96,18 @@ export async function openRouterChatCompletion(
   const timeoutMs = options?.timeoutMs ?? 120_000;
   const retries = options?.retries ?? 2;
   const url = `${openRouterBaseUrl().replace(/\/$/, '')}/chat/completions`;
+  const apiModel = resolveOpenRouterApiModel(request, options);
+  const thinking = resolveReasoning({
+    modelId: apiModel,
+    purpose: request.reasoning_purpose ?? 'agent',
+    maxTokens: request.max_tokens,
+    requestedEffort: request.reasoning_effort ?? null,
+  });
   const body: Record<string, unknown> = {
-    model: resolveOpenRouterApiModel(request, options),
+    model: apiModel,
     messages: request.messages,
     temperature: request.temperature,
-    max_tokens: request.max_tokens,
+    max_tokens: thinking.maxTokens,
     stream: false,
     // Without this OpenRouter omits cost and cached-token counts, so RunUsage.totalCostUsd
     // was always 0 and prompt-cache hit rate was unobservable.
@@ -108,6 +118,9 @@ export async function openRouterChatCompletion(
   }
   if (request.tool_choice !== undefined) {
     body.tool_choice = request.tool_choice;
+  }
+  if (thinking.reasoning) {
+    body.reasoning = thinking.reasoning;
   }
 
   let lastError: Error | null = null;

@@ -103,11 +103,11 @@ export function buildAutoReplyInboundPrompt(input: {
     parts.push(instructions);
     parts.push('');
     parts.push(
-      'Follow those instructions. Use whatsapp_read_chat if you need more context, then act and reply with whatsapp_send_message to this contact.',
+      'Follow those instructions. Use whatsapp_read_chat if you need more context, then act and reply with whatsapp_send_message (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
     );
   } else {
     parts.push(
-      'Use whatsapp_read_chat if you need more context, then reply with whatsapp_send_message to this contact.',
+      'Use whatsapp_read_chat if you need more context, then reply with whatsapp_send_message (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
     );
   }
   return parts.join('\n');

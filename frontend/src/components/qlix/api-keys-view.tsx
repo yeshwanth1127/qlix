@@ -11,7 +11,6 @@ import {
 } from "@/lib/api-keys-api";
 import {
   SketchBox,
-  SketchPageHeader,
   SketchRow,
   sketchButton,
   sketchButtonPrimary,
@@ -19,7 +18,6 @@ import {
   sketchLabel,
 } from "@/components/qlix/sketch";
 import { CopyTextButton } from "@/components/qlix/api-keys/CopyTextButton";
-import { DeveloperApiManual } from "@/components/qlix/api-keys/DeveloperApiManual";
 
 const ALL_SCOPE_IDS = API_KEY_SCOPE_OPTIONS.map((s) => s.id);
 
@@ -91,16 +89,7 @@ export function ApiKeysView() {
     : "";
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto pb-6">
-      <SketchPageHeader title="API keys" />
-      <p className="-mt-2 max-w-2xl text-[13px] leading-relaxed text-black/60">
-        Create a secret key for scripts, CI, and backend services. The key string is your{" "}
-        <span className="text-black">Authorization Bearer</span> token — use it to call the Developer API as
-        your account.
-      </p>
-
-      <DeveloperApiManual apiBase={apiBase} />
-
+    <div className="flex flex-col gap-4">
       {justCreatedKey ? (
         <SketchBox className="flex flex-col gap-3 border-black p-4">
           <div>

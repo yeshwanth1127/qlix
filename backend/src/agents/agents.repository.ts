@@ -10,6 +10,10 @@ import type {
   PermissionScope,
 } from './agents.types.js';
 import type { ToolProfile } from './toolProfiles.js';
+import {
+  parseReasoningEffort,
+  type ReasoningEffort,
+} from '../llm/routing/reasoningBudget.js';
 
 export class OrgMembershipError extends Error {
   readonly code = 'forbidden_org';
@@ -59,6 +63,7 @@ export function toAgentDTO(agent: PrismaAgent): AgentDTO {
     model: agent.llmModel,
     llmMode: agent.llmMode as LlmMode,
     llmProvider: agent.llmProvider as LlmProvider,
+    reasoningEffort: parseReasoningEffort((agent as { reasoningEffort?: unknown }).reasoningEffort),
     localInferenceMode: (agent.localInferenceMode as LocalInferenceMode | null) ?? null,
     permissionScopes: agent.permissionScopes as PermissionScope[],
     jitScopes: agent.jitScopes as PermissionScope[],
@@ -275,10 +280,15 @@ export class AgentsRepository {
     agentId: string,
     llmProvider: LlmProvider,
     model: string,
+    reasoningEffort?: ReasoningEffort | null,
   ): Promise<AgentDTO> {
     const updated = await prisma.agent.update({
       where: { id: agentId },
-      data: { llmProvider, llmModel: model },
+      data: {
+        llmProvider,
+        llmModel: model,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      },
     });
     return toAgentDTO(updated);
   }
@@ -305,8 +315,8 @@ export class AgentsRepository {
   }
 
   /**
-   * Removes the agent row; DB cascades delete VCs and action log rows linked to this agent.
-   * Billing event rows keep history with `agent_id` set null (`SetNull`).
+   * Removes the agent row. Audit/billing history that uses SetNull (VCs, action logs,
+   * RunUsage, BrainUsage) keeps durable identifiers and remains queryable.
    */
   async deleteById(agentId: string): Promise<void> {
     await prisma.agent.delete({ where: { id: agentId } });

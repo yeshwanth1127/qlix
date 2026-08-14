@@ -3,7 +3,10 @@
 - ``whatsapp_send``: upload a runner-local file to the user's linked WhatsApp self-chat.
 - ``whatsapp_list_contacts`` / ``whatsapp_read_chat``: phonebook + recent 1:1 messages (scope whatsapp.read).
 - ``whatsapp_send_message``: text a contact/phone (scope whatsapp.contact_send, JIT-gated).
+- ``whatsapp_send_document``: send a file to a contact (same scope/JIT).
+- ``whatsapp_send_poll``: native WhatsApp poll to a contact (same scope/JIT). Votes count as replies.
 
+You may send multiple messages to the same contact in order (text, document, poll, …).
 Only use contact tools when the user explicitly asks.
 """
 
@@ -23,6 +26,8 @@ WHATSAPP_TOOL_SCOPES: dict[str, tuple[str, ...]] = {
     "whatsapp_list_contacts": ("whatsapp.read", "whatsapp.contact_send"),
     "whatsapp_read_chat": ("whatsapp.read",),
     "whatsapp_send_message": ("whatsapp.contact_send",),
+    "whatsapp_send_document": ("whatsapp.contact_send",),
+    "whatsapp_send_poll": ("whatsapp.contact_send",),
     "whatsapp_auto_reply_status": ("whatsapp.auto_reply",),
     "whatsapp_auto_reply_stop": ("whatsapp.auto_reply",),
     "whatsapp_auto_reply_set_instructions": ("whatsapp.auto_reply",),
@@ -40,7 +45,7 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "description": (
                 "Send a file (PDF, image, screenshot, document) produced during this run to "
                 "the user's linked WhatsApp self-chat (Message yourself). Not for messaging "
-                "other contacts — use whatsapp_send_message for that. "
+                "other contacts — use whatsapp_send_document (file) or whatsapp_send_message (text). "
                 "Requires the whatsapp.send scope."
             ),
             "parameters": {
@@ -52,7 +57,10 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "Optional display name shown in WhatsApp (defaults to the file's name).",
+                        "description": (
+                            "Optional display name shown in WhatsApp. Always include the real "
+                            "extension (e.g. .xlsx, .pdf); defaults to the file's name."
+                        ),
                     },
                 },
                 "required": ["file_path"],
@@ -120,8 +128,12 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "phone number with country code. ONLY call this when the user explicitly asked "
                 "to message that person (never unsolicited outreach). Requires whatsapp.contact_send "
                 "and dashboard/WhatsApp approval the first time in a chat. "
+                "You may send several messages to the same contact in order — follow with "
+                "whatsapp_send_document and/or whatsapp_send_poll when the user asked for a file or poll. "
                 "If this agent also has whatsapp.auto_reply, sending arms a 24h listener so "
-                "contact replies auto-route back to this agent."
+                "contact replies auto-route back to this agent. "
+                "On team wait runs, messages are queued until the wait duration is set and then "
+                "delivered in queue order."
             ),
             "parameters": {
                 "type": "object",
@@ -143,6 +155,97 @@ WHATSAPP_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     },
                 },
                 "required": ["recipient", "message"],
+            },
+        },
+    },
+    "whatsapp_send_document": {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_send_document",
+            "description": (
+                "Send a real file (PDF brochure, spreadsheet, etc.) to a WhatsApp contact. "
+                "REQUIRED when the user asks to send a brochure/document — never paste a link or "
+                "placeholder like [Brochure Link] in a text message. "
+                "Prefer brain_document_id from brain citations / brain_find_documents (company brain). "
+                "Alternatively pass file_path for a runner-local file. "
+                "Requires whatsapp.contact_send (+ brain.query when using brain_document_id). "
+                "On team wait runs the file is queued and sent in order with other messages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "Contact name, phone with country code, or jid.",
+                    },
+                    "brain_document_id": {
+                        "type": "string",
+                        "description": (
+                            "Brain document id (from brain context documentId=… or brain_find_documents). "
+                            "Preferred for brochures stored in the company brain."
+                        ),
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Runner-local path (alternative to brain_document_id).",
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "Optional display name (keep a real extension, e.g. .pdf).",
+                    },
+                    "reply_instructions": {
+                        "type": "string",
+                        "description": (
+                            "Optional. What this agent should do when that contact replies "
+                            "(requires whatsapp.auto_reply)."
+                        ),
+                    },
+                },
+                "required": ["recipient"],
+            },
+        },
+    },
+    "whatsapp_send_poll": {
+        "type": "function",
+        "function": {
+            "name": "whatsapp_send_poll",
+            "description": (
+                "Send a native WhatsApp poll to a contact (name, phone with country code, or jid). "
+                "REQUIRED when the user asks for an interest poll — do NOT replace this with a text "
+                "message that says 'reply Interested/Not Interested'. "
+                "Votes are captured as the contact's reply (selected option text). "
+                "Requires whatsapp.contact_send and the same JIT approval as whatsapp_send_message. "
+                "On team wait runs the poll is queued until the wait duration is set and sent in order."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "Contact name, phone with country code, or jid.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Poll question shown in WhatsApp (max 255 chars).",
+                    },
+                    "values": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Poll options (2–12 unique strings).",
+                    },
+                    "selectableCount": {
+                        "type": "integer",
+                        "description": "How many options the contact can pick (default 1).",
+                    },
+                    "reply_instructions": {
+                        "type": "string",
+                        "description": (
+                            "Optional. What this agent should do when that contact votes or replies "
+                            "(requires whatsapp.auto_reply)."
+                        ),
+                    },
+                },
+                "required": ["recipient", "name", "values"],
             },
         },
     },
@@ -215,6 +318,24 @@ def _scope_needs_jit(identity: AgentIdentity, scope: str) -> bool:
     jit = set(identity.jit_scopes)
     always = set(identity.always_scopes)
     return scope in jit and scope not in always
+
+
+WHATSAPP_CONTACT_SEND_TOOLS = frozenset({
+    "whatsapp_send_message",
+    "whatsapp_send_document",
+    "whatsapp_send_poll",
+})
+
+
+def is_placeholder_file_path(raw: str) -> bool:
+    path = raw.strip().replace("\\", "/").lower()
+    if not path:
+        return False
+    if "path/to/" in path or path.startswith("path/to"):
+        return True
+    if path in {"brochure.pdf", "./brochure.pdf", "document.pdf", "file.pdf"}:
+        return True
+    return False
 
 
 def whatsapp_contact_send_needs_jit(identity: AgentIdentity) -> bool:
@@ -300,6 +421,45 @@ def build_whatsapp_tool_executors(
     executors: dict[str, callable] = {}
     defs = openai_whatsapp_tool_definitions(identity, skill_filter)
     allowed = {d["function"]["name"] for d in defs if isinstance(d.get("function"), dict)}
+    jit_state: dict[str, Any] = {"granted": False, "token": None}
+
+    async def ensure_contact_send_jit(payload: dict[str, Any]) -> str | None:
+        if not whatsapp_contact_send_needs_jit(identity):
+            jit_state["granted"] = True
+            return None
+        if jit_state["granted"]:
+            return None
+        try:
+            from .jit import request_jit_via_runner
+
+            approval = await request_jit_via_runner(
+                agent_id=agent_id,
+                runner_token=runner_token,
+                backend_url=backend_url,
+                did=identity.did,
+                private_key_hex=identity.private_key_hex,
+                action_type="whatsapp.contact_send",
+                payload={"runId": run_id, **payload},
+                qlix_sdk=qlix_sdk,
+            )
+            token = getattr(approval, "jit_token", None)
+            if token:
+                jit_state["token"] = token
+            jit_state["granted"] = True
+            return None
+        except Exception as exc:  # noqa: BLE001
+            return f"JIT approval not granted: {exc}"
+
+    def attach_jit(body: dict[str, Any]) -> dict[str, Any]:
+        token = jit_state.get("token")
+        if token:
+            body["jitToken"] = token
+            # One-time token. Later sends in this run use the conversation grant.
+            jit_state["token"] = None
+        return body
+
+    if any(name in WHATSAPP_CONTACT_SEND_TOOLS for name in allowed):
+        executors["_qlix_whatsapp_contact_jit_preflight"] = ensure_contact_send_jit
 
     if "whatsapp_send" in allowed:
 
@@ -310,6 +470,11 @@ def build_whatsapp_tool_executors(
             raw_path = str(params.get("file_path", "")).strip()
             if not raw_path:
                 return "[failed] file_path is required"
+            if is_placeholder_file_path(raw_path):
+                return (
+                    "[failed] That file_path is a placeholder. Write a real file first "
+                    "or pass an existing local path — do not invent path/to/…"
+                )
             path = Path(raw_path).expanduser()
             if not path.is_file():
                 return f"[failed] File not found: {path}"
@@ -326,6 +491,10 @@ def build_whatsapp_tool_executors(
                 )
 
             file_name = str(params.get("file_name", "")).strip() or path.name
+            # Models often pass a display title without an extension; keep the real
+            # suffix so WhatsApp does not deliver application/octet-stream (.bin).
+            if not Path(file_name).suffix and path.suffix:
+                file_name = f"{file_name}{path.suffix}"
             body = {
                 "runId": run_id,
                 "file_name": file_name,
@@ -407,10 +576,8 @@ def build_whatsapp_tool_executors(
         executors["whatsapp_read_chat"] = _read_chat
 
     if "whatsapp_send_message" in allowed:
-        jit_granted = False
 
         async def _send_message(args_json: str) -> str:
-            nonlocal jit_granted
             params = json.loads(args_json) if args_json.strip() else {}
             if not isinstance(params, dict):
                 params = {}
@@ -429,32 +596,14 @@ def build_whatsapp_tool_executors(
             if params.get("reply_instructions"):
                 body["replyInstructions"] = str(params["reply_instructions"]).strip()
 
-            if whatsapp_contact_send_needs_jit(identity) and not jit_granted:
-                jit_payload = {
-                    "runId": run_id,
-                    "tool": "whatsapp_send_message",
-                    "recipient": recipient,
-                    "message": message[:300],
-                }
-                try:
-                    from .jit import request_jit_via_runner
-
-                    approval = await request_jit_via_runner(
-                        agent_id=agent_id,
-                        runner_token=runner_token,
-                        backend_url=backend_url,
-                        did=identity.did,
-                        private_key_hex=identity.private_key_hex,
-                        action_type="whatsapp.contact_send",
-                        payload=jit_payload,
-                        qlix_sdk=qlix_sdk,
-                    )
-                    token = getattr(approval, "jit_token", None)
-                    if token:
-                        body["jitToken"] = token
-                    jit_granted = True
-                except Exception as exc:  # noqa: BLE001
-                    return f"[failed] JIT approval not granted: {exc}"
+            jit_err = await ensure_contact_send_jit({
+                "tool": "whatsapp_send_message",
+                "recipient": recipient,
+                "message": message[:300],
+            })
+            if jit_err:
+                return f"[failed] {jit_err}"
+            attach_jit(body)
 
             return _post_json(
                 backend_url=backend_url,
@@ -465,6 +614,129 @@ def build_whatsapp_tool_executors(
             )
 
         executors["whatsapp_send_message"] = _send_message
+
+    if "whatsapp_send_document" in allowed:
+
+        async def _send_document(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            recipient = str(params.get("recipient", "")).strip()
+            brain_document_id = str(params.get("brain_document_id", "")).strip()
+            raw_path = str(params.get("file_path", "")).strip()
+            if not recipient:
+                return "[failed] recipient is required"
+            if not brain_document_id and not raw_path:
+                return (
+                    "[failed] Provide brain_document_id (preferred for brochures) "
+                    "or file_path"
+                )
+
+            jit_err = await ensure_contact_send_jit({
+                "tool": "whatsapp_send_document",
+                "recipient": recipient,
+                "brain_document_id": brain_document_id or None,
+            })
+            if jit_err:
+                return f"[failed] {jit_err}"
+
+            if raw_path and not brain_document_id and is_placeholder_file_path(raw_path):
+                return (
+                    "[failed] That file_path is a placeholder. Call brain_find_documents "
+                    "for the brochure and pass brain_document_id — do not invent path/to/…"
+                )
+
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "recipient": recipient,
+            }
+            if brain_document_id:
+                body["brain_document_id"] = brain_document_id
+            if params.get("file_name"):
+                body["file_name"] = str(params.get("file_name")).strip()
+            if params.get("reply_instructions"):
+                body["replyInstructions"] = str(params["reply_instructions"]).strip()
+
+            if raw_path and not brain_document_id:
+                path = Path(raw_path).expanduser()
+                if not path.is_file():
+                    return f"[failed] File not found: {path}"
+                try:
+                    data = path.read_bytes()
+                except OSError as exc:
+                    return f"[failed] Could not read file: {exc}"
+                if not data:
+                    return "[failed] File is empty"
+                if len(data) > _MAX_FILE_BYTES:
+                    return (
+                        f"[failed] File too large ({len(data)} bytes); "
+                        f"limit is {_MAX_FILE_BYTES} bytes."
+                    )
+                file_name = str(params.get("file_name", "")).strip() or path.name
+                if not Path(file_name).suffix and path.suffix:
+                    file_name = f"{file_name}{path.suffix}"
+                body["file_name"] = file_name
+                body["content_base64"] = base64.b64encode(data).decode("ascii")
+
+            attach_jit(body)
+
+            return _post_json(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/whatsapp/send-document-to",
+                body=body,
+            )
+
+        executors["whatsapp_send_document"] = _send_document
+
+    if "whatsapp_send_poll" in allowed:
+
+        async def _send_poll(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            recipient = str(params.get("recipient", "")).strip()
+            name = str(params.get("name", "")).strip()
+            raw_values = params.get("values")
+            if not recipient:
+                return "[failed] recipient is required"
+            if not name:
+                return "[failed] name is required"
+            if not isinstance(raw_values, list) or len(raw_values) < 2:
+                return "[failed] values must be a list of at least 2 options"
+
+            values = [str(v).strip() for v in raw_values if str(v).strip()]
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "recipient": recipient,
+                "name": name,
+                "values": values,
+            }
+            if params.get("selectableCount") is not None:
+                body["selectableCount"] = int(params["selectableCount"])
+            if params.get("reply_instructions"):
+                body["replyInstructions"] = str(params["reply_instructions"]).strip()
+
+            jit_err = await ensure_contact_send_jit({
+                "tool": "whatsapp_send_poll",
+                "recipient": recipient,
+                "name": name,
+                "values": values[:12],
+            })
+            if jit_err:
+                return f"[failed] {jit_err}"
+            attach_jit(body)
+
+            return _post_json(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/whatsapp/send-poll",
+                body=body,
+            )
+
+        executors["whatsapp_send_poll"] = _send_poll
 
     if "whatsapp_auto_reply_status" in allowed:
 

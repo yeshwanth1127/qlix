@@ -45,20 +45,19 @@ class ReplyDispatcherImpl {
 
     // Prefer tracked delivery target; fall back to channel adapters that know how to discover.
     if (pending) {
-      const adapter = this.adapters.get(pending.deliveryTarget.channel);
+      const channel = pending.deliveryTarget.channel;
+      const adapter =
+        this.adapters.get(channel) ?? (channel === 'api' ? this.adapters.get('web') : undefined);
       if (adapter) {
         await adapter.deliver(pending.deliveryTarget, full);
-        return;
       }
+      return;
     }
 
     // Fallback: try WhatsApp adapter for legacy untracked runs (teamRole=whatsapp).
     const wa = this.adapters.get('whatsapp');
     if (wa) {
-      await wa.deliver(
-        pending?.deliveryTarget ?? { channel: 'whatsapp' },
-        full,
-      );
+      await wa.deliver({ channel: 'whatsapp' }, full);
     }
   }
 

@@ -23,11 +23,15 @@ export function buildWebChatInbound(input: {
   attachments?: InboundAttachments;
   skills?: string[];
   inferenceModel?: string | null;
+  reasoningEffort?: string | null;
   useBrain?: boolean;
   agentName?: string;
+  /** Origin of this turn. Console chat is `web`; Developer API keys are `api`. */
+  channel?: import('../types.js').GatewayChannel;
 }): import('../types.js').InboundMessage {
+  const channel = input.channel ?? 'web';
   return {
-    channel: 'web',
+    channel,
     orgId: input.orgId,
     userId: input.userId,
     email: input.email,
@@ -38,9 +42,10 @@ export function buildWebChatInbound(input: {
     attachments: input.attachments,
     skills: input.skills,
     inferenceModel: input.inferenceModel,
+    reasoningEffort: input.reasoningEffort,
     useBrain: input.useBrain,
     deliveryTarget: {
-      channel: 'web',
+      channel,
       peerId: input.userId,
       threadId: input.conversationId,
     },

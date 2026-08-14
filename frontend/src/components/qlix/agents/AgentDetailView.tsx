@@ -8,6 +8,7 @@ import {
   type AgentDTO,
   type LlmProvider,
   type ModelCatalogEntry,
+  type ReasoningEffort,
   type VerifiableCredentialDTO,
   buildProxyModelGroups,
   llmProviderFromModelId,
@@ -26,6 +27,7 @@ import {
 import { downloadBase64File, getStashedStarterPack, type StarterPack } from "@/lib/download";
 import { canDeleteAgentRecord } from "@/lib/org-permissions";
 import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
+import { ReasoningEffortPicker } from "@/components/qlix/agents/ReasoningEffortPicker";
 import {
   SketchBox,
   SketchListSkeleton,
@@ -82,6 +84,9 @@ function AgentInferenceSettings({
 }) {
   const [provider, setProvider] = useState<LlmProvider>(agent.llmProvider);
   const [model, setModel] = useState(agent.model);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | null>(
+    agent.reasoningEffort ?? null,
+  );
   const [exoraCatalog, setExoraCatalog] = useState<ModelCatalogEntry[]>([]);
   const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
   const [capabilities, setCapabilities] = useState<Awaited<
@@ -118,7 +123,10 @@ function AgentInferenceSettings({
       capabilities?.providers.openrouter.enabled !== false,
     selectedModel: model,
   });
-  const dirty = provider !== agent.llmProvider || model !== agent.model;
+  const dirty =
+    provider !== agent.llmProvider ||
+    model !== agent.model ||
+    (reasoningEffort ?? null) !== (agent.reasoningEffort ?? null);
 
   return (
     <div className="sm:col-span-2 grid gap-3">
@@ -136,6 +144,16 @@ function AgentInferenceSettings({
           />
         </div>
       </div>
+      <div>
+        <span className={sketchLabel}>Thinking budget</span>
+        <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--ink-soft)]">
+          How much of the reply a reasoning model may spend thinking. Low keeps a little
+          thinking without eating the whole answer.
+        </p>
+        <div className="mt-1.5">
+          <ReasoningEffortPicker value={reasoningEffort} onChange={setReasoningEffort} />
+        </div>
+      </div>
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -144,7 +162,7 @@ function AgentInferenceSettings({
           onClick={() => {
             setSaving(true);
             setError(null);
-            void updateAgentInference(agent.id, provider, model).then((result) => {
+            void updateAgentInference(agent.id, provider, model, reasoningEffort).then((result) => {
               setSaving(false);
               if (!result.ok) {
                 setError(result.error);

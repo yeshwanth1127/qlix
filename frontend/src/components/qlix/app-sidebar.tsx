@@ -48,11 +48,11 @@ export function AppSidebar({
   const moreActive = more.some((item) => isConsoleNavActive(item.href, currentPath, overviewHref));
 
   const navLinkBase =
-    "sketch-press rounded-lg border-l-[3px] border-transparent py-2 pl-2.5 pr-2 text-[10px] leading-snug transition-all duration-200 ease-out";
+    "sketch-press rounded-lg border border-transparent py-2 pl-2.5 pr-2 text-[10px] leading-snug transition-all duration-200 ease-out";
   const navLinkActive =
-    "border-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-bold text-[color:var(--sketch-purple)]";
+    "border-l-[3px] border-l-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-bold text-[color:var(--sketch-purple)]";
   const navLinkIdle =
-    "text-black hover:border-[color:var(--sketch-purple)]/40 hover:bg-[color:var(--sketch-purple-soft)]/60 hover:text-black hover:pl-3";
+    "text-black hover:border-black hover:bg-[color:var(--sketch-purple-soft)] hover:text-black";
 
   return (
     <aside

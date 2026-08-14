@@ -310,7 +310,12 @@ export class SubAgentService {
 
     const parent = await prisma.agentRun.findUnique({
       where: { id: params.parentRunId },
-      select: { userId: true, orgId: true, conversation: { select: { sessionKey: true, kind: true } } },
+      select: {
+        userId: true,
+        orgId: true,
+        sourceChannel: true,
+        conversation: { select: { sessionKey: true, kind: true } },
+      },
     });
     if (!parent) fail('parent_run_not_found', 'Parent run not found');
 
@@ -350,6 +355,7 @@ export class SubAgentService {
         body: params.prompt,
         skills: params.skills,
         agentName: params.target.name,
+        channel: (parent.sourceChannel as import('../gateway/types.js').GatewayChannel) || 'web',
       }),
     );
 

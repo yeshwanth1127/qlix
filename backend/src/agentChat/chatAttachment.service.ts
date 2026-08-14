@@ -16,7 +16,7 @@ export interface ChatAttachmentMeta {
   textPreview?: string;
 }
 
-interface ProcessedChatAttachment extends ChatAttachmentMeta {
+export interface ProcessedChatAttachment extends ChatAttachmentMeta {
   extractedText?: string;
 }
 

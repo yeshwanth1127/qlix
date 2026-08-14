@@ -268,6 +268,10 @@ model Agent {
   llmProvider        String  @default("exora") @map("llm_provider")
   /// When `runtime` is `local`: `local_llm` vs `cloud_api`. Null when `runtime` is `cloud`.
   localInferenceMode String? @map("local_inference_mode")
+  /// How much of the completion budget a thinking model may spend reasoning:
+  /// `none` | `minimal` | `low` | `medium` | `high` | `xhigh` | `max`.
+  /// Null lets Qlix pick a small share, which keeps room for the visible answer.
+  reasoningEffort    String? @map("reasoning_effort")
 
   permissionScopes String[] @default([]) @map("permission_scopes")
   jitScopes        String[] @default([]) @map("jit_scopes")
@@ -610,9 +614,15 @@ model BrainConversationMessage {
 }
 
 /// Token usage recorded for Exa brain queries, which do not run through AgentRun.
+/// Kept after the brain agent is deleted (`SetNull` on FK); `agentKey` / `agentName` are durable snapshots.
 model BrainUsage {
   id               String   @id @default(cuid())
-  brainAgentId     String   @map("brain_agent_id")
+  /// Live FK — null after the Agent row is deleted.
+  brainAgentId     String?  @map("brain_agent_id")
+  /// Durable agent id for grouping after delete (never cleared).
+  agentKey         String   @map("agent_key")
+  /// Display name captured when usage was recorded.
+  agentName        String   @map("agent_name") @db.VarChar(160)
   userId           String   @map("user_id") @db.Uuid
   orgId            String   @map("org_id") @db.Uuid
   promptTokens     Int      @default(0) @map("prompt_tokens")
@@ -623,11 +633,12 @@ model BrainUsage {
   provider         String?
   createdAt        DateTime @default(now()) @map("created_at")
 
-  brainAgent Agent        @relation(fields: [brainAgentId], references: [id], onDelete: Cascade)
+  brainAgent Agent?       @relation(fields: [brainAgentId], references: [id], onDelete: SetNull)
   user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([brainAgentId, createdAt])
+  @@index([agentKey, createdAt])
   @@index([orgId, createdAt])
   @@index([userId, createdAt])
   @@map("brain_usages")
@@ -675,7 +686,9 @@ model BrainKnowledgeCollection {
   @@map("brain_knowledge_collections")
 }
 
-/// Document ingested into a brain collection (text-first; chunking for RAG).
+/// Document ingested into a brain collection.
+/// File uploads retain the original binary (storageKey) AND extract text into
+/// bodyText + chunks + embeddings for the normal RAG workflow.
 model BrainKnowledgeDocument {
   id           String   @id @default(cuid())
   orgId        String   @map("org_id") @db.Uuid
@@ -684,6 +697,12 @@ model BrainKnowledgeDocument {
   /// Raw source text for MVP ingest; external URI optional for future connectors.
   bodyText     String   @map("body_text") @db.Text
   sourceUri    String?  @map("source_uri")
+  /// Original upload filename (when a binary was retained for download/send).
+  originalFileName String? @map("original_file_name")
+  /// MIME type of the retained original upload.
+  originalMimeType String? @map("original_mime_type")
+  /// Relative path under the brain-files root (orgId/docId/filename).
+  storageKey   String?  @map("storage_key")
   /// `pending` | `ready` | `failed`
   ingestStatus String   @default("pending") @map("ingest_status")
   createdAt    DateTime @default(now()) @map("created_at")
@@ -749,6 +768,8 @@ model AgentRun {
   skills         String[]  @default([])
   /// Normalized OpenRouter model id for proxy inference (`openrouter/provider/model`). Null = runner manifest default.
   inferenceModel String?   @map("inference_model")
+  /// Per-run thinking share. Null uses the agent's saved preference or Qlix's small default.
+  reasoningEffort String?  @map("reasoning_effort")
   /// When true, cloud runner prepends org brain context before proxy inference.
   useBrain       Boolean   @default(false) @map("use_brain")
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -761,6 +782,8 @@ model AgentRun {
   teamId         String?   @map("team_id")
   /// supervisor | worker — role within the team run.
   teamRole       String?   @map("team_role")
+  /// Where this run was started: `web` | `api` | `whatsapp` | `slack` | `telegram` | `local` | `cron`.
+  sourceChannel  String    @default("web") @map("source_channel")
   /// When set, final run result is delivered to this WhatsApp contact JID (auto-reply).
   whatsappReplyToJid String? @map("whatsapp_reply_to_jid")
   /// Parent AgentRun when this run is a child of another run (V2 child runs; optional in V1).
@@ -834,10 +857,18 @@ model AgentRunEvent {
 }
 
 /// Token usage and cost tracking for completed agent runs. One row per run; data sourced from OpenRouter inference events.
+/// Kept after the Agent / AgentRun rows are deleted (`SetNull` on FKs); `agentKey` / `agentName` are durable snapshots
+/// so the usage page still attributes tokens after an agent is removed.
 model RunUsage {
   id               String   @id @default(cuid())
-  runId            String   @unique @map("run_id")
-  agentId          String   @map("agent_id")
+  /// Live FK to the run — null after the AgentRun row is cascade-deleted with the agent.
+  runId            String?  @unique @map("run_id")
+  /// Live FK — null after the Agent row is deleted.
+  agentId          String?  @map("agent_id")
+  /// Durable agent id for grouping after delete (never cleared).
+  agentKey         String   @map("agent_key")
+  /// Display name captured when usage was recorded.
+  agentName        String   @map("agent_name") @db.VarChar(160)
   orgId            String?  @map("org_id") @db.Uuid
   userId           String   @map("user_id") @db.Uuid
   promptTokens     Int      @default(0) @map("prompt_tokens")
@@ -849,10 +880,11 @@ model RunUsage {
   openrouterGenId  String?  @map("openrouter_gen_id")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  agent Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  run   AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  agent Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   @@index([agentId, createdAt])
+  @@index([agentKey, createdAt])
   @@index([orgId, createdAt])
   @@index([userId, createdAt])
   @@map("run_usages")
@@ -1298,7 +1330,7 @@ model TeamRun {
   orgId                  String    @map("org_id") @db.Uuid
   startedByUserId        String    @map("started_by_user_id") @db.Uuid
   goal                   String    @db.Text
-  /// `web` | `whatsapp` — where the run was started.
+  /// `web` | `whatsapp` | `api` | `slack` | `telegram` — where the run was started.
   sourceChannel          String    @default("web") @map("source_channel")
   /// Connector UUID when started from WhatsApp.
   sourceConnectorId      String?   @map("source_connector_id") @db.Uuid
@@ -1314,18 +1346,25 @@ model TeamRun {
   scopeEscalations       Json      @default("[]") @map("scope_escalations")
   /// Durable pipeline state saved while this run is waiting for an external trigger.
   checkpointJson         Json?     @map("checkpoint_json")
+  /// Immutable source handles for Luna-Teams (authoritative user inputs vs reference assets).
+  inputs                 Json      @default("[]")
   /// Final synthesized result from the supervisor.
   result                 Json?
   errorMessage           String?   @map("error_message")
+  /// Prior TeamRun this follow-up continues (same team conversation).
+  continuesRunId         String?   @map("continues_run_id")
   createdAt              DateTime  @default(now()) @map("created_at")
   startedAt              DateTime? @map("started_at")
   completedAt            DateTime? @map("completed_at")
 
   team           Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
   startedBy      User                   @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
+  continuedFrom  TeamRun?               @relation("TeamRunFollowUp", fields: [continuesRunId], references: [id], onDelete: SetNull)
+  followUps      TeamRun[]              @relation("TeamRunFollowUp")
   events         TeamRunEvent[]
   a2aTasks       A2ATask[]
   agentRuns      AgentRun[]
+  mailbox        TeamMailboxMessage[]
   waitTriggers   WaitTrigger[]
   channelSession TeamRunChannelSession?
 
@@ -1333,7 +1372,35 @@ model TeamRun {
   @@index([orgId, createdAt])
   @@index([status, createdAt])
   @@index([sourceConnectorId, status])
+  @@index([continuesRunId])
   @@map("team_runs")
+}
+
+/// Durable Luna-Teams handoff. Messages are conversational context; Results are
+/// terminal worker handbacks consumed by the commander host.
+model TeamMailboxMessage {
+  id               String   @id @default(cuid())
+  teamRunId        String   @map("team_run_id")
+  teamId           String   @map("team_id")
+  kind             String   @default("result")
+  status           String   @default("pending")
+  senderAgentId    String?  @map("sender_agent_id")
+  recipientAgentId String?  @map("recipient_agent_id")
+  a2aTaskId        String?  @map("a2a_task_id")
+  agentRunId       String?  @map("agent_run_id")
+  contractId       String?  @map("contract_id")
+  payload          Json
+  errorMessage     String?  @map("error_message")
+  createdAt        DateTime @default(now()) @map("created_at")
+  completedAt      DateTime? @map("completed_at")
+
+  run TeamRun @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+
+  @@index([teamRunId, kind, createdAt])
+  @@index([teamRunId, status])
+  @@index([a2aTaskId])
+  @@index([agentRunId])
+  @@map("team_mailbox_messages")
 }
 
 /// Durable external-event wait for an agent or a paused team pipeline.

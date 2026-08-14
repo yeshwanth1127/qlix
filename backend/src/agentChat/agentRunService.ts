@@ -15,10 +15,13 @@ export interface EnqueueAgentRunInput {
   attachments?: unknown;
   skills?: string[];
   inferenceModel?: string | null;
+  reasoningEffort?: string | null;
   useBrain?: boolean;
   teamRunId?: string | null;
   teamId?: string | null;
   teamRole?: string | null;
+  /** Where the run started: `web` | `api` | `whatsapp` | `slack` | `telegram` | `local` | `cron`. */
+  sourceChannel?: string | null;
   whatsappReplyToJid?: string | null;
 }
 
@@ -27,33 +30,23 @@ export interface EnqueueAgentRunResult {
   messageId: string;
 }
 
-/**
- * Upsert a per-user conversation used for team-orchestrated runs (distinct from chat UI threads).
- */
-export async function ensureTeamConversation(params: {
+/** Create a physically isolated conversation for exactly one Luna-Teams dispatch. */
+export async function createTeamDispatchConversation(params: {
   agentId: string;
   userId: string;
   orgId: string | null;
   teamId: string;
+  teamRunId: string;
+  dispatchId: string;
 }): Promise<string> {
-  const existing = await prisma.agentConversation.findFirst({
-    where: {
-      agentId: params.agentId,
-      userId: params.userId,
-      orgId: params.orgId,
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
-
   const conv = await prisma.agentConversation.create({
     data: {
       agentId: params.agentId,
       userId: params.userId,
       orgId: params.orgId,
-      kind: 'chat',
-      title: `Team ${params.teamId.slice(0, 8)}`,
+      kind: 'team_dispatch',
+      title: `Team dispatch ${params.teamRunId.slice(0, 8)} · ${params.dispatchId}`,
+      sessionKey: `team:${params.teamId}:${params.teamRunId}:${params.dispatchId}`,
     },
   });
   return conv.id;
@@ -105,10 +98,12 @@ export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<Enqu
         attachments: input.attachments ?? undefined,
         skills: input.skills ?? [],
         inferenceModel: input.inferenceModel ?? null,
+        reasoningEffort: input.reasoningEffort ?? null,
         useBrain: input.useBrain ?? false,
         teamRunId: input.teamRunId ?? null,
         teamId: input.teamId ?? null,
         teamRole: input.teamRole ?? null,
+        sourceChannel: input.sourceChannel ?? 'web',
         whatsappReplyToJid: input.whatsappReplyToJid ?? null,
       },
     }),
@@ -134,6 +129,51 @@ export async function getAgentRunStatus(runId: string): Promise<{
 
 const TERMINAL = new Set<string>(['success', 'failed', 'canceled', 'cancelled']);
 
+export function isAgentRunTerminal(status: string): boolean {
+  return TERMINAL.has(status);
+}
+
+/** Stop an in-flight agent run so the hybrid/cloud runner exits between tool rounds. */
+export async function cancelAgentRun(
+  runId: string,
+  errorMessage = 'Stopped by user',
+): Promise<boolean> {
+  const updated = await prisma.agentRun.updateMany({
+    where: { id: runId, status: { notIn: [...TERMINAL] } },
+    data: {
+      status: 'canceled',
+      finishedAt: new Date(),
+      errorMessage,
+    },
+  });
+  if (updated.count === 0) return false;
+  await appendAgentRunLogEvent(runId, {
+    message: 'run_canceled',
+    reason: 'stopped_by_user',
+  });
+  try {
+    const { JitService } = await import('../jit/jit.service.js');
+    await new JitService().denyPendingForRun(runId, 'run_canceled');
+  } catch (jitErr) {
+    console.warn('[cancelAgentRun] denyPendingForRun failed', jitErr);
+  }
+  return true;
+}
+
+export async function cancelAgentRunsForTeamRun(
+  teamRunId: string,
+  errorMessage = 'Team run stopped',
+): Promise<number> {
+  const runs = await prisma.agentRun.findMany({
+    where: { teamRunId, status: { notIn: [...TERMINAL] } },
+    select: { id: true },
+  });
+  for (const run of runs) {
+    await cancelAgentRun(run.id, errorMessage);
+  }
+  return runs.length;
+}
+
 export async function terminateAgentRun(
   runId: string,
   errorMessage: string,
@@ -146,6 +186,43 @@ export async function terminateAgentRun(
       finishedAt: new Date(),
     },
   });
+  try {
+    const { JitService } = await import('../jit/jit.service.js');
+    // Expire the pending card so the runner leaves JIT poll and can claim the next job.
+    await new JitService().denyPendingForRun(runId, 'timeout');
+  } catch (jitErr) {
+    console.warn('[terminateAgentRun] denyPendingForRun failed', jitErr);
+  }
+}
+
+/** Human JIT wait does not consume the agent-run timeout. After approval, work gets a fresh window. */
+export function applyAgentRunWaitSlice(params: {
+  sliceMs: number;
+  activeMs: number;
+  timeoutMs: number;
+  holdingForJit: boolean;
+  jitPending?: boolean;
+}): { activeMs: number; holdingForJit: boolean; timedOut: boolean; needsJitCheck: boolean } {
+  const needsJitCheck =
+    params.holdingForJit || params.activeMs + Math.max(0, params.sliceMs) >= params.timeoutMs;
+  if (needsJitCheck && params.jitPending === undefined) {
+    return {
+      activeMs: params.activeMs,
+      holdingForJit: params.holdingForJit,
+      timedOut: false,
+      needsJitCheck: true,
+    };
+  }
+  if (params.jitPending) {
+    return { activeMs: 0, holdingForJit: true, timedOut: false, needsJitCheck: false };
+  }
+  const activeMs = (params.holdingForJit ? 0 : params.activeMs) + Math.max(0, params.sliceMs);
+  return {
+    activeMs,
+    holdingForJit: false,
+    timedOut: activeMs >= params.timeoutMs,
+    needsJitCheck: false,
+  };
 }
 
 export async function waitForAgentRunCompletion(
@@ -153,8 +230,10 @@ export async function waitForAgentRunCompletion(
   timeoutMs: number,
   pollIntervalMs = 500,
 ): Promise<{ status: AgentRunTerminalStatus; result: unknown; errorMessage: string | null }> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  let activeMs = 0;
+  let holdingForJit = false;
+  let lastTick = Date.now();
+  while (true) {
     const run = await getAgentRunStatus(runId);
     if (TERMINAL.has(run.status)) {
       return {
@@ -163,11 +242,40 @@ export async function waitForAgentRunCompletion(
         errorMessage: run.errorMessage,
       };
     }
+    const now = Date.now();
+    const sliceMs = now - lastTick;
+    lastTick = now;
+    let slice = applyAgentRunWaitSlice({
+      sliceMs,
+      activeMs,
+      timeoutMs,
+      holdingForJit,
+    });
+    if (slice.needsJitCheck) {
+      let jitPending = false;
+      try {
+        const { JitService } = await import('../jit/jit.service.js');
+        jitPending = await new JitService().hasPendingForRun(runId);
+      } catch (jitErr) {
+        console.warn('[waitForAgentRunCompletion] hasPendingForRun failed', jitErr);
+      }
+      slice = applyAgentRunWaitSlice({
+        sliceMs,
+        activeMs,
+        timeoutMs,
+        holdingForJit,
+        jitPending,
+      });
+    }
+    activeMs = slice.activeMs;
+    holdingForJit = slice.holdingForJit;
+    if (slice.timedOut) {
+      const message = `Agent run timed out after ${timeoutMs}ms`;
+      await terminateAgentRun(runId, message);
+      throw new Error(message);
+    }
     await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
-  const message = `Agent run timed out after ${timeoutMs}ms`;
-  await terminateAgentRun(runId, message);
-  throw new Error(message);
 }
 
 /** Append a structured log row to an agent run (SSE / activity timeline). */

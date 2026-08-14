@@ -60,10 +60,11 @@ const VENDOR_ORDER = [
   "anthropic",
   "openai",
   "google",
+  "nvidia",
+  "deepseek",
   "meta-llama",
   "mistralai",
   "qwen",
-  "deepseek",
   "x-ai",
 ];
 

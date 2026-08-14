@@ -31,6 +31,7 @@ async def backend_proxy_chat_completion(
     tool_choice: str | dict[str, Any] | None = None,
     tools_hash: str | None = None,
     pinned_model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> BackendInferenceResult:
     body: dict[str, Any] = {
         "model": model,
@@ -48,6 +49,9 @@ async def backend_proxy_chat_completion(
         body["tool_choice"] = tool_choice
     if pinned_model:
         body["pinned_model"] = pinned_model
+    if reasoning_effort:
+        body["reasoning_effort"] = reasoning_effort
+    body["reasoning_purpose"] = "agent"
     response = await http.post_json(
         f"/api/v1/agents/{agent_id}/inference/chat",
         body,

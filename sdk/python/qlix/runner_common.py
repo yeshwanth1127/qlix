@@ -25,6 +25,7 @@ from .cloud_browser_runtime import (
     smart_truncate_tool_result,
     truncation_key,
 )
+from .cloud_whatsapp_runtime import WHATSAPP_CONTACT_SEND_TOOLS
 from .http_client import QlixHttpClient
 from .identity import AgentIdentity
 
@@ -341,6 +342,10 @@ async def emit_event(
 
 class RunCanceledError(Exception):
     """Raised when Active Runs (or API) stops the run mid-execution."""
+
+
+class InferenceTruncatedError(Exception):
+    """Raised when the model spent its output budget thinking and returned no answer."""
 
 
 def _status_is_canceled(status: object) -> bool:
@@ -692,8 +697,18 @@ def describe_capabilities(granted_scopes: set[str]) -> str:
         "When the user asks what you can do, or whether you can do something, answer "
         "based on these capabilities and the tools available to you. Never claim you "
         "are unable to do something your tools enable (for example, do not say you "
-        "cannot browse the internet when you have web access). Prefer calling a tool "
-        "to actually do the task rather than asking the user to do it themselves."
+        "cannot browse the internet when you have web access).\n"
+        "Tool discipline:\n"
+        "- Call a tool only when this user message needs a real action or fresh "
+        "external data that your tools provide.\n"
+        "- For greetings, thanks, capability questions, clarifications, or answers "
+        "already in recent conversation/memory (IDs, URLs, prior results), reply "
+        "directly — do not re-run tools.\n"
+        "- Having a tool available is not permission to use it; do not invent side "
+        "work.\n"
+        "- When a tool returns a durable result (shareable link, formId, doc URL, "
+        "permalink), include it in your user-visible reply so later turns can reuse "
+        "it from memory."
     )
     return "\n\n".join(parts)
 
@@ -891,6 +906,7 @@ async def run_backend_proxy_inference(
     max_rounds: int | None = None,
     max_seconds: float | None = None,
     subagent_context: Any = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn inference with pre-bound tool executors."""
     if is_acknowledgement_only(enriched_prompt):
@@ -966,9 +982,13 @@ async def run_backend_proxy_inference(
     max_empty_nudges = int(os.environ.get("QLIX_PROXY_MAX_EMPTY_NUDGES", "2"))
     empty_nudges = 0
     force_tool_next_round = False
+    force_text_next_round = False
+    stuck_final_nudge = 0
     # Set from round 1's response; sent back on every later round (see pinned_model).
     pinned_model: str | None = None
     exit_reason = "complete"
+    length_retries = 0
+    max_length_retries = int(os.environ.get("QLIX_PROXY_MAX_LENGTH_RETRIES", "2"))
 
     for round_idx in range(max_rounds):
         inference_rounds += 1
@@ -1002,18 +1022,70 @@ async def run_backend_proxy_inference(
             max_tokens=max_tokens,
             run_id=run_id,
             tools=tools,
-            tool_choice="required" if force_tool_next_round else "auto",
+            tool_choice=(
+                "required"
+                if force_tool_next_round
+                else "none"
+                if force_text_next_round
+                else "auto"
+            ),
             tools_hash=tools_hash,
             pinned_model=pinned_model,
+            reasoning_effort=reasoning_effort,
         )
         if force_tool_next_round:
             force_tool_next_round = False
+        if force_text_next_round:
+            force_text_next_round = False
         # Lock the run to whatever concrete model round 1 resolved to, so later rounds
         # keep the same provider (and therefore the same warm prompt-prefix cache).
         if pinned_model is None and proxy_result.routed_model:
             pinned_model = proxy_result.routed_model
             log("model_pinned", agent_id=agent_id, run_id=run_id, model=pinned_model)
         accumulate_usage(usage_acc, proxy_result.usage)
+
+        finish_reason = str(proxy_result.finish_reason or "").strip().lower()
+        if (
+            finish_reason == "length"
+            and not proxy_result.tool_calls
+            and length_retries < max_length_retries
+            and time.time() <= deadline
+        ):
+            length_retries += 1
+            max_tokens = min(32768, int(max_tokens * 1.5) if max_tokens else 8192)
+            log(
+                "inference_truncated",
+                agent_id=agent_id,
+                run_id=run_id,
+                round=round_idx + 1,
+                retry=length_retries,
+                max_tokens=max_tokens,
+            )
+            seq = await emit_event(
+                http,
+                agent_id=agent_id,
+                run_id=run_id,
+                headers=headers,
+                seq=seq,
+                event_type="log",
+                data={
+                    "message": "inference_truncated",
+                    "round": round_idx + 1,
+                    "retry": length_retries,
+                    "maxTokens": max_tokens,
+                },
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous reply was cut off because too many tokens went to "
+                        "internal reasoning. Answer directly and briefly. Call tools if "
+                        "the task still needs them, then return the final result."
+                    ),
+                }
+            )
+            continue
 
         # Stop may land during a long inference call — bail before executing tools.
         try:
@@ -1071,6 +1143,24 @@ async def run_backend_proxy_inference(
                         "tools": [c["function"]["name"] for c in assistant_calls],
                     },
                 )
+                if (
+                    stuck_final_nudge < 1
+                    and time.time() <= deadline
+                    and not str(content_out or proxy_result.content or "").strip()
+                ):
+                    stuck_final_nudge += 1
+                    force_text_next_round = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Stop calling tools. Previous tool calls failed or were repeats. "
+                                "Reply with the final answer now. If this dispatch asked for a "
+                                "JSON Result, return only that JSON object."
+                            ),
+                        }
+                    )
+                    continue
                 content_out = content_out or proxy_result.content or ""
                 break
 
@@ -1110,7 +1200,52 @@ async def run_backend_proxy_inference(
                 },
             )
 
+            preflight = tool_executors.get("_qlix_whatsapp_contact_jit_preflight")
+            if callable(preflight) and any(
+                str((tc.get("function") or {}).get("name") or "") in WHATSAPP_CONTACT_SEND_TOOLS
+                for tc in tc_list
+                if isinstance(tc, dict)
+            ):
+                first_payload: dict[str, Any] = {"tool": "whatsapp.contact_send"}
+                for tc in tc_list:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    name = str(fn.get("name", ""))
+                    if name not in WHATSAPP_CONTACT_SEND_TOOLS:
+                        continue
+                    try:
+                        parsed = json.loads(str(fn.get("arguments", "") or "") or "{}")
+                    except json.JSONDecodeError:
+                        parsed = {}
+                    if isinstance(parsed, dict):
+                        if parsed.get("recipient"):
+                            first_payload["recipient"] = str(parsed.get("recipient"))
+                        if parsed.get("message"):
+                            first_payload["message"] = str(parsed.get("message"))[:300]
+                    break
+                if inspect.iscoroutinefunction(preflight):
+                    jit_err = await preflight(first_payload)
+                else:
+                    jit_err = await asyncio.to_thread(preflight, first_payload)
+                if jit_err:
+                    for tc in tc_list:
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                        name = str(fn.get("name", ""))
+                        if name not in WHATSAPP_CONTACT_SEND_TOOLS:
+                            continue
+                        tid = str(tc.get("id", ""))
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": f"[failed] {jit_err}",
+                        })
+                    continue
+
             async def _execute_single_tool(tc_item: dict[str, Any]) -> dict[str, Any] | None:
+                nonlocal seq
                 if not isinstance(tc_item, dict):
                     return None
                 fn = tc_item.get("function") if isinstance(tc_item.get("function"), dict) else {}
@@ -1119,6 +1254,27 @@ async def run_backend_proxy_inference(
                 tid = str(tc_item.get("id", ""))
                 if not name or not tid:
                     return None
+                try:
+                    started_params = json.loads(args) if args.strip() else {}
+                except json.JSONDecodeError:
+                    started_params = {}
+                if not isinstance(started_params, dict):
+                    started_params = {}
+                started_data: dict[str, object] = {"message": "tool_started", "tool": name}
+                if is_browser_tool(name) or name.startswith("browser_"):
+                    started_data["label"] = browser_action_label(name, started_params)
+                    started_data["tool_args"] = sanitize_tool_args_for_ui(started_params)
+                if name == "gui_control" or name.startswith("luna_local_"):
+                    started_data["package"] = "agents3"
+                seq = await emit_event(
+                    http,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    headers=headers,
+                    seq=seq,
+                    event_type="log",
+                    data=started_data,
+                )
                 blocked = await _compliance_tool_hook(
                     "before_tool_call",
                     http=http,
@@ -1137,9 +1293,6 @@ async def run_backend_proxy_inference(
                     }
                 executor = tool_executors.get(name)
                 if executor:
-                    # A single tool raising must never fail the whole run. Turn any
-                    # exception into a failed tool result the model can read and
-                    # recover from (executors already prefix failures with "[failed] ").
                     try:
                         if inspect.iscoroutinefunction(executor):
                             tool_out = await executor(args)
@@ -1163,38 +1316,6 @@ async def run_backend_proxy_inference(
                     output=str(tool_out),
                 )
                 return {"tid": tid, "name": name, "args": args, "output": tool_out}
-
-            for tc_item in tc_list:
-                if not isinstance(tc_item, dict):
-                    continue
-                fn_pre = tc_item.get("function") if isinstance(tc_item.get("function"), dict) else {}
-                pre_name = str(fn_pre.get("name", ""))
-                if pre_name:
-                    pre_args_raw = str(fn_pre.get("arguments", "") or "")
-                    try:
-                        pre_params = json.loads(pre_args_raw) if pre_args_raw.strip() else {}
-                    except json.JSONDecodeError:
-                        pre_params = {}
-                    if not isinstance(pre_params, dict):
-                        pre_params = {}
-                    started_data: dict[str, object] = {
-                        "message": "tool_started",
-                        "tool": pre_name,
-                    }
-                    if is_browser_tool(pre_name) or pre_name.startswith("browser_"):
-                        started_data["label"] = browser_action_label(pre_name, pre_params)
-                        started_data["tool_args"] = sanitize_tool_args_for_ui(pre_params)
-                    if pre_name == "gui_control" or pre_name.startswith("luna_local_"):
-                        started_data["package"] = "agents3"
-                    seq = await emit_event(
-                        http,
-                        agent_id=agent_id,
-                        run_id=run_id,
-                        headers=headers,
-                        seq=seq,
-                        event_type="log",
-                        data=started_data,
-                    )
 
             # Parallelize only read-only tools; keep mutating tools sequential.
             tool_results: list[dict[str, Any] | None] = []
@@ -1394,7 +1515,6 @@ async def run_backend_proxy_inference(
         # nudge it to continue rather than ending on an empty reply.
         if (
             not content_out.strip()
-            and tool_names_ran
             and empty_nudges < max_empty_nudges
             and time.time() <= deadline
         ):
@@ -1512,4 +1632,8 @@ async def run_backend_proxy_inference(
         soft=True,
     )
     content_out = sanitize_assistant_content(content_out)
+    if not str(content_out or "").strip():
+        raise InferenceTruncatedError(
+            "The model was cut off before it produced an answer — all output tokens went to internal reasoning."
+        )
     return seq, content_out, duration_ms, inference_rounds, tool_names_ran, usage_acc, executed_tools

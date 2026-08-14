@@ -1,12 +1,14 @@
 import type { PermissionScope } from '../agents/agents.types.js';
 import {
-  ensureTeamConversation,
+  cancelAgentRun,
+  createTeamDispatchConversation,
   enqueueAgentRun,
   listAgentRunEventsSince,
   waitForAgentRunCompletion,
   type AgentRunTerminalStatus,
 } from '../agentChat/agentRunService.js';
 import type { TeamAgentRole, TeamDTO, TeamRunDTO } from './teams.types.js';
+import { TEAM_DISPATCH_ONLY_SKILL } from './lunaTeamsHost.js';
 import { TeamsRepository } from './teams.repository.js';
 import type { RunEventEmitter } from './teamOrchestrator.js';
 
@@ -19,8 +21,10 @@ export interface TeamRunEnqueueParams {
   prompt: string;
   skills: PermissionScope[];
   a2aTaskId?: string;
+  dispatchId?: string;
   useBrain?: boolean;
   inferenceModel?: string | null;
+  reasoningEffort?: string | null;
 }
 
 export interface TeamRunEnqueueResult {
@@ -34,10 +38,11 @@ export function buildTeamPromptEnvelope(params: {
   delegatedScopes: PermissionScope[];
   task: string;
 }): string {
+  const realScopes = params.delegatedScopes.filter((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL);
   const scopeLine =
-    params.delegatedScopes.length > 0
-      ? params.delegatedScopes.join(', ')
-      : 'none';
+    realScopes.length > 0
+      ? realScopes.join(', ')
+      : 'none — do not call find_tools, call_tool, or any connector tool';
   return [
     `Team: ${params.team.name} (${params.team.id})`,
     `Role: ${params.role}`,
@@ -52,11 +57,13 @@ export class TeamAgentRunBridge {
   private readonly teamsRepo = new TeamsRepository();
 
   async enqueue(params: TeamRunEnqueueParams): Promise<TeamRunEnqueueResult> {
-    const conversationId = await ensureTeamConversation({
+    const conversationId = await createTeamDispatchConversation({
       agentId: params.agentId,
       userId: params.userId,
       orgId: params.team.orgId,
       teamId: params.team.id,
+      teamRunId: params.teamRun.id,
+      dispatchId: params.dispatchId ?? params.a2aTaskId ?? `supervisor-${Date.now()}`,
     });
 
     const envelope = buildTeamPromptEnvelope({
@@ -74,10 +81,12 @@ export class TeamAgentRunBridge {
       prompt: envelope,
       skills: params.skills,
       inferenceModel: params.inferenceModel ?? null,
+      reasoningEffort: params.reasoningEffort ?? null,
       useBrain: params.useBrain ?? false,
       teamRunId: params.teamRun.id,
       teamId: params.team.id,
       teamRole: params.role,
+      sourceChannel: params.teamRun.sourceChannel ?? 'web',
     });
 
     if (params.a2aTaskId) {
@@ -96,7 +105,14 @@ export class TeamAgentRunBridge {
     emit: RunEventEmitter;
   }): Promise<{ status: AgentRunTerminalStatus; result: unknown; errorMessage: string | null }> {
     let lastSeq = -1;
+    const cancelIfTeamStopped = async () => {
+      const current = await this.teamsRepo.findRun(params.teamRun.id);
+      if (current?.status === 'canceled' || current?.status === 'failed') {
+        await cancelAgentRun(params.agentRunId, 'Team run stopped');
+      }
+    };
     const pollBridge = async () => {
+      await cancelIfTeamStopped();
       const events = await listAgentRunEventsSince(params.agentRunId, lastSeq);
       for (const ev of events) {
         lastSeq = ev.seq;

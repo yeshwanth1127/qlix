@@ -18,6 +18,7 @@ import {
   type ReplyInterestResult,
 } from './replyInterestClassifier.js';
 import { deliverTextToWorkspaceWhatsApp } from '../whatsapp/whatsappChannel.service.js';
+import { nonReasoningFallbackModel } from '../llm/routing/reasoningBudget.js';
 import { goalRequestsWhatsAppDelivery } from '../whatsapp/whatsappDeliveryIntent.js';
 import {
   clearNotifierState,
@@ -27,13 +28,31 @@ import {
 import {
   buildWaitPolicySnapshot,
   findWaitStepForStage,
+  goalRequestsOutreachPack,
   resolveWaitStepsForTeam,
 } from '../wait/waitPolicy.js';
 import {
+  deliverWaitResumeSideEffects,
   initializeWaitSideEffects,
   liveArtifactsForResume,
 } from '../wait/waitSideEffect.service.js';
 import { liveArtifactPreviewPayload } from '../wait/liveArtifact.service.js';
+import {
+  parseLunaTeamsHandback,
+  DEFAULT_RESULT_CONTRACT,
+  planLunaTeamsDispatches,
+  renderLunaTeamsFinal,
+  renderResultHandbacks,
+  resolveDispatchAllowedScopes,
+  skillsForLunaTeamsDispatch,
+  TEAM_DISPATCH_ONLY_SKILL,
+  validateLunaTeamsResult,
+} from './lunaTeamsHost.js';
+import { extractTeamRunUserGoal } from './teamRunFollowUp.js';
+
+function runObjective(run: TeamRunDTO): string {
+  return extractTeamRunUserGoal(run.goal) || run.goal;
+}
 
 function normalizeFindingsText(findings: unknown): string {
   if (typeof findings === 'string') return findings;
@@ -45,6 +64,30 @@ function normalizeFindingsText(findings: unknown): string {
   }
 }
 
+const TRUNCATION_FAILURE_RE =
+  /did not return a Result|cut off|No response generated|result\.summary is required|Worker Result JSON was cut off/i;
+
+function isTruncationLikeFailure(message: string): boolean {
+  return TRUNCATION_FAILURE_RE.test(message);
+}
+
+function teamRunInferenceModel(
+  team: TeamDTO,
+  attempt: number,
+  lastError: Error | null,
+): string | null {
+  const requested = (team.config as TeamConfig).defaultModel?.trim() || null;
+  if (attempt > 1 && lastError && isTruncationLikeFailure(lastError.message)) {
+    return nonReasoningFallbackModel(requested ?? '');
+  }
+  return requested;
+}
+
+function teamRunReasoningEffort(team: TeamDTO): string | null {
+  const value = (team.config as TeamConfig).defaultReasoningEffort?.trim();
+  return value || null;
+}
+
 export interface SubtaskPlan {
   subtaskId: string;
   agentId: string;
@@ -53,11 +96,17 @@ export interface SubtaskPlan {
   role: string;
   goal: string;
   delegatedScopes: PermissionScope[];
+  allowedScopes: PermissionScope[];
   /**
    * Pipeline stage this subtask belongs to. Subtasks sharing a stage run concurrently;
    * stages themselves run in ascending order, each seeing every earlier stage's output.
    */
   stageOrder: number;
+  contractId?: string;
+  inputRefs: string[];
+  allowedSources: Array<'authoritative_input' | 'reference_asset'>;
+  knowledgeMode: 'none' | 'reference_only' | 'required';
+  outputContract: Record<string, unknown>;
 }
 
 interface WorkerResult {
@@ -66,6 +115,8 @@ interface WorkerResult {
   agentName: string;
   summary: string;
   findings: string;
+  payload?: unknown;
+  mailboxMessageId?: string;
   artifacts: TeamRunArtifact[];
   status: 'completed' | 'failed';
   errorMessage?: string;
@@ -130,36 +181,35 @@ export class TeamOrchestrator {
         return a.addedAt.localeCompare(b.addedAt);
       });
 
-      // Decide planning strategy:
-      // - autoSequence=true  → supervisor LLM decomposes (free-form, can reorder).
-      // - autoSequence=false → deterministic plan: workers run in the team-defined
-      //   stageOrder, supervisor never sees a "pick the order" prompt.
-      const useDeterministicOrder = !config.autoSequence;
-
-      const planMessage = useDeterministicOrder
-        ? `Pipeline order locked by team stages (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`
-        : 'Supervisor is planning subtasks…';
+      const planMessage = config.autoSequence
+        ? 'Luna-Teams is selecting the next specialists…'
+        : `Luna-Teams is preparing dispatches in team order (${orderedMembers.map((m) => m.agent?.name ?? m.agentId).join(' → ')})`;
       await this.emitEvent(run, team, supervisorId, 'task_status_update', { message: planMessage }, emit);
 
-      const plan = useDeterministicOrder
-        ? this.buildStaticPipelinePlan(run, orderedMembers)
-        : await this.supervisorDecompose(
-            run,
-            team,
-            orderedMembers,
-            emit,
-            timeoutMs,
-            maxAttempts,
-            !!config.pipelineMode,
-          );
+      const dispatches = await planLunaTeamsDispatches(run, team, orderedMembers);
+      const plan: SubtaskPlan[] = dispatches.map((dispatch) => ({
+        subtaskId: dispatch.dispatchId,
+        agentId: dispatch.agentId,
+        agentName: dispatch.agentName,
+        role: dispatch.role,
+        goal: dispatch.task,
+        delegatedScopes: dispatch.delegatedScopes,
+        allowedScopes: dispatch.allowedScopes,
+        stageOrder: dispatch.stageOrder,
+        ...(dispatch.contractId ? { contractId: dispatch.contractId } : {}),
+        inputRefs: dispatch.inputRefs,
+        allowedSources: dispatch.allowedSources,
+        knowledgeMode: dispatch.knowledgeMode,
+        outputContract: dispatch.outputContract,
+      }));
 
       await this.repo.appendSupervisorTrace(run.id, {
-        step: 'decompose',
+        step: 'dispatch_plan',
         subtasks: plan.map((s) => ({ subtaskId: s.subtaskId, agentId: s.agentId, goal: s.goal })),
         timestampMs: Date.now(),
       });
       await this.emitEvent(run, team, supervisorId, 'supervisor_step', {
-        step: 'decompose',
+        step: 'dispatch_plan',
         subtasks: plan,
       }, emit);
 
@@ -192,6 +242,11 @@ export class TeamOrchestrator {
             stageGroups.length,
           );
           results.push(...groupResults);
+
+          if ((await this.repo.findRun(run.id))?.status === 'canceled') {
+            emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+            return;
+          }
 
           const failed = groupResults.find((r) => r.status === 'failed');
           if (failed) {
@@ -230,11 +285,16 @@ export class TeamOrchestrator {
 
       await this.finalizeSuccessfulRun(run, team, supervisorId, results, emit, timeoutMs, maxAttempts);
     } catch (err) {
+      const current = await this.repo.findRun(run.id);
+      if (current?.status === 'canceled') {
+        emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[TeamOrchestrator] run ${run.id} failed:`, message);
       await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
       await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
-      if (teamRunShouldReplyWhatsApp(run, run.goal)) {
+      if (teamRunShouldReplyWhatsApp(run, runObjective(run))) {
         void deliverTextToWorkspaceWhatsApp(team.orgId, {
           title: team.name,
           body: message,
@@ -303,12 +363,33 @@ export class TeamOrchestrator {
               .join('\n')}\n--- End live artifacts ---\n`
           : '';
 
-      results.push(this.externalReplyResult(inbound, classifications, {
+      const waitResult = this.externalReplyResult(inbound, classifications, {
         timedOut,
         totalContacts,
         repliedCount: inbound.length,
         liveArtifactContext,
-      }));
+      });
+      const waitPayload = {
+        kind: 'external_wait_result',
+        triggerKind: 'whatsapp_inbound',
+        timedOut,
+        totalContacts,
+        replies: inbound,
+        classifications,
+        interestSummary,
+        liveArtifacts,
+      };
+      const waitMailbox = await this.repo.appendMailboxResult({
+        runId: run.id,
+        teamId: team.id,
+        senderAgentId: null,
+        recipientAgentId: supervisorId,
+        contractId: 'qlix.wait.result.v1',
+        payload: waitPayload,
+      });
+      waitResult.payload = waitPayload;
+      waitResult.mailboxMessageId = waitMailbox.id;
+      results.push(waitResult);
 
       // Direct the first resumed stage to sheet only included (interested + unclear) leads.
       const stageGroups = groupSubtasksByStage(plan);
@@ -322,6 +403,9 @@ export class TeamOrchestrator {
       }
 
       await this.repo.updateRunStatus(run.id, 'running', { checkpointJson: null });
+      const activeWaitStep = checkpoint.waitPolicySnapshot?.waitSteps.find(
+        (step) => step.id === checkpoint.waitPolicySnapshot?.activeWaitStepId,
+      );
       await this.emitEvent(run, team, supervisorId, 'wait_fulfilled', {
         triggerIds: checkpoint.waitTriggerIds,
         responderCount: inbound.length,
@@ -334,7 +418,32 @@ export class TeamOrchestrator {
         interestSummary,
         timedOut,
         totalContacts,
+        continuePipeline: activeWaitStep?.resume.continuePipeline !== false,
       }, emit);
+
+      const resumeDeliveries = await deliverWaitResumeSideEffects({
+        checkpoint,
+        orgId: team.orgId,
+      });
+      for (const delivery of resumeDeliveries) {
+        await this.emitEvent(run, team, supervisorId, 'result_delivered', {
+          boundary: 'wait_resume',
+          ...delivery,
+        }, emit);
+      }
+
+      if (activeWaitStep?.resume.continuePipeline === false) {
+        await this.finalizeSuccessfulRun(
+          run,
+          team,
+          supervisorId,
+          results,
+          emit,
+          timeoutMs,
+          maxAttempts,
+        );
+        return;
+      }
 
       for (let groupIndex = checkpoint.nextStageIndex; groupIndex < stageGroups.length; groupIndex++) {
         const current = await this.repo.findRun(run.id);
@@ -358,6 +467,11 @@ export class TeamOrchestrator {
         );
         results.push(...groupResults);
 
+        if ((await this.repo.findRun(run.id))?.status === 'canceled') {
+          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+          return;
+        }
+
         const failed = groupResults.find((result) => result.status === 'failed');
         if (failed) {
           await this.abortPipelineRun(run, team, supervisorId, failed, emit);
@@ -378,6 +492,11 @@ export class TeamOrchestrator {
 
       await this.finalizeSuccessfulRun(run, team, supervisorId, results, emit, timeoutMs, maxAttempts);
     } catch (err) {
+      const current = await this.repo.findRun(run.id);
+      if (current?.status === 'canceled') {
+        emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[TeamOrchestrator] resume ${run.id} failed:`, message);
       await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
@@ -437,10 +556,18 @@ export class TeamOrchestrator {
     const freshRun = await this.repo.findRun(run.id);
     const priorCheckpoint =
       ((freshRun?.checkpointJson ?? run.checkpointJson) as TeamRunCheckpoint | null) ?? null;
-    const pendingOutbounds = priorCheckpoint?.pendingWaitOutbounds ?? [];
-    if (waits.length === 0 && pendingOutbounds.length === 0) return false;
-
-    const contactCount = Math.max(waits.length, pendingOutbounds.length);
+    const { distinctPendingContactCount, fillMissingOutreachPack } = await import('../wait/pendingWaitOutbound.js');
+    const rawPending = priorCheckpoint?.pendingWaitOutbounds ?? [];
+    if (waits.length === 0 && rawPending.length === 0) return false;
+    const pendingOutbounds = await fillMissingOutreachPack({
+      teamRunId: run.id,
+      orgId: team.orgId,
+      goal: runObjective(run),
+      pending: rawPending,
+    });
+    const pendingContactCount = distinctPendingContactCount(pendingOutbounds);
+    const contactCount = Math.max(waits.length, pendingContactCount);
+    const pendingSendCount = pendingOutbounds.length;
     const stageGroups = groupSubtasksByStage(plan);
     const completedStageOrder =
       nextStageIndex > 0
@@ -453,8 +580,8 @@ export class TeamOrchestrator {
       nextStageIndex,
       waitTriggerIds: waits.map((wait) => wait.id),
       waitReason:
-        pendingOutbounds.length > 0
-          ? `Ready to message ${pendingOutbounds.length} lead${pendingOutbounds.length === 1 ? '' : 's'} — pick a wait duration, then Qlix will send and listen for replies.`
+        pendingSendCount > 0
+          ? `Ready to send ${pendingSendCount} WhatsApp message${pendingSendCount === 1 ? '' : 's'} to ${pendingContactCount} lead${pendingContactCount === 1 ? '' : 's'} — pick a wait duration, then Qlix will send in order and listen for replies.`
           : `Waiting for a WhatsApp reply from ${waits.length} contacted lead${waits.length === 1 ? '' : 's'}.`,
       awaitingTtlSelection: true,
       waitExpiresAt: null,
@@ -464,7 +591,7 @@ export class TeamOrchestrator {
       ...(pendingOutbounds.length > 0 ? { pendingWaitOutbounds: pendingOutbounds } : {}),
     };
 
-    const waitSteps = resolveWaitStepsForTeam(team.config, run.goal, completedStageOrder);
+    const waitSteps = resolveWaitStepsForTeam(team.config, runObjective(run), completedStageOrder);
     const waitStep = findWaitStepForStage(waitSteps, completedStageOrder);
     let liveArtifactsForEvent: ReturnType<typeof liveArtifactPreviewPayload>[] = [];
 
@@ -477,7 +604,7 @@ export class TeamOrchestrator {
           runId: run.id,
           teamName: team.name,
           supervisorAgentId: team.supervisorAgentId,
-          runGoal: run.goal,
+          runGoal: runObjective(run),
         });
         checkpoint = init.checkpoint;
         liveArtifactsForEvent = init.liveArtifacts.map((artifact) => liveArtifactPreviewPayload(artifact));
@@ -499,22 +626,22 @@ export class TeamOrchestrator {
       triggerKind: 'whatsapp_inbound',
       triggerIds: checkpoint.waitTriggerIds,
       contactCount,
-      pendingSendCount: pendingOutbounds.length,
+      pendingSendCount,
       expiresAt: waits.map((wait) => wait.expiresAt.toISOString()),
       reason: checkpoint.waitReason,
       nextStage: nextStageIndex + 1,
       awaitingTtlSelection: true,
       liveArtifacts: liveArtifactsForEvent,
-      messagesDeferred: pendingOutbounds.length > 0,
+      messagesDeferred: pendingSendCount > 0,
     }, emit);
     await this.emitEvent(run, team, team.supervisorAgentId, 'wait_ttl_requested', {
       optionsHours: [1, 6, 24, 48],
       allowCustom: true,
       safetyCapHours: 168,
       contactCount,
-      pendingSendCount: pendingOutbounds.length,
+      pendingSendCount,
       reason:
-        pendingOutbounds.length > 0
+        pendingSendCount > 0
           ? 'How long should we wait for WhatsApp replies? Messages are sent only after you pick a duration.'
           : 'How long should we wait for WhatsApp replies before continuing with whoever has responded?',
     }, emit);
@@ -528,26 +655,18 @@ export class TeamOrchestrator {
     supervisorId: string,
     results: WorkerResult[],
     emit: RunEventEmitter,
-    timeoutMs: number,
-    maxAttempts: number,
+    _timeoutMs: number,
+    _maxAttempts: number,
   ): Promise<void> {
     await this.emitEvent(
       run,
       team,
       supervisorId,
       'task_status_update',
-      { message: 'Supervisor is synthesizing results…' },
+      { message: 'Luna-Teams is preparing the final result…' },
       emit,
     );
-    const synthesis = await this.supervisorSynthesize(
-      run,
-      team,
-      run.goal,
-      results,
-      emit,
-      timeoutMs,
-      maxAttempts,
-    );
+    const synthesis = renderLunaTeamsFinal(results);
 
     await this.repo.appendSupervisorTrace(run.id, {
       step: 'synthesize',
@@ -581,7 +700,7 @@ export class TeamOrchestrator {
       result: { synthesis, artifactCount: allArtifacts.length },
     });
 
-    if (teamRunShouldReplyWhatsApp(run, run.goal)) {
+    if (teamRunShouldReplyWhatsApp(run, runObjective(run))) {
       const delivery = await deliverTextToWorkspaceWhatsApp(team.orgId, {
         title: team.name,
         body: synthesis,
@@ -625,7 +744,8 @@ export class TeamOrchestrator {
           role: 'supervisor',
           prompt: taskPrompt,
           skills: [],
-          inferenceModel: (team.config as TeamConfig).defaultModel ?? null,
+          inferenceModel: teamRunInferenceModel(team, attempt, lastError),
+          reasoningEffort: teamRunReasoningEffort(team),
         });
 
         const outcome = await this.bridge.waitAndBridgeEvents({
@@ -677,15 +797,26 @@ export class TeamOrchestrator {
       const descPart = description?.trim()
         ? `\n\nYour role: ${description.trim()}`
         : '';
+      const goal = `Stage ${stage} of ${total} in the "${this.pipelineName(orderedMembers)}" pipeline.${descPart}\n\nUser goal: ${runObjective(run)}`;
       return {
         subtaskId: `stage_${stage}_${m.agentId.slice(0, 8)}`,
         agentId: m.agentId,
         agentName: m.agent?.name ?? m.agentId,
         agentDescription: description,
         role: m.role,
-        goal: `Stage ${stage} of ${total} in the "${this.pipelineName(orderedMembers)}" pipeline.${descPart}\n\nUser goal: ${run.goal}`,
+        goal,
         delegatedScopes: m.delegatedScopes,
+        allowedScopes: resolveDispatchAllowedScopes({
+          role: m.role,
+          task: goal,
+          delegatedScopes: m.delegatedScopes,
+          knowledgeMode: 'none',
+        }),
         stageOrder: m.stageOrder,
+        inputRefs: run.inputs.filter((input) => input.purpose === 'authoritative_input').map((input) => input.ref),
+        allowedSources: ['authoritative_input'],
+        knowledgeMode: 'none',
+        outputContract: DEFAULT_RESULT_CONTRACT,
       };
     });
   }
@@ -697,6 +828,11 @@ export class TeamOrchestrator {
     failed: WorkerResult,
     emit: RunEventEmitter,
   ): Promise<void> {
+    const current = await this.repo.findRun(run.id);
+    if (current?.status === 'canceled') {
+      emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+      return;
+    }
     const synthesis = `Pipeline aborted: stage "${failed.agentName}" failed — ${failed.errorMessage ?? 'no output produced'}. Downstream stages were skipped.`;
     await this.repo.updateRunStatus(run.id, 'failed', {
       completedAt: new Date(),
@@ -809,7 +945,7 @@ Rules:
 - Return ONLY a JSON array with this exact shape:
 [{"subtaskId":"<unique>","agentId":"<agent_id>","goal":"<subtask_goal>"}]
 
-User goal: ${run.goal}`;
+User goal: ${runObjective(run)}`;
 
     try {
       const raw = await this.runSupervisorLlm(run, team, taskPrompt, emit, timeoutMs, maxAttempts);
@@ -825,18 +961,29 @@ User goal: ${run.goal}`;
         .filter((s) => s.agentId && memberMap.has(s.agentId))
         .map((s, i) => {
           const member = memberMap.get(s.agentId!)!;
+          const goal = s.goal ?? runObjective(run);
           return {
             subtaskId: s.subtaskId ?? `st_${i}_${Date.now()}`,
             agentId: member.agentId,
             agentName: member.agent?.name ?? member.agentId,
             agentDescription: (member.agent as any)?.description as string | undefined,
             role: member.role,
-            goal: s.goal ?? run.goal,
+            goal,
             delegatedScopes: member.delegatedScopes,
+            allowedScopes: resolveDispatchAllowedScopes({
+              role: member.role,
+              task: goal,
+              delegatedScopes: member.delegatedScopes,
+              knowledgeMode: 'none',
+            }),
             // A supervisor-decomposed plan carries no stage semantics — the LLM chose an
             // order, not a set of concurrent layers. Give each subtask its own stage so
             // decomposed runs stay strictly sequential, as they were before grouping.
             stageOrder: i + 1,
+            inputRefs: run.inputs.filter((input) => input.purpose === 'authoritative_input').map((input) => input.ref),
+            allowedSources: ['authoritative_input'] as Array<'authoritative_input' | 'reference_asset'>,
+            knowledgeMode: 'none' as const,
+            outputContract: DEFAULT_RESULT_CONTRACT,
           };
         });
 
@@ -851,9 +998,19 @@ User goal: ${run.goal}`;
       agentName: m.agent?.name ?? m.agentId,
       agentDescription: (m.agent as any)?.description as string | undefined,
       role: m.role,
-      goal: run.goal,
+      goal: runObjective(run),
       delegatedScopes: m.delegatedScopes,
+      allowedScopes: resolveDispatchAllowedScopes({
+        role: m.role,
+        task: runObjective(run),
+        delegatedScopes: m.delegatedScopes,
+        knowledgeMode: 'none',
+      }),
       stageOrder: i + 1,
+      inputRefs: run.inputs.filter((input) => input.purpose === 'authoritative_input').map((input) => input.ref),
+      allowedSources: ['authoritative_input'],
+      knowledgeMode: 'none',
+      outputContract: DEFAULT_RESULT_CONTRACT,
     }));
   }
 
@@ -873,6 +1030,15 @@ User goal: ${run.goal}`;
       subtask.agentId,
       subtask.goal,
     );
+    const mailbox = await this.repo.createMailboxDispatch({
+      runId: run.id,
+      teamId: team.id,
+      senderAgentId: team.supervisorAgentId,
+      recipientAgentId: subtask.agentId,
+      a2aTaskId: a2aTask.id,
+      contractId: subtask.contractId,
+      task: subtask.goal,
+    });
 
     await this.repo.updateA2ATask(a2aTask.id, { status: 'working', startedAt: new Date() });
     await this.emitEvent(run, team, subtask.agentId, 'task_delegated', {
@@ -881,6 +1047,8 @@ User goal: ${run.goal}`;
       agentId: subtask.agentId,
       agentName: subtask.agentName,
       goal: subtask.goal,
+      mailboxMessageId: mailbox.id,
+      contractId: subtask.contractId ?? null,
     }, emit);
 
     await this.emitEvent(
@@ -889,24 +1057,76 @@ User goal: ${run.goal}`;
       subtask.agentId,
       'task_status_update',
       {
-        message: `${subtask.agentName} (${subtask.role}) is working on: ${subtask.goal.slice(0, 80)}…`,
+        message: `${subtask.agentName} started`,
         taskId: a2aTask.id,
       },
       emit,
     );
 
     const completedPrior = priorResults.filter((r) => r.status === 'completed');
-    const priorContext =
-      completedPrior.length > 0
-        ? `\n\n--- Context from prior pipeline stages ---\n${completedPrior
-            .map((r) => `[${r.agentName}]:\n${r.findings}`)
-            .join('\n\n')}\n--- End prior context ---\n`
-        : '';
+    const priorContext = renderResultHandbacks(
+      completedPrior.map((result) => ({
+        agentName: result.agentName,
+        payload: result.payload ?? { summary: result.summary, findings: result.findings },
+      })),
+    );
 
-    const member = team.members?.find((m) => m.agentId === subtask.agentId);
-    const agentHasBrain = member?.agent?.permissionScopes?.includes('brain.query') ?? false;
-    const useBrain =
-      subtask.delegatedScopes.includes('brain.query') || agentHasBrain;
+    const inputRefs = subtask.inputRefs ?? [];
+    const allowedSources = subtask.allowedSources ?? ['authoritative_input'];
+    const knowledgeMode = subtask.knowledgeMode ?? 'none';
+    const outputContract = subtask.outputContract ?? DEFAULT_RESULT_CONTRACT;
+    const inputByRef = new Map(run.inputs.map((input) => [input.ref, input]));
+    const selectedInputs = inputRefs.map((ref) => {
+      const input = inputByRef.get(ref);
+      if (!input) throw new Error(`Dispatch references unknown immutable input: ${ref}`);
+      if (!allowedSources.includes(input.purpose)) {
+        throw new Error(`Dispatch is not allowed to use ${input.purpose}: ${ref}`);
+      }
+      return input;
+    });
+    if (
+      selectedInputs.length === 0 &&
+      /\b(provided|attached|uploaded|input)\s+(file|sheet|spreadsheet|document)\b/i.test(subtask.goal)
+    ) {
+      throw new Error('Dispatch refers to a provided file but has no valid input reference');
+    }
+    const inputContext = selectedInputs.length > 0
+      ? [
+          'Immutable dispatch inputs (use only for the purpose shown):',
+          ...selectedInputs.map((input) =>
+            [
+              `--- ${input.ref} | ${input.purpose} | ${input.fileName} | sha256:${input.sha256}`,
+              `Download: ${input.url}`,
+              input.extractedText ? `Exact extracted content:\n${input.extractedText}` : '[Binary input; use the download URL.]',
+            ].join('\n'),
+          ),
+        ].join('\n\n')
+      : '';
+    if (selectedInputs.length > 0) {
+      const sourceLabels = selectedInputs.map((input) => {
+        const rows = input.extractedText
+          ? Math.max(0, input.extractedText.split(/\r?\n/).filter(Boolean).length - 1)
+          : 0;
+        return `${input.fileName}${rows > 0 ? ` (${rows} rows)` : ''}`;
+      });
+      await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
+        message: `${subtask.agentName} used ${sourceLabels.join(', ')}`,
+        provenance: true,
+      }, emit);
+    }
+    const validatedPriorRecords = completedPrior.reduce((count, result) => {
+      const payload = result.payload as { provenance?: { recordRefs?: unknown[] } } | undefined;
+      return count + (Array.isArray(payload?.provenance?.recordRefs) ? payload.provenance.recordRefs.length : 0);
+    }, 0);
+    if (validatedPriorRecords > 0) {
+      await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
+        message: `${subtask.agentName} received ${validatedPriorRecords} validated record${validatedPriorRecords === 1 ? '' : 's'}`,
+        provenance: true,
+      }, emit);
+    }
+    // reference_only means the immutable reference assets above; unrestricted
+    // org Brain retrieval is enabled only by an explicit "required" contract.
+    const useBrain = knowledgeMode === 'required';
 
     const needsBrowser =
       (() => {
@@ -923,45 +1143,105 @@ User goal: ${run.goal}`;
     const browserGuidance = needsBrowser
       ? '- Browser tools are allowed if needed; use at most 3 browser actions, then return your JSON answer.\n'
       : '- Do NOT use browser tools for this subtask unless explicitly required.\n';
+    const workerSkills = skillsForLunaTeamsDispatch({
+      allowedScopes: subtask.allowedScopes,
+      role: subtask.role,
+      task: subtask.goal,
+      delegatedScopes: subtask.delegatedScopes,
+      knowledgeMode,
+    });
+    const toolsEnabled = workerSkills.some((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL);
     const replyWaitGuidance =
-      subtask.delegatedScopes.includes('whatsapp.contact_send') &&
-      subtask.delegatedScopes.includes('whatsapp.auto_reply') &&
-      /\b(?:wait\s+(?:for|until)|if|when|once|after)\b[\s\S]{0,120}\b(?:reply|respond)/i.test(subtask.goal)
-        ? '- This stage queues WhatsApp outreach (whatsapp_send_message) with the **full phone number including country code** from prior stage context — one number per lead, never reuse. Messages are NOT delivered yet; Qlix enters wait mode, you pick a duration, then messages go out and replies are captured live. Do NOT create a responder sheet or deliver anything yet.\n'
+      workerSkills.includes('whatsapp.contact_send') &&
+      workerSkills.includes('whatsapp.auto_reply') &&
+      (goalRequestsOutreachPack(runObjective(run)) ||
+        (Array.isArray((team.config as TeamConfig).waitSteps) &&
+          ((team.config as TeamConfig).waitSteps?.length ?? 0) > 0))
+        ? '- This stage queues WhatsApp outreach with the **full phone number including country code** from prior stage context — one number per lead, never reuse.\n' +
+          '- REQUIRED tool sequence when the goal asks for greeting + brochure + poll (per lead, in order):\n' +
+          '  1) whatsapp_send_message for the greeting only — do not put the word "brochure" or a poll question in this text\n' +
+          '  2) whatsapp_send_document with brain_document_id (from brain context documentId=… or brain_find_documents query \"brochure\") — NEVER send a URL/link/placeholder text instead of the file\n' +
+          '  3) whatsapp_send_poll with clear Yes/No (or Interest) options — NEVER replace the poll with a text asking them to type Interested/Not Interested\n' +
+          '- If you skip the document or poll tools, Qlix will still attach the brochure file and a Yes/No poll before sending.\n' +
+          '- Messages are NOT delivered yet; Qlix enters wait mode, you pick a duration, then they go out in that order and replies/votes are captured live. Do NOT create a responder sheet or deliver anything yet.\n' +
+          '- Message only contacts present in the authoritative Luna-Teams Result handback. Never broaden or re-read the original source list.\n'
+        : '';
+    const filterGuidance =
+      subtask.role === 'filtering' ||
+      /\bfilter\b/i.test(subtask.goal) ||
+      /\bqualified\s+lead/i.test(subtask.goal)
+        ? '- When filtering by city/region, treat common aliases as the SAME place (Bangalore = Bengaluru, Bombay = Mumbai, Madras = Chennai, Calcutta = Kolkata, Poona = Pune). Keep EVERY row that matches the intent — never drop a lead only because of alternate spelling or casing.\n' +
+          '- In findings, list every kept lead with **Name + full phone with country code + city** so the next stage can message all of them.\n'
         : '';
 
-    const workerPrompt = `You are completing one pipeline stage. Stay inside this stage.
+    const extractedReady = selectedInputs.some((input) => Boolean(input.extractedText?.trim()));
+    const extractedGuidance = extractedReady
+      ? '- Exact extracted content is already below. Do NOT call find_tools, call_tool, or any other tool to re-read the file. Filter from that text and return the JSON Result immediately.\n'
+      : selectedInputs.length === 0
+        ? '- This dispatch has no attached source file. Copy provenance.inputRefs and recordRefs from the prior Result handback. Do not invent a new source file.\n'
+        : '';
+    const workerPrompt = `You are completing one Luna-Teams dispatch. Stay inside this task.
 
 Rules:
-- Do only what this subtask asks. Do NOT invent side work (CRM writes, outreach, research, scheduling, etc.) unless the subtask explicitly requires it.
+- Do only what this dispatch asks. Do NOT invent side work (CRM writes, outreach, research, scheduling, etc.) unless the dispatch explicitly requires it.
 - Prefer tools that are necessary for this stage. Having a tool available is not permission to use it.
-- Put the handoff data in your JSON findings so the next stage can use it — do not write it to CRM/email/WhatsApp unless this stage's goal says so.
+${toolsEnabled ? '' : '- No connector tools are enabled for this dispatch. Do not call find_tools, call_tool, or any permission/scope name. Return the JSON Result from the dispatch text only.\n'}
+- Treat Luna-Teams Result handbacks as authoritative. Do not re-read or broaden their source data unless this dispatch explicitly asks you to.
+- Put all handoff data in the returned JSON. Do not write it externally unless this dispatch explicitly requires it.
+- Operational values must come from authoritative_input or validated Result handbacks. reference_asset and Brain are context only.
+- Knowledge policy for this dispatch: ${knowledgeMode}. Do not use Brain unless it is "required".
+${extractedGuidance}- Keep the Result JSON compact (summary <= 2 sentences). Do not include chain-of-thought in the Result.
 - Return a JSON object:
 {
   "summary": "<concise 2-3 sentence summary>",
-  "findings": "<detailed output, include all relevant data>",
-  "artifacts": []
+  "findings": <structured JSON or detailed text needed by the next specialist>,
+  "artifacts": [],
+  "provenance": {
+    "inputRefs": ["team-input:..."],
+    "recordRefs": ["<input ref>:row:<1-based row>"],
+    "knowledgeRefs": []
+  }
 }
-${browserGuidance}${priorContext}
-${replyWaitGuidance}
-Subtask: ${subtask.goal}`;
-
-    const workerSkills: PermissionScope[] = subtask.delegatedScopes;
+${browserGuidance}${inputContext ? `\n${inputContext}\n` : ''}${priorContext ? `\n${priorContext}\n` : ''}
+${filterGuidance}${replyWaitGuidance}
+Dispatch: ${subtask.goal}`;
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        const requestedModel = (team.config as TeamConfig).defaultModel ?? null;
+        const inferenceModel = teamRunInferenceModel(team, attempt, lastError);
+        const attemptPrompt =
+          attempt === 1
+            ? workerPrompt
+            : lastError && isTruncationLikeFailure(lastError.message) && toolsEnabled
+              ? `Previous attempt was cut off while thinking. Call the required tools, then return the compact JSON Result.\n\n${workerPrompt}`
+              : `Previous attempt returned no Result. Do not call find_tools, call_tool, or any other tool. Return only the JSON Result object.\n\n${workerPrompt}`;
+        if (attempt > 1 && inferenceModel && inferenceModel !== requestedModel) {
+          await this.emitEvent(
+            run,
+            team,
+            subtask.agentId,
+            'task_status_update',
+            {
+              message: `Retrying ${subtask.agentName} on ${inferenceModel.replace(/^openrouter\//, '')} — previous model ran out of output budget while thinking`,
+            },
+            emit,
+          );
+        }
         const { runId: agentRunId } = await this.bridge.enqueue({
           team,
           teamRun: run,
           agentId: subtask.agentId,
           userId: run.startedByUserId,
           role: 'worker',
-          prompt: workerPrompt,
+          prompt: attemptPrompt,
           skills: workerSkills,
           a2aTaskId: a2aTask.id,
+          dispatchId: subtask.subtaskId,
           useBrain,
-          inferenceModel: (team.config as TeamConfig).defaultModel ?? null,
+          inferenceModel,
+          reasoningEffort: teamRunReasoningEffort(team),
         });
 
         const outcome = await this.bridge.waitAndBridgeEvents({
@@ -974,23 +1254,48 @@ Subtask: ${subtask.goal}`;
         });
 
         if (outcome.status !== 'success') {
+          const current = await this.repo.findRun(run.id);
+          if (current?.status === 'canceled' || outcome.status === 'canceled') {
+            throw Object.assign(new Error('Run was canceled.'), { code: 'team_run_canceled' });
+          }
           throw new Error(outcome.errorMessage ?? `Worker run ${outcome.status}`);
         }
 
         const raw = TeamAgentRunBridge.extractResultText(outcome.result);
-        let summary = raw.slice(0, 200);
-        let findings = raw;
-        try {
-          const jsonMatch = raw.match(/\{[\s\S]*\}/);
-          const parsed = JSON.parse(jsonMatch?.[0] ?? '{}') as {
-            summary?: string;
-            findings?: unknown;
-          };
-          summary = typeof parsed.summary === 'string' ? parsed.summary : summary;
-          findings = normalizeFindingsText(parsed.findings ?? findings);
-        } catch {
-          // use raw text
+        const handback = parseLunaTeamsHandback(raw);
+        if (handback.truncated) {
+          throw new Error('Worker Result JSON was cut off');
         }
+        const handbackRecord =
+          handback.payload && typeof handback.payload === 'object' && !Array.isArray(handback.payload)
+            ? handback.payload as Record<string, unknown>
+            : null;
+        const summary = handback.summary;
+        const findings = normalizeFindingsText(handbackRecord?.findings ?? handback.payload);
+        const validatedResult = validateLunaTeamsResult({
+          payload: handback.payload,
+          dispatch: {
+            inputRefs,
+            allowedSources,
+            knowledgeMode,
+            outputContract,
+          },
+          run,
+          priorHandbacks: completedPrior.map((result) => result.payload),
+        });
+        if (validatedResult.provenance.recordRefs.length > 0) {
+          await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
+            message:
+              `Result: ${validatedResult.provenance.recordRefs.length} matching record` +
+              `${validatedResult.provenance.recordRefs.length === 1 ? '' : 's'} with source lineage`,
+            provenance: true,
+          }, emit);
+        }
+        await this.repo.completeMailboxDispatch(mailbox.id, {
+          status: 'completed',
+          payload: validatedResult,
+          agentRunId,
+        });
 
         const artifact: TeamRunArtifact = {
           id: `artifact_${subtask.subtaskId}_${Date.now()}`,
@@ -1017,6 +1322,7 @@ Subtask: ${subtask.goal}`;
           agentRunId,
           summary,
           status: 'completed',
+          mailboxMessageId: mailbox.id,
         }, emit);
 
         await this.emitEvent(run, team, subtask.agentId, 'artifact_produced', { artifact }, emit);
@@ -1027,11 +1333,17 @@ Subtask: ${subtask.goal}`;
           agentName: subtask.agentName,
           summary,
           findings,
+          payload: validatedResult,
+          mailboxMessageId: mailbox.id,
           artifacts: [artifact],
           status: 'completed',
         };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        const current = await this.repo.findRun(run.id);
+        if (current?.status === 'canceled' || (err as { code?: string }).code === 'team_run_canceled') {
+          break;
+        }
         if (attempt < maxAttempts) {
           await this.emitEvent(
             run,
@@ -1045,7 +1357,31 @@ Subtask: ${subtask.goal}`;
       }
     }
 
+    const canceled = (await this.repo.findRun(run.id))?.status === 'canceled';
+    if (canceled) {
+      await this.repo.completeMailboxDispatch(mailbox.id, {
+        status: 'canceled',
+        payload: { error: 'Run was canceled.' },
+        errorMessage: 'Run was canceled.',
+      });
+      return {
+        subtaskId: subtask.subtaskId,
+        agentId: subtask.agentId,
+        agentName: subtask.agentName,
+        summary: '',
+        findings: '',
+        artifacts: [],
+        status: 'failed',
+        errorMessage: 'Run was canceled.',
+      };
+    }
+
     const message = lastError?.message ?? 'Worker subtask failed';
+    await this.repo.completeMailboxDispatch(mailbox.id, {
+      status: 'failed',
+      payload: { error: message },
+      errorMessage: message,
+    });
     await this.repo.updateA2ATask(a2aTask.id, {
       status: 'failed',
       errorMessage: message,

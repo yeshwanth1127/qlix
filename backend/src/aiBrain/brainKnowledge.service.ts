@@ -127,6 +127,11 @@ export class BrainKnowledgeService {
     }));
   }
 
+  /**
+   * Ingest for RAG: bodyText → chunks → async embeddings.
+   * When `originalFile` is provided (file uploads), also retains the binary on disk
+   * so agents can send the real brochure/PDF — without replacing the RAG pipeline.
+   */
   async ingestDocument(input: {
     userId: string;
     orgId: string;
@@ -136,7 +141,13 @@ export class BrainKnowledgeService {
     title: string;
     bodyText: string;
     sourceUri?: string | null;
-  }): Promise<{ id: string; chunkCount: number }> {
+    /** When set, retain original bytes alongside chunks/embeddings. */
+    originalFile?: {
+      fileName: string;
+      mimeType?: string | null;
+      bytes: Buffer;
+    } | null;
+  }): Promise<{ id: string; chunkCount: number; hasOriginalFile: boolean }> {
     await this.agentsRepo.assertOrgMembership(input.userId, input.orgId);
     if (!roleCan(input.role, 'manage_brain')) {
       throw new BrainKnowledgeForbiddenError('Only owners and admins can ingest documents.');
@@ -172,6 +183,27 @@ export class BrainKnowledgeService {
       },
     });
 
+    let hasOriginalFile = false;
+    if (input.originalFile?.bytes?.length) {
+      const { storeBrainOriginalFile } = await import('./brainFileStorage.js');
+      const stored = await storeBrainOriginalFile({
+        orgId: input.orgId,
+        documentId: doc.id,
+        fileName: input.originalFile.fileName,
+        mimeType: input.originalFile.mimeType,
+        bytes: input.originalFile.bytes,
+      });
+      await prisma.brainKnowledgeDocument.update({
+        where: { id: doc.id },
+        data: {
+          originalFileName: stored.originalFileName,
+          originalMimeType: stored.originalMimeType,
+          storageKey: stored.storageKey,
+        },
+      });
+      hasOriginalFile = true;
+    }
+
     await appendBrainActionLog({
       brainAgentId: input.brainAgentId,
       userId: input.userId,
@@ -180,6 +212,7 @@ export class BrainKnowledgeService {
         description: `Ingested document "${input.title.trim()}" (${chunks.length} chunks)`,
         collectionId: input.collectionId,
         documentId: doc.id,
+        hasOriginalFile,
       },
       status: 'success',
       riskLevel: 'low',
@@ -190,7 +223,7 @@ export class BrainKnowledgeService {
       console.error('[brainKnowledge] Async embedding failed for doc', doc.id, err instanceof Error ? err.message : err);
     });
 
-    return { id: doc.id, chunkCount: chunks.length };
+    return { id: doc.id, chunkCount: chunks.length, hasOriginalFile };
   }
 
   async getKnowledgeDocument(

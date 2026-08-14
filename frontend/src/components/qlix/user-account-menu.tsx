@@ -111,10 +111,10 @@ export function UserAccountMenu({
   const triggerClass = isSidebar
     ? cn(
         sketchNavLink,
-        "rounded-md border-l-2 border-transparent py-1.5 pl-2.5 text-left text-[10px] leading-snug transition-all duration-200",
+        "rounded-md border border-transparent py-1.5 pl-2.5 text-left text-[10px] leading-snug transition-all duration-200",
         open
-          ? "border-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold"
-          : "hover:border-[color:var(--sketch-purple)]/45 hover:bg-[color:var(--sketch-purple-soft)]/70 hover:pl-3",
+          ? "border-l-[3px] border-l-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold"
+          : "hover:border-black hover:bg-[color:var(--sketch-purple-soft)]",
       )
     : cn(
         "flex size-8 flex-shrink-0 items-center justify-center rounded-full border border-black/15 bg-white/70 text-black backdrop-blur-sm transition-colors hover:border-black hover:bg-black hover:text-white",

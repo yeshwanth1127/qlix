@@ -126,6 +126,44 @@ export async function sendWhatsAppDocument(input: {
   return { ok: true };
 }
 
+export async function sendWhatsAppDocumentToRecipient(input: {
+  connectorId: string;
+  recipient: string;
+  filePath: string;
+  fileName?: string;
+  mimetype?: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}> {
+  const res = await waFetch('POST', '/send-document-to', {
+    connector_id: input.connectorId,
+    recipient: input.recipient,
+    file_path: input.filePath,
+    file_name: input.fileName,
+    mimetype: input.mimetype,
+  });
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(res.data.error ?? 'Document send failed'),
+      matches: Array.isArray(res.data.matches)
+        ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
+        : undefined,
+    };
+  }
+  return {
+    ok: true,
+    jid: typeof res.data.jid === 'string' ? res.data.jid : undefined,
+    phone: typeof res.data.phone === 'string' ? res.data.phone : null,
+    name: typeof res.data.name === 'string' ? res.data.name : null,
+  };
+}
+
 export async function sendWhatsAppApproval(input: {
   connector_id: string;
   action_id: string;
@@ -209,6 +247,44 @@ export async function sendWhatsAppToRecipient(input: {
     return {
       ok: false,
       error: String(res.data.error ?? 'Send failed'),
+      matches: Array.isArray(res.data.matches)
+        ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
+        : undefined,
+    };
+  }
+  return {
+    ok: true,
+    jid: typeof res.data.jid === 'string' ? res.data.jid : undefined,
+    phone: typeof res.data.phone === 'string' ? res.data.phone : null,
+    name: typeof res.data.name === 'string' ? res.data.name : null,
+  };
+}
+
+export async function sendWhatsAppPoll(input: {
+  connectorId: string;
+  recipient: string;
+  name: string;
+  values: string[];
+  selectableCount?: number;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}> {
+  const res = await waFetch('POST', '/send-poll', {
+    connector_id: input.connectorId,
+    recipient: input.recipient,
+    name: input.name,
+    values: input.values,
+    selectableCount: input.selectableCount,
+  });
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(res.data.error ?? 'Poll send failed'),
       matches: Array.isArray(res.data.matches)
         ? (res.data.matches as Array<{ name: string | null; phone: string | null; jid: string }>)
         : undefined,

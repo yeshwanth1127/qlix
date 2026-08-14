@@ -3,11 +3,20 @@ import type {
   TeamDTO,
   TeamRunDTO,
   TeamRunReplyChannel,
+  TeamRunInput,
   TeamRunSourceChannel,
 } from './teams.types.js';
 import { TeamOrchestrator } from './teamOrchestrator.js';
 import { TeamsRepository } from './teams.repository.js';
-import { TeamsService } from './teams.service.js';
+import { TeamContinuesRunError, TeamsService } from './teams.service.js';
+import {
+  applyTeamRunFollowUp,
+  firstInputsInContinueChain,
+  firstRealGoalInContinueChain,
+  priorContextFromRun,
+} from './teamRunFollowUp.js';
+
+const FINISHED_RUN_STATUSES = new Set(['completed', 'failed', 'canceled']);
 
 const orchestrator = new TeamOrchestrator();
 const teamsService = new TeamsService();
@@ -21,11 +30,68 @@ export interface LaunchTeamRunInput {
   backendUrl?: string;
   /** Overrides team.config.defaultModel for this execution only. */
   inferenceModel?: string;
+  reasoningEffort?: string | null;
   source?: {
     channel: TeamRunSourceChannel;
     connectorId?: string;
   };
   replyChannel?: TeamRunReplyChannel;
+  /** Prior TeamRun this send continues; WhatsApp infers the latest finished run when omitted. */
+  continuesRunId?: string | null;
+  inputs?: TeamRunInput[];
+}
+
+async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
+  goal: string;
+  continuesRunId: string | null;
+  priorInputs: TeamRunInput[];
+}> {
+  let continuesRunId = input.continuesRunId?.trim() || null;
+  if (!continuesRunId && input.source?.channel === 'whatsapp') {
+    const latest = await teamsRepo.findLatestFinishedRun(input.teamId, input.userId);
+    continuesRunId = latest?.id ?? null;
+  }
+  if (!continuesRunId) {
+    return { goal: input.goal, continuesRunId: null, priorInputs: [] };
+  }
+
+  const priorRun = await teamsRepo.findRun(continuesRunId);
+  if (!priorRun || priorRun.teamId !== input.teamId) {
+    throw new TeamContinuesRunError();
+  }
+  if (!FINISHED_RUN_STATUSES.has(priorRun.status)) {
+    throw new TeamContinuesRunError('Cannot continue a run that is still active');
+  }
+
+  const events = await teamsRepo.listEvents(continuesRunId);
+  const chain = await loadContinueChain(continuesRunId, priorRun.teamId);
+  const originalGoal = firstRealGoalInContinueChain(chain);
+  const prior = priorContextFromRun(priorRun, events);
+  return {
+    goal: applyTeamRunFollowUp(input.goal, {
+      ...prior,
+      goal: originalGoal || prior.goal,
+    }),
+    continuesRunId,
+    priorInputs: firstInputsInContinueChain(chain),
+  };
+}
+
+async function loadContinueChain(
+  startRunId: string,
+  teamId: string,
+): Promise<Array<{ goal: string; inputs: TeamRunInput[] }>> {
+  const chain: Array<{ goal: string; inputs: TeamRunInput[] }> = [];
+  let id: string | null = startRunId;
+  const seen = new Set<string>();
+  for (let hops = 0; hops < 20 && id && !seen.has(id); hops++) {
+    seen.add(id);
+    const run = await teamsRepo.findRun(id);
+    if (!run || run.teamId !== teamId) break;
+    chain.push({ goal: run.goal, inputs: run.inputs ?? [] });
+    id = run.continuesRunId ?? null;
+  }
+  return chain;
 }
 
 export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
@@ -33,30 +99,38 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
   team: TeamDTO;
 }> {
   const sourceChannel = input.source?.channel ?? 'web';
+  const { goal, continuesRunId, priorInputs } = await resolveContinuedGoal(input);
+  const inputs =
+    input.inputs && input.inputs.length > 0 ? input.inputs : priorInputs;
   const run = await teamsService.startRun(
     input.teamId,
     input.orgId,
     input.userId,
-    input.goal,
+    goal,
     {
       sourceChannel,
       sourceConnectorId: input.source?.connectorId ?? null,
       replyChannel: input.replyChannel,
+      continuesRunId,
+      inputs,
     },
     input.backendUrl,
   );
 
   const team = await teamsService.getTeam(input.teamId, input.orgId);
   const modelOverride = input.inferenceModel?.trim();
-  const effectiveTeam: TeamDTO = modelOverride
-    ? {
-        ...team,
-        config: {
-          ...(team.config as TeamConfig),
-          defaultModel: modelOverride,
-        },
-      }
-    : team;
+  const effortOverride = input.reasoningEffort?.trim() || null;
+  const effectiveTeam: TeamDTO =
+    modelOverride || effortOverride
+      ? {
+          ...team,
+          config: {
+            ...(team.config as TeamConfig),
+            ...(modelOverride ? { defaultModel: modelOverride } : {}),
+            ...(effortOverride ? { defaultReasoningEffort: effortOverride } : {}),
+          },
+        }
+      : team;
 
   if (sourceChannel === 'whatsapp' && input.source?.connectorId) {
     await teamsRepo.upsertChannelSession({

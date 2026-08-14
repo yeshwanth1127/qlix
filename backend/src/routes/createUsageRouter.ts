@@ -16,6 +16,15 @@ const agentUsageQuerySchema = z.object({
   cursor: z.string().min(1).optional(),
 });
 
+type UsageBucket = {
+  totalRuns: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  totalCostUsd: Prisma.Decimal;
+  snapshotName: string;
+};
+
 export function createUsageRouter(): Router {
   const router = Router();
 
@@ -25,7 +34,7 @@ export function createUsageRouter(): Router {
   // Usage/cost data is billing-sensitive: org members/admins must not see it (owner-only in orgs).
   router.use(assertCanViewBilling);
 
-  // GET /api/v1/usage/summary — agents grouped by agentId for the workspace
+  // GET /api/v1/usage/summary — agents grouped by durable agentKey for the workspace
   router.get('/summary', async (request: Request, response: Response) => {
     try {
       const auth = request.auth!;
@@ -41,41 +50,50 @@ export function createUsageRouter(): Router {
           ? { orgId: auth.orgId }
           : { userId: auth.userId };
 
-      // Aggregate by agentId
-      const [runUsage, brainUsage] = await Promise.all([
+      const cycleWhere = { ...scopeFilter, createdAt: { gte: cycleStart, lt: cycleEnd } };
+
+      // Aggregate by durable agentKey so deleted agents still appear.
+      const [runUsage, brainUsage, runNameRows, brainNameRows] = await Promise.all([
         prisma.runUsage.groupBy({
-          by: ['agentId'],
-          where: { ...scopeFilter, createdAt: { gte: cycleStart, lt: cycleEnd } },
+          by: ['agentKey'],
+          where: cycleWhere,
           _count: { id: true },
           _sum: { promptTokens: true, completionTokens: true, totalTokens: true, totalCostUsd: true },
         }),
         prisma.brainUsage.groupBy({
-          by: ['brainAgentId'],
-          where: { ...scopeFilter, createdAt: { gte: cycleStart, lt: cycleEnd } },
+          by: ['agentKey'],
+          where: cycleWhere,
           _count: { id: true },
           _sum: { promptTokens: true, completionTokens: true, totalTokens: true, totalCostUsd: true },
         }),
+        prisma.runUsage.findMany({
+          where: cycleWhere,
+          distinct: ['agentKey'],
+          orderBy: { createdAt: 'desc' },
+          select: { agentKey: true, agentName: true },
+        }),
+        prisma.brainUsage.findMany({
+          where: cycleWhere,
+          distinct: ['agentKey'],
+          orderBy: { createdAt: 'desc' },
+          select: { agentKey: true, agentName: true },
+        }),
       ]);
 
-      const totals = new Map<string, {
-        totalRuns: number;
-        promptTokens: number;
-        completionTokens: number;
-        totalTokens: number;
-        totalCostUsd: Prisma.Decimal;
-      }>();
+      const totals = new Map<string, UsageBucket>();
       for (const row of runUsage) {
-        totals.set(row.agentId, {
+        totals.set(row.agentKey, {
           totalRuns: row._count.id,
           promptTokens: row._sum.promptTokens ?? 0,
           completionTokens: row._sum.completionTokens ?? 0,
           totalTokens: row._sum.totalTokens ?? 0,
           totalCostUsd: row._sum.totalCostUsd ?? new Prisma.Decimal('0'),
+          snapshotName: row.agentKey,
         });
       }
       for (const row of brainUsage) {
-        const previous = totals.get(row.brainAgentId);
-        totals.set(row.brainAgentId, {
+        const previous = totals.get(row.agentKey);
+        totals.set(row.agentKey, {
           totalRuns: (previous?.totalRuns ?? 0) + row._count.id,
           promptTokens: (previous?.promptTokens ?? 0) + (row._sum.promptTokens ?? 0),
           completionTokens: (previous?.completionTokens ?? 0) + (row._sum.completionTokens ?? 0),
@@ -83,24 +101,43 @@ export function createUsageRouter(): Router {
           totalCostUsd: (previous?.totalCostUsd ?? new Prisma.Decimal('0')).add(
             row._sum.totalCostUsd ?? new Prisma.Decimal('0'),
           ),
+          snapshotName: previous?.snapshotName ?? row.agentKey,
         });
       }
 
-      // Fetch agent names
-      const agentIds = [...totals.keys()];
+      const snapshotNames = new Map<string, string>();
+      for (const row of [...brainNameRows, ...runNameRows]) {
+        // Prefer the most recent run-usage name when both exist (runNameRows applied last
+        // would win — iterate brain first then run so run names take precedence).
+        if (row.agentName.trim()) snapshotNames.set(row.agentKey, row.agentName.trim());
+      }
+      for (const [key, bucket] of totals) {
+        const snap = snapshotNames.get(key);
+        if (snap) bucket.snapshotName = snap;
+      }
+
+      // Prefer live agent names when the agent still exists.
+      const agentKeys = [...totals.keys()];
       const agents = await prisma.agent.findMany({
-        where: { id: { in: agentIds } },
+        where: { id: { in: agentKeys } },
         select: { id: true, name: true },
       });
-      const agentMap = new Map(agents.map((a) => [a.id, a.name]));
+      const liveNames = new Map(agents.map((a) => [a.id, a.name]));
 
       const summary = [...totals.entries()]
-        .map(([agentId, row]) => ({
-          agentId,
-          agentName: agentMap.get(agentId) ?? agentId,
-          ...row,
-          totalCostUsd: row.totalCostUsd.toString(),
-        }))
+        .map(([agentId, row]) => {
+          const live = liveNames.get(agentId);
+          const agentName = live ?? `${row.snapshotName} (deleted)`;
+          return {
+            agentId,
+            agentName,
+            totalRuns: row.totalRuns,
+            promptTokens: row.promptTokens,
+            completionTokens: row.completionTokens,
+            totalTokens: row.totalTokens,
+            totalCostUsd: row.totalCostUsd.toString(),
+          };
+        })
         .sort((a, b) => b.totalRuns - a.totalRuns);
 
       response.json({ billingCycle, summary });
@@ -114,7 +151,7 @@ export function createUsageRouter(): Router {
     }
   });
 
-  // GET /api/v1/usage/agents/:agentId — per-run breakdown for a specific agent
+  // GET /api/v1/usage/agents/:agentId — per-run breakdown (works for deleted agents via agentKey)
   router.get('/agents/:agentId', async (request: Request, response: Response) => {
     try {
       const auth = request.auth!;
@@ -127,25 +164,47 @@ export function createUsageRouter(): Router {
           ? { orgId: auth.orgId }
           : { userId: auth.userId };
 
-      // Check agent ownership
+      const [year, month] = (query.billingCycle ?? billingCycleFromDateUtc(new Date()))
+        .split('-')
+        .map(Number);
+      const cycleStart = new Date(Date.UTC(year, month - 1, 1));
+      const cycleEnd = new Date(Date.UTC(year, month, 1));
+
+      // Authorize from usage rows (or live agent) so deleted agents remain readable.
       const agent = await prisma.agent.findUnique({
         where: { id: agentId },
-        select: { orgId: true, userId: true },
+        select: { orgId: true, userId: true, name: true },
       });
-      if (!agent) {
-        response.status(404).json({ error: { code: 'not_found', message: 'Agent not found' } });
-        return;
+
+      if (agent) {
+        const owns = scopeFilter.orgId ? agent.orgId === auth.orgId : agent.userId === auth.userId;
+        if (!owns) {
+          response.status(403).json({ error: { code: 'forbidden', message: 'Forbidden' } });
+          return;
+        }
+      } else {
+        const sample = await prisma.runUsage.findFirst({
+          where: { agentKey: agentId, ...scopeFilter },
+          select: { id: true },
+        });
+        const brainSample =
+          sample ??
+          (await prisma.brainUsage.findFirst({
+            where: { agentKey: agentId, ...scopeFilter },
+            select: { id: true },
+          }));
+        if (!brainSample) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Agent usage not found' } });
+          return;
+        }
       }
 
-      const owns = scopeFilter.orgId ? agent.orgId === auth.orgId : agent.userId === auth.userId;
-      if (!owns) {
-        response.status(403).json({ error: { code: 'forbidden', message: 'Forbidden' } });
-        return;
-      }
-
-      // Fetch runs for this agent
       const rows = await prisma.runUsage.findMany({
-        where: { agentId },
+        where: {
+          agentKey: agentId,
+          ...scopeFilter,
+          createdAt: { gte: cycleStart, lt: cycleEnd },
+        },
         orderBy: { createdAt: 'desc' },
         take: query.take + 1,
         ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : null),
@@ -171,7 +230,7 @@ export function createUsageRouter(): Router {
         nextCursor,
         runs: slice.map((r) => ({
           runId: r.runId,
-          conversationId: r.run.conversationId,
+          conversationId: r.run?.conversationId ?? null,
           promptTokens: r.promptTokens,
           completionTokens: r.completionTokens,
           totalTokens: r.totalTokens,

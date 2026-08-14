@@ -1,4 +1,11 @@
-import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  DisconnectReason,
+  decryptPollVote,
+  fetchLatestBaileysVersion,
+  getAggregateVotesInPollMessage,
+  getKeyAuthor,
+  jidNormalizedUser,
+} from '@whiskeysockets/baileys';
 import { migratePlaintextAuthDir, useEncryptedMultiFileAuthState } from './encryptedAuthState.js';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -12,6 +19,14 @@ import {
   isSelfChat,
   registerPendingApproval,
 } from './handlers.js';
+import {
+  formatPollVoteText,
+  getPollCreation,
+  getPollMessageForKey,
+  rememberPollCreation,
+  shouldForwardPollVote,
+  validatePollPayload,
+} from './pollStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_ROOT = path.join(__dirname, '..', 'auth_info');
@@ -577,6 +592,7 @@ export async function startSession(connectorId) {
       logger,
       version: await getBaileysVersion(),
       printQRInTerminal: false,
+      getMessage: async (key) => getPollMessageForKey(connectorId, key) ?? undefined,
     });
 
     entry.sock.ev.on('creds.update', async () => {
@@ -681,6 +697,20 @@ export async function startSession(connectorId) {
         if (remoteJid.endsWith('@g.us')) continue;
         if (msg.message.protocolMessage || msg.message.senderKeyDistributionMessage) continue;
 
+        // Baileys 7.0.0-rc14 no longer decrypts poll votes in processMessage (commented out),
+        // so messages.update never gets pollUpdates. Decrypt on upsert ourselves.
+        if (msg.message.pollUpdateMessage) {
+          try {
+            await handlePollUpdateUpsert(entry, connectorId, msg);
+          } catch (err) {
+            console.warn(
+              `[qlix-whatsapp] poll update upsert failed connector=${connectorId}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+          continue;
+        }
+
         const text = extractMessageText(msg);
         const trimmed = text.trim();
         if (!trimmed) {
@@ -743,10 +773,28 @@ export async function startSession(connectorId) {
             forwardJid,
             trimmed,
             allowedSelfJidsForEntry(entry),
-            { fromContact: contactArmed && !selfChat },
+            {
+              fromContact: contactArmed && !selfChat,
+              pushName: typeof msg.pushName === 'string' ? msg.pushName : null,
+            },
           );
         } finally {
           entry.inboundLock = false;
+        }
+      }
+    });
+
+    entry.sock.ev.on('messages.update', async (events) => {
+      if (!Array.isArray(events) || events.length === 0) return;
+      for (const event of events) {
+        if (!event?.update?.pollUpdates?.length) continue;
+        try {
+          await handlePollVoteUpdate(entry, connectorId, event.key, event.update.pollUpdates);
+        } catch (err) {
+          console.warn(
+            `[qlix-whatsapp] poll vote handle failed connector=${connectorId}:`,
+            err instanceof Error ? err.message : err,
+          );
         }
       }
     });
@@ -996,6 +1044,353 @@ export async function resolveRecipientJid(connectorId, recipient) {
   };
 }
 
+function voterMatchesJid(voter, target, entry) {
+  if (!voter || !target) return false;
+  const a = String(voter).toLowerCase();
+  const b = String(target).toLowerCase();
+  if (a === b) return true;
+  const aLocal = phoneLocalFromJid(voter);
+  const bLocal = phoneLocalFromJid(target);
+  if (
+    aLocal.length >= 8 &&
+    bLocal.length >= 8 &&
+    (aLocal === bLocal || aLocal.endsWith(bLocal) || bLocal.endsWith(aLocal))
+  ) {
+    return true;
+  }
+  const aLid = normalizeLid(voter);
+  const bLid = normalizeLid(target);
+  if (aLid && bLid && aLid === bLid) return true;
+  if (aLid) {
+    const mapped = entry.lidToPn?.get(aLid);
+    if (mapped && String(mapped).toLowerCase() === b) return true;
+  }
+  if (bLid) {
+    const mapped = entry.lidToPn?.get(bLid);
+    if (mapped && String(mapped).toLowerCase() === a) return true;
+  }
+  return false;
+}
+
+function isSelfVoter(voter, entry) {
+  if (!voter) return false;
+  for (const jid of entry.knownSelfJids ?? []) {
+    if (voterMatchesJid(voter, jid, entry)) return true;
+  }
+  if (entry.ownerPhoneJid && voterMatchesJid(voter, entry.ownerPhoneJid, entry)) return true;
+  if (entry.ownerJid && voterMatchesJid(voter, entry.ownerJid, entry)) return true;
+  if (entry.ownerLid && voterMatchesJid(voter, entry.ownerLid, entry)) return true;
+  return false;
+}
+
+function selectedOptionsForChat(aggregates, chatJid, entry) {
+  const selected = [];
+  for (const row of aggregates ?? []) {
+    const voters = Array.isArray(row.voters) ? row.voters : [];
+    const hit = voters.some((voter) => {
+      if (isSelfVoter(voter, entry)) return false;
+      return voterMatchesJid(voter, chatJid, entry) || voters.length === 1;
+    });
+    if (hit && row.name && row.name !== 'Unknown') selected.push(row.name);
+  }
+  return selected;
+}
+
+function bytesFromMaybeBase64(value) {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value === 'string') {
+    try {
+      return Buffer.from(value, 'base64');
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(value)) return Buffer.from(value);
+  if (value?.type === 'Buffer' && Array.isArray(value.data)) return Buffer.from(value.data);
+  return null;
+}
+
+function toNumberMaybe(value) {
+  if (value == null) return Date.now();
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value?.toNumber === 'function') {
+    try {
+      return value.toNumber();
+    } catch {
+      /* fall through */
+    }
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : Date.now();
+}
+
+async function handlePollUpdateUpsert(entry, connectorId, msg) {
+  const content = msg.message?.pollUpdateMessage;
+  const creationMsgKey = content?.pollCreationMessageKey;
+  const vote = content?.vote;
+  if (!creationMsgKey?.id || !vote) return;
+
+  const stored = getPollCreation(connectorId, creationMsgKey.id);
+  const pollMsg = stored?.message ?? null;
+  if (!pollMsg) {
+    console.log(
+      `[qlix-whatsapp] poll vote ignored (unknown poll) connector=${connectorId} id=${creationMsgKey.id}`,
+    );
+    return;
+  }
+
+  const meId = entry.sock?.user?.id || entry.ownerJid;
+  if (!meId) return;
+  const meIdNormalised = jidNormalizedUser(meId);
+  const pollEncKey = bytesFromMaybeBase64(pollMsg.messageContextInfo?.messageSecret);
+  if (!pollEncKey?.length) {
+    console.warn(
+      `[qlix-whatsapp] poll vote missing messageSecret connector=${connectorId} id=${creationMsgKey.id}`,
+    );
+    return;
+  }
+
+  const encPayload = bytesFromMaybeBase64(vote.encPayload) ?? vote.encPayload;
+  const encIv = bytesFromMaybeBase64(vote.encIv) ?? vote.encIv;
+  if (!encPayload || !encIv) {
+    console.warn(
+      `[qlix-whatsapp] poll vote missing enc fields connector=${connectorId} id=${creationMsgKey.id}`,
+    );
+    return;
+  }
+
+  // WhatsApp encrypts poll votes with LID and/or PN forms of creator + voter JIDs.
+  // Trying only getKeyAuthor() fails with "unable to authenticate data" — try combos.
+  const pushJid = (list, raw) => {
+    if (!raw || typeof raw !== 'string') return;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    if (!list.includes(trimmed)) list.push(trimmed);
+    try {
+      const norm = jidNormalizedUser(trimmed);
+      if (norm && !list.includes(norm)) list.push(norm);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const creators = [];
+  pushJid(creators, entry.ownerLid);
+  pushJid(creators, entry.ownerLidNormalized);
+  pushJid(creators, entry.sock?.user?.lid);
+  pushJid(creators, getKeyAuthor(creationMsgKey, meIdNormalised));
+  pushJid(creators, meIdNormalised);
+  pushJid(creators, entry.ownerPhoneJid);
+  pushJid(creators, meId);
+
+  const voters = [];
+  pushJid(voters, getKeyAuthor(msg.key, meIdNormalised));
+  pushJid(voters, msg.key?.remoteJid);
+  pushJid(voters, msg.key?.remoteJidAlt);
+  pushJid(voters, msg.key?.participant);
+  pushJid(voters, msg.key?.participantAlt);
+  pushJid(voters, stored?.remoteJid);
+
+  for (const lidCandidate of [...voters]) {
+    if (!String(lidCandidate).includes('@lid')) continue;
+    const cached = entry.lidToPn?.get(normalizeLid(lidCandidate));
+    pushJid(voters, cached);
+    try {
+      const mapped = await entry.sock?.signalRepository?.lidMapping?.getPNForLID?.(lidCandidate);
+      if (mapped) {
+        rememberLidPnMapping(entry, lidCandidate, mapped);
+        pushJid(voters, mapped);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const pnCandidate of [...voters]) {
+    if (!String(pnCandidate).includes('@s.whatsapp.net')) continue;
+    const cached = entry.pnToLid?.get(normalizePnJid(pnCandidate) || pnCandidate);
+    pushJid(voters, cached);
+    try {
+      const mapped = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(pnCandidate);
+      if (mapped) {
+        rememberLidPnMapping(entry, mapped, pnCandidate);
+        pushJid(voters, mapped);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let voteMsg = null;
+  let usedCreator = null;
+  let usedVoter = null;
+  let lastErr = null;
+  for (const pollCreatorJid of creators) {
+    for (const voterJid of voters) {
+      try {
+        voteMsg = decryptPollVote(
+          { encPayload, encIv },
+          {
+            pollEncKey,
+            pollCreatorJid,
+            pollMsgId: creationMsgKey.id,
+            voterJid,
+          },
+        );
+        usedCreator = pollCreatorJid;
+        usedVoter = voterJid;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (voteMsg) break;
+  }
+
+  if (!voteMsg) {
+    console.warn(
+      `[qlix-whatsapp] failed to decrypt poll vote connector=${connectorId} id=${creationMsgKey.id} creators=${creators.length} voters=${voters.length}:`,
+      lastErr instanceof Error ? lastErr.message : lastErr,
+    );
+    return;
+  }
+
+  console.log(
+    `[qlix-whatsapp] poll vote decrypted connector=${connectorId} id=${creationMsgKey.id} creator=${usedCreator} voter=${usedVoter}`,
+  );
+
+  const keyForHandle = {
+    ...creationMsgKey,
+    remoteJid: creationMsgKey.remoteJid || stored?.remoteJid || msg.key?.remoteJid || '',
+  };
+
+  await handlePollVoteUpdate(entry, connectorId, keyForHandle, [
+    {
+      pollUpdateMessageKey: msg.key,
+      vote: voteMsg,
+      senderTimestampMs: toNumberMaybe(content.senderTimestampMs),
+    },
+  ]);
+}
+
+async function handlePollVoteUpdate(entry, connectorId, key, pollUpdates) {
+  const messageId = key?.id;
+  const chatJid = key?.remoteJid;
+  if (!messageId || !chatJid || chatJid.endsWith('@g.us')) return;
+
+  const stored = getPollCreation(connectorId, messageId);
+  const pollMessage = stored?.message ?? getPollMessageForKey(connectorId, key);
+  if (!pollMessage) {
+    console.log(
+      `[qlix-whatsapp] poll vote ignored (unknown poll) connector=${connectorId} id=${messageId}`,
+    );
+    return;
+  }
+
+  const meId = entry.sock?.user?.id || entry.ownerJid || undefined;
+  const aggregates = getAggregateVotesInPollMessage(
+    { message: pollMessage, pollUpdates },
+    meId,
+  );
+  const selected = selectedOptionsForChat(aggregates, chatJid, entry);
+  const text = formatPollVoteText(selected);
+  if (!text) return;
+
+  const voterKey = stored?.remoteJid || chatJid;
+  if (!shouldForwardPollVote(connectorId, messageId, voterKey, text)) return;
+
+  const armed = await resolveArmedContactJid(
+    entry,
+    connectorId,
+    { key: { remoteJid: chatJid, fromMe: false, id: messageId } },
+    chatJid,
+  );
+  if (!armed.armedJid) {
+    console.log(
+      `[qlix-whatsapp] poll vote skipped (not-armed) connector=${connectorId} remote=${chatJid} vote="${text}"`,
+    );
+    return;
+  }
+
+  const selfJid = ownerJidForInbound(entry);
+  if (!selfJid) return;
+  if (entry.inboundLock) return;
+  entry.inboundLock = true;
+  try {
+    console.log(
+      `[qlix-whatsapp] poll vote connector=${connectorId} remote=${chatJid} forward=${armed.armedJid} vote="${text}"`,
+    );
+    await handleInboundMessage(
+      connectorId,
+      selfJid,
+      armed.armedJid,
+      text,
+      allowedSelfJidsForEntry(entry),
+      { fromContact: true, pushName: null },
+    );
+  } finally {
+    entry.inboundLock = false;
+  }
+}
+
+export async function sendPollToRecipient(connectorId, recipient, poll) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected || !entry.sock) {
+    return { ok: false, error: 'WhatsApp not connected' };
+  }
+  const validated = validatePollPayload(poll);
+  if (!validated.ok) return validated;
+
+  const resolved = await resolveRecipientJid(connectorId, recipient);
+  if (!resolved.ok) return resolved;
+
+  return throttledSend(connectorId, async () => {
+    try {
+      const sent = await entry.sock.sendMessage(resolved.jid, {
+        poll: {
+          name: validated.name,
+          values: validated.values,
+          selectableCount: validated.selectableCount,
+        },
+      });
+      rememberOutboundMessageId(entry, sent?.key);
+      if (sent?.key?.id && sent?.message) {
+        rememberPollCreation({
+          connectorId,
+          id: sent.key.id,
+          remoteJid: sent.key.remoteJid || resolved.jid,
+          message: sent.message,
+        });
+      }
+      try {
+        const lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(resolved.jid);
+        if (lid) rememberLidPnMapping(entry, lid, resolved.jid);
+      } catch (err) {
+        console.warn(
+          `[qlix-whatsapp] getLIDForPN failed for ${resolved.jid}:`,
+          err?.message ?? err,
+        );
+      }
+      console.log(
+        `[qlix-whatsapp] sent-poll connector=${connectorId} to=${resolved.jid} name="${validated.name}" options=${validated.values.length}`,
+      );
+      return {
+        ok: true,
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: resolved.name,
+        pollName: validated.name,
+        pollValues: validated.values,
+        selectableCount: validated.selectableCount,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err) {
+      return { ok: false, error: err?.message || 'Poll send failed' };
+    }
+  });
+}
+
 export async function sendToRecipient(connectorId, recipient, text) {
   const entry = sessions.get(connectorId);
   if (!entry?.connected || !entry.sock) {
@@ -1201,6 +1596,58 @@ export async function sendDocumentToConnector(connectorId, filePath, fileName, m
       }
     }
     return { ok: false, error: lastError };
+  });
+}
+
+/** Send a document to a contact (not self-chat). */
+export async function sendDocumentToRecipient(connectorId, recipient, filePath, fileName, mimetype) {
+  const entry = sessions.get(connectorId);
+  if (!entry?.connected || !entry.sock) {
+    return { ok: false, error: 'WhatsApp not connected' };
+  }
+
+  const resolved = await resolveRecipientJid(connectorId, recipient);
+  if (!resolved.ok) return resolved;
+
+  let buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch (err) {
+    return { ok: false, error: `Cannot read file: ${err.message}` };
+  }
+  if (!buffer?.length) return { ok: false, error: 'File is empty' };
+
+  return throttledSend(connectorId, async () => {
+    try {
+      const sent = await entry.sock.sendMessage(resolved.jid, {
+        document: buffer,
+        mimetype,
+        fileName,
+      });
+      rememberOutboundMessageId(entry, sent?.key);
+      try {
+        const lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(resolved.jid);
+        if (lid) rememberLidPnMapping(entry, lid, resolved.jid);
+      } catch (err) {
+        console.warn(
+          `[qlix-whatsapp] getLIDForPN failed for ${resolved.jid}:`,
+          err?.message ?? err,
+        );
+      }
+      console.log(
+        `[qlix-whatsapp] sent-document-to-contact connector=${connectorId} to=${resolved.jid} file=${fileName} name=${resolved.name ?? 'n/a'}`,
+      );
+      return {
+        ok: true,
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: resolved.name,
+        fileName,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err) {
+      return { ok: false, error: err?.message || 'Document send failed' };
+    }
   });
 }
 

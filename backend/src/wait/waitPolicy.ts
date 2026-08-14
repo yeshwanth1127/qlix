@@ -10,11 +10,44 @@ export const WHATSAPP_REPLY_LIVE_SHEET_EFFECT: WaitSideEffect = {
   deliver: { channel: 'whatsapp', when: 'on_resume' },
 };
 
+const REPLY_WAIT_NOUN = String.raw`(?:reply|replies|respond|response|responses|poll\s+votes?)`;
+
 export function goalRequestsReplyWait(goal: string): boolean {
   return (
-    /\bwait\s+(?:for|until)\b[\s\S]{0,100}\b(?:reply|replies|respond)/i.test(goal) ||
-    /\b(?:if|when|once|after)\b[\s\S]{0,100}\b(?:reply|replies|respond)/i.test(goal)
+    new RegExp(String.raw`\bwait\s+(?:for|until)\b[\s\S]{0,120}\b${REPLY_WAIT_NOUN}\b`, 'i').test(goal) ||
+    new RegExp(String.raw`\b(?:if|when|once|after)\b[\s\S]{0,120}\b${REPLY_WAIT_NOUN}\b`, 'i').test(goal) ||
+    /\bcollect\b[\s\S]{0,80}\b(?:reply|replies|respond|response|responses|poll)\b/i.test(goal) ||
+    /\bvia the poll\b/i.test(goal) ||
+    (/\bpoll\b/i.test(goal) && /\b(wait|listen|collect|capture)\b/i.test(goal))
   );
+}
+
+export function goalRequestsBrochureFile(goal: string): boolean {
+  return /\bbrochure\b/i.test(goal);
+}
+
+export function goalRequestsInterestPoll(goal: string): boolean {
+  return /\bpoll\b/i.test(goal);
+}
+
+export function goalRequestsOutreachPack(goal: string): boolean {
+  return goalRequestsBrochureFile(goal) || goalRequestsInterestPoll(goal) || goalRequestsReplyWait(goal);
+}
+
+export type TeamWhatsAppWaitMode = 'queue' | 'live' | 'blocked';
+
+const ACTIVE_TEAM_RUN = new Set(['queued', 'running', 'paused']);
+
+export function resolveTeamWhatsAppWaitMode(input: {
+  teamRunStatus: string;
+  goal: string;
+  waitSteps?: unknown;
+}): TeamWhatsAppWaitMode {
+  if (!ACTIVE_TEAM_RUN.has(input.teamRunStatus)) return 'blocked';
+  const waitsConfigured =
+    goalRequestsReplyWait(input.goal) ||
+    (Array.isArray(input.waitSteps) && input.waitSteps.length > 0);
+  return waitsConfigured ? 'queue' : 'live';
 }
 
 export function goalRequestsLiveArtifact(goal: string): boolean {

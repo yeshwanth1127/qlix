@@ -11,6 +11,7 @@ export interface RecordRunUsageInput {
  * Extract token usage data from AgentRunEvent logs and write a RunUsage row.
  * Looks for the last `inference_success` log event in the run and aggregates token data.
  * Idempotent: upserts based on runId.
+ * Stores agentKey/agentName snapshots so usage survives agent deletion.
  */
 export async function recordRunUsage(
   prisma: PrismaClient,
@@ -54,12 +55,20 @@ export async function recordRunUsage(
     }
   }
 
+  const agent = await prisma.agent.findUnique({
+    where: { id: input.agentId },
+    select: { name: true },
+  });
+  const agentName = agent?.name?.trim() || input.agentId;
+
   // Upsert the RunUsage row
   await prisma.runUsage.upsert({
     where: { runId: input.runId },
     create: {
       runId: input.runId,
       agentId: input.agentId,
+      agentKey: input.agentId,
+      agentName,
       orgId: input.orgId,
       userId: input.userId,
       promptTokens,
@@ -71,6 +80,9 @@ export async function recordRunUsage(
       openrouterGenId,
     },
     update: {
+      agentId: input.agentId,
+      agentKey: input.agentId,
+      agentName,
       promptTokens,
       completionTokens,
       totalTokens,

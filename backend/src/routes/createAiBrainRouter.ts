@@ -367,6 +367,7 @@ export function createAiBrainRouter(): Router {
         const titleRaw = typeof request.body?.title === 'string' ? request.body.title.trim() : '';
         const title = titleRaw || file.originalname || 'Uploaded document';
 
+        // Dual ingest: extracted text → chunks/embeddings (RAG) + retain original bytes (file send).
         const result = await knowledge.ingestDocument({
           userId,
           orgId,
@@ -376,6 +377,11 @@ export function createAiBrainRouter(): Router {
           title: title.slice(0, 500),
           bodyText,
           sourceUri: null,
+          originalFile: {
+            fileName: file.originalname || title,
+            mimeType: file.mimetype,
+            bytes: file.buffer,
+          },
         });
 
         response.status(201).json(result);

@@ -39,14 +39,14 @@ export async function getWhatsAppConnectorForAgent(agentId: string): Promise<Con
   if (!agent) return null;
   const orgId = agent.orgId;
   if (orgId) {
-    return getConnectedWhatsAppForOrg(orgId);
+    return getWhatsAppConnectorForOrg(orgId);
   }
   const user = await prisma.user.findUnique({
     where: { id: agent.userId },
     select: { orgId: true },
   });
   if (!user) return null;
-  return getConnectedWhatsAppForOrg(user.orgId);
+  return getWhatsAppConnectorForOrg(user.orgId);
 }
 
 /**

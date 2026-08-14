@@ -147,22 +147,26 @@ export function createJitRouter(): Router {
     }
   });
 
-  // Pending JIT approvals for a dashboard chat (fallback when SSE missed the approval card).
+  // Pending JIT approvals. Chat UI passes conversationId+agentId; API keys may omit filters.
   router.get('/pending', authenticateUser(true), async (request: Request, response: Response) => {
     const conversationId = String(request.query.conversationId ?? '').trim();
     const agentId = String(request.query.agentId ?? '').trim();
-    if (!conversationId || !agentId) {
-      response.status(400).json({
-        error: { code: 'invalid_query', message: 'conversationId and agentId are required' },
-      });
-      return;
-    }
+    const runId = String(request.query.runId ?? '').trim();
     try {
       const auth = request.auth!;
-      const pending = await service.listPendingForConversation({
+      if (conversationId && agentId) {
+        const pending = await service.listPendingForConversation({
+          userId: auth.userId,
+          conversationId,
+          agentId,
+        });
+        response.status(200).json({ pending });
+        return;
+      }
+      const pending = await service.listPendingForUser({
         userId: auth.userId,
-        conversationId,
-        agentId,
+        agentId: agentId || undefined,
+        runId: runId || undefined,
       });
       response.status(200).json({ pending });
     } catch (error) {

@@ -34,7 +34,18 @@ export function lookupWaitContact(
 ): WaitContactRecord | null {
   if (!checkpoint?.waitContacts) return null;
   const key = normalizeContactJid(jid);
-  return checkpoint.waitContacts[key] ?? null;
+  const direct = checkpoint.waitContacts[key];
+  if (direct) return direct;
+  // Fallback: match by phone local-part when key forms differ slightly.
+  const local = key.split('@')[0]?.split(':')[0] ?? '';
+  if (local.length < 8) return null;
+  for (const [storedJid, record] of Object.entries(checkpoint.waitContacts)) {
+    const storedLocal = normalizeContactJid(storedJid).split('@')[0]?.split(':')[0] ?? '';
+    if (storedLocal === local || storedLocal.endsWith(local) || local.endsWith(storedLocal)) {
+      return record;
+    }
+  }
+  return null;
 }
 
 export async function persistWaitContact(input: {

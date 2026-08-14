@@ -13,6 +13,8 @@ export const API_KEY_SCOPES = [
   'teams:write',
   'brain:read',
   'brain:write',
+  'builder:read',
+  'builder:write',
   'jit:decide',
   'usage:read',
 ] as const;
@@ -99,6 +101,70 @@ const DEVELOPER_API_SCOPE_RULES: readonly ScopeRule[] = [
     methods: ['POST'],
     pattern: /^\/api\/v1\/agents\/[^/]+\/brain\/query\/?$/,
     scopes: ['brain:read'],
+  },
+
+  // Identity — any valid key can read the bound user/org
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/auth\/me\/?$/,
+    scopes: [],
+  },
+
+  // AI Builder (NL parse/create, sessions, visual canvases)
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/agents\/nl-(parse|create)\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/nl-builder\/sessions\/?$/,
+    scopes: ['builder:read'],
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/nl-builder\/sessions\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/nl-builder\/sessions\/[^/]+\/?$/,
+    scopes: ['builder:read'],
+  },
+  {
+    methods: ['PATCH', 'DELETE'],
+    pattern: /^\/api\/v1\/nl-builder\/sessions\/[^/]+\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/nl-builder\/history\/?$/,
+    scopes: ['builder:read'],
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/nl-builder\/history\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/builder\/canvases\/?$/,
+    scopes: ['builder:read'],
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/builder\/canvases\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/builder\/canvases\/[^/]+\/?$/,
+    scopes: ['builder:read'],
+  },
+  {
+    methods: ['PATCH', 'DELETE'],
+    pattern: /^\/api\/v1\/builder\/canvases\/[^/]+\/?$/,
+    scopes: ['builder:write'],
   },
 
   // Agents (Layer 3)

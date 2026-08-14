@@ -50,6 +50,8 @@ export type WaitStep = {
   sideEffects: WaitSideEffect[];
   resume: {
     injectAs: 'whatsapp_responses';
+    /** False when resume side effects fully satisfy the workflow. */
+    continuePipeline?: boolean;
   };
 };
 

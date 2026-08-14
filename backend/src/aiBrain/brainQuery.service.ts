@@ -103,9 +103,16 @@ export class BrainQueryService {
     totalTokens: number;
     totalCostUsd: number;
   }): Promise<void> {
+    const agent = await prisma.agent.findUnique({
+      where: { id: input.brainAgentId },
+      select: { name: true },
+    });
+    const agentName = agent?.name?.trim() || input.brainAgentId;
     await prisma.brainUsage.create({
       data: {
         brainAgentId: input.brainAgentId,
+        agentKey: input.brainAgentId,
+        agentName,
         userId: input.userId,
         orgId: input.orgId,
         model: input.model,
@@ -218,7 +225,7 @@ export class BrainQueryService {
     return scored.map((s, i) => {
       const doc = s.chunk.document;
       const col = doc.collection;
-      return `[${i + 1}] Collection: "${col.name}" | Document: "${doc.title}"\n${s.chunk.textContent}`;
+      return `[${i + 1}] Collection: "${col.name}" | Document: "${doc.title}" | documentId: ${s.chunk.documentId}\n${s.chunk.textContent}`;
     });
   }
 

@@ -76,7 +76,9 @@ def _build_run_guidance(
     from .tool_router import (
         crm_jit_run_guidance,
         crm_no_invent_guidance,
+        forms_reuse_guidance,
         has_crm_scope,
+        has_forms_scope,
         is_crm_mutation_intent,
     )
 
@@ -87,6 +89,8 @@ def _build_run_guidance(
             parts.append(crm_jit_run_guidance())
         else:
             parts.append(crm_no_invent_guidance())
+    if has_forms_scope(identity):
+        parts.append(forms_reuse_guidance())
     if base_guidance.strip():
         parts.append(base_guidance.strip())
     try:

@@ -258,6 +258,7 @@ export async function handleInboundMessage(
     const result = await qlix.sendInbound(connectorId, text, {
       remoteJid,
       fromContact: true,
+      pushName: opts.pushName ?? null,
     });
     if (result?.error) {
       console.warn(`[qlix-whatsapp] contact inbound error: ${result.error}`);

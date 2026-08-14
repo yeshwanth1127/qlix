@@ -11,6 +11,13 @@ import {
 } from '../connectors/whatsappConnector.service.js';
 import { isWhatsAppJitEnabled, sendApproval } from './whatsappNotifier.js';
 import { ephemeralHas, ephemeralSet } from '../lib/ephemeralGrants.js';
+import {
+  jitEventChannel,
+  resolveJitDeliveryChannel,
+  shouldDeliverJitToExternalChat,
+  type JitDeliveryChannel,
+} from './jitDelivery.js';
+import { JIT_MAX_ATTEMPTS, jitAttemptFromPayload, nextJitAttempt } from './jitRetry.js';
 
 /** ±5 minutes — same window as actions. */
 const SIGNATURE_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
@@ -181,12 +188,118 @@ function formatJitApprovalContext(payload: unknown): string {
 async function isActiveWhatsAppAgentRun(runId: string): Promise<boolean> {
   const run = await prisma.agentRun.findUnique({
     where: { id: runId },
-    select: { teamRole: true, status: true },
+    select: { teamRole: true, sourceChannel: true, status: true },
   });
-  return (
-    run?.teamRole === 'whatsapp' &&
-    (run.status === 'queued' || run.status === 'running')
-  );
+  const fromWhatsApp = run?.sourceChannel === 'whatsapp' || run?.teamRole === 'whatsapp';
+  return Boolean(fromWhatsApp && (run?.status === 'queued' || run?.status === 'running'));
+}
+
+async function loadJitDeliveryChannel(runId: string | null): Promise<JitDeliveryChannel> {
+  if (!runId) return 'web';
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: { sourceChannel: true, teamRole: true, teamRunId: true },
+  });
+  if (!run) return 'web';
+  let teamRunSourceChannel: string | null = null;
+  if (run.teamRunId) {
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: run.teamRunId },
+      select: { sourceChannel: true },
+    });
+    teamRunSourceChannel = teamRun?.sourceChannel ?? null;
+  }
+  return resolveJitDeliveryChannel({
+    sourceChannel: run.sourceChannel,
+    teamRole: run.teamRole,
+    teamRunSourceChannel,
+  });
+}
+
+async function deliverPendingJitToOrigin(input: {
+  runId: string | null;
+  agent: { id: string; name: string; orgId: string | null };
+  actionLogId: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  const delivery = await loadJitDeliveryChannel(input.runId);
+  const base = {
+    actionLogId: input.actionLogId,
+    actionType: input.actionType,
+    payload: input.payload,
+    channel: jitEventChannel(delivery),
+    sourceChannel: delivery,
+  };
+
+  if (delivery === 'whatsapp') {
+    if (!isWhatsAppJitEnabled()) {
+      console.log(`[jit] waiting for approval on whatsapp (notifier off): actionId=${input.actionLogId}`);
+      await emitJitRunLog(input.runId, dashboardJitPendingPayload(base));
+      return;
+    }
+    const wa = await getWhatsAppConnectorForAgent(input.agent.id);
+    if (wa) {
+      console.log(
+        `[jit] sending WhatsApp approval: actionId=${input.actionLogId} connector=${wa.id} context=${formatJitApprovalContext(input.payload)}`,
+      );
+      const sent = await sendApproval({
+        connector_id: wa.id,
+        action_id: input.actionLogId,
+        agent_name: input.agent.name,
+        scope: input.actionType,
+        context: formatJitApprovalContext(input.payload),
+      });
+      if (sent.ok) {
+        await emitJitRunLog(input.runId, dashboardJitPendingPayload({ ...base, whatsappSent: true }));
+        return;
+      }
+      console.warn(
+        `[jit] WhatsApp approval delivery failed, falling back to run stream: actionId=${input.actionLogId} error=${sent.error}`,
+      );
+      await emitJitRunLog(
+        input.runId,
+        dashboardJitPendingPayload({
+          ...base,
+          channel: 'dashboard',
+          whatsappError: sent.error ?? 'delivery failed',
+          whatsappExpected: true,
+          whatsappStatus: 'disconnected',
+        }),
+      );
+      return;
+    }
+    const waConn = await getWhatsAppConnectionForAgent(input.agent.id);
+    console.log(
+      `[jit] WhatsApp not connected for agent: agentId=${input.agent.id} exists=${waConn.exists} connected=${waConn.connected}`,
+    );
+    await emitJitRunLog(
+      input.runId,
+      dashboardJitPendingPayload({
+        ...base,
+        channel: 'dashboard',
+        whatsappExpected: true,
+        whatsappStatus: waConn.exists ? 'disconnected' : 'not_linked',
+      }),
+    );
+    return;
+  }
+
+  if (shouldDeliverJitToExternalChat(delivery)) {
+    void import('../gateway/jitChatDelivery.js').then(({ deliverJitApprovalToChat }) =>
+      deliverJitApprovalToChat({
+        runId: input.runId,
+        orgId: input.agent.orgId ?? '',
+        actionType: input.actionType,
+        actionLogId: input.actionLogId,
+        agentName: input.agent.name,
+        context: formatJitApprovalContext(input.payload),
+      }),
+    );
+  }
+
+  console.log(`[jit] waiting for approval on ${delivery}: actionId=${input.actionLogId}`);
+  await emitJitRunLog(input.runId, dashboardJitPendingPayload(base));
 }
 
 async function hasRunScopedJitGrant(
@@ -220,6 +333,10 @@ async function hasRunScopedJitGrant(
 const CONVERSATION_SCOPED_GRANT_SCOPES = new Set([
   'email.send',
   'drive.write',
+  'docs.write',
+  'sheets.write',
+  'slides.write',
+  'forms.write',
   'calendar.write',
   'meet.manage',
   'youtube.publish',
@@ -292,13 +409,17 @@ function formatScopeLabel(scope: string): string {
     'system.gui_control': 'Control desktop',
     'email.send': 'Send email (not drafts)',
     'drive.write': 'Write to Google Drive / OneDrive',
+    'docs.write': 'Write Google Docs',
+    'sheets.write': 'Write Google Sheets',
+    'slides.write': 'Write Google Slides',
+    'forms.write': 'Write Google Forms',
     'calendar.write': 'Write to Google Calendar',
     'meet.manage': 'Manage Google Meet',
     'youtube.publish': 'Publish to YouTube',
     'crm.write': 'Create or update CRM records',
     'crm.delete': 'Delete CRM records',
     'slack.send': 'Post Slack messages',
-    'whatsapp.contact_send': 'Message a WhatsApp contact',
+    'whatsapp.contact_send': 'Message WhatsApp contacts',
     'web.transaction': 'Web transactions',
   };
   return labels[scope] ?? scope;
@@ -327,11 +448,13 @@ async function emitJitRunLog(
   }
 }
 
-/** Pending JIT rows always surface on the dashboard chat — WhatsApp is optional extra. */
+/** Pending JIT rows surface on the originating channel (run SSE / pending API / chat). */
 function dashboardJitPendingPayload(input: {
   actionLogId: string;
   actionType: string;
   payload: Record<string, unknown>;
+  channel?: string;
+  sourceChannel?: string;
   whatsappSent?: boolean;
   whatsappError?: string;
   whatsappExpected?: boolean;
@@ -341,13 +464,17 @@ function dashboardJitPendingPayload(input: {
     message: 'jit_approval_pending',
     scope: input.actionType,
     scopeLabel: formatScopeLabel(input.actionType),
-    channel: 'dashboard',
+    channel: input.channel ?? 'dashboard',
+    ...(input.sourceChannel ? { sourceChannel: input.sourceChannel } : {}),
     context: formatJitApprovalContext(input.payload),
     jitRequestId: input.actionLogId,
     ...(input.whatsappSent ? { whatsappSent: true } : {}),
     ...(input.whatsappError ? { whatsappError: input.whatsappError } : {}),
     ...(input.whatsappExpected ? { whatsappExpected: true } : {}),
     ...(input.whatsappStatus ? { whatsappStatus: input.whatsappStatus } : {}),
+    ...(typeof input.payload.jitAttempt === 'number'
+      ? { jitAttempt: input.payload.jitAttempt, jitMaxAttempts: JIT_MAX_ATTEMPTS }
+      : {}),
   };
 }
 
@@ -388,6 +515,7 @@ export interface PendingJitDTO {
   context: string;
   runId: string | null;
   conversationId: string | null;
+  sourceChannel?: string;
   requestedAt: string;
 }
 
@@ -485,6 +613,7 @@ export class JitService {
           did: agent.did,
           conversationId,
           toolPayload: payload,
+          jitAttempt: 1,
         } as Prisma.InputJsonValue,
         riskLevel: 'high',
         status: 'pending',
@@ -557,84 +686,14 @@ export class JitService {
         auto: true,
         reason: envAutoApprove ? 'env' : whatsappRunAuto ? 'whatsapp-run' : conversationGrant ? 'conversation' : 'run-scoped',
       });
-    } else if (isWhatsAppJitEnabled()) {
-      const wa = await getWhatsAppConnectorForAgent(agent.id);
-      if (wa) {
-        console.log(
-          `[jit] sending WhatsApp approval: actionId=${actionLog.id} connector=${wa.id} context=${formatJitApprovalContext(payload)}`,
-        );
-        const sent = await sendApproval({
-          connector_id: wa.id,
-          action_id: actionLog.id,
-          agent_name: agent.name,
-          scope: actionType,
-          context: formatJitApprovalContext(payload),
-        });
-        // Also fan out to Slack (or tracked chat) via gateway ReplyDispatcher when applicable.
-        void import('../gateway/jitChatDelivery.js').then(({ deliverJitApprovalToChat }) =>
-          deliverJitApprovalToChat({
-            runId,
-            orgId: agent.orgId ?? '',
-            actionType,
-            actionLogId: actionLog.id,
-            agentName: agent.name,
-            context: formatJitApprovalContext(payload),
-          }),
-        );
-        if (sent.ok) {
-          await emitJitRunLog(
-            runId,
-            dashboardJitPendingPayload({
-              actionLogId: actionLog.id,
-              actionType,
-              payload,
-              whatsappSent: true,
-            }),
-          );
-        } else {
-          // WhatsApp delivery failed (e.g. session reconnecting) — never leave
-          // the request silently stuck; surface it on the dashboard instead.
-          console.warn(
-            `[jit] WhatsApp approval delivery failed, falling back to dashboard: actionId=${actionLog.id} error=${sent.error}`,
-          );
-          await emitJitRunLog(
-            runId,
-            dashboardJitPendingPayload({
-              actionLogId: actionLog.id,
-              actionType,
-              payload,
-              whatsappError: sent.error ?? 'delivery failed',
-              whatsappExpected: true,
-              whatsappStatus: 'disconnected',
-            }),
-          );
-        }
-      } else {
-        const waConn = await getWhatsAppConnectionForAgent(agent.id);
-        console.log(
-          `[jit] WhatsApp not connected for agent: agentId=${agent.id} exists=${waConn.exists} connected=${waConn.connected}`,
-        );
-        await emitJitRunLog(
-          runId,
-          dashboardJitPendingPayload({
-            actionLogId: actionLog.id,
-            actionType,
-            payload,
-            whatsappExpected: true,
-            whatsappStatus: waConn.exists ? 'disconnected' : 'not_linked',
-          }),
-        );
-      }
     } else {
-      console.log(`[jit] waiting for approval (WhatsApp not enabled): actionId=${actionLog.id}`);
-      await emitJitRunLog(
+      await deliverPendingJitToOrigin({
         runId,
-        dashboardJitPendingPayload({
-          actionLogId: actionLog.id,
-          actionType,
-          payload,
-        }),
-      );
+        agent,
+        actionLogId: actionLog.id,
+        actionType,
+        payload,
+      });
     }
 
     return { jitRequestId: actionLog.id, expiresAtMs, pollToken: computeJitPollToken(actionLog.id) };
@@ -792,6 +851,29 @@ export class JitService {
     });
   }
 
+  /** True when a still-valid (not TTL-elapsed) pending JIT belongs to this agent run. */
+  async hasPendingForRun(runId: string): Promise<boolean> {
+    if (!runId.trim()) return false;
+    const pending = await prisma.approval.findMany({
+      where: { decision: 'pending' },
+      include: {
+        actionLog: { select: { payload: true } },
+      },
+      take: 50,
+      orderBy: { requestedAtMs: 'desc' },
+    });
+    const now = Date.now();
+    for (const row of pending) {
+      const ttlMs = (row.ttlSeconds ?? 120) * 1000;
+      if (Number(row.requestedAtMs) + ttlMs < now) continue;
+      const pl = row.actionLog.payload;
+      if (!pl || typeof pl !== 'object') continue;
+      const rid = extractRunId((pl as Record<string, unknown>).toolPayload ?? pl);
+      if (rid === runId) return true;
+    }
+    return false;
+  }
+
   /**
    * Deny every still-pending JIT tied to a run (e.g. Active Runs → Stop).
    * Unblocks hybrid runners stuck in JIT poll so they can exit promptly.
@@ -879,7 +961,10 @@ export class JitService {
     }
     const row = await prisma.actionLog.findUnique({
       where: { id: jitRequestId },
-      include: { approval: true },
+      include: {
+        approval: true,
+        agent: { select: { id: true, name: true, orgId: true } },
+      },
     });
     if (!row?.approval) throw new JitRequestNotFoundError();
 
@@ -887,6 +972,45 @@ export class JitService {
     const requested = Number(row.approval.requestedAtMs);
     const ttlMs = row.approval.ttlSeconds * 1000;
     if (row.approval.decision === 'pending' && now > requested + ttlMs) {
+      const payload =
+        row.payload && typeof row.payload === 'object'
+          ? { ...(row.payload as Record<string, unknown>) }
+          : {};
+      const nextAttempt = nextJitAttempt(jitAttemptFromPayload(payload));
+      if (nextAttempt != null) {
+        await prisma.$transaction([
+          prisma.approval.update({
+            where: { id: row.approval.id },
+            data: {
+              decision: 'pending',
+              requestedAtMs: BigInt(now),
+              decidedAtMs: null,
+            },
+          }),
+          prisma.actionLog.update({
+            where: { id: row.id },
+            data: { payload: { ...payload, jitAttempt: nextAttempt } as Prisma.InputJsonValue },
+          }),
+        ]);
+        const runId = extractRunId(payload.toolPayload ?? payload);
+        const toolPayload =
+          payload.toolPayload && typeof payload.toolPayload === 'object'
+            ? (payload.toolPayload as Record<string, unknown>)
+            : payload;
+        console.log(
+          `[jit] approval window expired — asking again (${nextAttempt}/${JIT_MAX_ATTEMPTS}) actionId=${row.id}`,
+        );
+        if (row.agent) {
+          await deliverPendingJitToOrigin({
+            runId,
+            agent: row.agent,
+            actionLogId: row.id,
+            actionType: row.actionType,
+            payload: { ...toolPayload, jitAttempt: nextAttempt, jitMaxAttempts: JIT_MAX_ATTEMPTS },
+          });
+        }
+        return { status: 'pending' };
+      }
       await prisma.approval.update({
         where: { id: row.approval.id },
         data: { decision: 'expired', decidedAtMs: BigInt(now) },
@@ -978,6 +1102,75 @@ export class JitService {
   async touchConversationGrantForRun(runId: string | null, scope: string): Promise<void> {
     const conversationId = await resolveConversationId(runId);
     if (conversationId) await touchConversationScopedGrant(conversationId, scope);
+  }
+
+  /**
+   * Pending JIT approvals for the authenticated user.
+   * Developer API callers poll this when a run started with an API key is waiting.
+   */
+  async listPendingForUser(input: {
+    userId: string;
+    agentId?: string;
+    runId?: string;
+  }): Promise<PendingJitDTO[]> {
+    const pending = await prisma.approval.findMany({
+      where: {
+        decision: 'pending',
+        userId: input.userId,
+        ...(input.agentId ? { actionLog: { agentId: input.agentId } } : {}),
+      },
+      include: {
+        actionLog: {
+          select: { id: true, actionType: true, payload: true, timestampMs: true, agentId: true },
+        },
+      },
+      orderBy: { requestedAtMs: 'desc' },
+      take: 50,
+    });
+
+    const now = Date.now();
+    const out: PendingJitDTO[] = [];
+    const sourceCache = new Map<string, string>();
+
+    for (const row of pending) {
+      const ttlMs = (row.ttlSeconds ?? 120) * 1000;
+      const requestedMs = Number(row.requestedAtMs);
+      if (requestedMs + ttlMs < now) continue;
+
+      const payload = row.actionLog.payload;
+      if (!payload || typeof payload !== 'object') continue;
+      const pl = payload as Record<string, unknown>;
+      const runId = extractRunId(pl.toolPayload ?? pl);
+      if (input.runId && runId !== input.runId) continue;
+      const agentId = row.actionLog.agentId;
+      if (!agentId) continue;
+
+      let sourceChannel: string | undefined;
+      if (runId) {
+        const cached = sourceCache.get(runId);
+        if (cached) {
+          sourceChannel = cached;
+        } else {
+          sourceChannel = await loadJitDeliveryChannel(runId);
+          sourceCache.set(runId, sourceChannel);
+        }
+      }
+
+      const storedConvo = typeof pl.conversationId === 'string' ? pl.conversationId : null;
+      out.push({
+        jitRequestId: row.actionLog.id,
+        agentId,
+        scope: row.actionLog.actionType,
+        scopeLabel: formatScopeLabel(row.actionLog.actionType),
+        context: formatJitApprovalContext(pl.toolPayload ?? pl),
+        runId,
+        conversationId: storedConvo,
+        sourceChannel,
+        requestedAt: new Date(requestedMs).toISOString(),
+      });
+    }
+
+    return out;
   }
 
   /**

@@ -29,6 +29,9 @@ export function startHttpServer(application: Express, input: StartHttpServerInpu
 
   server.listen(input.port, () => {
     console.info(`[qlix-backend] listening on http://localhost:${input.port}`);
+    void import('../llm/openrouterCatalog.js')
+      .then(({ warmOpenRouterCatalog }) => warmOpenRouterCatalog())
+      .catch(() => undefined);
   });
 
   let shuttingDown = false;

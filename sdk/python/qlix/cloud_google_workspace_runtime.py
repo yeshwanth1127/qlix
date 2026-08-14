@@ -12,14 +12,26 @@ from .identity import AgentIdentity
 GOOGLE_TOOL_SCOPES: dict[str, tuple[str, ...]] = {
     "drive_read": ("drive.read", "drive.write"),
     "drive_write": ("drive.write",),
+    "docs_read": ("docs.read", "docs.write"),
+    "docs_write": ("docs.write",),
+    "sheets_read": ("sheets.read", "sheets.write"),
+    "sheets_write": ("sheets.write",),
+    "slides_read": ("slides.read", "slides.write"),
+    "slides_write": ("slides.write",),
+    "forms_read": ("forms.read", "forms.write"),
+    "forms_write": ("forms.write",),
     "calendar_read": ("calendar.read", "calendar.write"),
     "calendar_write": ("calendar.write",),
     "meet_manage": ("meet.manage",),
 }
 
-# For drive_read / calendar_read, either read or write scope is enough.
+# For *_read tools, either read or write scope is enough.
 _READ_ANY_OF = {
     "drive_read": ("drive.read", "drive.write"),
+    "docs_read": ("docs.read", "docs.write"),
+    "sheets_read": ("sheets.read", "sheets.write"),
+    "slides_read": ("slides.read", "slides.write"),
+    "forms_read": ("forms.read", "forms.write"),
     "calendar_read": ("calendar.read", "calendar.write"),
 }
 
@@ -30,7 +42,8 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "name": "drive_read",
             "description": (
                 "Read Google Drive or OneDrive. action='list' searches/lists files "
-                "(optional query string); action='get' returns metadata for fileId; "
+                "(optional query string; optional parentId to list a folder); "
+                "action='get' returns metadata for fileId; "
                 "action='get_content' downloads file text content. "
                 "When drive_provider_selection_required is returned, ask the user which listed drive "
                 "to use and retry this operation with provider='google' or provider='microsoft'. "
@@ -53,6 +66,10 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     },
                     "query": {"type": "string", "description": "Search/list query for action=list."},
                     "fileId": {"type": "string"},
+                    "parentId": {
+                        "type": "string",
+                        "description": "OneDrive/Google folder id to list children of (action=list).",
+                    },
                     "pageSize": {"type": "integer"},
                     "pageToken": {"type": "string"},
                 },
@@ -91,6 +108,200 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     "contentText": {"type": "string"},
                     "mimeType": {"type": "string"},
                     "parentId": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    "docs_read": {
+        "type": "function",
+        "function": {
+            "name": "docs_read",
+            "description": (
+                "Read a Google Doc. action='get' returns title and plain text for documentId. "
+                "Requires Docs connected in Connectors → Google → Docs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get"]},
+                    "documentId": {"type": "string"},
+                },
+                "required": ["action", "documentId"],
+            },
+        },
+    },
+    "docs_write": {
+        "type": "function",
+        "function": {
+            "name": "docs_write",
+            "description": (
+                "Create or update Google Docs. action='create' needs title (+ optional text); "
+                "action='append' needs documentId + text; "
+                "action='replace_all' needs documentId + findText (+ replaceText). "
+                "Mutations may require JIT approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "append", "replace_all"],
+                    },
+                    "documentId": {"type": "string"},
+                    "title": {"type": "string"},
+                    "text": {"type": "string"},
+                    "findText": {"type": "string"},
+                    "replaceText": {"type": "string"},
+                    "matchCase": {"type": "boolean"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    "sheets_read": {
+        "type": "function",
+        "function": {
+            "name": "sheets_read",
+            "description": (
+                "Read Google Sheets. action='get' returns spreadsheet metadata; "
+                "action='get_values' needs range (e.g. Sheet1!A1:C10). "
+                "Requires Sheets connected in Connectors → Google → Sheets."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get", "get_values"]},
+                    "spreadsheetId": {"type": "string"},
+                    "range": {"type": "string"},
+                },
+                "required": ["action", "spreadsheetId"],
+            },
+        },
+    },
+    "sheets_write": {
+        "type": "function",
+        "function": {
+            "name": "sheets_write",
+            "description": (
+                "Create or update Google Sheets. action='create' needs title; "
+                "action='update_values'/'append_values' need spreadsheetId, range, and values "
+                "(2D array of cells). Mutations may require JIT approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update_values", "append_values"],
+                    },
+                    "spreadsheetId": {"type": "string"},
+                    "title": {"type": "string"},
+                    "sheetTitle": {"type": "string"},
+                    "range": {"type": "string"},
+                    "values": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    "slides_read": {
+        "type": "function",
+        "function": {
+            "name": "slides_read",
+            "description": (
+                "Read a Google Slides presentation. action='get' returns title and per-slide text. "
+                "Requires Slides connected in Connectors → Google → Slides."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get"]},
+                    "presentationId": {"type": "string"},
+                },
+                "required": ["action", "presentationId"],
+            },
+        },
+    },
+    "slides_write": {
+        "type": "function",
+        "function": {
+            "name": "slides_write",
+            "description": (
+                "Create or update Google Slides. action='create' needs title; "
+                "action='replace_all' needs presentationId + findText; "
+                "action='insert_text' needs presentationId + text. "
+                "Mutations may require JIT approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "replace_all", "insert_text"],
+                    },
+                    "presentationId": {"type": "string"},
+                    "title": {"type": "string"},
+                    "text": {"type": "string"},
+                    "findText": {"type": "string"},
+                    "replaceText": {"type": "string"},
+                    "matchCase": {"type": "boolean"},
+                    "pageObjectId": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    "forms_read": {
+        "type": "function",
+        "function": {
+            "name": "forms_read",
+            "description": (
+                "Read Google Forms. action='get' returns form metadata/items including "
+                "responderUri (the shareable respondent link — paste it for the user) "
+                "and formId; action='list_responses' lists submitted responses. "
+                "Use get when the user asks for an existing form's link and formId is known. "
+                "Requires Forms connected in Connectors → Google → Forms."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get", "list_responses"]},
+                    "formId": {"type": "string"},
+                    "pageSize": {"type": "integer"},
+                    "pageToken": {"type": "string"},
+                },
+                "required": ["action", "formId"],
+            },
+        },
+    },
+    "forms_write": {
+        "type": "function",
+        "function": {
+            "name": "forms_write",
+            "description": (
+                "Create or update Google Forms. action='create' needs title and returns "
+                "formId plus responderUri — always give the user responderUri as the "
+                "shareable link. action='update_info' needs formId (+ title/description); "
+                "action='add_question' needs formId + questionTitle. "
+                "Do not create a new form just to recover a link; use forms_read get or "
+                "recent conversation. Mutations may require JIT approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update_info", "add_question"],
+                    },
+                    "formId": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "questionTitle": {"type": "string"},
+                    "required": {"type": "boolean"},
                 },
                 "required": ["action"],
             },
@@ -184,6 +395,10 @@ GOOGLE_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 _JIT_TOOLS = {
     "drive_write": "drive.write",
+    "docs_write": "docs.write",
+    "sheets_write": "sheets.write",
+    "slides_write": "slides.write",
+    "forms_write": "forms.write",
     "calendar_write": "calendar.write",
     "meet_manage": "meet.manage",
 }
@@ -332,7 +547,7 @@ def build_google_workspace_tool_executors(
             if not isinstance(params, dict):
                 params = {}
             body: dict[str, Any] = {"runId": run_id, "action": params.get("action") or "list"}
-            for key in ("provider", "query", "fileId", "pageSize", "pageToken"):
+            for key in ("provider", "query", "fileId", "parentId", "pageSize", "pageToken"):
                 if params.get(key) is not None:
                     body[key] = params[key]
             return _post(
@@ -391,6 +606,241 @@ def build_google_workspace_tool_executors(
             )
 
         executors["calendar_read"] = _calendar_read
+
+    if "docs_read" in allowed:
+
+        def _docs_read(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "action": params.get("action") or "get",
+            }
+            if params.get("documentId") is not None:
+                body["documentId"] = params["documentId"]
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/docs/read",
+                body=body,
+            )
+
+        executors["docs_read"] = _docs_read
+
+    if "docs_write" in allowed:
+
+        async def _docs_write(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            action = str(params.get("action") or "create")
+            body: dict[str, Any] = {"runId": run_id, "action": action}
+            for key in (
+                "documentId",
+                "title",
+                "text",
+                "findText",
+                "replaceText",
+                "matchCase",
+            ):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            try:
+                jit = await _maybe_jit(
+                    "docs_write",
+                    action,
+                    {"action": action, "title": body.get("title")},
+                )
+            except RuntimeError as exc:
+                return f"[failed] {exc}"
+            if jit:
+                body["jitToken"] = jit
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/docs/write",
+                body=body,
+            )
+
+        executors["docs_write"] = _docs_write
+
+    if "sheets_read" in allowed:
+
+        def _sheets_read(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "action": params.get("action") or "get",
+            }
+            for key in ("spreadsheetId", "range"):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/sheets/read",
+                body=body,
+            )
+
+        executors["sheets_read"] = _sheets_read
+
+    if "sheets_write" in allowed:
+
+        async def _sheets_write(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            action = str(params.get("action") or "create")
+            body: dict[str, Any] = {"runId": run_id, "action": action}
+            for key in ("spreadsheetId", "title", "sheetTitle", "range", "values"):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            try:
+                jit = await _maybe_jit(
+                    "sheets_write",
+                    action,
+                    {"action": action, "title": body.get("title")},
+                )
+            except RuntimeError as exc:
+                return f"[failed] {exc}"
+            if jit:
+                body["jitToken"] = jit
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/sheets/write",
+                body=body,
+            )
+
+        executors["sheets_write"] = _sheets_write
+
+    if "slides_read" in allowed:
+
+        def _slides_read(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "action": params.get("action") or "get",
+            }
+            if params.get("presentationId") is not None:
+                body["presentationId"] = params["presentationId"]
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/slides/read",
+                body=body,
+            )
+
+        executors["slides_read"] = _slides_read
+
+    if "slides_write" in allowed:
+
+        async def _slides_write(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            action = str(params.get("action") or "create")
+            body: dict[str, Any] = {"runId": run_id, "action": action}
+            for key in (
+                "presentationId",
+                "title",
+                "text",
+                "findText",
+                "replaceText",
+                "matchCase",
+                "pageObjectId",
+            ):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            try:
+                jit = await _maybe_jit(
+                    "slides_write",
+                    action,
+                    {"action": action, "title": body.get("title")},
+                )
+            except RuntimeError as exc:
+                return f"[failed] {exc}"
+            if jit:
+                body["jitToken"] = jit
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/slides/write",
+                body=body,
+            )
+
+        executors["slides_write"] = _slides_write
+
+    if "forms_read" in allowed:
+
+        def _forms_read(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            body: dict[str, Any] = {
+                "runId": run_id,
+                "action": params.get("action") or "get",
+            }
+            for key in ("formId", "pageSize", "pageToken"):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/forms/read",
+                body=body,
+            )
+
+        executors["forms_read"] = _forms_read
+
+    if "forms_write" in allowed:
+
+        async def _forms_write(args_json: str) -> str:
+            params = json.loads(args_json) if args_json.strip() else {}
+            if not isinstance(params, dict):
+                params = {}
+            action = str(params.get("action") or "create")
+            body: dict[str, Any] = {"runId": run_id, "action": action}
+            for key in (
+                "formId",
+                "title",
+                "description",
+                "questionTitle",
+                "required",
+            ):
+                if params.get(key) is not None:
+                    body[key] = params[key]
+            try:
+                jit = await _maybe_jit(
+                    "forms_write",
+                    action,
+                    {"action": action, "title": body.get("title")},
+                )
+            except RuntimeError as exc:
+                return f"[failed] {exc}"
+            if jit:
+                body["jitToken"] = jit
+            return _post(
+                backend_url=backend_url,
+                runner_token=runner_token,
+                agent_id=agent_id,
+                path=f"/api/v1/agents/{agent_id}/tools/forms/write",
+                body=body,
+            )
+
+        executors["forms_write"] = _forms_write
 
     if "calendar_write" in allowed:
 

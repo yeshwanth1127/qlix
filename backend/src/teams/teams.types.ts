@@ -31,6 +31,7 @@ export type TeamRunEventType =
   | 'run_completed'
   | 'run_failed'
   | 'result_delivered'
+  | 'outbound_blocked'
   | 'user_injection'
   | 'wait_armed'
   | 'wait_ttl_requested'
@@ -70,6 +71,8 @@ export interface TeamConfig {
   autoSequence?: boolean;
   /** Override model for all agents in this team (supervisor + all workers). */
   defaultModel?: string;
+  /** How much of the completion budget thinking models may spend reasoning. */
+  defaultReasoningEffort?: string;
   /** Declarative external-event waits (WhatsApp inbound + side effects). */
   waitSteps?: WaitStep[];
 }
@@ -134,8 +137,21 @@ export interface ScopeEscalation {
   resolvedAt: string | null;
 }
 
-export type TeamRunSourceChannel = 'web' | 'whatsapp';
+export type TeamRunSourceChannel = 'web' | 'whatsapp' | 'api' | 'slack' | 'telegram';
 export type TeamRunReplyChannel = 'whatsapp' | 'none';
+export type TeamRunInputPurpose = 'authoritative_input' | 'reference_asset';
+
+export interface TeamRunInput {
+  id: string;
+  ref: string;
+  fileName: string;
+  mimeType: string;
+  url: string;
+  sizeBytes: number;
+  extractedText?: string;
+  sha256: string;
+  purpose: TeamRunInputPurpose;
+}
 
 export interface TeamRunDTO {
   id: string;
@@ -152,8 +168,10 @@ export interface TeamRunDTO {
   scopeEscalations: ScopeEscalation[];
   /** Durable state used to continue a paused external-event wait. */
   checkpointJson?: TeamRunCheckpoint | null;
+  inputs: TeamRunInput[];
   result: unknown | null;
   errorMessage: string | null;
+  continuesRunId?: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -191,12 +209,23 @@ export type PendingWaitOutbound = {
   agentId: string;
   connectorId: string;
   recipient: string;
+  /** Text body, poll question, or document display name. */
   message: string;
+  kind?: 'text' | 'poll' | 'document';
+  pollName?: string;
+  pollValues?: string[];
+  pollSelectableCount?: number;
+  /** Staged file for document outbounds (under tmpdir/qlix-wa-pending). */
+  documentFileName?: string;
+  documentMimetype?: string;
+  documentStagedPath?: string;
   replyInstructions?: string | null;
   jid?: string | null;
   phone?: string | null;
   name?: string | null;
   queuedAt: string;
+  /** Last flush error if send failed (item stays queued). */
+  lastError?: string | null;
 };
 
 export interface SubtaskCheckpoint {
@@ -207,7 +236,13 @@ export interface SubtaskCheckpoint {
   role: string;
   goal: string;
   delegatedScopes: PermissionScope[];
+  allowedScopes: PermissionScope[];
   stageOrder: number;
+  contractId?: string;
+  inputRefs: string[];
+  allowedSources: TeamRunInputPurpose[];
+  knowledgeMode: 'none' | 'reference_only' | 'required';
+  outputContract: Record<string, unknown>;
 }
 
 export interface WorkerResultCheckpoint {
@@ -216,9 +251,31 @@ export interface WorkerResultCheckpoint {
   agentName: string;
   summary: string;
   findings: string;
+  payload?: unknown;
+  mailboxMessageId?: string;
   artifacts: TeamRunArtifact[];
   status: 'completed' | 'failed';
   errorMessage?: string;
+}
+
+export type TeamMailboxKind = 'message' | 'result';
+export type TeamMailboxStatus = 'pending' | 'completed' | 'failed' | 'canceled';
+
+export interface TeamMailboxMessageDTO {
+  id: string;
+  teamRunId: string;
+  teamId: string;
+  kind: TeamMailboxKind;
+  status: TeamMailboxStatus;
+  senderAgentId: string | null;
+  recipientAgentId: string | null;
+  a2aTaskId: string | null;
+  agentRunId: string | null;
+  contractId: string | null;
+  payload: unknown;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
 }
 
 export interface TeamRunEventDTO {
@@ -278,7 +335,7 @@ export interface CreateTeamInput {
   orgId: string;
   name: string;
   description?: string;
-  /** Assigned after creation via PATCH /:id/supervisor */
+  /** When set at create time the team is stored as active. Otherwise assign via PATCH /:id/supervisor. */
   supervisorAgentId?: string | null;
   members?: Array<{
     agentId: string;

@@ -74,6 +74,7 @@ That workspace’s agents use this number for:
 | DELETE | `/sessions/:connectorId` | Logout + wipe session |
 | POST | `/send` | `{ connector_id, message }` — self-chat only |
 | POST | `/send-to` | `{ connector_id, recipient, message }` — contact / phone |
+| POST | `/send-poll` | `{ connector_id, recipient, name, values[], selectableCount? }` |
 | POST | `/contacts/list` | `{ connector_id, query?, limit? }` |
 | POST | `/chats/messages` | `{ connector_id, recipient, limit? }` |
 | POST | `/send-approval` | `{ connector_id, action_id, … }` |

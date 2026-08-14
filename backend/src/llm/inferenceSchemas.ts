@@ -14,12 +14,32 @@ export const inferenceMessageSchema = z
   })
   .passthrough();
 
+/**
+ * How much of the completion budget a thinking model may spend reasoning.
+ * Omitted means "use the per-purpose default" (see `reasoningBudget.ts`).
+ */
+export const reasoningEffortSchema = z.enum([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+/** Shape of the call, which decides how small the default thinking share is. */
+export const reasoningPurposeSchema = z.enum(['agent', 'planning', 'micro']);
+
 export const inferenceChatRequestSchema = z.object({
   model: z.string().trim().min(1).max(200),
   messages: z.array(inferenceMessageSchema).min(1).max(100),
   temperature: z.number().min(0).max(2).optional(),
-  max_tokens: z.number().int().min(1).max(16_384).optional(),
+  // Ceiling leaves room for reasoning headroom on top of a 16k visible budget.
+  max_tokens: z.number().int().min(1).max(32_768).optional(),
   stream: z.boolean().optional().default(false),
+  reasoning_effort: reasoningEffortSchema.optional(),
+  reasoning_purpose: reasoningPurposeSchema.optional(),
   /** OpenAI-style tool definitions (function tools). */
   tools: z.array(z.unknown()).optional(),
   tool_choice: z
@@ -44,6 +64,7 @@ export const inferenceChatRequestSchema = z.object({
 });
 
 export type InferenceChatRequest = z.infer<typeof inferenceChatRequestSchema>;
+export type ReasoningEffortInput = z.infer<typeof reasoningEffortSchema>;
 
 /** OpenAI `/v1/chat/completions` body (Agent-S3, vision messages). */
 export const openAiChatCompletionsRequestSchema = z
@@ -51,7 +72,7 @@ export const openAiChatCompletionsRequestSchema = z
     model: z.string().trim().min(1).max(200),
     messages: z.array(inferenceMessageSchema).min(1).max(100),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().min(1).max(16_384).optional(),
+    max_tokens: z.number().int().min(1).max(32_768).optional(),
     stream: z.boolean().optional().default(false),
     tools: z.array(z.unknown()).optional(),
     tool_choice: z

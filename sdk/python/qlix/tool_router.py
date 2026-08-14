@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -22,6 +24,14 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
         "email.send",
         "drive.read",
         "drive.write",
+        "docs.read",
+        "docs.write",
+        "sheets.read",
+        "sheets.write",
+        "slides.read",
+        "slides.write",
+        "forms.read",
+        "forms.write",
         "calendar.read",
         "calendar.write",
         "meet.manage",
@@ -234,6 +244,17 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "drive",
             "google drive",
             "gdrive",
+            "docs",
+            "google docs",
+            "document",
+            "sheets",
+            "google sheets",
+            "spreadsheet",
+            "slides",
+            "google slides",
+            "presentation",
+            "forms",
+            "google forms",
             "calendar",
             "google calendar",
             "gcal",
@@ -290,6 +311,81 @@ ESCALATION_LADDER_GUIDANCE = (
     "logins, or multi-step navigation.\n"
     "Do not open the browser first for a simple lookup."
 )
+
+_DISCOVERED_TOOL_PREFIXES = ("functions.", "tools.")
+
+
+def normalize_discovered_tool_name(name: str) -> str:
+    """Strip OpenAI-style ``functions.`` / ``tools.`` prefixes from call_tool names."""
+    cleaned = (name or "").strip()
+    lowered = cleaned.lower()
+    for prefix in _DISCOVERED_TOOL_PREFIXES:
+        if lowered.startswith(prefix):
+            return cleaned[len(prefix) :].strip()
+    return cleaned
+
+
+def invoke_discovered_tool(args_json: str, executor_map: dict[str, Any]) -> str:
+    """Execute ``call_tool`` against the live executor map.
+
+    Weak models often pass ``functions.find_tools`` (or ``call_tool`` itself) as the
+    discovered name instead of calling the top-level meta-tool. Resolve those aliases
+    so the run can continue instead of looping on ``Unknown tool``.
+    """
+    params = json.loads(args_json) if args_json.strip() else {}
+    if not isinstance(params, dict):
+        params = {}
+    name = normalize_discovered_tool_name(str(params.get("name", "")))
+    arguments = params.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    if not name:
+        return "[failed] name is required"
+    if name == "call_tool":
+        return (
+            "[failed] call_tool cannot invoke itself. Pass the discovered tool name, "
+            "or call find_tools as a top-level tool. If extracted file content is "
+            "already in the prompt, return the final answer without tools."
+        )
+    if name == "find_tools":
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return (
+                "[hint] find_tools is a top-level tool — call it directly with "
+                '{"query": "..."}. If the task already includes extracted file '
+                "content, do not look up tools; return the final answer now."
+            )
+        find_fn = executor_map.get("find_tools")
+        if not find_fn:
+            return "[failed] find_tools is not available"
+        return find_fn(json.dumps(arguments))
+    if name.startswith("browser:"):
+        action = name.split(":", 1)[1]
+        browser_exec = executor_map.get("browser")
+        if not browser_exec:
+            return "[failed] browser tool not available"
+        payload = {"action": action, **arguments}
+        return browser_exec(json.dumps(payload))
+    if "." in name and name not in executor_map and not name.startswith("mcp."):
+        return (
+            f"[failed] {name} is a permission scope, not a tool. Do not call it. "
+            "If this dispatch already includes the source data, return the JSON Result now."
+        )
+    fn = executor_map.get(name)
+    if not fn:
+        return f"[failed] Unknown tool: {name}. Use find_tools first."
+    if inspect.iscoroutinefunction(fn):
+        return (
+            f"[failed] {name} must be called as a top-level tool, not via call_tool. "
+            "If this dispatch does not need tools, return the final JSON Result now."
+        )
+    result = fn(json.dumps(arguments))
+    if inspect.isawaitable(result):
+        return (
+            f"[failed] {name} returned an async result via call_tool. "
+            "Call it as a top-level tool, or return the final answer without tools."
+        )
+    return str(result)
 
 
 @dataclass(frozen=True)
@@ -435,6 +531,53 @@ def crm_no_invent_guidance() -> str:
     )
 
 
+def has_forms_scope(identity: AgentIdentity) -> bool:
+    granted = _granted_scope_set(identity)
+    return "forms.read" in granted or "forms.write" in granted
+
+
+FORMS_MUTATION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "create a form",
+        "create form",
+        "make a form",
+        "make form",
+        "new form",
+        "build a form",
+        "build form",
+        "google form",
+        "google forms",
+        "add a question",
+        "add question",
+        "update the form",
+        "update form",
+        "rebuild the form",
+        "rebuild form",
+        "recreate the form",
+        "recreate form",
+    }
+)
+
+
+def is_forms_mutation_intent(text: str) -> bool:
+    """True when the user wants to create/update a Google Form."""
+    lower = text.lower()
+    return any(kw in lower for kw in FORMS_MUTATION_KEYWORDS)
+
+
+def forms_reuse_guidance() -> str:
+    """Steer Forms-capable agents to surface links and avoid recreate-on-follow-up."""
+    return (
+        "## Google Forms (reuse prior results)\n"
+        "After forms_write action='create' (or forms_read action='get'), always give the user "
+        "responderUri as the shareable respondent link, plus formId.\n"
+        "For link-only follow-ups (\"shareable link\", \"send the link\", \"where is the form\"): "
+        "answer from recent conversation/memory first; if the link is missing but formId is known, "
+        "call forms_read action='get' once. Do NOT create a new form unless the user explicitly "
+        "asks to create, rebuild, or recreate one."
+    )
+
+
 def scope_groups(
     identity: AgentIdentity,
     *,
@@ -495,6 +638,12 @@ def tool_preference_text(
             + ", ".join(preferred)
             + ". Prefer those; do not expand into unrelated side work with other tools."
         )
+    else:
+        lines.append(
+            "This looks like a conversational or follow-up message rather than a new "
+            "tool task. Reply directly from recent conversation/memory when you can. "
+            "Do not invent side work with available tools."
+        )
     if "research" in available:
         if "research" in intent_groups and "web" not in intent_groups:
             lines.append(
@@ -531,6 +680,8 @@ def classify_groups(
     """Keyword classifier + scope intersection. Fixed for the whole run."""
     if skill_filter:
         filt = {str(s).strip() for s in skill_filter if str(s).strip()}
+        if filt == {"team.dispatch"}:
+            return tuple(g for g in _GROUP_ORDER if g == "always")
         if filt and any("." in s for s in filt):
             selected: set[ToolGroup] = set()
             granted = _granted_scopes(identity)
@@ -644,6 +795,10 @@ class ToolRouter:
                 guidance_parts.append(crm_jit_run_guidance())
             else:
                 guidance_parts.append(crm_no_invent_guidance())
+        if has_forms_scope(self.identity):
+            # Always remind Forms agents to surface responderUri / reuse; create is fine
+            # when mutation intent is present, but recreate-on-follow-up is not.
+            guidance_parts.append(forms_reuse_guidance())
         if "comms" in groups and has_slack_scope(self.identity) and is_slack_api_intent(routing_text):
             guidance_parts.append(slack_run_guidance())
         if "comms" in groups and "email.send" in (
@@ -738,6 +893,9 @@ class ToolRouter:
             tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
         if "knowledge" in groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
+            from .cloud_brain_file_runtime import openai_brain_file_tool_definitions
+
+            tools.extend(openai_brain_file_tool_definitions(self.identity, sf))
         if "always" in groups:
             tools.extend(openai_always_tool_definitions(askable_agents))
 
@@ -1005,6 +1163,18 @@ class ToolRouter:
                 return "Company brain context is prepended to the user message for this run."
 
             executor_map.setdefault("brain_query", _brain_stub)
+            from .cloud_brain_file_runtime import build_brain_file_tool_executors
+
+            executor_map.update(
+                build_brain_file_tool_executors(
+                    identity=self.identity,
+                    skill_filter=sf,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                )
+            )
 
         if "always" in groups:
             def _think(args_json: str) -> str:
@@ -1048,23 +1218,7 @@ class ToolRouter:
                 return "\n".join(hits) if hits else "No matching tools."
 
             def _call_tool(args_json: str, emap=executor_map) -> str:
-                params = json.loads(args_json) if args_json.strip() else {}
-                name = str(params.get("name", "")).strip()
-                arguments = params.get("arguments") or {}
-                if not name:
-                    return "[failed] name is required"
-                # browser:action shorthand
-                if name.startswith("browser:"):
-                    action = name.split(":", 1)[1]
-                    browser_exec = emap.get("browser")
-                    if not browser_exec:
-                        return "[failed] browser tool not available"
-                    payload = {"action": action, **(arguments if isinstance(arguments, dict) else {})}
-                    return browser_exec(json.dumps(payload))
-                fn = emap.get(name)
-                if not fn:
-                    return f"[failed] Unknown tool: {name}. Use find_tools first."
-                return fn(json.dumps(arguments if isinstance(arguments, dict) else {}))
+                return invoke_discovered_tool(args_json, emap)
 
             def _delegate_task(
                 args_json: str,

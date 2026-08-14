@@ -16,8 +16,8 @@ export interface UsageSummaryResponse {
 }
 
 export interface AgentRunUsage {
-  runId: string;
-  conversationId: string;
+  runId: string | null;
+  conversationId: string | null;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;

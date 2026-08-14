@@ -85,24 +85,59 @@ export async function revokeJitGrant(grantId: string): Promise<void> {
   }
 }
 
+/** Scopes where one approval covers the rest of the conversation. */
+export const SESSION_CHAT_JIT_SCOPES = new Set([
+  "email.send",
+  "drive.write",
+  "docs.write",
+  "sheets.write",
+  "slides.write",
+  "forms.write",
+  "calendar.write",
+  "meet.manage",
+  "social.publish",
+  "crm.write",
+  "crm.delete",
+  "whatsapp.contact_send",
+  "slack.send",
+  "notion.write",
+]);
+
+export function isSessionChatJitScope(scope: string | undefined): boolean {
+  return Boolean(scope && SESSION_CHAT_JIT_SCOPES.has(scope));
+}
+
 /** Human label for a scope id shown in the session-approvals list. */
 export function jitScopeLabel(scope: string): string {
   const labels: Record<string, string> = {
     "email.send": "Send email",
     "email.read": "Read email",
-    "social.publish": "Publish to social (Orbit)",
-    "social.read": "Read social (Orbit)",
-    "crm.write": "Create or update CRM",
+    "drive.write": "Write to Drive",
+    "drive.read": "Read Drive",
+    "docs.write": "Write a Doc",
+    "docs.read": "Read Docs",
+    "sheets.write": "Write a Sheet",
+    "sheets.read": "Read Sheets",
+    "slides.write": "Write Slides",
+    "slides.read": "Read Slides",
+    "forms.write": "Write a Form",
+    "forms.read": "Read Forms",
+    "calendar.write": "Change Calendar",
+    "calendar.read": "Read Calendar",
+    "meet.manage": "Manage Meet",
+    "social.publish": "Publish to social",
+    "social.read": "Read social",
+    "crm.write": "Update CRM",
     "crm.delete": "Delete CRM records",
-    "crm.read": "Read Zoho CRM",
+    "crm.read": "Read CRM",
     "slack.send": "Write to Slack",
     "slack.read": "Read Slack",
     "notion.write": "Write to Notion",
     "notion.read": "Read Notion",
-    "whatsapp.contact_send": "Message a WhatsApp contact",
+    "whatsapp.contact_send": "Message WhatsApp contacts",
     "whatsapp.read": "Read WhatsApp chats",
-    "whatsapp.send": "Send files to linked WhatsApp",
-    "web.transaction": "Web transactions",
+    "whatsapp.send": "Send files to WhatsApp",
+    "web.transaction": "Web transaction",
     "system.file_write": "Write files",
   };
   return labels[scope] ?? scope;

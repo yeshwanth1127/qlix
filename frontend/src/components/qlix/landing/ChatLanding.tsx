@@ -1268,6 +1268,9 @@ export function ChatLanding({
             )}
           >
             {historyControls}
+            <Link href="/docs" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#1c1830]">
+              Docs
+            </Link>
             {session && isGuest && (
               <>
                 <span className="hidden items-center gap-1.5 rounded-full border border-black/10 bg-black/[0.04] px-2.5 py-1 text-[11px] text-black/55 sm:flex">

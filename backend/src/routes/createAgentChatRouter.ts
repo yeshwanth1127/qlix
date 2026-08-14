@@ -2,11 +2,12 @@ import { Router, raw, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeFile, unlink } from 'node:fs/promises';
+import { writeFile, unlink, readFile } from 'node:fs/promises';
 import multer from 'multer';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { buildWebChatInbound, buildLocalInbound, gatewayService, replyDispatcher } from '../gateway/index.js';
+import { inboundChannelFromRequest } from '../lib/runOrigin.js';
 import {
   buildPromptWithAttachments,
   CHAT_ATTACHMENT_MAX_FILES,
@@ -30,7 +31,7 @@ import { McpRepository } from '../mcp/mcp.repository.js';
 import { askableAgentIds } from '../agents/peerAgentScopes.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
-import { appendAgentRunLogEvent, ensureLocalConversation } from '../agentChat/agentRunService.js';
+import { appendAgentRunLogEvent, cancelAgentRun, ensureLocalConversation } from '../agentChat/agentRunService.js';
 import {
   createLocalConversation,
   forkConversation,
@@ -58,10 +59,14 @@ import {
 } from '../connectors/emailConnector.service.js';
 import {
   CALENDAR_CONNECT_INSTRUCTIONS,
+  DOCS_CONNECT_INSTRUCTIONS,
   DRIVE_CONNECT_INSTRUCTIONS,
+  FORMS_CONNECT_INSTRUCTIONS,
   GMAIL_CONNECT_INSTRUCTIONS,
   GMAIL_RECONNECT_FOR_DRAFT_INSTRUCTIONS,
   MEET_CONNECT_INSTRUCTIONS,
+  SHEETS_CONNECT_INSTRUCTIONS,
+  SLIDES_CONNECT_INSTRUCTIONS,
 } from '../connectors/connectorUserMessages.js';
 import {
   executeDriveRead,
@@ -72,6 +77,34 @@ import {
   GoogleScopeDeniedError as DriveScopeDeniedError,
   GoogleToolError as DriveToolError,
 } from '../connectors/driveTool.service.js';
+import {
+  executeDocsRead,
+  executeDocsWrite,
+  GoogleConnectorNotConfiguredError as DocsConnectorNotConfiguredError,
+  GoogleScopeDeniedError as DocsScopeDeniedError,
+  GoogleToolError as DocsToolError,
+} from '../connectors/docsTool.service.js';
+import {
+  executeSheetsRead,
+  executeSheetsWrite,
+  GoogleConnectorNotConfiguredError as SheetsConnectorNotConfiguredError,
+  GoogleScopeDeniedError as SheetsScopeDeniedError,
+  GoogleToolError as SheetsToolError,
+} from '../connectors/sheetsTool.service.js';
+import {
+  executeSlidesRead,
+  executeSlidesWrite,
+  GoogleConnectorNotConfiguredError as SlidesConnectorNotConfiguredError,
+  GoogleScopeDeniedError as SlidesScopeDeniedError,
+  GoogleToolError as SlidesToolError,
+} from '../connectors/slidesTool.service.js';
+import {
+  executeFormsRead,
+  executeFormsWrite,
+  GoogleConnectorNotConfiguredError as FormsConnectorNotConfiguredError,
+  GoogleScopeDeniedError as FormsScopeDeniedError,
+  GoogleToolError as FormsToolError,
+} from '../connectors/formsTool.service.js';
 import {
   executeCalendarRead,
   executeCalendarWrite,
@@ -108,7 +141,9 @@ import {
   executeWhatsAppAutoReplyStatus,
   executeWhatsAppAutoReplyStop,
   executeWhatsAppContactSend,
+  executeWhatsAppDocumentSend,
   executeWhatsAppListContacts,
+  executeWhatsAppPollSend,
   executeWhatsAppReadChat,
   WhatsAppNotLinkedError,
   WhatsAppScopeDeniedError,
@@ -135,6 +170,9 @@ const postMessageBody = z.object({
   skills: z.array(z.string().trim().min(1).max(120)).default([]),
   /** Canonical proxy model id (`openrouter/...`). Omit to use cloud runner manifest default. */
   model: z.string().trim().min(1).max(200).optional(),
+  reasoningEffort: z
+    .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .optional(),
   /** When true, cloud runner retrieves org brain context for this turn (requires `brain.query` on the agent). */
   useBrain: z.boolean().optional().default(false),
 });
@@ -144,6 +182,9 @@ const editResendMessageBody = z.object({
   content: z.string().trim().max(20_000).default(''),
   skills: z.array(z.string().trim().min(1).max(120)).default([]),
   model: z.string().trim().min(1).max(200).optional(),
+  reasoningEffort: z
+    .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .optional(),
   useBrain: z.boolean().optional().default(false),
 });
 
@@ -183,6 +224,7 @@ function parseMultipartMessageFields(body: Record<string, unknown>): {
   content: string;
   skills: string[];
   model?: string;
+  reasoningEffort?: string;
   useBrain: boolean;
 } {
   const content = typeof body.content === 'string' ? body.content.trim() : '';
@@ -198,11 +240,15 @@ function parseMultipartMessageFields(body: Record<string, unknown>): {
     }
   }
   const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined;
+  const reasoningEffort =
+    typeof body.reasoningEffort === 'string' && body.reasoningEffort.trim()
+      ? body.reasoningEffort.trim()
+      : undefined;
   const useBrain =
     body.useBrain === true ||
     body.useBrain === 'true' ||
     body.useBrain === '1';
-  return { content, skills, model, useBrain };
+  return { content, skills, model, reasoningEffort, useBrain };
 }
 
 const runnerBrainQueryBody = z.object({
@@ -388,6 +434,7 @@ const driveReadBody = z.object({
   action: z.enum(['list', 'get', 'get_content']),
   query: z.string().trim().max(500).optional(),
   fileId: z.string().trim().max(200).optional(),
+  parentId: z.string().trim().max(200).nullable().optional(),
   pageSize: z.number().int().min(1).max(50).optional(),
   pageToken: z.string().trim().max(2000).nullable().optional(),
 });
@@ -401,6 +448,80 @@ const driveWriteBody = z.object({
   contentText: z.string().max(200_000).optional(),
   mimeType: z.string().trim().max(200).optional(),
   parentId: z.string().trim().max(200).nullable().optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const docsReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['get']),
+  documentId: z.string().trim().max(200).optional(),
+});
+
+const docsWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'append', 'replace_all']),
+  documentId: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(500).optional(),
+  text: z.string().max(200_000).optional(),
+  findText: z.string().max(5000).optional(),
+  replaceText: z.string().max(200_000).optional(),
+  matchCase: z.boolean().optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const sheetsReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['get', 'get_values']),
+  spreadsheetId: z.string().trim().max(200).optional(),
+  range: z.string().trim().max(500).optional(),
+});
+
+const sheetsWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'update_values', 'append_values']),
+  spreadsheetId: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(500).optional(),
+  sheetTitle: z.string().trim().max(200).optional(),
+  range: z.string().trim().max(500).optional(),
+  values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).max(5000).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const slidesReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['get']),
+  presentationId: z.string().trim().max(200).optional(),
+});
+
+const slidesWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'replace_all', 'insert_text']),
+  presentationId: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(500).optional(),
+  text: z.string().max(50_000).optional(),
+  findText: z.string().max(5000).optional(),
+  replaceText: z.string().max(50_000).optional(),
+  matchCase: z.boolean().optional(),
+  pageObjectId: z.string().trim().max(200).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+});
+
+const formsReadBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['get', 'list_responses']),
+  formId: z.string().trim().max(200).optional(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+  pageToken: z.string().trim().max(500).optional(),
+});
+
+const formsWriteBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  action: z.enum(['create', 'update_info', 'add_question']),
+  formId: z.string().trim().max(200).optional(),
+  title: z.string().trim().max(500).optional(),
+  description: z.string().trim().max(10_000).optional(),
+  questionTitle: z.string().trim().max(500).optional(),
+  required: z.boolean().optional(),
   jitToken: z.string().trim().min(8).max(512).nullable().optional(),
 });
 
@@ -456,6 +577,30 @@ const whatsappContactSendBody = z.object({
   jitToken: z.string().trim().min(8).max(512).nullable().optional(),
   replyInstructions: z.string().trim().min(1).max(2000).optional(),
 });
+
+const whatsappPollSendBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(255),
+  values: z.array(z.string().trim().min(1).max(100)).min(2).max(12),
+  selectableCount: z.number().int().min(1).max(12).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+  replyInstructions: z.string().trim().min(1).max(2000).optional(),
+});
+
+const whatsappContactDocumentSendBody = z.object({
+  runId: z.string().trim().min(1).max(80).optional(),
+  recipient: z.string().trim().min(1).max(200),
+  file_name: z.string().trim().min(1).max(255).optional(),
+  mimetype: z.string().trim().max(255).optional(),
+  content_base64: z.string().min(1).max(28_000_000).optional(),
+  brain_document_id: z.string().trim().min(1).max(80).optional(),
+  jitToken: z.string().trim().min(8).max(512).nullable().optional(),
+  replyInstructions: z.string().trim().min(1).max(2000).optional(),
+}).refine(
+  (v) => Boolean(v.content_base64?.trim()) || Boolean(v.brain_document_id?.trim()),
+  { message: 'content_base64 or brain_document_id is required' },
+);
 
 const whatsappAutoReplyStopBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
@@ -552,7 +697,8 @@ async function deliverWhatsAppDocumentForAgent(
   agentId: string,
   filePath: string,
   fileName: string | undefined,
-): Promise<{ ok: true } | { ok: false; status: number; code: string; message: string }> {
+  mimetype?: string,
+): Promise<{ ok: true; fileName: string } | { ok: false; status: number; code: string; message: string }> {
   if (!isWhatsAppServiceConfigured()) {
     return { ok: false, status: 409, code: 'whatsapp_not_configured', message: 'WhatsApp service is not configured on the backend' };
   }
@@ -573,11 +719,30 @@ async function deliverWhatsAppDocumentForAgent(
     return { ok: false, status: 503, code: 'whatsapp_offline', message: 'WhatsApp session is offline — re-link WhatsApp in Connectors.' };
   }
 
-  const sent = await sendWhatsAppDocument({ connectorId: connector.id, filePath, fileName });
+  const { resolveWhatsAppDocumentIdentity } = await import('../whatsapp/documentFileIdentity.js');
+  let bytes: Buffer | null = null;
+  try {
+    bytes = await readFile(filePath);
+  } catch {
+    bytes = null;
+  }
+  const identity = resolveWhatsAppDocumentIdentity({
+    fileName,
+    fallbackName: filePath.split(/[/\\]/).pop() ?? 'document',
+    bytes,
+    mimetype,
+  });
+
+  const sent = await sendWhatsAppDocument({
+    connectorId: connector.id,
+    filePath,
+    fileName: identity.fileName,
+    mimetype: identity.mimetype,
+  });
   if (!sent.ok) {
     return { ok: false, status: 503, code: 'whatsapp_send_failed', message: sent.error ?? 'Document send failed' };
   }
-  return { ok: true };
+  return { ok: true, fileName: identity.fileName };
 }
 
 async function assertOwnsAgent(request: Request, agentId: string): Promise<{ userId: string; orgId: string }> {
@@ -624,7 +789,9 @@ async function claimNextQueuedRun(agentId: string): Promise<{
   userId: string;
   createdAt: Date;
   inferenceModel: string | null;
+  reasoningEffort: string | null;
   useBrain: boolean;
+  teamRunId: string | null;
 } | null> {
   const claimed = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     WITH next_run AS (
@@ -656,7 +823,9 @@ async function claimNextQueuedRun(agentId: string): Promise<{
       userId: true,
       createdAt: true,
       inferenceModel: true,
+      reasoningEffort: true,
       useBrain: true,
+      teamRunId: true,
     },
   });
   return row;
@@ -1040,6 +1209,7 @@ export function createAgentChatRouter(): Router {
           inferenceModel = normalizeQlixInferenceModelId(parsed.data.model);
           assertModelAllowed(inferenceModel);
         }
+        const reasoningEffort = parsed.data.reasoningEffort ?? null;
 
         const cutAt = target.createdAt;
         const toDeleteIds = messages.slice(idx).map((m) => m.id);
@@ -1095,7 +1265,9 @@ export function createAgentChatRouter(): Router {
             attachments: priorAttachments.length > 0 ? priorAttachments : undefined,
             skills: parsed.data.skills,
             inferenceModel,
+            reasoningEffort,
             useBrain: parsed.data.useBrain,
+            channel: inboundChannelFromRequest(request),
           }),
         );
 
@@ -1185,6 +1357,7 @@ export function createAgentChatRouter(): Router {
         let content: string;
         let skills: string[];
         let model: string | undefined;
+        let reasoningEffort: string | undefined;
         let useBrain: boolean;
         let storedAttachments: ChatAttachmentMeta[] = [];
         let processedAttachments: Awaited<ReturnType<typeof processChatUploads>> = [];
@@ -1194,6 +1367,7 @@ export function createAgentChatRouter(): Router {
           content = fields.content;
           skills = fields.skills;
           model = fields.model;
+          reasoningEffort = fields.reasoningEffort;
           useBrain = fields.useBrain;
           processedAttachments = await processChatUploads((request.files as Express.Multer.File[]) ?? []);
           storedAttachments = storedChatAttachments(processedAttachments);
@@ -1216,6 +1390,7 @@ export function createAgentChatRouter(): Router {
           content = parsed.data.content;
           skills = parsed.data.skills;
           model = parsed.data.model;
+          reasoningEffort = parsed.data.reasoningEffort;
           useBrain = parsed.data.useBrain;
         }
 
@@ -1242,7 +1417,9 @@ export function createAgentChatRouter(): Router {
             attachments: storedAttachments.length > 0 ? storedAttachments : undefined,
             skills,
             inferenceModel,
+            reasoningEffort: reasoningEffort ?? null,
             useBrain,
+            channel: inboundChannelFromRequest(request),
           }),
         );
 
@@ -1660,6 +1837,63 @@ export function createAgentChatRouter(): Router {
     }
   });
 
+  // Runner: list/find brain documents (for sending originals via WhatsApp).
+  router.post('/:agentId/tools/brain/find-documents', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    const body = z
+      .object({
+        runId: z.string().trim().min(1).max(80).optional(),
+        query: z.string().trim().max(200).optional(),
+        limit: z.number().int().min(1).max(20).optional(),
+      })
+      .safeParse(request.body ?? {});
+    if (!body.success) {
+      response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid find-documents body' } });
+      return;
+    }
+    try {
+      await assertRunnerAuth(agentId, request);
+      const worker = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: { orgId: true },
+      });
+      const orgId = worker?.orgId;
+      if (!orgId) {
+        response.status(409).json({
+          error: { code: 'brain_org_required', message: 'Agent must belong to an organization to use AI brain' },
+        });
+        return;
+      }
+      await assertStandardAgentCanQueryBrain(agentId, orgId);
+      const { findBrainDocumentsForAgent } = await import('../aiBrain/brainFileStorage.js');
+      const documents = await findBrainDocumentsForAgent({
+        orgId,
+        query: body.data.query,
+        limit: body.data.limit,
+      });
+      response.json({ documents });
+    } catch (e: unknown) {
+      if (e instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: e.message } });
+        return;
+      }
+      if (e instanceof BrainQueryForbiddenError) {
+        response.status(403).json({ error: { code: e.code, message: e.message } });
+        return;
+      }
+      if (e instanceof BrainNotProvisionedError) {
+        response.status(409).json({ error: { code: e.code, message: e.message } });
+        return;
+      }
+      if (e instanceof BrainWrongOrgError) {
+        response.status(403).json({ error: { code: e.code, message: e.message } });
+        return;
+      }
+      console.error('tools/brain/find-documents', e);
+      response.status(500).json({ error: { code: 'brain_find_failed', message: 'Brain find failed' } });
+    }
+  });
+
   // Runner: poll for queued runs (authenticated by runner token)
   router.post('/:agentId/runs/poll', async (request: Request, response: Response) => {
     const parsed = pollBody.safeParse(request.body ?? {});
@@ -1687,6 +1921,7 @@ export function createAgentChatRouter(): Router {
             description: true,
             orgId: true,
             llmModel: true,
+            reasoningEffort: true,
             toolProfile: true,
             permissionScopes: true,
             jitScopes: true,
@@ -1697,7 +1932,9 @@ export function createAgentChatRouter(): Router {
           where: { whatsappDefaultAgentId: agentId },
           select: { id: true },
         }),
-        prefetched !== undefined
+        run.teamRunId
+          ? Promise.resolve(null)
+          : prefetched !== undefined
           ? Promise.resolve(prefetched)
           : buildMemoryBlock({
               agentId,
@@ -1771,6 +2008,7 @@ export function createAgentChatRouter(): Router {
           inferenceModel:
             run.inferenceModel ??
             (agentRow?.llmModel ? normalizeQlixInferenceModelId(agentRow.llmModel) : null),
+          reasoningEffort: run.reasoningEffort ?? agentRow?.reasoningEffort ?? null,
           conversationId: run.conversationId,
           userId: run.userId,
           createdAt: run.createdAt.toISOString(),
@@ -1845,6 +2083,7 @@ export function createAgentChatRouter(): Router {
           body: parsed.data.prompt,
           skills: parsed.data.skills,
           agentName: agent.name,
+          channel: inboundChannelFromRequest(request),
         }),
       );
       if (turn.status !== 'accepted') {
@@ -2201,6 +2440,7 @@ export function createAgentChatRouter(): Router {
           prompt: true,
           skills: true,
           status: true,
+          teamRunId: true,
         },
       });
       if (!run || run.agentId !== agentId) {
@@ -2284,22 +2524,24 @@ export function createAgentChatRouter(): Router {
         typeof parsed.data.result === 'string'
           ? parsed.data.result
           : JSON.stringify(parsed.data.result ?? {}, null, 2);
-      void extractAndStoreMemories({
-        agentId,
-        userId: run.userId,
-        orgId: run.orgId,
-        prompt: run.prompt,
-        resultContent,
-        ok: parsed.data.ok,
-        skills: run.skills ?? [],
-      }).catch((err) => {
-        console.error('[agent-memory] extractAndStoreMemories', err instanceof Error ? err.message : err);
-      });
+      if (!run.teamRunId) {
+        void extractAndStoreMemories({
+          agentId,
+          userId: run.userId,
+          orgId: run.orgId,
+          prompt: run.prompt,
+          resultContent,
+          ok: parsed.data.ok,
+          skills: run.skills ?? [],
+        }).catch((err) => {
+          console.error('[agent-memory] extractAndStoreMemories', err instanceof Error ? err.message : err);
+        });
 
-      // Fire-and-forget: fold older messages into the rolling conversation summary (compaction).
-      void updateConversationSummary(run.conversationId).catch((err) => {
-        console.error('[agent-memory] updateConversationSummary', err instanceof Error ? err.message : err);
-      });
+        // Individual conversations retain their existing memory and compaction behavior.
+        void updateConversationSummary(run.conversationId).catch((err) => {
+          console.error('[agent-memory] updateConversationSummary', err instanceof Error ? err.message : err);
+        });
+      }
 
       // Fire-and-forget: record run usage and post-execution billing
       if (parsed.data.ok && user?.email) {
@@ -2435,26 +2677,7 @@ export function createAgentChatRouter(): Router {
 
         const alreadyTerminal = RUN_TERMINAL_STATUSES.has(run.status);
         if (!alreadyTerminal) {
-          // Canonical spelling is American "canceled" (matches AgentRunTerminalStatus / Active Runs).
-          await prisma.agentRun.update({
-            where: { id: runId },
-            data: {
-              status: 'canceled',
-              finishedAt: new Date(),
-              errorMessage: 'Stopped by user',
-            },
-          });
-          await appendAgentRunEvent(runId, 'log', {
-            message: 'run_canceled',
-            reason: 'stopped_by_user',
-          });
-          // Unblock any in-flight JIT poll so the hybrid runner can exit the tool promptly.
-          try {
-            const jit = new JitService();
-            await jit.denyPendingForRun(runId, 'run_canceled');
-          } catch (jitErr) {
-            console.warn('[stop] denyPendingForRun failed', jitErr);
-          }
+          await cancelAgentRun(runId, 'Stopped by user');
         }
 
         response.json({ ok: true, message: 'Run stopped', status: 'canceled' });
@@ -2750,6 +2973,10 @@ export function createAgentChatRouter(): Router {
     }
     if (
       err instanceof DriveScopeDeniedError ||
+      err instanceof DocsScopeDeniedError ||
+      err instanceof SheetsScopeDeniedError ||
+      err instanceof SlidesScopeDeniedError ||
+      err instanceof FormsScopeDeniedError ||
       err instanceof CalendarScopeDeniedError ||
       err instanceof MeetScopeDeniedError
     ) {
@@ -2772,6 +2999,10 @@ export function createAgentChatRouter(): Router {
     }
     if (
       err instanceof DriveConnectorNotConfiguredError ||
+      err instanceof DocsConnectorNotConfiguredError ||
+      err instanceof SheetsConnectorNotConfiguredError ||
+      err instanceof SlidesConnectorNotConfiguredError ||
+      err instanceof FormsConnectorNotConfiguredError ||
       err instanceof CalendarConnectorNotConfiguredError ||
       err instanceof MeetConnectorNotConfiguredError
     ) {
@@ -2786,6 +3017,10 @@ export function createAgentChatRouter(): Router {
     }
     if (
       err instanceof DriveToolError ||
+      err instanceof DocsToolError ||
+      err instanceof SheetsToolError ||
+      err instanceof SlidesToolError ||
+      err instanceof FormsToolError ||
       err instanceof CalendarToolError ||
       err instanceof MeetToolError
     ) {
@@ -2836,6 +3071,182 @@ export function createAgentChatRouter(): Router {
       if (respondGoogleToolError(response, err, 'drive_write_failed', DRIVE_CONNECT_INSTRUCTIONS)) return;
       console.error('drive/write', err);
       response.status(500).json({ error: { code: 'drive_write_failed', message: 'Drive write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/docs/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = docsReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid docs read payload' } });
+        return;
+      }
+      const result = await executeDocsRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'docs_read_failed', DOCS_CONNECT_INSTRUCTIONS)) return;
+      console.error('docs/read', err);
+      response.status(500).json({ error: { code: 'docs_read_failed', message: 'Docs read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/docs/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = docsWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid docs write payload' } });
+        return;
+      }
+      const result = await executeDocsWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'docs_write_failed', DOCS_CONNECT_INSTRUCTIONS)) return;
+      console.error('docs/write', err);
+      response.status(500).json({ error: { code: 'docs_write_failed', message: 'Docs write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/sheets/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = sheetsReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid sheets read payload' } });
+        return;
+      }
+      const result = await executeSheetsRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'sheets_read_failed', SHEETS_CONNECT_INSTRUCTIONS)) return;
+      console.error('sheets/read', err);
+      response.status(500).json({ error: { code: 'sheets_read_failed', message: 'Sheets read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/sheets/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = sheetsWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid sheets write payload' } });
+        return;
+      }
+      const result = await executeSheetsWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'sheets_write_failed', SHEETS_CONNECT_INSTRUCTIONS)) return;
+      console.error('sheets/write', err);
+      response.status(500).json({ error: { code: 'sheets_write_failed', message: 'Sheets write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/slides/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = slidesReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid slides read payload' } });
+        return;
+      }
+      const result = await executeSlidesRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'slides_read_failed', SLIDES_CONNECT_INSTRUCTIONS)) return;
+      console.error('slides/read', err);
+      response.status(500).json({ error: { code: 'slides_read_failed', message: 'Slides read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/slides/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = slidesWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid slides write payload' } });
+        return;
+      }
+      const result = await executeSlidesWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'slides_write_failed', SLIDES_CONNECT_INSTRUCTIONS)) return;
+      console.error('slides/write', err);
+      response.status(500).json({ error: { code: 'slides_write_failed', message: 'Slides write failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/forms/read', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = formsReadBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid forms read payload' } });
+        return;
+      }
+      const result = await executeFormsRead({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'forms_read_failed', FORMS_CONNECT_INSTRUCTIONS)) return;
+      console.error('forms/read', err);
+      response.status(500).json({ error: { code: 'forms_read_failed', message: 'Forms read failed' } });
+    }
+  });
+
+  router.post('/:agentId/tools/forms/write', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = formsWriteBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid forms write payload' } });
+        return;
+      }
+      const result = await executeFormsWrite({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (respondGoogleToolError(response, err, 'forms_write_failed', FORMS_CONNECT_INSTRUCTIONS)) return;
+      console.error('forms/write', err);
+      response.status(500).json({ error: { code: 'forms_write_failed', message: 'Forms write failed' } });
     }
   });
 
@@ -3023,6 +3434,100 @@ export function createAgentChatRouter(): Router {
     }
   });
 
+  router.post('/:agentId/tools/whatsapp/send-poll', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappPollSendBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid WhatsApp send-poll payload' } });
+        return;
+      }
+      const result = await executeWhatsAppPollSend({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: parsed.data,
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
+        response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppNotLinkedError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/send-poll', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_send_poll_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'WhatsApp send poll failed',
+        },
+      });
+    }
+  });
+
+  router.post('/:agentId/tools/whatsapp/send-document-to', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = whatsappContactDocumentSendBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({
+          error: { code: 'invalid_body', message: 'Invalid WhatsApp send-document-to payload' },
+        });
+        return;
+      }
+      const result = await executeWhatsAppDocumentSend({
+        agentId,
+        runId: parsed.data.runId ?? null,
+        input: {
+          recipient: parsed.data.recipient,
+          fileName: parsed.data.file_name,
+          contentBase64: parsed.data.content_base64,
+          brainDocumentId: parsed.data.brain_document_id,
+          mimetype: parsed.data.mimetype,
+          jitToken: parsed.data.jitToken,
+          replyInstructions: parsed.data.replyInstructions,
+        },
+      });
+      response.json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppScopeDeniedError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof JitTokenRequiredError || err instanceof JitTokenInvalidError) {
+        response.status(403).json({ error: { code: (err as Error & { code: string }).code, message: err.message } });
+        return;
+      }
+      if (err instanceof WhatsAppNotLinkedError) {
+        response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      console.error('whatsapp/send-document-to', err);
+      response.status(500).json({
+        error: {
+          code: 'whatsapp_send_document_failed',
+          message: err instanceof WhatsAppToolError ? err.message : 'WhatsApp send document failed',
+        },
+      });
+    }
+  });
+
   router.post('/:agentId/tools/whatsapp/auto-reply/status', async (request: Request, response: Response) => {
     const agentId = String(request.params.agentId);
     try {
@@ -3197,7 +3702,7 @@ export function createAgentChatRouter(): Router {
         response.status(result.status).json({ error: { code: result.code, message: result.message } });
         return;
       }
-      response.json({ ok: true, fileName: parsed.data.file_name ?? null });
+      response.json({ ok: true, fileName: result.fileName });
     } catch (err) {
       if (err instanceof RunnerUnauthorizedError) {
         response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
@@ -3228,16 +3733,26 @@ export function createAgentChatRouter(): Router {
         response.status(400).json({ error: { code: 'invalid_body', message: 'content_base64 decoded to empty file' } });
         return;
       }
-      const safeName = parsed.data.file_name.replace(/[^\w.\-]+/g, '_').slice(0, 120) || 'document';
-      tmpPath = join(tmpdir(), `qlix-wa-${randomUUID()}-${safeName}`);
+      const { resolveWhatsAppDocumentIdentity } = await import('../whatsapp/documentFileIdentity.js');
+      const identity = resolveWhatsAppDocumentIdentity({
+        fileName: parsed.data.file_name,
+        bytes: buffer,
+        mimetype: parsed.data.mimetype,
+      });
+      tmpPath = join(tmpdir(), `qlix-wa-${randomUUID()}-${identity.fileName}`);
       await writeFile(tmpPath, buffer);
 
-      const result = await deliverWhatsAppDocumentForAgent(agentId, tmpPath, parsed.data.file_name);
+      const result = await deliverWhatsAppDocumentForAgent(
+        agentId,
+        tmpPath,
+        identity.fileName,
+        identity.mimetype,
+      );
       if (!result.ok) {
         response.status(result.status).json({ error: { code: result.code, message: result.message } });
         return;
       }
-      response.json({ ok: true, fileName: parsed.data.file_name });
+      response.json({ ok: true, fileName: result.fileName });
     } catch (err) {
       if (err instanceof RunnerUnauthorizedError) {
         response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });

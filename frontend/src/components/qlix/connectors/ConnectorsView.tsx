@@ -49,6 +49,7 @@ import {
 } from "@/lib/connectors-api";
 import { getCatalogEntry } from "@/lib/connector-catalog";
 import {
+  GOOGLE_SERVICE_LOGOS,
   GOOGLE_SERVICES,
   connectedGoogleServiceCount,
   googleServiceConnected,
@@ -780,7 +781,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
                 ? `${connected.emailAddress} · ${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"}`
                 : `${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"} connected`
             ) : (
-              "Gmail, Drive, Calendar, GMeet, YouTube"
+              "Gmail, Drive, Docs, Sheets, Slides, Forms, Calendar, GMeet, YouTube"
             )
           }
           action={
@@ -797,7 +798,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
               const logo =
                 svc.id === "youtube"
                   ? getCatalogEntry("youtube")?.logo
-                  : googleLogo;
+                  : (GOOGLE_SERVICE_LOGOS[svc.id] ?? googleLogo);
               const busySvc = googleBusy === svc.id;
               return (
                 <li key={svc.id}>

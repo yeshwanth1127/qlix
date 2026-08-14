@@ -30,7 +30,9 @@ export function TeamsSplitView({ routePrefix }: TeamsSplitViewProps) {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
@@ -40,10 +42,12 @@ export function TeamsSplitView({ routePrefix }: TeamsSplitViewProps) {
         error={error}
         routePrefix={routePrefix}
         onCreateClick={() => setShowCreate(true)}
-        onRefresh={load}
+        onDeleted={(teamId) => {
+          setTeams((prev) => prev.filter((t) => t.id !== teamId));
+        }}
       />
 
-      {showCreate && session && (
+      {showCreate && session ? (
         <CreateTeamModal
           open={showCreate}
           orgId={session.organization.id}
@@ -53,7 +57,7 @@ export function TeamsSplitView({ routePrefix }: TeamsSplitViewProps) {
             setShowCreate(false);
           }}
         />
-      )}
+      ) : null}
     </div>
   );
 }

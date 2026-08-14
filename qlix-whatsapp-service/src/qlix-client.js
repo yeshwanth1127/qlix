@@ -81,6 +81,7 @@ export async function sendInbound(connectorId, text, opts = {}) {
   };
   if (opts.remoteJid) body.remote_jid = opts.remoteJid;
   if (opts.fromContact) body.from_contact = true;
+  if (opts.pushName) body.push_name = opts.pushName;
 
   const result = await request('POST', '/api/v1/whatsapp/inbound', body);
   if (!result.ok) return { error: result.error };

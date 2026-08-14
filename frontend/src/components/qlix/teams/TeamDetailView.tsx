@@ -23,7 +23,6 @@ import {
   deleteTeamSupervisor,
   getTeam,
   getTeamRunnersStatus,
-  listTeamRuns,
   reorderTeamMembers,
   setSupervisorAgent,
   updateTeamConfig,
@@ -31,7 +30,6 @@ import {
   type TeamDTO,
   type TeamMemberDTO,
   type TeamRunnerStatusEntry,
-  type TeamRunDTO,
   type TeamRunnersStatusDTO,
 } from "@/lib/teams-api";
 import { listAgents, restartCloudRunner, type AgentDTO, type PermissionScope } from "@/lib/agents-api";
@@ -40,7 +38,6 @@ import { SketchBox, sketchButton, sketchButtonPrimary } from "@/components/qlix/
 import { CreateAgentModal } from "@/components/qlix/agents/CreateAgentModal";
 import { DelegatedScopePicker } from "@/components/qlix/teams/DelegatedScopePicker";
 import { TeamRunView } from "./TeamRunView";
-import { TeamRunHistoryView } from "./TeamRunHistoryView";
 
 interface TeamDetailViewProps {
   readonly team: TeamDTO;
@@ -49,7 +46,7 @@ interface TeamDetailViewProps {
   readonly onUpdated: (team: TeamDTO) => void;
 }
 
-type ActiveTab = "build" | "run" | "history";
+type ActiveTab = "build" | "run";
 
 type AgentCreatePurpose = "supervisor" | "worker";
 
@@ -292,7 +289,6 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   const [actionError, setActionError] = useState<string | null>(null);
   const [runnersStatus, setRunnersStatus] = useState<TeamRunnersStatusDTO | null>(null);
   const [restartingId, setRestartingId] = useState<string | null>(null);
-  const [historyRuns, setHistoryRuns] = useState<TeamRunDTO[]>([]);
   const [showExistingPicker, setShowExistingPicker] = useState(false);
   const [pickerPurpose, setPickerPurpose] = useState<AgentCreatePurpose>("worker");
   const [existingAgents, setExistingAgents] = useState<AgentDTO[]>([]);
@@ -333,11 +329,6 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
     const interval = setInterval(() => void pollRunners(), 2500);
     return () => clearInterval(interval);
   }, [tab, pollRunners]);
-
-  useEffect(() => {
-    if (tab !== "history") return;
-    void listTeamRuns(team.id).then(setHistoryRuns).catch(() => {});
-  }, [tab, team.id]);
 
   async function copyToClipboard(value: string, key: "did" | "trigger") {
     try {
@@ -578,11 +569,10 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
 
   const tabs: { id: ActiveTab; label: string; disabled?: boolean }[] = [
     { id: "build", label: "Team" },
-    { id: "run", label: "Run", disabled: !canRun },
-    { id: "history", label: "History" },
+    { id: "run", label: "Run" },
   ];
 
-  const isRunTab = tab === "run" && canRun;
+  const isRunTab = tab === "run";
 
   const headerPresence: Presence = !team.supervisorAgentId
     ? "offline"
@@ -664,7 +654,10 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
           <button
             key={t.id}
             type="button"
-            onClick={() => !t.disabled && setTab(t.id)}
+            onClick={() => {
+              if (t.disabled) return;
+              setTab(t.id);
+            }}
             disabled={t.disabled}
             title={t.disabled ? "Available once every agent is online" : undefined}
             className={cn(
@@ -888,18 +881,7 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
           </div>
         )}
 
-        {tab === "run" && canRun && <TeamRunView team={team} onRunStarted={() => {}} />}
-
-        {tab === "history" && (
-          <TeamRunHistoryView
-            teamId={team.id}
-            runs={historyRuns}
-            onRefresh={async () => {
-              const runs = await listTeamRuns(team.id);
-              setHistoryRuns(runs);
-            }}
-          />
-        )}
+        {tab === "run" && <TeamRunView team={team} canSend={canRun} />}
       </div>
 
       {showCreateAgent && (

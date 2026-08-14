@@ -20,9 +20,13 @@ export type ActivityStep = {
   jitRequestId?: string;
   jitChannel?: "dashboard" | "whatsapp";
   jitScope?: string;
+  /** Pending JIT only: the action context shown on the approval card. */
+  jitContext?: string;
   /** Pending JIT only: WhatsApp was the configured approval channel but it isn't connected. */
   jitWhatsappExpected?: boolean;
   jitWhatsappStatus?: "disconnected" | "not_linked";
+  jitAttempt?: number;
+  jitMaxAttempts?: number;
 };
 
 /** Normalize the `sources` payload on a tool_finished event into safe link rows. */
@@ -65,6 +69,9 @@ const TOOL_META: Record<string, { label: string; category: ToolCategory; verb?: 
   whatsapp_list_contacts: { label: "WhatsApp", category: "other", verb: "List contacts" },
   whatsapp_read_chat: { label: "WhatsApp", category: "other", verb: "Read chat" },
   whatsapp_send_message: { label: "WhatsApp", category: "other", verb: "Send message" },
+  whatsapp_send_document: { label: "WhatsApp", category: "other", verb: "Send file to contact" },
+  brain_find_documents: { label: "Brain", category: "other", verb: "Find documents" },
+  whatsapp_send_poll: { label: "WhatsApp", category: "other", verb: "Send poll" },
   whatsapp_auto_reply_status: { label: "WhatsApp", category: "other", verb: "Auto-reply status" },
   whatsapp_auto_reply_stop: { label: "WhatsApp", category: "other", verb: "Stop auto-reply" },
   whatsapp_auto_reply_set_instructions: {
@@ -482,7 +489,7 @@ export function collectTeamReasoningSteps(
     steps.push({ ...step, agentName });
   }
 
-  return { steps, isThinking, activeLabel };
+  return { steps: collapseRetriedActivity(steps), isThinking, activeLabel };
 }
 
 function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
@@ -790,8 +797,11 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         jitRequestId,
         jitChannel: channel === "whatsapp" ? "whatsapp" : "dashboard",
         jitScope: String(d.scope ?? ""),
+        jitContext: context || undefined,
         jitWhatsappExpected: whatsappExpected,
         jitWhatsappStatus: whatsappStatus,
+        jitAttempt: typeof d.jitAttempt === "number" ? d.jitAttempt : undefined,
+        jitMaxAttempts: typeof d.jitMaxAttempts === "number" ? d.jitMaxAttempts : undefined,
       };
     }
     case "jit_approval_granted": {
@@ -838,6 +848,78 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         kind: "other",
       };
   }
+}
+
+function retryIdentity(step: ActivityStep): string | null {
+  if (step.kind === "tool_done" && step.toolId) return `tool:${step.toolId}`;
+  if (
+    (step.kind === "subagent_done" || step.kind === "subagent_running") &&
+    step.subagentInvocationId
+  ) {
+    return `sub:${step.subagentInvocationId}`;
+  }
+  if (step.toolId) return `tool:${step.toolId}`;
+  return null;
+}
+
+function isSingleToolRound(step: ActivityStep, toolId: string): boolean {
+  if (step.kind !== "tool_round") return false;
+  if (step.toolId === toolId) return true;
+  return Boolean(step.toolIds && step.toolIds.length === 1 && step.toolIds[0] === toolId);
+}
+
+/**
+ * Drop failed tool/sub-agent attempts that were later retried successfully,
+ * so the feed shows the final outcome of that step rather than the error.
+ */
+export function collapseRetriedActivity<T extends ActivityStep>(steps: T[]): T[] {
+  if (steps.length === 0) return steps;
+
+  const lastSuccessAt = new Map<string, number>();
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    if (!step || step.tone !== "success") continue;
+    const key = retryIdentity(step);
+    if (key) lastSuccessAt.set(key, i);
+  }
+
+  const hide = new Set<number>();
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    if (!step || step.tone !== "error") continue;
+    const key = retryIdentity(step);
+    if (!key) continue;
+    const successAt = lastSuccessAt.get(key);
+    if (successAt == null || successAt <= i) continue;
+    hide.add(i);
+    if (step.kind === "tool_done" && step.toolId) {
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const prev = steps[j];
+        if (!prev || hide.has(j)) continue;
+        if (isSingleToolRound(prev, step.toolId)) {
+          hide.add(j);
+          break;
+        }
+      }
+    }
+  }
+
+  if (hide.size === 0) return steps;
+  return steps.filter((_, i) => !hide.has(i));
+}
+
+/** True when an error is still the latest settled outcome (no later success/retry). */
+export function activityEndedInFailure(activity?: ActivityStep[]): boolean {
+  if (!activity || activity.length === 0) return false;
+  const visible = collapseRetriedActivity(activity);
+  let lastError = -1;
+  let lastSuccess = -1;
+  for (let i = 0; i < visible.length; i += 1) {
+    const tone = visible[i]?.tone;
+    if (tone === "error") lastError = i;
+    if (tone === "success") lastSuccess = i;
+  }
+  return lastError > lastSuccess;
 }
 
 export function getActiveToolsFromSteps(steps: ActivityStep[]): Array<{

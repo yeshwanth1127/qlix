@@ -24,6 +24,10 @@ describe('apiKeyScopes', () => {
   });
 
   it('allowlists curated developer routes', () => {
+    assert.deepEqual(resolveApiKeyRouteAccess('GET', '/api/v1/auth/me'), {
+      allowed: true,
+      scopes: [],
+    });
     assert.deepEqual(resolveApiKeyRouteAccess('GET', '/api/v1/agents'), {
       allowed: true,
       scopes: ['agents:read'],
@@ -44,6 +48,22 @@ describe('apiKeyScopes', () => {
       allowed: true,
       scopes: ['teams:write'],
     });
+    assert.deepEqual(resolveApiKeyRouteAccess('POST', '/api/v1/agents/nl-parse'), {
+      allowed: true,
+      scopes: ['builder:write'],
+    });
+    assert.deepEqual(resolveApiKeyRouteAccess('POST', '/api/v1/agents/nl-create'), {
+      allowed: true,
+      scopes: ['builder:write'],
+    });
+    assert.deepEqual(resolveApiKeyRouteAccess('GET', '/api/v1/nl-builder/sessions'), {
+      allowed: true,
+      scopes: ['builder:read'],
+    });
+    assert.deepEqual(resolveApiKeyRouteAccess('GET', '/api/v1/builder/canvases'), {
+      allowed: true,
+      scopes: ['builder:read'],
+    });
   });
 
   it('rejects non-developer routes for API keys', () => {
@@ -51,7 +71,7 @@ describe('apiKeyScopes', () => {
       allowed: false,
       reason: 'not_in_developer_api',
     });
-    assert.deepEqual(resolveApiKeyRouteAccess('POST', '/api/v1/agents/nl-create'), {
+    assert.deepEqual(resolveApiKeyRouteAccess('POST', '/api/v1/agents/nl-parse-not-a-route'), {
       allowed: false,
       reason: 'not_in_developer_api',
     });

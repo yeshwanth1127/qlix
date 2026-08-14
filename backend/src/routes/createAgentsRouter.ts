@@ -35,6 +35,7 @@ import { recordApiKeySensitiveUse } from '../lib/apiKeyAudit.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
 import { checkStepUpOrGuest, checkGuestAgentCap } from '../lib/stepUpOrGuest.js';
+import { resolveWorkspaceOrgId } from '../lib/resolveWorkspaceOrgId.js';
 import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.service.js';
 import { dockerLogs } from '../cloudRunners/dockerClient.js';
 import { dockerContainerName, legacyDockerContainerName } from '../cloudRunners/dockerNaming.js';
@@ -62,6 +63,7 @@ import {
   isLlmProviderConfigured,
   modelForProvider,
 } from '../llm/inferenceRouter.js';
+import { reasoningEffortSchema } from '../llm/inferenceSchemas.js';
 import { prisma } from '../lib/prisma.js';
 import type { AgentDTO } from '../agents/agents.types.js';
 
@@ -130,7 +132,7 @@ const createAgentSchema = z
     model: z.string().trim().min(1).max(120),
     llmMode: z.enum(['direct', 'proxy']).default('proxy'),
     llmProvider: z.enum(['exora', 'openrouter']).default(defaultLlmProvider()),
-    orgId: z.string().uuid().nullable(),
+    orgId: z.string().uuid().nullable().optional(),
     localInferenceMode: z.enum(['local_llm', 'cloud_api']).nullable(),
     /** Hybrid starter ZIP: include only the launcher for this OS (from the creating browser). */
     clientPlatform: z.enum(['windows', 'macos', 'linux']).optional(),
@@ -239,11 +241,12 @@ export function createAgentsRouter(): Router {
           localInferenceMode: runtime === 'local' ? createInput.localInferenceMode : null,
         };
       }
+      const orgId = resolveWorkspaceOrgId(request, createInput.orgId);
       console.log('[createAgent] runtime=%s name=%s', createInput.runtime, createInput.name);
-      const result = await service.createAgent(request.auth!.userId, createInput);
+      const result = await service.createAgent(request.auth!.userId, { ...createInput, orgId });
       await wireAgentMcpFromScopes({
         userId: request.auth!.userId,
-        orgId: createInput.orgId,
+        orgId,
         agentId: result.agent.id,
         scopes: result.agent.permissionScopes,
       });
@@ -388,7 +391,7 @@ export function createAgentsRouter(): Router {
       type: z.enum(['single', 'team']),
       rationale: z.string().optional(),
     }).passthrough(),
-    orgId: z.string().uuid().nullable(),
+    orgId: z.string().uuid().nullable().optional(),
     clientPlatform: z.enum(['windows', 'macos', 'linux']).optional(),
     model: z.string().trim().min(1).max(200).optional(),
   });
@@ -399,7 +402,7 @@ export function createAgentsRouter(): Router {
     const parsed = nlCreateSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
-        error: { code: 'invalid_body', message: 'plan and orgId are required', issues: parsed.error.issues },
+        error: { code: 'invalid_body', message: 'plan is required', issues: parsed.error.issues },
       });
       return;
     }
@@ -440,7 +443,7 @@ export function createAgentsRouter(): Router {
 
       const result = await nlCreationService.createFromPlan({
         userId: request.auth!.userId,
-        orgId: parsed.data.orgId,
+        orgId: resolveWorkspaceOrgId(request, parsed.data.orgId),
         plan,
         request,
         clientPlatform: parsed.data.clientPlatform as HybridStarterPlatform | undefined,
@@ -943,6 +946,7 @@ export function createAgentsRouter(): Router {
       .object({
         llmProvider: z.enum(['exora', 'openrouter']),
         model: z.string().trim().min(1).max(200),
+        reasoningEffort: reasoningEffortSchema.nullable().optional(),
       })
       .safeParse(request.body);
     if (!body.success) {
@@ -977,6 +981,9 @@ export function createAgentsRouter(): Router {
         {
           llmProvider: body.data.llmProvider,
           model: modelForProvider(body.data.model, body.data.llmProvider),
+          ...(body.data.reasoningEffort !== undefined
+            ? { reasoningEffort: body.data.reasoningEffort }
+            : {}),
         },
       );
       response.json({ agent: updated });

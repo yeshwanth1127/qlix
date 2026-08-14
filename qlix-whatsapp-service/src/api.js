@@ -10,6 +10,8 @@ import {
   listSessions,
   resolveRecipientJid,
   sendDocumentToConnector,
+  sendDocumentToRecipient,
+  sendPollToRecipient,
   sendToConnector,
   sendToRecipient,
   startSession,
@@ -26,12 +28,50 @@ const MIME_MAP = {
   '.xls':  'application/vnd.ms-excel',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.doc':  'application/msword',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.ppt':  'application/vnd.ms-powerpoint',
   '.csv':  'text/csv',
   '.txt':  'text/plain',
   '.png':  'image/png',
   '.jpg':  'image/jpeg',
   '.jpeg': 'image/jpeg',
 };
+
+function sniffExtFromBytes(buf) {
+  if (buf.length >= 5 && buf.subarray(0, 5).toString('ascii') === '%PDF-') return '.pdf';
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
+    const head = buf.subarray(0, Math.min(buf.length, 64 * 1024)).toString('latin1');
+    if (head.includes('xl/') || head.includes('xl\\')) return '.xlsx';
+    if (head.includes('word/')) return '.docx';
+    if (head.includes('ppt/')) return '.pptx';
+    return '.zip';
+  }
+  return '';
+}
+
+/** Ensure WhatsApp gets a real extension + MIME (avoid phone .bin downloads). */
+function resolveDocumentIdentity(filePath, fileName, mimetype, fileBytes) {
+  const pathExt = path.extname(filePath).toLowerCase();
+  let name = String(fileName || path.basename(filePath) || 'document').trim() || 'document';
+  let nameExt = path.extname(name).toLowerCase();
+  if (!nameExt && pathExt) {
+    name = `${name}${pathExt}`;
+    nameExt = pathExt;
+  }
+  if (!nameExt && fileBytes) {
+    const sniffed = sniffExtFromBytes(fileBytes);
+    if (sniffed) {
+      name = `${name}${sniffed}`;
+      nameExt = sniffed;
+    }
+  }
+  const resolvedMime =
+    (typeof mimetype === 'string' && mimetype.trim()) ||
+    MIME_MAP[nameExt] ||
+    MIME_MAP[pathExt] ||
+    'application/octet-stream';
+  return { resolvedName: name, resolvedMime };
+}
 
 const SERVICE_SECRET = process.env.SERVICE_SECRET || '';
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
@@ -236,11 +276,68 @@ export function createApiRouter() {
       res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
       return;
     }
-    const ext = path.extname(file_path).toLowerCase();
-    const resolvedMime = mimetype || MIME_MAP[ext] || 'application/octet-stream';
-    const resolvedName = file_name || path.basename(file_path);
+    const fileBytes = await fs.readFile(file_path);
+    const { resolvedName, resolvedMime } = resolveDocumentIdentity(
+      file_path,
+      file_name,
+      mimetype,
+      fileBytes,
+    );
     const result = await sendDocumentToConnector(connector_id, file_path, resolvedName, resolvedMime);
     res.status(result.ok ? 200 : 503).json(result);
+  });
+
+  /** Send a document to a contact (phone / jid / contact name) — not self-chat. */
+  router.post('/send-document-to', async (req, res) => {
+    const { connector_id, recipient, file_path, file_name, mimetype } = req.body ?? {};
+    if (!connector_id || typeof file_path !== 'string' || !file_path.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and file_path required' });
+      return;
+    }
+    if (typeof recipient !== 'string' || !recipient.trim()) {
+      res.status(400).json({ ok: false, error: 'recipient required' });
+      return;
+    }
+    if (!isPathWithinAllowedRoots(file_path)) {
+      res.status(400).json({ ok: false, error: 'file_path is outside the allowed directory' });
+      return;
+    }
+    try {
+      const stat = await fs.stat(file_path);
+      if (!stat.isFile()) {
+        res.status(400).json({ ok: false, error: 'file_path is not a regular file' });
+        return;
+      }
+    } catch {
+      res.status(404).json({ ok: false, error: 'file not found' });
+      return;
+    }
+    if (!isSessionConnected(connector_id)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const fileBytes = await fs.readFile(file_path);
+    const { resolvedName, resolvedMime } = resolveDocumentIdentity(
+      file_path,
+      file_name,
+      mimetype,
+      fileBytes,
+    );
+    const result = await sendDocumentToRecipient(
+      connector_id,
+      recipient,
+      file_path,
+      resolvedName,
+      resolvedMime,
+    );
+    if (result.ok) {
+      console.log(`[qlix-whatsapp] /send-document-to ok connector=${connector_id} to=${result.jid}`);
+      res.json(result);
+      return;
+    }
+    const status = result.matches ? 409 : 400;
+    console.warn(`[qlix-whatsapp] /send-document-to failed connector=${connector_id}:`, result.error);
+    res.status(result.error?.includes('not connected') ? 503 : status).json(result);
   });
 
   /** Resolve a contact / phone to a JID without sending a message. */
@@ -289,6 +386,36 @@ export function createApiRouter() {
     }
     const status = result.matches ? 409 : 400;
     console.warn(`[qlix-whatsapp] /send-to failed connector=${connectorId}:`, result.error);
+    res.status(result.error?.includes('not connected') ? 503 : status).json(result);
+  });
+
+  /** Send a native WhatsApp poll to a contact (phone / jid / contact name). */
+  router.post('/send-poll', async (req, res) => {
+    const connectorId = req.body?.connector_id;
+    const recipient = req.body?.recipient;
+    const name = req.body?.name;
+    const values = req.body?.values;
+    const selectableCount = req.body?.selectableCount;
+    if (!connectorId || typeof recipient !== 'string' || !recipient.trim()) {
+      res.status(400).json({ ok: false, error: 'connector_id and recipient required' });
+      return;
+    }
+    if (!isSessionConnected(connectorId)) {
+      res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
+      return;
+    }
+    const result = await sendPollToRecipient(connectorId, recipient, {
+      name,
+      values,
+      selectableCount,
+    });
+    if (result.ok) {
+      console.log(`[qlix-whatsapp] /send-poll ok connector=${connectorId} to=${result.jid}`);
+      res.json(result);
+      return;
+    }
+    const status = result.matches ? 409 : 400;
+    console.warn(`[qlix-whatsapp] /send-poll failed connector=${connectorId}:`, result.error);
     res.status(result.error?.includes('not connected') ? 503 : status).json(result);
   });
 

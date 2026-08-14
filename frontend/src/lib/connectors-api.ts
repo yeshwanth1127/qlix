@@ -1,4 +1,5 @@
 import type { ApiErrorBody } from "./auth-api";
+import type { GoogleServiceId } from "./google-services";
 
 const defaultBase = "http://localhost:4000";
 
@@ -70,7 +71,7 @@ export async function listConnectors(): Promise<ConnectorsListResponse> {
 }
 
 export async function startGoogleOAuth(
-  service: "gmail" | "drive" | "calendar" | "meet" | "youtube" = "gmail",
+  service: GoogleServiceId = "gmail",
 ): Promise<{ url: string; service: string }> {
   const response = await fetch(`${apiBase()}/api/v1/connectors/google/start`, {
     method: "POST",
@@ -110,9 +111,7 @@ export async function disconnectGoogle(): Promise<void> {
   }
 }
 
-export async function disconnectGoogleService(
-  service: "gmail" | "drive" | "calendar" | "meet" | "youtube",
-): Promise<void> {
+export async function disconnectGoogleService(service: GoogleServiceId): Promise<void> {
   const response = await fetch(
     `${apiBase()}/api/v1/connectors/google/services/${encodeURIComponent(service)}`,
     {

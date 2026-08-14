@@ -4,6 +4,7 @@ import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 import { addInjection } from './runInjectionStore.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamsService, TeamNotFoundError } from './teams.service.js';
+import { stopInFlightTeamRunWorkers } from './teamRunCancel.js';
 import type { TeamRunDTO } from './teams.types.js';
 
 const connectorsRepo = new ConnectorsRepository();
@@ -123,7 +124,9 @@ export async function cancelTeamRunForConnector(connectorId: string): Promise<st
   if (!['queued', 'running'].includes(active.status)) {
     return `Team run is already ${active.status}.`;
   }
+  await stopInFlightTeamRunWorkers(active.id);
   await teamsRepo.updateRunStatus(active.id, 'canceled');
+  await teamsRepo.appendEvent(active.id, active.teamId, null, 'run_failed', { reason: 'canceled_by_user' });
   await teamsRepo.clearChannelSession(connectorId);
   const team = await prisma.team.findUnique({ where: { id: active.teamId }, select: { name: true } });
   return `Canceled team run for ${team?.name ?? 'team'} (${active.id.slice(0, 8)}…).`;

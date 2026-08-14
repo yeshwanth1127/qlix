@@ -15,6 +15,21 @@ export {
 } from './ladder.js';
 export { selectInferenceModel, type RouteDecision } from './selectModel.js';
 export {
+  REASONING_EFFORTS,
+  REASONING_HEADROOM_TOKENS,
+  PLANNING_MIN_MAX_TOKENS,
+  isReasoningEffort,
+  isReasoningModelId,
+  nonReasoningFallbackModel,
+  parseReasoningEffort,
+  planningMaxTokens,
+  resolveReasoning,
+  withReasoningHeadroom,
+  type ReasoningEffort,
+  type ReasoningPurpose,
+  type ResolvedReasoning,
+} from './reasoningBudget.js';
+export {
   resolveOpenRouterApiModel,
   type ResolveOpenRouterModelOptions,
 } from './resolveOpenRouterModel.js';

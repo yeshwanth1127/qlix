@@ -64,10 +64,10 @@ export function AdminChrome({ children }: { children: React.ReactNode }) {
               style={active ? { color: "var(--sketch-purple)" } : undefined}
               className={cn(
                 sketchNavLink,
-                "rounded-md border-l-2 border-transparent py-1.5 pl-2.5 text-[10px] leading-snug transition-all duration-200",
+                "rounded-md border border-transparent py-1.5 pl-2.5 text-[10px] leading-snug transition-all duration-200",
                 active
-                  ? "border-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold"
-                  : "hover:border-[color:var(--sketch-purple)]/45 hover:bg-[color:var(--sketch-purple-soft)]/70 hover:pl-3",
+                  ? "border-l-[3px] border-l-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-semibold"
+                  : "hover:border-black hover:bg-[color:var(--sketch-purple-soft)]",
               )}
             >
               {item.label.toUpperCase()}

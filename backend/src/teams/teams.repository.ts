@@ -3,6 +3,7 @@ import type {
   TeamMember as PrismaTeamMember,
   TeamRun as PrismaTeamRun,
   TeamRunEvent as PrismaTeamRunEvent,
+  TeamMailboxMessage as PrismaTeamMailboxMessage,
   A2ATask as PrismaA2ATask,
 } from '@prisma/client';
 import { Prisma } from '@prisma/client';
@@ -17,6 +18,9 @@ import type {
   TeamConfig,
   TeamDTO,
   TeamMemberDTO,
+  TeamMailboxMessageDTO,
+  TeamMailboxStatus,
+  TeamRunInput,
   TeamRunDTO,
   TeamRunArtifact,
   TeamRunEventDTO,
@@ -103,8 +107,10 @@ function toRunDTO(r: PrismaTeamRun): TeamRunDTO {
     artifacts: r.artifacts as unknown as TeamRunDTO['artifacts'],
     scopeEscalations: r.scopeEscalations as unknown as TeamRunDTO['scopeEscalations'],
     checkpointJson: r.checkpointJson as TeamRunDTO['checkpointJson'],
+    inputs: (r.inputs as unknown as TeamRunInput[]) ?? [],
     result: r.result,
     errorMessage: r.errorMessage,
+    continuesRunId: r.continuesRunId ?? null,
     createdAt: r.createdAt.toISOString(),
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
@@ -146,6 +152,25 @@ function toA2ATaskDTO(t: PrismaA2ATask): A2ATaskDTO {
   };
 }
 
+function toMailboxDTO(message: PrismaTeamMailboxMessage): TeamMailboxMessageDTO {
+  return {
+    id: message.id,
+    teamRunId: message.teamRunId,
+    teamId: message.teamId,
+    kind: message.kind as TeamMailboxMessageDTO['kind'],
+    status: message.status as TeamMailboxStatus,
+    senderAgentId: message.senderAgentId,
+    recipientAgentId: message.recipientAgentId,
+    a2aTaskId: message.a2aTaskId,
+    agentRunId: message.agentRunId,
+    contractId: message.contractId,
+    payload: message.payload,
+    errorMessage: message.errorMessage,
+    createdAt: message.createdAt.toISOString(),
+    completedAt: message.completedAt?.toISOString() ?? null,
+  };
+}
+
 const MEMBER_AGENT_SELECT = {
   id: true,
   name: true,
@@ -166,7 +191,7 @@ export class TeamsRepository {
         did: input.did,
         name: input.name,
         description: input.description ?? null,
-        status: 'draft',
+        status: input.supervisorAgentId ? 'active' : 'draft',
         config,
         members: {
           create: (input.members ?? []).map((m, i) => ({
@@ -376,6 +401,8 @@ export class TeamsRepository {
       sourceChannel?: TeamRunSourceChannel;
       sourceConnectorId?: string | null;
       replyChannel?: TeamRunReplyChannel;
+      continuesRunId?: string | null;
+      inputs?: TeamRunInput[];
     },
   ): Promise<TeamRunDTO> {
     const sourceChannel = opts?.sourceChannel ?? 'web';
@@ -391,6 +418,8 @@ export class TeamsRepository {
         sourceChannel,
         sourceConnectorId: opts?.sourceConnectorId ?? null,
         replyChannel,
+        continuesRunId: opts?.continuesRunId ?? null,
+        inputs: (opts?.inputs ?? []) as unknown as Prisma.InputJsonValue,
       },
     });
     return toRunDTO(run);
@@ -433,6 +462,18 @@ export class TeamsRepository {
       return null;
     }
     return toRunDTO(session.run);
+  }
+
+  async findLatestFinishedRun(teamId: string, userId: string): Promise<TeamRunDTO | null> {
+    const run = await prisma.teamRun.findFirst({
+      where: {
+        teamId,
+        startedByUserId: userId,
+        status: { in: ['completed', 'failed', 'canceled'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return run ? toRunDTO(run) : null;
   }
 
   async listRuns(teamId: string): Promise<TeamRunDTO[]> {
@@ -523,6 +564,87 @@ export class TeamsRepository {
     if (!run) return;
     const esc = (run.scopeEscalations as unknown[]).concat([escalation]);
     await prisma.teamRun.update({ where: { id: runId }, data: { scopeEscalations: esc as object[] } });
+  }
+
+  // ─── Luna-Teams mailbox ─────────────────────────────────────────────────────
+
+  async createMailboxDispatch(input: {
+    runId: string;
+    teamId: string;
+    senderAgentId: string | null;
+    recipientAgentId: string;
+    a2aTaskId: string;
+    contractId?: string | null;
+    task: string;
+  }): Promise<TeamMailboxMessageDTO> {
+    const message = await prisma.teamMailboxMessage.create({
+      data: {
+        teamRunId: input.runId,
+        teamId: input.teamId,
+        kind: 'result',
+        status: 'pending',
+        senderAgentId: input.senderAgentId,
+        recipientAgentId: input.recipientAgentId,
+        a2aTaskId: input.a2aTaskId,
+        contractId: input.contractId ?? null,
+        payload: { task: input.task },
+      },
+    });
+    return toMailboxDTO(message);
+  }
+
+  async completeMailboxDispatch(
+    messageId: string,
+    input: {
+      status: Exclude<TeamMailboxStatus, 'pending'>;
+      payload: unknown;
+      agentRunId?: string | null;
+      errorMessage?: string | null;
+    },
+  ): Promise<TeamMailboxMessageDTO> {
+    const message = await prisma.teamMailboxMessage.update({
+      where: { id: messageId },
+      data: {
+        status: input.status,
+        payload: input.payload as Prisma.InputJsonValue,
+        agentRunId: input.agentRunId ?? null,
+        errorMessage: input.errorMessage ?? null,
+        completedAt: new Date(),
+      },
+    });
+    return toMailboxDTO(message);
+  }
+
+  async appendMailboxResult(input: {
+    runId: string;
+    teamId: string;
+    senderAgentId?: string | null;
+    recipientAgentId?: string | null;
+    contractId?: string | null;
+    payload: unknown;
+  }): Promise<TeamMailboxMessageDTO> {
+    const message = await prisma.teamMailboxMessage.create({
+      data: {
+        teamRunId: input.runId,
+        teamId: input.teamId,
+        kind: 'result',
+        status: 'completed',
+        senderAgentId: input.senderAgentId ?? null,
+        recipientAgentId: input.recipientAgentId ?? null,
+        contractId: input.contractId ?? null,
+        payload: input.payload as Prisma.InputJsonValue,
+        completedAt: new Date(),
+      },
+    });
+    return toMailboxDTO(message);
+  }
+
+  async listMailboxResults(runId: string): Promise<TeamMailboxMessageDTO[]> {
+    const messages = await prisma.teamMailboxMessage.findMany({
+      where: { teamRunId: runId, kind: 'result' },
+      orderBy: { createdAt: 'asc' },
+    });
+    return messages.map(toMailboxDTO);
   }
 
   // ─── Events ─────────────────────────────────────────────────────────────────

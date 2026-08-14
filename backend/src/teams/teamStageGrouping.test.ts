@@ -12,7 +12,12 @@ function subtask(agentId: string, stageOrder: number): SubtaskPlan {
     role: 'worker',
     goal: 'do the thing',
     delegatedScopes: [],
+    allowedScopes: [],
     stageOrder,
+    inputRefs: [],
+    allowedSources: ['authoritative_input'],
+    knowledgeMode: 'none',
+    outputContract: {},
   };
 }
 

@@ -5,6 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Sparkles, Users } from "lucide-react";
 import {
   type ActivityStep,
+  collapseRetriedActivity,
   getActiveSubagentsFromSteps,
   getActiveToolsFromSteps,
   getPendingJitStep,
@@ -39,6 +40,7 @@ export function ActivityTimeline({
   readonly className?: string;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
+  const visibleSteps = collapseRetriedActivity(steps);
   const jitPending = getPendingJitStep(steps);
   const activeSubagents = getActiveSubagentsFromSteps(steps);
   const activeSubIds = new Set(activeSubagents.map((s) => s.invocationId));
@@ -53,9 +55,9 @@ export function ActivityTimeline({
     prevKeepOpen.current = keepOpen;
   }, [keepOpen]);
 
-  if (steps.length === 0) return null;
+  if (visibleSteps.length === 0) return null;
 
-  const lastStepIdx = steps.length - 1;
+  const lastStepIdx = visibleSteps.length - 1;
 
   if (collapsed) {
     return (
@@ -65,20 +67,20 @@ export function ActivityTimeline({
         className={cn(
           "mb-2 flex items-center gap-1.5 text-[10px] transition-opacity hover:opacity-90",
           jitPending
-            ? "rounded-md border border-amber-600/30 bg-amber-500/15 px-2 py-1 font-medium text-amber-950 opacity-100"
+            ? "font-medium text-black/70 opacity-100"
             : "text-[--text-tertiary] opacity-50 hover:opacity-80",
           className,
         )}
       >
         {jitPending ? (
-          <ShieldCheck className="size-3 shrink-0 text-amber-700" aria-hidden />
+          <ShieldCheck className="size-3 shrink-0 text-black/50" aria-hidden />
         ) : (
           <Check className="size-3" aria-hidden />
         )}
         <span>
           {jitPending
             ? "Waiting for your approval"
-            : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
+            : `${visibleSteps.length} step${visibleSteps.length === 1 ? "" : "s"}`}
         </span>
         <ChevronDown className="size-3 shrink-0" aria-hidden />
       </button>
@@ -101,7 +103,7 @@ export function ActivityTimeline({
       </span>
 
       <AnimatePresence initial={false}>
-        {steps.map((s, i) => {
+        {visibleSteps.map((s, i) => {
           const isLiveSubagent =
             s.kind === "subagent_running" &&
             Boolean(s.subagentInvocationId) &&
@@ -132,7 +134,7 @@ export function ActivityTimeline({
                 isError
                   ? "opacity-80 text-red-400/90"
                   : isJitPending
-                    ? "rounded-md bg-amber-500/15 px-1.5 py-1 -ml-1.5 opacity-100 font-medium text-amber-950"
+                    ? "opacity-100 font-medium text-black/80"
                     : isLiveSubagent || active
                       ? "opacity-100 text-[--text-primary]"
                       : "opacity-40 text-[--text-secondary]",
@@ -145,7 +147,7 @@ export function ActivityTimeline({
                     <span className="qlix-orb-core relative inline-flex size-[7px] rounded-full bg-[--accent]" />
                   </span>
                 ) : (
-                  <Icon className={cn("size-3", isJitPending && "text-amber-700")} aria-hidden />
+                  <Icon className={cn("size-3", isJitPending && "text-black/55")} aria-hidden />
                 )}
               </span>
               <span className="flex min-w-0 flex-1 flex-col leading-snug">
@@ -161,7 +163,7 @@ export function ActivityTimeline({
                   >
                     {s.label}
                   </span>
-                  {s.detail && s.detail !== s.toolId ? (
+                  {s.detail && s.detail !== s.toolId && !isJitPending ? (
                     <span className="opacity-60"> · {s.detail}</span>
                   ) : null}
                 </span>
@@ -205,26 +207,10 @@ export function ActivityTimeline({
 
 export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
   const active = getActiveToolsFromSteps(steps);
-  const jitPending = getPendingJitStep(steps);
   const subagents = getActiveSubagentsFromSteps(steps);
-  if (active.length === 0 && !jitPending && subagents.length === 0) return null;
+  if (active.length === 0 && subagents.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      {jitPending ? (
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex items-start gap-2 rounded-lg border-2 border-amber-600/40 bg-amber-500/15 px-3 py-2.5"
-        >
-          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-amber-700" aria-hidden />
-          <div className="min-w-0 text-[11px] leading-snug text-amber-950">
-            <span className="font-semibold">{jitPending.label}</span>
-            {jitPending.detail ? (
-              <span className="mt-0.5 block text-[10px] opacity-90">{jitPending.detail}</span>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
       {subagents.length > 0 ? (
         <div
           role="status"

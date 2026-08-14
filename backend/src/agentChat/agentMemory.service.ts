@@ -40,9 +40,34 @@ function memoryProvider(): LlmProviderId {
   return MEMORY_MODEL.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
 }
 
-function clip(value: string, max: number): string {
+const URL_RE = /https?:\/\/[^\s<>"'\)\]]+/gi;
+const DURABLE_ID_RE =
+  /\b(?:formId|documentId|spreadsheetId|presentationId|pageId|fileId|responderUri)\s*[:=]\s*["']?[A-Za-z0-9_./:-]{6,}/gi;
+
+/**
+ * Clip prose for the memory sticky note, but keep durable crumbs (URLs / IDs)
+ * so follow-ups like "send the link again" do not require re-running tools.
+ */
+export function clip(value: string, max: number): string {
   const text = value.trim();
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+  if (text.length <= max) return text;
+
+  const artifacts = [
+    ...new Set([
+      ...(text.match(URL_RE) ?? []),
+      ...(text.match(DURABLE_ID_RE) ?? []),
+    ]),
+  ];
+  if (artifacts.length === 0) {
+    return `${text.slice(0, max)}…`;
+  }
+
+  const suffix = `\n…\n[kept]: ${artifacts.join(' | ')}`;
+  if (suffix.length >= max) {
+    return artifacts.join(' | ').slice(0, max);
+  }
+  const proseMax = Math.max(40, max - suffix.length);
+  return `${text.slice(0, proseMax).trimEnd()}${suffix}`;
 }
 
 function stripJsonFence(value: string): string {

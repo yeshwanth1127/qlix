@@ -2,7 +2,8 @@ import { ActionsService, JitTokenInvalidError, JitTokenRequiredError } from '../
 import type { PermissionScope } from '../agents/agents.types.js';
 import { prisma } from '../lib/prisma.js';
 import { JitService } from '../jit/jit.service.js';
-import { goalRequestsReplyWait } from '../wait/waitPolicy.js';
+import { isAgentRunTerminal } from '../agentChat/agentRunService.js';
+import { resolveTeamWhatsAppWaitMode } from '../wait/waitPolicy.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { getWhatsAppConnectorForAgent } from './whatsappConnector.service.js';
 import {
@@ -11,23 +12,79 @@ import {
   isWhatsAppServiceConfigured,
   listWhatsAppContacts,
   resolveWhatsAppRecipient,
+  sendWhatsAppDocumentToRecipient,
+  sendWhatsAppPoll,
   sendWhatsAppToRecipient,
   startWhatsAppSession,
 } from './whatsappServiceClient.js';
+import { TeamsRepository } from '../teams/teams.repository.js';
+import {
+  assertTeamOutboundAllowed,
+  TeamOutboundProvenanceError,
+} from '../teams/teamOutboundGuard.js';
 
 const actionsService = new ActionsService();
 const jitService = new JitService();
 
-async function getTeamReplyWaitContext(runId: string | null): Promise<{
-  teamRunId: string;
-  orgId: string;
-  userId: string;
-  fulfillment: 'first_match' | 'collect_until_timeout';
-} | null> {
-  if (!runId) return null;
+async function enforceLiveTeamOutboundTarget(input: {
+  runId: string | null;
+  agentId: string;
+  connectorId: string;
+  recipient: string;
+}): Promise<string> {
+  if (!input.runId) return input.recipient;
+  const agentRun = await prisma.agentRun.findUnique({
+    where: { id: input.runId },
+    select: { teamRunId: true },
+  });
+  if (!agentRun?.teamRunId) return input.recipient;
+  const resolved = await resolveWhatsAppRecipient({
+    connectorId: input.connectorId,
+    recipient: input.recipient,
+  });
+  if (!resolved.ok || !resolved.jid) {
+    throw new WhatsAppToolError(resolved.error ?? 'Failed to resolve WhatsApp recipient');
+  }
+  const repo = new TeamsRepository();
+  const run = await repo.findRun(agentRun.teamRunId);
+  if (!run) throw new WhatsAppToolError('Team run not found');
+  try {
+    assertTeamOutboundAllowed(run, await repo.listMailboxResults(run.id), {
+      recipient: input.recipient,
+      jid: resolved.jid,
+      phone: resolved.phone ?? null,
+      name: resolved.name ?? null,
+    });
+  } catch (error) {
+    if (error instanceof TeamOutboundProvenanceError) {
+      await repo.appendEvent(run.id, run.teamId, input.agentId, 'outbound_blocked', {
+        message: error.message,
+        recipient: input.recipient,
+      });
+      throw new WhatsAppToolError(error.message);
+    }
+    throw error;
+  }
+  return resolved.jid;
+}
+
+type TeamOutboundGate =
+  | { kind: 'live' }
+  | { kind: 'blocked'; reason: string }
+  | {
+      kind: 'queue';
+      teamRunId: string;
+      orgId: string;
+      userId: string;
+      fulfillment: 'first_match' | 'collect_until_timeout';
+    };
+
+async function getTeamOutboundGate(runId: string | null): Promise<TeamOutboundGate> {
+  if (!runId) return { kind: 'live' };
   const agentRun = await prisma.agentRun.findUnique({
     where: { id: runId },
     select: {
+      status: true,
       teamRun: {
         select: {
           id: true,
@@ -45,13 +102,23 @@ async function getTeamReplyWaitContext(runId: string | null): Promise<{
       },
     },
   });
-  const teamRun = agentRun?.teamRun;
-  if (!teamRun || teamRun.status !== 'running') return null;
+  if (!agentRun) return { kind: 'live' };
+  if (isAgentRunTerminal(agentRun.status)) {
+    return { kind: 'blocked', reason: 'Run was stopped; WhatsApp send skipped' };
+  }
+  const teamRun = agentRun.teamRun;
+  if (!teamRun) return { kind: 'live' };
+
   const teamConfig = (teamRun.team?.config ?? {}) as { waitSteps?: unknown[] };
-  const waitsConfigured =
-    goalRequestsReplyWait(teamRun.goal) ||
-    (Array.isArray(teamConfig.waitSteps) && teamConfig.waitSteps.length > 0);
-  if (!waitsConfigured) return null;
+  const mode = resolveTeamWhatsAppWaitMode({
+    teamRunStatus: teamRun.status,
+    goal: teamRun.goal,
+    waitSteps: teamConfig.waitSteps,
+  });
+  if (mode === 'blocked') {
+    return { kind: 'blocked', reason: 'Team run was stopped; WhatsApp send skipped' };
+  }
+  if (mode === 'live') return { kind: 'live' };
 
   const { resolveWaitStepsForTeam, findWaitStepForStage, inferOutreachStageOrderFromWorkers } =
     await import('../wait/waitPolicy.js');
@@ -63,11 +130,16 @@ async function getTeamReplyWaitContext(runId: string | null): Promise<{
     workers.length > 0
       ? inferOutreachStageOrderFromWorkers(workers)
       : 2;
-  const waitSteps = resolveWaitStepsForTeam(teamConfig as import('../teams/teams.types.js').TeamConfig, teamRun.goal, outreachStage);
+  const waitSteps = resolveWaitStepsForTeam(
+    teamConfig as import('../teams/teams.types.js').TeamConfig,
+    teamRun.goal,
+    outreachStage,
+  );
   const waitStep = findWaitStepForStage(waitSteps, outreachStage);
   const fulfillment = waitStep?.trigger.fulfillment ?? 'collect_until_timeout';
 
   return {
+    kind: 'queue',
     teamRunId: teamRun.id,
     orgId: teamRun.orgId,
     userId: teamRun.startedByUserId,
@@ -149,16 +221,19 @@ async function assertWhatsAppContactSendJit(params: {
   if (!needsJit) return;
 
   const token = params.jitToken?.trim();
-  if (!token) {
+  const allowByGrant = async (): Promise<boolean> => {
     const sessionGranted = await jitService.hasActiveConversationGrantForRun(
       params.runId,
       'whatsapp.contact_send',
     );
-    if (!sessionGranted) {
-      throw new JitTokenRequiredError('whatsapp.contact_send requires dashboard approval');
-    }
+    if (!sessionGranted) return false;
     await jitService.touchConversationGrantForRun(params.runId, 'whatsapp.contact_send');
-    return;
+    return true;
+  };
+
+  if (!token) {
+    if (await allowByGrant()) return;
+    throw new JitTokenRequiredError('whatsapp.contact_send requires dashboard approval');
   }
 
   const ok = await actionsService.consumeJitToken({
@@ -166,7 +241,9 @@ async function assertWhatsAppContactSendJit(params: {
     actionType: 'whatsapp.contact_send',
     token,
   });
-  if (!ok) throw new JitTokenInvalidError('Invalid or already used jitToken for whatsapp.contact_send');
+  if (ok) return;
+  if (await allowByGrant()) return;
+  throw new JitTokenInvalidError('Invalid or already used jitToken for whatsapp.contact_send');
 }
 
 export async function executeWhatsAppListContacts(params: {
@@ -315,9 +392,11 @@ export async function executeWhatsAppContactSend(params: {
 
   // Team reply-wait runs: queue the message and send only after wait mode + TTL.
   // That closes the race where contacts reply before the run is paused / sheet is ready.
-  if (scopes.has('whatsapp.auto_reply')) {
-    const teamWait = await getTeamReplyWaitContext(params.runId);
-    if (teamWait) {
+  const outboundGate = await getTeamOutboundGate(params.runId);
+  if (outboundGate.kind === 'blocked') {
+    throw new WhatsAppToolError(outboundGate.reason);
+  }
+  if (outboundGate.kind === 'queue') {
       const resolved = await resolveWhatsAppRecipient({
         connectorId: connector.id,
         recipient: params.input.recipient,
@@ -335,14 +414,18 @@ export async function executeWhatsAppContactSend(params: {
 
       const { normalizeReplyInstructions } = await import('../whatsapp/whatsappAutoReply.service.js');
       const { persistPendingWaitOutbound } = await import('../wait/pendingWaitOutbound.js');
+      const { inferNameFromOutreachMessage } = await import('../wait/liveSheetColumns.js');
+      const recipientLooksLikeName =
+        Boolean(params.input.recipient?.trim()) &&
+        !/^[\d+\s()-]+$/.test(params.input.recipient.trim()) &&
+        !params.input.recipient.includes('@');
       const displayName =
-        resolved.name ??
-        (params.input.recipient && !/^[\d+\s()-]+$/.test(params.input.recipient.trim())
-          ? params.input.recipient.trim()
-          : null);
+        resolved.name?.trim() ||
+        (recipientLooksLikeName ? params.input.recipient.trim() : null) ||
+        inferNameFromOutreachMessage(params.input.message);
 
       await persistPendingWaitOutbound({
-        teamRunId: teamWait.teamRunId,
+        teamRunId: outboundGate.teamRunId,
         outbound: {
           agentId: params.agentId,
           connectorId: connector.id,
@@ -384,12 +467,17 @@ export async function executeWhatsAppContactSend(params: {
         note:
           'Message queued. Qlix will send it after this stage finishes and the wait duration is set — so replies are captured live.',
       };
-    }
   }
 
-  const result = await sendWhatsAppToRecipient({
+  const guardedRecipient = await enforceLiveTeamOutboundTarget({
+    runId: params.runId,
+    agentId: params.agentId,
     connectorId: connector.id,
     recipient: params.input.recipient,
+  });
+  const result = await sendWhatsAppToRecipient({
+    connectorId: connector.id,
+    recipient: guardedRecipient,
     message: params.input.message,
   });
   if (!result.ok) {
@@ -455,6 +543,507 @@ export async function executeWhatsAppContactSend(params: {
     teamWaitArmed,
     replyInstructionsSet,
   };
+}
+
+function normalizePollInput(input: {
+  name: string;
+  values: string[];
+  selectableCount?: number;
+}): { name: string; values: string[]; selectableCount: number } {
+  const name = input.name.trim();
+  if (!name) throw new WhatsAppToolError('poll name is required');
+  if (name.length > 255) throw new WhatsAppToolError('poll name too long (max 255 chars)');
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const raw of input.values ?? []) {
+    const option = String(raw ?? '').trim();
+    if (!option) continue;
+    if (option.length > 100) throw new WhatsAppToolError('poll option too long (max 100 chars)');
+    const key = option.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    values.push(option);
+  }
+  if (values.length < 2) throw new WhatsAppToolError('poll needs at least 2 options');
+  if (values.length > 12) throw new WhatsAppToolError('poll allows at most 12 options');
+  const selectableCount = Math.max(
+    1,
+    Math.min(values.length, Math.floor(Number(input.selectableCount ?? 1) || 1)),
+  );
+  return { name, values, selectableCount };
+}
+
+export async function executeWhatsAppPollSend(params: {
+  agentId: string;
+  runId: string | null;
+  input: {
+    recipient: string;
+    name: string;
+    values: string[];
+    selectableCount?: number;
+    jitToken?: string | null;
+    replyInstructions?: string | null;
+  };
+}): Promise<{
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  pollName?: string;
+  pollValues?: string[];
+  autoReplyArmed?: boolean;
+  teamWaitArmed?: boolean;
+  replyInstructionsSet?: boolean;
+  deferredUntilWait?: boolean;
+  queued?: boolean;
+  note?: string;
+}> {
+  const ctx = await loadAgentRunContext(params.agentId);
+  const scopes = new Set([
+    ...(ctx.permissionScopes as string[]),
+    ...(ctx.alwaysScopes as string[]),
+  ]);
+  if (!scopes.has('whatsapp.contact_send')) {
+    throw new WhatsAppScopeDeniedError('whatsapp.contact_send');
+  }
+
+  const poll = normalizePollInput({
+    name: params.input.name,
+    values: params.input.values,
+    selectableCount: params.input.selectableCount,
+  });
+
+  await assertWhatsAppContactSendJit({
+    agentId: params.agentId,
+    runId: params.runId,
+    ctx,
+    jitToken: params.input.jitToken,
+  });
+
+  const connector = await ensureLiveWhatsApp(params.agentId);
+
+  const outboundGate = await getTeamOutboundGate(params.runId);
+  if (outboundGate.kind === 'blocked') {
+    throw new WhatsAppToolError(outboundGate.reason);
+  }
+  if (outboundGate.kind === 'queue') {
+      const resolved = await resolveWhatsAppRecipient({
+        connectorId: connector.id,
+        recipient: params.input.recipient,
+      });
+      if (!resolved.ok || !resolved.jid) {
+        if (resolved.matches?.length) {
+          throw new WhatsAppToolError(
+            `${resolved.error ?? 'Ambiguous recipient'}: ${resolved.matches
+              .map((m) => `${m.name ?? 'unknown'} (${m.phone ?? m.jid})`)
+              .join(', ')}`,
+          );
+        }
+        throw new WhatsAppToolError(resolved.error ?? 'Failed to resolve WhatsApp recipient');
+      }
+
+      const { normalizeReplyInstructions } = await import('../whatsapp/whatsappAutoReply.service.js');
+      const { persistPendingWaitOutbound } = await import('../wait/pendingWaitOutbound.js');
+      const recipientLooksLikeName =
+        Boolean(params.input.recipient?.trim()) &&
+        !/^[\d+\s()-]+$/.test(params.input.recipient.trim()) &&
+        !params.input.recipient.includes('@');
+      const displayName =
+        resolved.name?.trim() ||
+        (recipientLooksLikeName ? params.input.recipient.trim() : null);
+
+      await persistPendingWaitOutbound({
+        teamRunId: outboundGate.teamRunId,
+        outbound: {
+          agentId: params.agentId,
+          connectorId: connector.id,
+          recipient: params.input.recipient,
+          message: poll.name,
+          kind: 'poll',
+          pollName: poll.name,
+          pollValues: poll.values,
+          pollSelectableCount: poll.selectableCount,
+          replyInstructions: normalizeReplyInstructions(params.input.replyInstructions),
+          jid: resolved.jid,
+          phone: resolved.phone ?? null,
+          name: displayName,
+        },
+      });
+
+      await appendEmailActionLog({
+        agentId: params.agentId,
+        userId: ctx.userId,
+        actionType: 'whatsapp.contact_send',
+        payload: {
+          tool: 'whatsapp_send_poll',
+          recipient: params.input.recipient,
+          jid: resolved.jid,
+          name: displayName,
+          pollName: poll.name,
+          pollValues: poll.values,
+          runId: params.runId,
+          deferredUntilWait: true,
+        },
+        status: 'success',
+        riskLevel: 'high',
+      }).catch(() => {});
+
+      return {
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: displayName,
+        pollName: poll.name,
+        pollValues: poll.values,
+        autoReplyArmed: false,
+        teamWaitArmed: false,
+        replyInstructionsSet: Boolean(normalizeReplyInstructions(params.input.replyInstructions)),
+        deferredUntilWait: true,
+        queued: true,
+        note:
+          'Poll queued. Qlix will send it after this stage finishes and the wait duration is set — votes are captured as replies.',
+      };
+  }
+
+  const guardedRecipient = await enforceLiveTeamOutboundTarget({
+    runId: params.runId,
+    agentId: params.agentId,
+    connectorId: connector.id,
+    recipient: params.input.recipient,
+  });
+  const result = await sendWhatsAppPoll({
+    connectorId: connector.id,
+    recipient: guardedRecipient,
+    name: poll.name,
+    values: poll.values,
+    selectableCount: poll.selectableCount,
+  });
+  if (!result.ok) {
+    if (result.matches?.length) {
+      throw new WhatsAppToolError(
+        `${resolvedMatchesMessage(result)}`,
+      );
+    }
+    throw new WhatsAppToolError(result.error ?? 'Failed to send WhatsApp poll');
+  }
+
+  await appendEmailActionLog({
+    agentId: params.agentId,
+    userId: ctx.userId,
+    actionType: 'whatsapp.contact_send',
+    payload: {
+      tool: 'whatsapp_send_poll',
+      recipient: params.input.recipient,
+      jid: result.jid ?? null,
+      name: result.name ?? null,
+      pollName: poll.name,
+      pollValues: poll.values,
+      runId: params.runId,
+    },
+    status: 'success',
+    riskLevel: 'high',
+  }).catch(() => {});
+
+  let autoReplyArmed = false;
+  let replyInstructionsSet = false;
+  if (scopes.has('whatsapp.auto_reply') && result.jid) {
+    try {
+      const { armAutoReplySession, normalizeReplyInstructions } = await import(
+        '../whatsapp/whatsappAutoReply.service.js'
+      );
+      const instructions = normalizeReplyInstructions(params.input.replyInstructions);
+      await armAutoReplySession({
+        connectorId: connector.id,
+        agentId: params.agentId,
+        contactJid: result.jid,
+        contactName: result.name ?? null,
+        contactPhone: result.phone ?? null,
+        replyInstructions: instructions,
+        userId: ctx.userId,
+      });
+      autoReplyArmed = true;
+      replyInstructionsSet = Boolean(instructions);
+    } catch (err) {
+      console.warn(
+        '[whatsapp-auto-reply] arm failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return {
+    jid: result.jid,
+    phone: result.phone,
+    name: result.name,
+    pollName: poll.name,
+    pollValues: poll.values,
+    autoReplyArmed,
+    teamWaitArmed: false,
+    replyInstructionsSet,
+  };
+}
+
+export async function executeWhatsAppDocumentSend(params: {
+  agentId: string;
+  runId: string | null;
+  input: {
+    recipient: string;
+    fileName?: string | null;
+    contentBase64?: string | null;
+    /** Prefer this when sending a brochure/file from Brain — loads retained original or PDF fallback. */
+    brainDocumentId?: string | null;
+    mimetype?: string | null;
+    jitToken?: string | null;
+    replyInstructions?: string | null;
+  };
+}): Promise<{
+  jid?: string;
+  phone?: string | null;
+  name?: string | null;
+  fileName?: string;
+  autoReplyArmed?: boolean;
+  teamWaitArmed?: boolean;
+  replyInstructionsSet?: boolean;
+  deferredUntilWait?: boolean;
+  queued?: boolean;
+  note?: string;
+  brainSource?: 'original' | 'generated_pdf';
+}> {
+  const ctx = await loadAgentRunContext(params.agentId);
+  const scopes = new Set([
+    ...(ctx.permissionScopes as string[]),
+    ...(ctx.alwaysScopes as string[]),
+  ]);
+  if (!scopes.has('whatsapp.contact_send')) {
+    throw new WhatsAppScopeDeniedError('whatsapp.contact_send');
+  }
+
+  await assertWhatsAppContactSendJit({
+    agentId: params.agentId,
+    runId: params.runId,
+    ctx,
+    jitToken: params.input.jitToken,
+  });
+
+  let buffer: Buffer;
+  let fileNameHint: string;
+  let mimeHint: string | undefined;
+  let brainSource: 'original' | 'generated_pdf' | undefined;
+
+  const brainDocumentId = params.input.brainDocumentId?.trim() || null;
+  if (brainDocumentId) {
+    if (!scopes.has('brain.query')) {
+      throw new WhatsAppScopeDeniedError('brain.query');
+    }
+    const orgId = ctx.orgId;
+    if (!orgId) throw new WhatsAppToolError('Agent must belong to an organization to load Brain files');
+    const { loadBrainDocumentFile } = await import('../aiBrain/brainFileStorage.js');
+    const file = await loadBrainDocumentFile({ orgId, documentId: brainDocumentId });
+    buffer = file.bytes;
+    fileNameHint = params.input.fileName?.trim() || file.fileName;
+    mimeHint = params.input.mimetype ?? file.mimetype;
+    brainSource = file.source;
+  } else {
+    const raw = params.input.contentBase64;
+    if (!raw) {
+      throw new WhatsAppToolError('Provide content_base64 or brain_document_id');
+    }
+    buffer = Buffer.from(raw, 'base64');
+    if (buffer.length === 0) {
+      throw new WhatsAppToolError('content_base64 decoded to empty file');
+    }
+    fileNameHint = params.input.fileName?.trim() || 'document.bin';
+    mimeHint = params.input.mimetype ?? undefined;
+  }
+
+  const { resolveWhatsAppDocumentIdentity } = await import('../whatsapp/documentFileIdentity.js');
+  const identity = resolveWhatsAppDocumentIdentity({
+    fileName: fileNameHint,
+    bytes: buffer,
+    mimetype: mimeHint,
+  });
+
+  const connector = await ensureLiveWhatsApp(params.agentId);
+
+  const outboundGate = await getTeamOutboundGate(params.runId);
+  if (outboundGate.kind === 'blocked') {
+    throw new WhatsAppToolError(outboundGate.reason);
+  }
+  if (outboundGate.kind === 'queue') {
+      const resolved = await resolveWhatsAppRecipient({
+        connectorId: connector.id,
+        recipient: params.input.recipient,
+      });
+      if (!resolved.ok || !resolved.jid) {
+        if (resolved.matches?.length) {
+          throw new WhatsAppToolError(resolvedMatchesMessage(resolved));
+        }
+        throw new WhatsAppToolError(resolved.error ?? 'Failed to resolve WhatsApp recipient');
+      }
+
+      const { normalizeReplyInstructions } = await import('../whatsapp/whatsappAutoReply.service.js');
+      const { persistPendingWaitOutbound, stagePendingWaitDocument } = await import(
+        '../wait/pendingWaitOutbound.js'
+      );
+      const recipientLooksLikeName =
+        Boolean(params.input.recipient?.trim()) &&
+        !/^[\d+\s()-]+$/.test(params.input.recipient.trim()) &&
+        !params.input.recipient.includes('@');
+      const displayName =
+        resolved.name?.trim() ||
+        (recipientLooksLikeName ? params.input.recipient.trim() : null);
+
+      const staged = await stagePendingWaitDocument({
+        teamRunId: outboundGate.teamRunId,
+        fileName: identity.fileName,
+        bytes: buffer,
+      });
+
+      await persistPendingWaitOutbound({
+        teamRunId: outboundGate.teamRunId,
+        outbound: {
+          agentId: params.agentId,
+          connectorId: connector.id,
+          recipient: params.input.recipient,
+          message: staged.fileName,
+          kind: 'document',
+          documentFileName: staged.fileName,
+          documentMimetype: identity.mimetype,
+          documentStagedPath: staged.stagedPath,
+          replyInstructions: normalizeReplyInstructions(params.input.replyInstructions),
+          jid: resolved.jid,
+          phone: resolved.phone ?? null,
+          name: displayName,
+        },
+      });
+
+      await appendEmailActionLog({
+        agentId: params.agentId,
+        userId: ctx.userId,
+        actionType: 'whatsapp.contact_send',
+        payload: {
+          tool: 'whatsapp_send_document',
+          recipient: params.input.recipient,
+          jid: resolved.jid,
+          name: displayName,
+          fileName: staged.fileName,
+          runId: params.runId,
+          deferredUntilWait: true,
+          brainDocumentId: brainDocumentId,
+          brainSource,
+        },
+        status: 'success',
+        riskLevel: 'high',
+      }).catch(() => {});
+
+      return {
+        jid: resolved.jid,
+        phone: resolved.phone,
+        name: displayName,
+        fileName: staged.fileName,
+        autoReplyArmed: false,
+        teamWaitArmed: false,
+        replyInstructionsSet: Boolean(normalizeReplyInstructions(params.input.replyInstructions)),
+        deferredUntilWait: true,
+        queued: true,
+        brainSource,
+        note:
+          'Document queued. Qlix will send it after this stage finishes and the wait duration is set — in the same order as other messages to this contact.',
+      };
+  }
+
+  const { writeFile, unlink } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const tmpPath = join(tmpdir(), `qlix-wa-${randomUUID()}-${identity.fileName}`);
+  await writeFile(tmpPath, buffer);
+  try {
+    const guardedRecipient = await enforceLiveTeamOutboundTarget({
+      runId: params.runId,
+      agentId: params.agentId,
+      connectorId: connector.id,
+      recipient: params.input.recipient,
+    });
+    const result = await sendWhatsAppDocumentToRecipient({
+      connectorId: connector.id,
+      recipient: guardedRecipient,
+      filePath: tmpPath,
+      fileName: identity.fileName,
+      mimetype: identity.mimetype,
+    });
+    if (!result.ok) {
+      if (result.matches?.length) {
+        throw new WhatsAppToolError(resolvedMatchesMessage(result));
+      }
+      throw new WhatsAppToolError(result.error ?? 'Failed to send WhatsApp document');
+    }
+
+    await appendEmailActionLog({
+      agentId: params.agentId,
+      userId: ctx.userId,
+      actionType: 'whatsapp.contact_send',
+      payload: {
+        tool: 'whatsapp_send_document',
+        recipient: params.input.recipient,
+        jid: result.jid ?? null,
+        name: result.name ?? null,
+        fileName: identity.fileName,
+        runId: params.runId,
+      },
+      status: 'success',
+      riskLevel: 'high',
+    }).catch(() => {});
+
+    let autoReplyArmed = false;
+    let replyInstructionsSet = false;
+    if (scopes.has('whatsapp.auto_reply') && result.jid) {
+      try {
+        const { armAutoReplySession, normalizeReplyInstructions } = await import(
+          '../whatsapp/whatsappAutoReply.service.js'
+        );
+        const instructions = normalizeReplyInstructions(params.input.replyInstructions);
+        await armAutoReplySession({
+          connectorId: connector.id,
+          agentId: params.agentId,
+          contactJid: result.jid,
+          contactName: result.name ?? null,
+          contactPhone: result.phone ?? null,
+          replyInstructions: instructions,
+          userId: ctx.userId,
+        });
+        autoReplyArmed = true;
+        replyInstructionsSet = Boolean(instructions);
+      } catch (err) {
+        console.warn(
+          '[whatsapp-auto-reply] arm failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return {
+      jid: result.jid,
+      phone: result.phone,
+      name: result.name,
+      fileName: identity.fileName,
+      autoReplyArmed,
+      teamWaitArmed: false,
+      replyInstructionsSet,
+      brainSource,
+    };
+  } finally {
+    await unlink(tmpPath).catch(() => {
+      /* best-effort */
+    });
+  }
+}
+
+function resolvedMatchesMessage(result: {
+  error?: string;
+  matches?: Array<{ name: string | null; phone: string | null; jid: string }>;
+}): string {
+  return `${result.error ?? 'Ambiguous recipient'}: ${(result.matches ?? [])
+    .map((m) => `${m.name ?? 'unknown'} (${m.phone ?? m.jid})`)
+    .join(', ')}`;
 }
 
 export async function executeWhatsAppAutoReplyStatus(params: {

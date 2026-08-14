@@ -2,6 +2,7 @@ import { enqueueAgentRun } from '../agentChat/agentRunService.js';
 import { buildMemoryBlock } from '../agentChat/agentMemory.service.js';
 import { prisma } from '../lib/prisma.js';
 import { addInjection } from '../teams/runInjectionStore.js';
+import type { TeamRunSourceChannel } from '../teams/teams.types.js';
 import { admitTurn } from './admission.js';
 import { GatewayDrainingError, isGatewayDraining } from './drain.js';
 import { putPrefetchedMemory } from './memoryPrefetch.js';
@@ -100,8 +101,10 @@ export class GatewayService {
         attachments: msg.attachments,
         skills: msg.skills,
         inferenceModel: msg.inferenceModel,
+        reasoningEffort: msg.reasoningEffort ?? null,
         useBrain: msg.useBrain,
         teamRole: route.teamRole,
+        sourceChannel: msg.channel === 'system' ? 'web' : msg.channel,
         whatsappReplyToJid:
           typeof msg.metadata?.whatsappReplyToJid === 'string'
             ? msg.metadata.whatsappReplyToJid
@@ -167,7 +170,14 @@ export class GatewayService {
     }
 
     const { launchTeamRun } = await import('../teams/teamsRunLauncher.js');
-    const sourceChannel = msg.channel === 'whatsapp' ? 'whatsapp' : 'web';
+    const { TeamContinuesRunError } = await import('../teams/teams.service.js');
+    const sourceChannel: TeamRunSourceChannel =
+      msg.channel === 'whatsapp' ||
+      msg.channel === 'api' ||
+      msg.channel === 'slack' ||
+      msg.channel === 'telegram'
+        ? msg.channel
+        : 'web';
 
     const backendUrl =
       typeof msg.metadata?.backendUrl === 'string' ? msg.metadata.backendUrl : undefined;
@@ -175,20 +185,48 @@ export class GatewayService {
       typeof msg.metadata?.inferenceModel === 'string' && msg.metadata.inferenceModel.trim()
         ? msg.metadata.inferenceModel.trim()
         : undefined;
+    const reasoningEffort =
+      typeof msg.metadata?.reasoningEffort === 'string' && msg.metadata.reasoningEffort.trim()
+        ? msg.metadata.reasoningEffort.trim()
+        : undefined;
+    const continuesRunId =
+      typeof msg.metadata?.continuesRunId === 'string' && msg.metadata.continuesRunId.trim()
+        ? msg.metadata.continuesRunId.trim()
+        : undefined;
+    const inputs = Array.isArray(msg.metadata?.teamRunInputs)
+      ? (msg.metadata.teamRunInputs as import('../teams/teams.types.js').TeamRunInput[])
+      : undefined;
 
-    const { run, team } = await launchTeamRun({
-      teamId: route.teamId,
-      orgId: route.orgId,
-      userId: route.userId,
-      goal: msg.body,
-      backendUrl,
-      inferenceModel,
-      source: {
-        channel: sourceChannel,
-        connectorId: msg.deliveryTarget.connectorId ?? undefined,
-      },
-      replyChannel: msg.channel === 'whatsapp' ? 'whatsapp' : undefined,
-    });
+    let launched: Awaited<ReturnType<typeof launchTeamRun>>;
+    try {
+      launched = await launchTeamRun({
+        teamId: route.teamId,
+        orgId: route.orgId,
+        userId: route.userId,
+        goal: msg.body,
+        backendUrl,
+        inferenceModel,
+        reasoningEffort,
+        continuesRunId,
+        inputs,
+        source: {
+          channel: sourceChannel,
+          connectorId: msg.deliveryTarget.connectorId ?? undefined,
+        },
+        replyChannel: msg.channel === 'whatsapp' ? 'whatsapp' : undefined,
+      });
+    } catch (err) {
+      if (err instanceof TeamContinuesRunError) {
+        return {
+          status: 'rejected',
+          reason: err.message,
+          sessionKey,
+          ackReply: err.message,
+        };
+      }
+      throw err;
+    }
+    const { run, team } = launched;
 
     setActiveRun(sessionKey, run.id);
     replyDispatcher.track(run.id, msg.deliveryTarget, sessionKey);

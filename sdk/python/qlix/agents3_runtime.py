@@ -505,6 +505,8 @@ async def _send_whatsapp_document(
         return "[failed] File is empty"
 
     effective_name = file_name or path.name
+    if not Path(effective_name).suffix and path.suffix:
+        effective_name = f"{effective_name}{path.suffix}"
     body: dict[str, Any] = {
         "file_name": effective_name,
         "content_base64": base64.b64encode(data).decode("ascii"),

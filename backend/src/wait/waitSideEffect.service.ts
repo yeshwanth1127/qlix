@@ -25,6 +25,7 @@ import type {
   WaitPolicySnapshot,
   WaitSideEffect,
 } from './waitPolicy.types.js';
+import { deliverSandboxFileToWorkspaceWhatsApp } from '../whatsapp/whatsappChannel.service.js';
 
 export type WaitSideEffectInitResult = {
   checkpoint: TeamRunCheckpoint;
@@ -251,4 +252,42 @@ export function resolveWaitContactAck(
 
 export function liveArtifactsForResume(checkpoint: TeamRunCheckpoint | null | undefined): LiveArtifactState[] {
   return checkpoint?.liveArtifacts ?? [];
+}
+
+export type WaitResumeDelivery = {
+  sideEffectId: string;
+  channel: string;
+  artifactId: string;
+  sent: boolean;
+  reason?: string;
+};
+
+/** Execute adapter-owned deliveries declared for the generic on-resume boundary. */
+export async function deliverWaitResumeSideEffects(input: {
+  checkpoint: TeamRunCheckpoint;
+  orgId: string;
+}): Promise<WaitResumeDelivery[]> {
+  const step = getActiveWaitStep(input.checkpoint.waitPolicySnapshot);
+  if (!step) return [];
+  const artifacts = input.checkpoint.liveArtifacts ?? [];
+  const deliveries: WaitResumeDelivery[] = [];
+
+  for (const effect of step.sideEffects) {
+    if (effect.deliver?.when !== 'on_resume') continue;
+    const artifact = findLiveArtifact(artifacts, effect.id);
+    if (!artifact || artifact.rowCount === 0) continue;
+    if (effect.deliver.channel === 'whatsapp') {
+      const delivery = await deliverSandboxFileToWorkspaceWhatsApp(input.orgId, {
+        sandboxId: artifact.sandboxId,
+        fileName: artifact.fileName,
+      });
+      deliveries.push({
+        sideEffectId: effect.id,
+        channel: effect.deliver.channel,
+        artifactId: artifact.id,
+        ...delivery,
+      });
+    }
+  }
+  return deliveries;
 }

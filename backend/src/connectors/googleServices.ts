@@ -8,6 +8,10 @@
 export const GOOGLE_SERVICE_IDS = [
   'gmail',
   'drive',
+  'docs',
+  'sheets',
+  'slides',
+  'forms',
   'calendar',
   'meet',
   'youtube',
@@ -49,6 +53,47 @@ export const GOOGLE_SERVICES: Record<GoogleServiceId, GoogleServiceDef> = {
       'https://www.googleapis.com/auth/drive.file',
     ],
     permissionScopes: ['drive.read', 'drive.write'],
+  },
+  docs: {
+    id: 'docs',
+    label: 'Docs',
+    description: 'Read and write documents',
+    oauthScopes: [
+      'https://www.googleapis.com/auth/documents.readonly',
+      'https://www.googleapis.com/auth/documents',
+    ],
+    permissionScopes: ['docs.read', 'docs.write'],
+  },
+  sheets: {
+    id: 'sheets',
+    label: 'Sheets',
+    description: 'Read and write spreadsheets',
+    oauthScopes: [
+      'https://www.googleapis.com/auth/spreadsheets.readonly',
+      'https://www.googleapis.com/auth/spreadsheets',
+    ],
+    permissionScopes: ['sheets.read', 'sheets.write'],
+  },
+  slides: {
+    id: 'slides',
+    label: 'Slides',
+    description: 'Read and write presentations',
+    oauthScopes: [
+      'https://www.googleapis.com/auth/presentations.readonly',
+      'https://www.googleapis.com/auth/presentations',
+    ],
+    permissionScopes: ['slides.read', 'slides.write'],
+  },
+  forms: {
+    id: 'forms',
+    label: 'Forms',
+    description: 'Read and write forms and responses',
+    oauthScopes: [
+      'https://www.googleapis.com/auth/forms.body.readonly',
+      'https://www.googleapis.com/auth/forms.body',
+      'https://www.googleapis.com/auth/forms.responses.readonly',
+    ],
+    permissionScopes: ['forms.read', 'forms.write'],
   },
   calendar: {
     id: 'calendar',

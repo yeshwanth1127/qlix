@@ -14,6 +14,7 @@ import {
 import type { ReactNode } from "react";
 import {
   type ActivityStep,
+  activityEndedInFailure,
   isWaitingForJitApproval,
 } from "@/components/qlix/agents/agentToolActivity";
 import { sketchToneBg } from "@/components/qlix/sketch/tokens";
@@ -381,15 +382,84 @@ function BlockView({ block }: { readonly block: MessageBlock }) {
   }
 }
 
+const STRONG_FAILURE_RE = /\[failed\]|^error:/i;
+const SUCCESS_HINT_RE = /✅|successfully|completed|done|created|saved|summary/i;
+const FAILURE_HINT_RE = /failed to |could not |\berror\b|\bfailed\b|\bdenied\b|\brejected\b|\bunable to\b/i;
+
 export function agentMessageLooksSuccessful(content: string, activity?: ActivityStep[]): boolean {
   if (activity && isWaitingForJitApproval(activity)) return false;
-  if (activity?.some((s) => s.tone === "error")) return false;
+  if (activityEndedInFailure(activity)) return false;
   const lower = content.toLowerCase();
-  if (/\[failed\]|^error:|failed to |could not /i.test(content)) return false;
-  if (/✅|successfully|completed|done|created|saved|summary/i.test(content)) return true;
+  if (STRONG_FAILURE_RE.test(content.trim())) return false;
+  if (SUCCESS_HINT_RE.test(content)) return true;
   if (activity?.some((s) => s.tone === "success")) return true;
-  if (activity && activity.length > 0 && !activity.some((s) => s.tone === "error")) return true;
+  if (activity && activity.length > 0 && !activityEndedInFailure(activity)) return true;
   return !/\berror\b|\bfailed\b|\bdenied\b/.test(lower);
+}
+
+export function agentMessageLooksFailed(content: string, activity?: ActivityStep[]): boolean {
+  if (activity && isWaitingForJitApproval(activity)) return false;
+  if (activityEndedInFailure(activity)) return true;
+  // A later success means the run recovered — don't paint the whole answer red
+  // just because an earlier step failed or the write-up mentions that retry.
+  if (activity && activity.some((s) => s.tone === "success") && !activityEndedInFailure(activity)) {
+    return false;
+  }
+  if (STRONG_FAILURE_RE.test(content.trim())) return true;
+  const failed = FAILURE_HINT_RE.test(content);
+  const succeeded = SUCCESS_HINT_RE.test(content);
+  if (failed && succeeded) return false;
+  return failed;
+}
+
+function OutcomeFrame({
+  tone,
+  children,
+}: {
+  readonly tone: "success" | "failure";
+  readonly children: ReactNode;
+}) {
+  const success = tone === "success";
+  const Icon = success ? CheckCircle2 : XCircle;
+
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-xl border border-[color:var(--ink-border)] shadow-[var(--sketch-shadow)]",
+        success ? "bg-[var(--sketch-tint-green)]" : "bg-[var(--sketch-tint-rose)]",
+      )}
+      role="status"
+      aria-label={success ? "Completed result" : "Failed result"}
+    >
+      <div
+        className={cn(
+          "absolute inset-y-2.5 left-0 w-[2px] rounded-full",
+          success ? "bg-[color:var(--sketch-green)]" : "bg-[color:var(--sketch-red)]",
+        )}
+        aria-hidden
+      />
+      <div className="px-4 py-3.5 pl-[1.15rem]">
+        <div className="mb-2.5 flex items-center gap-2 border-b border-[color:var(--ink-border)] pb-2">
+          <Icon
+            className={cn(
+              "size-3.5 shrink-0",
+              success ? "text-[color:var(--sketch-green)]" : "text-[color:var(--sketch-red)]",
+            )}
+            aria-hidden
+          />
+          <span
+            className={cn(
+              "text-[10.5px] font-medium uppercase tracking-[0.16em]",
+              success ? "text-[color:var(--sketch-green)]" : "text-[color:var(--sketch-red)]",
+            )}
+          >
+            {success ? "Completed" : "Failed"}
+          </span>
+        </div>
+        <div className="relative">{children}</div>
+      </div>
+    </div>
+  );
 }
 
 export function AgentMessageContent({
@@ -405,7 +475,13 @@ export function AgentMessageContent({
   if (!trimmed) return null;
 
   const blocks = parseAgentMessageBlocks(trimmed);
-  const showSuccessFrame = completed && agentMessageLooksSuccessful(trimmed, activity);
+  const outcome: "success" | "failure" | null = !completed
+    ? null
+    : agentMessageLooksFailed(trimmed, activity)
+      ? "failure"
+      : agentMessageLooksSuccessful(trimmed, activity)
+        ? "success"
+        : null;
 
   const body = (
     <div className="space-y-2.5">
@@ -415,23 +491,7 @@ export function AgentMessageContent({
     </div>
   );
 
-  if (!showSuccessFrame) return body;
+  if (!outcome) return body;
 
-  return (
-    <div className="relative overflow-hidden rounded-2xl border border-emerald-900/10 bg-gradient-to-br from-emerald-50/95 via-white/70 to-white/40 px-4 py-3.5 shadow-[0_1px_2px_rgba(6,95,70,0.06),0_16px_32px_-22px_rgba(16,185,129,0.45),inset_0_1px_0_rgba(255,255,255,0.6)]">
-      <div
-        className="pointer-events-none absolute -right-6 -top-10 size-28 rounded-full bg-emerald-400/10 blur-2xl"
-        aria-hidden
-      />
-      <div className="mb-2.5 flex items-center gap-2 border-b border-emerald-900/8 pb-2.5">
-        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-[0_1px_5px_rgba(16,185,129,0.55)]">
-          <CheckCircle2 className="size-3" aria-hidden />
-        </span>
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-emerald-800">
-          Result
-        </span>
-      </div>
-      <div className="relative">{body}</div>
-    </div>
-  );
+  return <OutcomeFrame tone={outcome}>{body}</OutcomeFrame>;
 }

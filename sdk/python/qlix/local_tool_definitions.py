@@ -197,6 +197,8 @@ def openai_always_tool_definitions(
                 "name": "call_tool",
                 "description": (
                     "Invoke a tool discovered via find_tools by exact name. "
+                    "Pass the catalog name only (for example crm_search), never "
+                    "find_tools, call_tool, or a functions.* prefix. "
                     "Use when the tool is not in the default visible set."
                 ),
                 "parameters": {

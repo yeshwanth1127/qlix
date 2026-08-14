@@ -57,8 +57,8 @@ const PACK_TEXT: Record<NlPromptPackId, string> = {
 - Add finance.spend_50 or finance.spend_100 as needed (both JIT).`,
 
   messaging: `## Email / WhatsApp / social / Google
-- Google / Microsoft: email.read / email.send (Gmail or Microsoft 365; send JIT), drive.read / drive.write (Google Drive or OneDrive), calendar.read / calendar.write, meet.manage (JIT), youtube.read / youtube.publish (publish JIT).
-- whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT); whatsapp.auto_reply arms listen-after-send.
+- Google / Microsoft: email.read / email.send (Gmail or Microsoft 365; send JIT), drive.read / drive.write (Google Drive or OneDrive), docs.read / docs.write, sheets.read / sheets.write, slides.read / slides.write, forms.read / forms.write, calendar.read / calendar.write, meet.manage (JIT), youtube.read / youtube.publish (publish JIT).
+- whatsapp.send = self-chat files; whatsapp.read / whatsapp.contact_send for contacts (contact_send JIT). Contact send covers ordered text, documents, and polls (whatsapp_send_message / whatsapp_send_document / whatsapp_send_poll). whatsapp.auto_reply arms listen-after-send. A poll vote counts as the reply.
 - If the user says “wait for a reply”, “when they respond”, or “if they reply”, add whatsapp.auto_reply to the SAME worker that has whatsapp.contact_send. In a pipeline this pauses after outreach and resumes the next stage with the inbound replies.
 - If the user says “if interested”, “only interested”, or similar, keep a later Contact Manager / CRM worker that builds the sheet from responders — runtime classifies reply interest on resume (keywords then LLM) and only sheets interested + unclear leads.
 - Reply-wait + sheet language: persist structured waitSteps on the team (live sandbox xlsx updated on each included reply while waiting; deliver on resume).

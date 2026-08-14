@@ -3,12 +3,16 @@ import { getConnectedWhatsAppForOrg } from '../connectors/whatsappConnector.serv
 import {
   getWhatsAppSessionStatus,
   isWhatsAppServiceConfigured,
+  sendWhatsAppDocument,
   startWhatsAppSession,
 } from '../connectors/whatsappServiceClient.js';
+import { fetchSandboxFile } from '../sandbox/sandboxClient.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { sendMessage, sendNotification } from '../jit/whatsappNotifier.js';
 import type { ConnectorAccountDTO } from '../connectors/connectors.types.js';
 import { ConnectorsRepository } from '../connectors/connectors.repository.js';
-import { goalRequestsWhatsAppDelivery } from './whatsappDeliveryIntent.js';
 import {
   buildDisambiguationOptions,
   classifyWhatsAppIntent,
@@ -30,7 +34,6 @@ import {
 } from './whatsappRunModifiers.js';
 import {
   autoReplyInferenceOverride,
-  autoReplyOwnerFailureNotice,
   resolveWhatsAppRunDelivery,
 } from './whatsappDeliveryPolicy.js';
 
@@ -131,8 +134,53 @@ export async function deliverTextToWorkspaceWhatsApp(
   return { sent: true };
 }
 
+/** Channel adapter used by generic wait side effects to deliver a sandbox file. */
+export async function deliverSandboxFileToWorkspaceWhatsApp(
+  orgId: string,
+  input: { sandboxId: string; fileName: string },
+): Promise<WhatsAppDeliveryResult> {
+  if (!isWhatsAppServiceConfigured()) {
+    return { sent: false, reason: 'WhatsApp service not configured on backend' };
+  }
+  const connector = await getConnectedWhatsAppForOrg(orgId);
+  if (!connector) {
+    return { sent: false, reason: 'WhatsApp not linked in Connectors for this workspace' };
+  }
+  const downloaded = await fetchSandboxFile(input.sandboxId);
+  if (!downloaded) return { sent: false, reason: 'Sandbox file is missing or expired' };
+
+  let session = await getWhatsAppSessionStatus(connector.id);
+  if (!session.connected) {
+    const restarted = await startWhatsAppSession(connector.id);
+    if (restarted.ok) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      session = await getWhatsAppSessionStatus(connector.id);
+    }
+  }
+  if (!session.connected) return { sent: false, reason: 'WhatsApp session is offline' };
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'qlix-wait-delivery-'));
+  const filePath = path.join(dir, path.basename(input.fileName || downloaded.fileName));
+  try {
+    await writeFile(filePath, downloaded.body);
+    const delivery = await sendWhatsAppDocument({
+      connectorId: connector.id,
+      filePath,
+      fileName: input.fileName || downloaded.fileName,
+      mimetype: downloaded.contentType,
+    });
+    return delivery.ok
+      ? { sent: true }
+      : { sent: false, reason: delivery.error ?? 'WhatsApp document send failed' };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /**
- * Deliver when user asked for WhatsApp in source text, or run was started from WhatsApp.
+ * Contact auto-reply may still dump a successful reply to the lead when the
+ * agent did not use whatsapp_send_message. Agent-run completion never posts to
+ * self-chat (team final synthesis / JIT / whatsapp_send / inbound acks only).
  */
 async function runAlreadySentWhatsAppToContact(runId?: string | null): Promise<boolean> {
   if (!runId) return false;
@@ -163,20 +211,15 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
   connectorId?: string | null;
   runId?: string | null;
 }): Promise<WhatsAppDeliveryResult> {
-  const wantsDelivery =
-    Boolean(input.replyToJid) ||
-    input.fromWhatsAppChannel === true ||
-    goalRequestsWhatsAppDelivery(input.sourceText) ||
-    goalRequestsWhatsAppDelivery(input.agentDescription ?? '');
-  if (!wantsDelivery) {
-    return { sent: false, reason: 'not_requested' };
-  }
-
   const replyToJid = input.replyToJid?.trim() || null;
   const success = input.success !== false;
-  const alreadySentToContact = replyToJid
-    ? await runAlreadySentWhatsAppToContact(input.runId)
-    : false;
+
+  // Never dump agent-run completion into the owner's self-chat.
+  if (!replyToJid) {
+    return { sent: false, reason: 'self_chat_completion_disabled' };
+  }
+
+  const alreadySentToContact = await runAlreadySentWhatsAppToContact(input.runId);
   const mode = resolveWhatsAppRunDelivery({
     replyToJid,
     success,
@@ -185,6 +228,11 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
 
   if (mode === 'none') {
     return { sent: false, reason: 'already_sent_via_tool' };
+  }
+
+  // Failures previously notified the owner in self-chat — disabled by policy.
+  if (mode === 'self' || !success) {
+    return { sent: false, reason: 'self_chat_completion_disabled' };
   }
 
   if (mode === 'contact' && replyToJid) {
@@ -212,30 +260,7 @@ export async function deliverRunResultToWhatsAppIfRequested(input: {
     return { sent: true };
   }
 
-  if (!success && replyToJid) {
-    const notice = autoReplyOwnerFailureNotice({
-      agentName: input.title,
-      contactJid: replyToJid,
-    });
-    return deliverTextToWorkspaceWhatsApp(input.orgId, {
-      title: notice.title,
-      body: notice.body,
-      level: 'error',
-    });
-  }
-
-  if (!success) {
-    return deliverTextToWorkspaceWhatsApp(input.orgId, {
-      title: input.title,
-      body: input.errorMessage ?? 'Run failed',
-      level: 'error',
-    });
-  }
-
-  return deliverTextToWorkspaceWhatsApp(input.orgId, {
-    title: input.title,
-    body: input.body,
-  });
+  return { sent: false, reason: 'self_chat_completion_disabled' };
 }
 
 const repo = new ConnectorsRepository();
@@ -697,7 +722,7 @@ async function handleContactAutoReplyInbound(
 export async function handleWhatsAppInbound(
   connectorId: string,
   text: string,
-  opts?: { remoteJid?: string | null; fromContact?: boolean },
+  opts?: { remoteJid?: string | null; fromContact?: boolean; pushName?: string | null },
 ): Promise<WhatsAppInboundResult> {
   const connector = await repo.findById(connectorId);
   if (!connector || connector.status !== 'connected') {
@@ -710,7 +735,12 @@ export async function handleWhatsAppInbound(
   }
 
   if (opts?.fromContact && opts.remoteJid) {
-    const teamWaitResult = await handleContactTeamWaitInbound(connector, opts.remoteJid, trimmed);
+    const teamWaitResult = await handleContactTeamWaitInbound(
+      connector,
+      opts.remoteJid,
+      trimmed,
+      opts.pushName ?? null,
+    );
     if (teamWaitResult) return teamWaitResult;
     const { isContactClosedAfterWaitAck, stopAutoReplySessionsForContact } = await import(
       './whatsappAutoReply.service.js'
