@@ -395,6 +395,7 @@ export class TeamsService {
       replyChannel?: TeamRunReplyChannel;
       continuesRunId?: string | null;
       inputs?: import('./teams.types.js').TeamRunInput[];
+      resolvedIntent?: import('./teams.types.js').ResolvedTeamIntent;
     },
     backendUrl?: string,
   ): Promise<TeamRunDTO> {

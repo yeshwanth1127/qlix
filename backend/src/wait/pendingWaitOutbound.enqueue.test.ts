@@ -162,4 +162,28 @@ describe('completePendingOutreachPack', () => {
     assert.equal(next.filter((row) => row.kind === 'poll').length, 1);
     assert.equal(next[1]!.pollName, 'Interested?');
   });
+
+  it('repairs poll-before-document order and removes duplicate polls', () => {
+    const poll = {
+      ...text,
+      id: 'p1',
+      kind: 'poll' as const,
+      message: 'Interested?',
+      pollName: 'Interested?',
+      pollValues: ['Yes', 'No'],
+    };
+    const next = completePendingOutreachPack(
+      [text, poll, { ...poll, id: 'p2' }],
+      {
+        brochureForContact: () => ({
+          fileName: 'brochure.pdf',
+          mimetype: 'application/pdf',
+          stagedPath: '/tmp/brochure.pdf',
+        }),
+        poll: { name: 'Are you interested?', values: ['Yes', 'No'] },
+      },
+    );
+    assert.deepEqual(next.map((row) => row.kind ?? 'text'), ['text', 'document', 'poll']);
+    assert.equal(next.filter((row) => row.kind === 'poll').length, 1);
+  });
 });

@@ -53,7 +53,7 @@ export function priorContextFromRun(
 }
 
 const RETRY_ONLY_GOAL_RE =
-  /^(try again|retry|again|please retry|re-?run(?: it)?|re-?try|proceed with the original intent)\.?!?$/i;
+  /^(try again|do it again|do that again|repeat(?: that| it)?|same again|run it again|retry|again|please retry|re-?run(?: it)?|re-?try|proceed with the original intent)\.?!?$/i;
 
 export function isRetryOnlyUserText(text: string): boolean {
   return RETRY_ONLY_GOAL_RE.test(text.trim());

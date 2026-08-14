@@ -76,7 +76,7 @@ import {
   type TeamReasoningStep,
 } from "@/components/qlix/agents/agentToolActivity";
 import { cn } from "@/lib/utils/cn";
-import { SketchBox, sketchButtonPrimary } from "@/components/qlix/sketch";
+import { sketchButtonPrimary } from "@/components/qlix/sketch";
 import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
 import {
   TeamRunGraph,
@@ -798,20 +798,39 @@ function UserMessage({
 function SystemLine({
   icon: Icon,
   tone = "muted",
+  active = false,
   children,
 }: {
   readonly icon?: ComponentType<{ size?: number; className?: string }>;
-  readonly tone?: "muted" | "danger";
+  readonly tone?: "muted" | "info" | "success" | "warning" | "danger";
+  readonly active?: boolean;
   readonly children: ReactNode;
 }) {
+  const toneClass = {
+    muted: "border-black/[0.06] bg-black/[0.025] text-[color:var(--ink-faint)]",
+    info: "border-violet-500/15 bg-violet-50/70 text-violet-900/70",
+    success: "border-emerald-600/15 bg-emerald-50/80 text-emerald-900/75",
+    warning: "border-amber-500/20 bg-amber-50/80 text-amber-950/70",
+    danger: "border-red-500/15 bg-red-50/75 text-[color:var(--sketch-red)]",
+  }[tone];
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-2 text-center text-[11px] leading-relaxed",
-        tone === "danger" ? "text-[color:var(--sketch-red)]" : INK_FAINT,
+        "mx-auto flex w-fit max-w-full items-center justify-center gap-2 rounded-full border px-3 py-1.5 text-center text-[11px] leading-relaxed transition-colors",
+        toneClass,
+        active && "motion-safe:animate-pulse",
       )}
+      role="status"
+      aria-live={active ? "polite" : undefined}
     >
-      {Icon && <Icon size={11} className="shrink-0" />}
+      {active ? (
+        <span className="relative flex size-2 shrink-0" aria-hidden>
+          <span className="absolute inline-flex size-full rounded-full bg-violet-500/45 motion-safe:animate-ping" />
+          <span className="relative inline-flex size-2 rounded-full bg-violet-600" />
+        </span>
+      ) : Icon ? (
+        <Icon size={11} className="shrink-0" />
+      ) : null}
       <span>{children}</span>
     </div>
   );
@@ -822,28 +841,75 @@ function SystemLine({
 function PlanBody({
   payload,
   agentNameById,
+  agentStates,
 }: {
   readonly payload: Record<string, unknown>;
   readonly agentNameById: (id: string | null) => string;
+  readonly agentStates: ReadonlyMap<string, AgentStatus>;
 }) {
   type SubtaskEntry = { subtaskId?: string; agentId?: string; goal?: string };
   const subtasks = (payload.subtasks as SubtaskEntry[]) ?? [];
 
   return (
-    <div className="space-y-2">
-      <p className={cn("text-[13px] leading-relaxed", INK_SOFT)}>
-        {subtasks.length} step{subtasks.length === 1 ? "" : "s"}
-      </p>
+    <div className="overflow-hidden rounded-2xl border border-violet-500/15 bg-gradient-to-br from-violet-50/65 via-white/80 to-white">
+      <div className="flex items-center justify-between border-b border-violet-500/10 px-3.5 py-2.5">
+        <div>
+          <p className="text-[12.5px] font-semibold text-violet-950/85">Execution plan</p>
+          <p className="mt-0.5 text-[10.5px] text-violet-900/50">
+            {subtasks.length} specialist step{subtasks.length === 1 ? "" : "s"}
+          </p>
+        </div>
+        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-800">
+          Live
+        </span>
+      </div>
       {subtasks.length > 0 && (
-        <ol className="space-y-1">
-          {subtasks.map((st, i) => (
-            <li key={st.subtaskId ?? i} className="flex gap-2.5 text-[12.5px] leading-relaxed">
-              <span className={cn("mt-[3px] font-mono text-[10px] tabular-nums", INK_FAINT)}>
-                {i + 1}
-              </span>
-              <span className="font-medium text-black">{agentNameById(st.agentId ?? null)}</span>
-            </li>
-          ))}
+        <ol className="divide-y divide-black/[0.05] px-3.5">
+          {subtasks.map((st, i) => {
+            const state = st.agentId ? agentStates.get(st.agentId)?.state ?? "idle" : "idle";
+            const running = state === "thinking" || state === "tool_active";
+            const failed = state === "failed";
+            const completed = state === "completed";
+            return (
+              <li key={st.subtaskId ?? i} className="flex items-center gap-2.5 py-2.5 text-[12.5px]">
+                <span
+                  className={cn(
+                    "grid size-5 shrink-0 place-items-center rounded-full text-[9.5px] font-semibold tabular-nums",
+                    completed
+                      ? "bg-emerald-100 text-emerald-800"
+                      : failed
+                        ? "bg-red-100 text-red-700"
+                        : running
+                          ? "bg-violet-100 text-violet-800"
+                          : "bg-black/[0.05] text-black/45",
+                  )}
+                >
+                  {completed ? <CheckCircle size={12} /> : failed ? <XCircle size={12} /> : i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium text-black/85">
+                    {agentNameById(st.agentId ?? null)}
+                  </p>
+                  {st.goal ? <p className={cn("mt-0.5 truncate text-[10.5px]", INK_FAINT)}>{st.goal}</p> : null}
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9.5px] font-medium",
+                    completed
+                      ? "bg-emerald-100/80 text-emerald-800"
+                      : failed
+                        ? "bg-red-100/80 text-red-700"
+                        : running
+                          ? "bg-violet-100 text-violet-800"
+                          : "bg-black/[0.04] text-black/45",
+                  )}
+                >
+                  {running ? <Loader2 size={9} className="motion-safe:animate-spin" /> : null}
+                  {completed ? "Completed" : failed ? "Failed" : running ? "Running" : "Waiting"}
+                </span>
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>
@@ -898,31 +964,51 @@ function ActivityBody({
         }
         return (
           <li key={entry.id} className="min-w-0">
-            <div className="flex items-start gap-2">
+            <div
+              className={cn(
+                "flex items-start gap-2 rounded-xl border px-2.5 py-2 transition-colors",
+                isRunningStep
+                  ? "border-violet-500/15 bg-violet-50/65"
+                  : isError
+                    ? "border-red-500/15 bg-red-50/60"
+                    : "border-emerald-600/10 bg-emerald-50/55",
+              )}
+            >
               {isRunningStep ? (
-                <Loader2 size={11} className={cn("mt-0.5 shrink-0 animate-spin", INK_FAINT)} />
+                <Loader2 size={12} className="mt-0.5 shrink-0 text-violet-600 motion-safe:animate-spin" />
               ) : isError ? (
                 <XCircle size={11} className="mt-0.5 shrink-0 text-[color:var(--sketch-red)]/80" />
               ) : (
-                <ToolGlyph
-                  kind={entry.kind}
-                  tool={entry.tool}
-                  size={11}
-                  className={cn("mt-0.5 shrink-0 opacity-55", INK_FAINT)}
-                />
+                <span className="relative mt-0.5 grid size-4 shrink-0 place-items-center text-emerald-700">
+                  <ToolGlyph kind={entry.kind} tool={entry.tool} size={12} />
+                  <CheckCircle className="absolute -bottom-1 -right-1 size-2.5 fill-emerald-50" />
+                </span>
               )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                   <span
                     className={cn(
                       "text-[12.5px] leading-snug",
-                      isError ? "text-[color:var(--sketch-red)]/80" : "text-black/80",
+                      isError
+                        ? "text-[color:var(--sketch-red)]/85"
+                        : isRunningStep
+                          ? "text-violet-950/80"
+                          : "text-emerald-950/80",
                     )}
                   >
                     {entry.label}
                   </span>
-                  <span className={cn("ml-auto shrink-0 text-[10px]", INK_FAINT)}>
-                    {isRunningStep ? "…" : isError ? "failed" : ""}
+                  <span
+                    className={cn(
+                      "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium",
+                      isRunningStep
+                        ? "bg-violet-100 text-violet-700"
+                        : isError
+                          ? "bg-red-100 text-red-700"
+                          : "bg-emerald-100 text-emerald-800",
+                    )}
+                  >
+                    {isRunningStep ? "Running" : isError ? "Failed" : "Succeeded"}
                   </span>
                 </div>
                 {entry.detail ? (
@@ -972,26 +1058,37 @@ function CompletedBody({
   readonly durationMs?: number;
 }) {
   return (
-    <div className="space-y-1">
-      <p className={cn("flex items-center gap-1.5 text-[12.5px]", INK_SOFT)}>
-        <CheckCircle size={12} className="shrink-0 text-[color:var(--sketch-green)]" />
-        Finished
-        {durationMs != null && (
-          <span className={INK_FAINT}>· {formatDuration(durationMs)}</span>
+    <div className="overflow-hidden rounded-2xl border border-emerald-600/15 bg-emerald-50/55">
+      <div className="flex items-center gap-2 border-b border-emerald-600/10 px-3.5 py-2">
+        <CheckCircle size={13} className="shrink-0 text-emerald-700" />
+        <span className="text-[11px] font-semibold text-emerald-900/80">Step completed</span>
+        {durationMs != null && <span className="ml-auto text-[10px] text-emerald-900/45">{formatDuration(durationMs)}</span>}
+      </div>
+      <div className="px-3.5 py-3">
+        <p className="mb-1 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-emerald-800/55">
+          Step output
+        </p>
+        {summary ? (
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-emerald-950/75">{summary}</p>
+        ) : (
+          <p className="text-[12px] text-emerald-900/50">Completed successfully. No text output was returned.</p>
         )}
-      </p>
-      {summary && (
-        <p className={cn("text-[13px] leading-relaxed", INK_SOFT)}>{summary}</p>
-      )}
+      </div>
     </div>
   );
 }
 
 function ResultBody({ result }: { readonly result: string }) {
   return (
-    <SketchBox className="px-4 py-3.5">
-      <AgentMessageContent content={result} completed />
-    </SketchBox>
+    <div className="overflow-hidden rounded-2xl border border-emerald-600/20 bg-gradient-to-br from-emerald-50/80 via-white to-white shadow-[0_8px_30px_rgba(16,185,129,0.07)]">
+      <div className="flex items-center gap-2 border-b border-emerald-600/10 px-4 py-2.5">
+        <CheckCircle size={14} className="text-emerald-700" />
+        <span className="text-[11px] font-semibold text-emerald-950/80">Team result</span>
+      </div>
+      <div className="px-4 py-3.5">
+        <AgentMessageContent content={result} completed />
+      </div>
+    </div>
   );
 }
 
@@ -1011,22 +1108,22 @@ function TypingIndicator({
   return (
     <div className="flex gap-3">
       <Avatar name={name} role={role} />
-      <div className="min-w-0 flex-1 pt-1">
+      <div className="min-w-0 flex-1 rounded-2xl border border-violet-500/15 bg-violet-50/55 px-3 py-2">
         <button
           type="button"
           onClick={() => steps.length > 0 && setOpen((v) => !v)}
           aria-expanded={open}
           className={cn(
-            "-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-xl px-2 py-1 text-left",
+            "flex w-full items-center gap-2 rounded-xl py-1 text-left",
             steps.length > 0 && "transition-colors hover:bg-black/[0.04]",
           )}
         >
           <span className="flex shrink-0 items-center gap-1" aria-hidden>
-            <span className="size-1.5 animate-bounce rounded-full bg-[color:var(--ink-faint)]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-[color:var(--ink-faint)] [animation-delay:150ms]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-[color:var(--ink-faint)] [animation-delay:300ms]" />
+            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce" />
+            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce [animation-delay:150ms]" />
+            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce [animation-delay:300ms]" />
           </span>
-          <span className={cn("min-w-0 flex-1 truncate text-[12.5px]", INK_SOFT)}>
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-violet-950/70">
             {label ?? "Thinking…"}
           </span>
           {steps.length > 0 && (
@@ -1064,8 +1161,20 @@ function TypingIndicator({
 // ─── Sidebar pieces ───────────────────────────────────────────────────────────
 
 function SidebarAgent({ status }: { readonly status: AgentStatus }) {
+  const active = status.state === "thinking" || status.state === "tool_active";
   return (
-    <div className="flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/60">
+    <div
+      className={cn(
+        "flex items-center gap-2.5 rounded-xl border px-2.5 py-2 transition-colors",
+        active
+          ? "border-violet-500/15 bg-violet-50/70"
+          : status.state === "completed"
+            ? "border-emerald-600/10 bg-emerald-50/55"
+            : status.state === "failed"
+              ? "border-red-500/10 bg-red-50/50"
+              : "border-transparent hover:bg-white/60",
+      )}
+    >
       <Avatar name={status.name} role={status.role} />
       <div className="min-w-0 flex-1">
         <p className="truncate text-[12.5px] font-medium text-black">{status.name}</p>
@@ -1073,7 +1182,11 @@ function SidebarAgent({ status }: { readonly status: AgentStatus }) {
           {status.currentAction ?? STATE_LABEL[status.state]}
         </p>
       </div>
-      <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[status.state])} aria-hidden />
+      {active ? (
+        <Loader2 className="size-3 shrink-0 text-violet-600 motion-safe:animate-spin" aria-hidden />
+      ) : (
+        <span className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[status.state])} aria-hidden />
+      )}
     </div>
   );
 }
@@ -2668,6 +2781,11 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const goalAttachmentDelivery =
     uploadingAttachments && uploadingAttachments.length > 0 ? "uploading" : "confirmed";
   const hasConversation = Boolean(goalText) || chatItems.length > 0;
+  const planningActive =
+    isRunning &&
+    !processedEvents.some(
+      (event) => event.kind === "supervisor_plan" || event.kind === "task_delegated",
+    );
 
   const activeRunModel = useMemo(() => {
     if (runModelLabel) return runModelLabel;
@@ -2927,7 +3045,20 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
           </div>
 
           {statusLabel && (
-            <span className={cn("inline-flex items-center gap-1.5 text-[11px]", INK_SOFT)}>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium",
+                isRunning
+                  ? "border-violet-500/15 bg-violet-50 text-violet-800"
+                  : isPaused
+                    ? "border-amber-500/20 bg-amber-50 text-amber-800"
+                    : runStatus === "completed"
+                      ? "border-emerald-600/15 bg-emerald-50 text-emerald-800"
+                      : runStatus === "failed"
+                        ? "border-red-500/15 bg-red-50 text-red-700"
+                        : "border-black/10 bg-black/[0.03] text-black/55",
+              )}
+            >
               <span className={cn("size-1.5 rounded-full", statusDot)} aria-hidden />
               {statusLabel}
             </span>
@@ -3021,7 +3152,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
               switch (item.kind) {
                 case "started":
                   return (
-                    <SystemLine key={item.id} icon={Zap}>
+                    <SystemLine key={item.id} icon={Zap} tone="info" active={planningActive}>
                       Luna-Teams started · preparing specialist dispatches
                     </SystemLine>
                   );
@@ -3033,13 +3164,17 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                       role="supervisor"
                       timestampMs={item.ts}
                     >
-                      <PlanBody payload={item.payload} agentNameById={agentNameById} />
+                      <PlanBody
+                        payload={item.payload}
+                        agentNameById={agentNameById}
+                        agentStates={agentStates}
+                      />
                     </ChatMessage>
                   );
 
                 case "handoff":
                   return (
-                    <SystemLine key={item.id} icon={Send}>
+                    <SystemLine key={item.id} icon={Send} tone="info">
                       Dispatched focused work to {item.agentName}
                     </SystemLine>
                   );
@@ -3196,7 +3331,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                 }
                 case "wait_ttl_set":
                   return (
-                    <SystemLine key={item.id} icon={CheckCircle}>
+                    <SystemLine key={item.id} icon={CheckCircle} tone="warning">
                       Waiting up to {formatWaitDuration(item.hours)}
                       {item.expiresAt
                         ? ` (until ${new Date(item.expiresAt).toLocaleString()})`
@@ -3213,7 +3348,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                         ? ` Listening for replies (0 of ${item.total} received).`
                         : "";
                     return (
-                      <SystemLine key={item.id} icon={Phone}>
+                      <SystemLine key={item.id} icon={Phone} tone={failed > 0 ? "warning" : "success"}>
                         {item.reason?.trim() ||
                           `Sent ${sent ?? 0} WhatsApp message${(sent ?? 0) === 1 ? "" : "s"}${failed > 0 ? ` (${failed} failed)` : ""}.`}
                         {listening}
@@ -3222,7 +3357,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                   }
                   const total = item.total > 0 ? item.total : item.received + item.remaining;
                   return (
-                    <SystemLine key={item.id} icon={Phone}>
+                    <SystemLine key={item.id} icon={Phone} tone="warning" active={isPaused && item.remaining > 0}>
                       {item.reason?.trim() && item.phase === "listening"
                         ? item.reason
                         : `WhatsApp replies: ${item.received} of ${total} received${item.remaining > 0 ? " — still waiting." : "."}`}
@@ -3231,7 +3366,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                 }
                 case "live_artifact_updated":
                   return (
-                    <SystemLine key={item.id} icon={FileText}>
+                    <SystemLine key={item.id} icon={FileText} tone="success">
                       Live sheet updated ({item.rowCount} row{item.rowCount === 1 ? "" : "s"}
                       {item.jid ? ` · ${item.jid.split("@")[0]}` : ""}
                       {item.interest ? ` · ${item.interest}` : ""}).
@@ -3239,7 +3374,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                   );
                 case "wait_fulfilled":
                   return (
-                    <SystemLine key={item.id} icon={CheckCircle}>
+                    <SystemLine key={item.id} icon={CheckCircle} tone="success">
                       {formatWaitFulfilledLine(
                         item.responderCount,
                         item.interestSummary,
@@ -3265,7 +3400,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
                 case "delivered":
                   return (
-                    <SystemLine key={item.id} icon={Phone}>
+                    <SystemLine key={item.id} icon={Phone} tone={item.sent ? "success" : "danger"}>
                       {item.sent
                         ? item.boundary === "wait_resume"
                           ? "Live result file sent to your WhatsApp"
@@ -3276,7 +3411,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
                 case "blocked":
                   return (
-                    <SystemLine key={item.id} icon={ShieldAlert}>
+                    <SystemLine key={item.id} icon={ShieldAlert} tone="danger">
                       {item.message}
                     </SystemLine>
                   );

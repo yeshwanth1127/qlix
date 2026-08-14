@@ -108,6 +108,7 @@ function toRunDTO(r: PrismaTeamRun): TeamRunDTO {
     scopeEscalations: r.scopeEscalations as unknown as TeamRunDTO['scopeEscalations'],
     checkpointJson: r.checkpointJson as TeamRunDTO['checkpointJson'],
     inputs: (r.inputs as unknown as TeamRunInput[]) ?? [],
+    resolvedIntent: r.intentJson as TeamRunDTO['resolvedIntent'],
     result: r.result,
     errorMessage: r.errorMessage,
     continuesRunId: r.continuesRunId ?? null,
@@ -403,6 +404,7 @@ export class TeamsRepository {
       replyChannel?: TeamRunReplyChannel;
       continuesRunId?: string | null;
       inputs?: TeamRunInput[];
+      resolvedIntent?: TeamRunDTO['resolvedIntent'];
     },
   ): Promise<TeamRunDTO> {
     const sourceChannel = opts?.sourceChannel ?? 'web';
@@ -420,6 +422,7 @@ export class TeamsRepository {
         replyChannel,
         continuesRunId: opts?.continuesRunId ?? null,
         inputs: (opts?.inputs ?? []) as unknown as Prisma.InputJsonValue,
+        intentJson: (opts?.resolvedIntent ?? undefined) as Prisma.InputJsonValue | undefined,
       },
     });
     return toRunDTO(run);

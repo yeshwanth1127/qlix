@@ -149,6 +149,7 @@ import {
   WhatsAppScopeDeniedError,
   WhatsAppToolError,
 } from '../connectors/whatsappTool.service.js';
+import { TeamOutboundProvenanceError } from '../teams/teamOutboundGuard.js';
 import { recordSuccessfulEvent } from '../billings/lib/recordBillingEvent.js';
 import { recordRunUsage } from '../billings/lib/recordRunUsage.js';
 import { storeSandboxFile } from '../sandbox/sandboxClient.js';
@@ -3424,6 +3425,12 @@ export function createAgentChatRouter(): Router {
         response.status(409).json({ error: { code: err.code, message: err.message } });
         return;
       }
+      if (err instanceof TeamOutboundProvenanceError) {
+        response.status(422).json({
+          error: { code: err.code, message: err.message, retryable: false },
+        });
+        return;
+      }
       console.error('whatsapp/send-message', err);
       response.status(500).json({
         error: {
@@ -3464,6 +3471,12 @@ export function createAgentChatRouter(): Router {
       }
       if (err instanceof WhatsAppNotLinkedError) {
         response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamOutboundProvenanceError) {
+        response.status(422).json({
+          error: { code: err.code, message: err.message, retryable: false },
+        });
         return;
       }
       console.error('whatsapp/send-poll', err);
@@ -3516,6 +3529,12 @@ export function createAgentChatRouter(): Router {
       }
       if (err instanceof WhatsAppNotLinkedError) {
         response.status(409).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof TeamOutboundProvenanceError) {
+        response.status(422).json({
+          error: { code: err.code, message: err.message, retryable: false },
+        });
         return;
       }
       console.error('whatsapp/send-document-to', err);
@@ -3804,4 +3823,3 @@ export function createAgentChatRouter(): Router {
 
   return router;
 }
-

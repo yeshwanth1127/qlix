@@ -1348,6 +1348,8 @@ model TeamRun {
   checkpointJson         Json?     @map("checkpoint_json")
   /// Immutable source handles for Luna-Teams (authoritative user inputs vs reference assets).
   inputs                 Json      @default("[]")
+  /// Versioned, canonical intent consumed by every team execution subsystem.
+  intentJson             Json?     @map("intent_json")
   /// Final synthesized result from the supervisor.
   result                 Json?
   errorMessage           String?   @map("error_message")

@@ -8,7 +8,9 @@ import type {
   TeamRunDTO,
   TeamRunInputPurpose,
 } from './teams.types.js';
-import { extractTeamRunUserGoal, lastResultFromEnvelope } from './teamRunFollowUp.js';
+import { lastResultFromEnvelope } from './teamRunFollowUp.js';
+import { effectiveRunGoal, resolvedIntentForRun } from './teamIntent.js';
+import type { TeamIntentMode, TeamIntentRequirement } from './teams.types.js';
 
 export type LunaTeamsKnowledgeMode = 'none' | 'reference_only' | 'required';
 
@@ -31,6 +33,23 @@ const CONNECTOR_DISPATCH_RE =
 const FILTER_ONLY_RE = /\b(filter|filtering|qualify|qualifying)\b/i;
 const DOWNSTREAM_STAGE_RE =
   /\b(whatsapp|messenger|outreach|contact|crm|send|message|poll|brochure)\b/i;
+const BRAIN_SOURCE_RE = /\b(brain|company knowledge|knowledge base)\b/i;
+const KNOWLEDGE_ASSET_RE = /\b(brochure|document|file|asset)\b/i;
+
+export function resolveDispatchKnowledgeMode(params: {
+  task: string;
+  objective: string;
+  proposed?: LunaTeamsKnowledgeMode | null;
+}): LunaTeamsKnowledgeMode {
+  const taskNeedsAsset = KNOWLEDGE_ASSET_RE.test(params.task);
+  const taskNamesBrain = BRAIN_SOURCE_RE.test(params.task);
+  const objectiveNamesBrainAsset =
+    BRAIN_SOURCE_RE.test(params.objective) && KNOWLEDGE_ASSET_RE.test(params.objective);
+  if (taskNamesBrain || (taskNeedsAsset && objectiveNamesBrainAsset)) return 'required';
+  return params.proposed === 'reference_only' || params.proposed === 'required'
+    ? params.proposed
+    : 'none';
+}
 
 function dispatchNeedsSourceFile(role: string, task: string, index: number): boolean {
   const text = `${role} ${task}`;
@@ -55,12 +74,17 @@ export function heuristicAllowedScopes(params: {
   knowledgeMode: LunaTeamsKnowledgeMode;
 }): PermissionScope[] {
   const scopes = withoutBrainUnlessRequired(params.delegatedScopes, params.knowledgeMode);
+  const brainScopes = params.knowledgeMode === 'required'
+    ? scopes.filter((scope) => scope === 'brain.query')
+    : [];
   const text = `${params.role} ${params.task}`;
-  if (FILTER_ONLY_RE.test(text) && !CONNECTOR_DISPATCH_RE.test(text)) return [];
+  if (FILTER_ONLY_RE.test(text) && !CONNECTOR_DISPATCH_RE.test(text)) return brainScopes;
   const matched = SCOPE_FAMILIES.flatMap((family) =>
     family.pattern.test(text) ? scopes.filter((scope) => family.match(scope)) : [],
   );
-  if (matched.length > 0) return [...new Set(matched)];
+  if (matched.length > 0 || brainScopes.length > 0) {
+    return [...new Set([...matched, ...brainScopes])];
+  }
   if (CONNECTOR_DISPATCH_RE.test(text)) return scopes;
   return [];
 }
@@ -86,10 +110,16 @@ export function resolveDispatchAllowedScopes(params: {
       granted.has(scope as PermissionScope),
     ),
   )];
-  return withoutBrainUnlessRequired(
+  const selected = withoutBrainUnlessRequired(
     fromCommander.filter((scope) => heuristic.includes(scope)),
     params.knowledgeMode,
   );
+  // A model-produced allowlist must not remove a host-determined required
+  // knowledge capability.
+  const requiredBrain = params.knowledgeMode === 'required'
+    ? heuristic.filter((scope) => scope === 'brain.query')
+    : [];
+  return [...new Set([...selected, ...requiredBrain])];
 }
 
 export function skillsForLunaTeamsDispatch(params: {
@@ -143,6 +173,95 @@ export interface LunaTeamsDispatch {
   allowedSources: TeamRunInputPurpose[];
   knowledgeMode: LunaTeamsKnowledgeMode;
   outputContract: Record<string, unknown>;
+  requirementIds: string[];
+}
+
+function requirementDispatchScore(
+  requirement: TeamIntentRequirement,
+  dispatch: LunaTeamsDispatch,
+  index: number,
+  count: number,
+): number {
+  const requirementText = requirement.text.toLocaleLowerCase();
+  const dispatchText = `${dispatch.role} ${dispatch.task} ${dispatch.agentName}`.toLocaleLowerCase();
+  const tokens = [...new Set(requirementText.match(/[a-z0-9]{4,}/g) ?? [])];
+  let score = tokens.filter((token) => dispatchText.includes(token)).length * 3;
+  if (/\b(filter|qualify|select|retain|where|city|region)\b/i.test(requirementText) && FILTER_ONLY_RE.test(dispatchText)) score += 12;
+  if (/\b(whatsapp|message|greeting|brochure|poll|outreach|send)\b/i.test(requirementText) && DOWNSTREAM_STAGE_RE.test(dispatchText)) score += 10;
+  if (/\b(reply|replies|response|wait|collect)\b/i.test(requirementText) && /\b(whatsapp|message|contact|outreach)\b/i.test(dispatchText)) score += 8;
+  if (/\b(sheet|excel|report|result|deliver|output)\b/i.test(requirementText) && /\b(contact|manager|report|writer|sheet|output)\b/i.test(dispatchText)) score += 9;
+  const knowledgeMode = resolveDispatchKnowledgeMode({
+    task: requirement.text,
+    objective: requirement.text,
+    proposed: 'none',
+  });
+  if (heuristicAllowedScopes({
+    role: dispatch.role,
+    task: requirement.text,
+    delegatedScopes: dispatch.delegatedScopes,
+    knowledgeMode,
+  }).length > 0) score += 6;
+  if (score === 0 && index === count - 1) score = 1;
+  return score;
+}
+
+/** Host-side coverage: every active intent requirement is owned by a dispatch. */
+export function bindIntentRequirements(
+  dispatches: LunaTeamsDispatch[],
+  requirements: TeamIntentRequirement[],
+  effectiveGoal: string,
+  intentMode: TeamIntentMode = 'new',
+): LunaTeamsDispatch[] {
+  if (dispatches.length === 0 || requirements.length === 0) return dispatches;
+  const validIds = new Set(requirements.map((requirement) => requirement.id));
+  const next = dispatches.map((dispatch) => ({
+    ...dispatch,
+    requirementIds: [...new Set(dispatch.requirementIds.filter((id) => validIds.has(id)))],
+  }));
+  for (const requirement of requirements) {
+    if (next.some((dispatch) => dispatch.requirementIds.includes(requirement.id))) continue;
+    let bestIndex = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    next.forEach((dispatch, index) => {
+      const score = requirementDispatchScore(requirement, dispatch, index, next.length);
+      if (score > bestScore) {
+        bestIndex = index;
+        bestScore = score;
+      }
+    });
+    next[bestIndex]!.requirementIds.push(requirement.id);
+  }
+  const requirementById = new Map(requirements.map((item) => [item.id, item]));
+  return next.map((dispatch) => {
+    const owned = dispatch.requirementIds.flatMap((id) => {
+      const requirement = requirementById.get(id);
+      return requirement ? [requirement] : [];
+    });
+    const task = owned.length > 0
+      ? `${dispatch.task}\n\nRequired outcomes owned by this dispatch (do not omit):\n${owned.map((item) => `- [${item.id}] ${item.text}`).join('\n')}`
+      : dispatch.task;
+    const readOnlyFollowUp = intentMode === 'question' || intentMode === 'cancel';
+    const knowledgeMode = readOnlyFollowUp
+      ? 'none'
+      : resolveDispatchKnowledgeMode({
+          task,
+          objective: effectiveGoal,
+          proposed: dispatch.knowledgeMode,
+        });
+    return {
+      ...dispatch,
+      task,
+      knowledgeMode,
+      allowedScopes: readOnlyFollowUp
+        ? []
+        : resolveDispatchAllowedScopes({
+            role: dispatch.role,
+            task,
+            delegatedScopes: dispatch.delegatedScopes,
+            knowledgeMode,
+          }),
+    };
+  });
 }
 
 export interface LunaTeamsHandback {
@@ -174,7 +293,7 @@ function fallbackDispatches(
   const authoritativeRefs = run.inputs
     .filter((input) => input.purpose === 'authoritative_input')
     .map((input) => input.ref);
-  const objective = extractTeamRunUserGoal(run.goal) || run.goal;
+  const objective = effectiveRunGoal(run);
   return members.map((member, index) => {
     const task =
       index === 0
@@ -198,6 +317,7 @@ function fallbackDispatches(
       allowedSources: ['authoritative_input'] as TeamRunInputPurpose[],
       knowledgeMode: 'none' as const,
       outputContract: DEFAULT_RESULT_CONTRACT,
+      requirementIds: [],
     };
   });
 }
@@ -211,6 +331,8 @@ export async function planLunaTeamsDispatches(
   team: TeamDTO,
   orderedMembers: TeamMemberDTO[],
 ): Promise<LunaTeamsDispatch[]> {
+  const intent = resolvedIntentForRun(run);
+  const objective = intent.effectiveGoal;
   const preserveOrder = !(team.config as TeamConfig).autoSequence;
   const roster = orderedMembers
     .map(
@@ -240,14 +362,16 @@ Never invent agents or scopes.
 allowedScopes must be a subset of that member's roster scopes. Use the smallest set that can complete the task. Use [] when the member can finish from extracted inputs or Result handbacks with no connector. Do not include write, research, or schedule scopes unless the task explicitly needs them.
 Use only input refs from the supplied input catalog. Only the source/filter stage should receive authoritative_input refs. Later stages (WhatsApp, contacts, CRM) must set inputRefs to [] and use Result handbacks. Operational records must come from authoritative_input or those handbacks.
 Knowledge mode is "none" by default, "reference_only" when a selected reference asset is needed, or "required" only when Brain knowledge is explicitly necessary.
-Return only a JSON array: [{"agentId":"...","task":"...","inputRefs":["team-input:..."],"allowedSources":["authoritative_input"],"allowedScopes":[],"knowledgeMode":"none","contractId":"optional","outputContract":{...}}].
+Every active requirement id must appear in at least one dispatch.requirementIds array.
+Return only a JSON array: [{"agentId":"...","task":"...","requirementIds":["req_..."],"inputRefs":["team-input:..."],"allowedSources":["authoritative_input"],"allowedScopes":[],"knowledgeMode":"none","contractId":"optional","outputContract":{...}}].
 ${preserveOrder ? 'Use every roster member exactly once and preserve roster order.' : 'You may reorder or omit members when their role is unnecessary.'}`,
           },
           {
             role: 'user',
             content: [
               `Team: ${team.name}`,
-              `Intent (authoritative): ${extractTeamRunUserGoal(run.goal) || run.goal}`,
+              `Intent (authoritative): ${objective}`,
+              `Active requirements (all must be covered):\n${intent.requirements.map((item) => `- ${item.id}: ${item.text}`).join('\n') || '- none'}`,
               lastResultFromEnvelope(run.goal)
                 ? `Last attempt: ${lastResultFromEnvelope(run.goal)}`
                 : null,
@@ -285,6 +409,7 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
       allowedScopes?: string[];
       knowledgeMode?: LunaTeamsKnowledgeMode;
       outputContract?: Record<string, unknown>;
+      requirementIds?: string[];
     }>;
     const memberById = new Map(orderedMembers.map((member) => [member.agentId, member]));
     const seen = new Set<string>();
@@ -305,10 +430,11 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         (source): source is TeamRunInputPurpose =>
           source === 'authoritative_input' || source === 'reference_asset',
       );
-      const knowledgeMode: LunaTeamsKnowledgeMode =
-        item.knowledgeMode === 'reference_only' || item.knowledgeMode === 'required'
-          ? item.knowledgeMode
-          : 'none';
+      const knowledgeMode = resolveDispatchKnowledgeMode({
+        task,
+        objective,
+        proposed: item.knowledgeMode,
+      });
       seen.add(member.agentId);
       return [{
         dispatchId: `dispatch_${index + 1}_${member.agentId.slice(0, 8)}`,
@@ -330,17 +456,21 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         allowedSources: allowedSources.length > 0 ? allowedSources : ['authoritative_input'],
         knowledgeMode,
         outputContract: effectiveOutputContract(item.outputContract),
+        requirementIds: [...new Set(
+          (item.requirementIds ?? []).filter((id) => intent.requirements.some((r) => r.id === id)),
+        )],
       }];
     });
     if (
       selected.length > 0 &&
       (!preserveOrder || selected.length === orderedMembers.length)
     ) {
-      return preserveOrder
+      const ordered = preserveOrder
         ? orderedMembers.map(
             (member) => selected.find((item) => item.agentId === member.agentId)!,
           )
         : selected;
+      return bindIntentRequirements(ordered, intent.requirements, objective, intent.mode);
     }
   } catch (error) {
     console.warn(
@@ -348,7 +478,12 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
       error instanceof Error ? error.message : error,
     );
   }
-  return fallbackDispatches(run, orderedMembers);
+  return bindIntentRequirements(
+    fallbackDispatches(run, orderedMembers),
+    intent.requirements,
+    objective,
+    intent.mode,
+  );
 }
 
 function extractBalancedJson(text: string): { json: string; truncated: boolean } | null {
@@ -630,20 +765,32 @@ export function renderResultHandbacks(
 }
 
 export function renderLunaTeamsFinal(
-  results: Array<{ agentName: string; summary: string; findings: string; status: string }>,
+  results: Array<{
+    agentName: string;
+    summary: string;
+    findings: string;
+    status: string;
+    subtaskId?: string;
+  }>,
 ): string {
   const completed = results.filter((result) => result.status === 'completed');
   if (completed.length === 0) {
     throw new Error('All team dispatches failed');
   }
   const last = completed[completed.length - 1]!;
+  const workerDispatches = completed.filter(
+    (result) => result.subtaskId !== 'external_whatsapp_reply',
+  );
+  const hasExternalResult = last.subtaskId === 'external_whatsapp_reply';
   if (completed.length === 1) {
     return last.findings.trim() || last.summary.trim();
   }
-  const progress = completed
-    .slice(0, -1)
+  const progressRows = hasExternalResult ? workerDispatches : completed.slice(0, -1);
+  const progress = progressRows
     .map((result) => `${result.agentName}: ${result.summary}`)
     .join('\n');
   const finalResult = last.findings.trim() || last.summary.trim();
-  return `Team completed ${completed.length} dispatches.\n${progress}\n\nFinal result from ${last.agentName}:\n${finalResult}`;
+  const dispatchCount = hasExternalResult ? workerDispatches.length : completed.length;
+  const dispatchLabel = hasExternalResult ? 'worker dispatches' : 'dispatches';
+  return `Team completed ${dispatchCount} ${dispatchLabel}.\n${progress}\n\nFinal result from ${last.agentName}:\n${finalResult}`;
 }

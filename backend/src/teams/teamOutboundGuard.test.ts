@@ -77,6 +77,16 @@ test('outbound guard permits a validated authoritative contact', () => {
   );
 });
 
+test('outbound guard trusts a validated phone and ignores a device-local contact nickname', () => {
+  const match = assertTeamOutboundAllowed(run, mailbox, {
+    recipient: '+919111111111',
+    phone: '+919111111111',
+    jid: '919111111111@s.whatsapp.net',
+    name: 'My local nickname',
+  });
+  assert.deepEqual(match, { phone: '919111111111', name: 'Aarav' });
+});
+
 test('outbound guard blocks brochure, stale-memory, and name-remapped targets', () => {
   for (const target of [
     { recipient: 'Brochure', phone: '9442592170', jid: null, name: 'Brochure' },

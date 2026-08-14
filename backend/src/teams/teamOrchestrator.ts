@@ -48,10 +48,10 @@ import {
   TEAM_DISPATCH_ONLY_SKILL,
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
-import { extractTeamRunUserGoal } from './teamRunFollowUp.js';
+import { effectiveRunGoal } from './teamIntent.js';
 
 function runObjective(run: TeamRunDTO): string {
-  return extractTeamRunUserGoal(run.goal) || run.goal;
+  return effectiveRunGoal(run);
 }
 
 function normalizeFindingsText(findings: unknown): string {
@@ -201,6 +201,7 @@ export class TeamOrchestrator {
         allowedSources: dispatch.allowedSources,
         knowledgeMode: dispatch.knowledgeMode,
         outputContract: dispatch.outputContract,
+        requirementIds: dispatch.requirementIds,
       }));
 
       await this.repo.appendSupervisorTrace(run.id, {

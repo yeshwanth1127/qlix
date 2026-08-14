@@ -45,6 +45,21 @@ function pendingContactKey(row: PendingWaitOutbound): string {
   return normalizeContactJid(row.jid || row.recipient) || row.recipient.trim();
 }
 
+function uniquePendingRows(rows: PendingWaitOutbound[]): PendingWaitOutbound[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const kind = row.kind ?? 'text';
+    const fingerprint = kind === 'poll'
+      ? `${kind}:${row.pollName ?? row.message}:${JSON.stringify(row.pollValues ?? [])}:${row.pollSelectableCount ?? 1}`
+      : kind === 'document'
+        ? `${kind}:${row.documentFileName ?? row.message}:${row.documentStagedPath ?? ''}`
+        : `${kind}:${row.id}`;
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
+  });
+}
+
 /**
  * After the outreach worker queues text, fill missing brochure file + Yes/No poll
  * per contact so wait-mode flush still sends the pack the user asked for.
@@ -77,11 +92,17 @@ export function completePendingOutreachPack(
     const rows = groups.get(key)!;
     const template = rows[0]!;
     const kinds = new Set(rows.map((row) => row.kind ?? 'text'));
-    out.push(...rows);
+    const textRows = rows.filter((row) => (row.kind ?? 'text') === 'text');
+    const documentRows = uniquePendingRows(rows.filter((row) => row.kind === 'document'));
+    const pollRows = uniquePendingRows(rows.filter((row) => row.kind === 'poll'));
+    const otherRows = rows.filter((row) => {
+      const kind = row.kind ?? 'text';
+      return kind !== 'text' && kind !== 'document' && kind !== 'poll';
+    });
 
     const brochure = extras.brochureForContact?.(key) ?? null;
     if (brochure && !kinds.has('document')) {
-      out.push({
+      documentRows.push({
         id: randomUUID(),
         agentId: template.agentId,
         connectorId: template.connectorId,
@@ -100,7 +121,7 @@ export function completePendingOutreachPack(
     }
 
     if (extras.poll && !kinds.has('poll')) {
-      out.push({
+      pollRows.push({
         id: randomUUID(),
         agentId: template.agentId,
         connectorId: template.connectorId,
@@ -117,6 +138,9 @@ export function completePendingOutreachPack(
         queuedAt: new Date().toISOString(),
       });
     }
+    // WhatsApp outreach packs have a deterministic send order regardless of
+    // the order in which a worker called the tools.
+    out.push(...textRows, ...documentRows, ...pollRows, ...otherRows);
   }
   return out;
 }
@@ -230,9 +254,10 @@ export async function persistPendingWaitOutbound(input: {
   const repo = new TeamsRepository();
   const run = await repo.findRun(input.teamRunId);
   if (!run) throw new Error('Team run not found');
+  let authoritativeContact: { phone: string; name?: string };
   try {
     const mailbox = await repo.listMailboxResults(run.id);
-    assertTeamOutboundAllowed(run, mailbox, {
+    authoritativeContact = assertTeamOutboundAllowed(run, mailbox, {
       recipient: input.outbound.recipient,
       jid: input.outbound.jid ?? null,
       phone: input.outbound.phone ?? null,
@@ -247,6 +272,12 @@ export async function persistPendingWaitOutbound(input: {
     }
     throw error;
   }
+  const authoritativeOutbound = {
+    ...input.outbound,
+    // Preserve the source-of-truth name. WhatsApp may return a device-local
+    // nickname for the same valid phone number.
+    name: authoritativeContact.name ?? input.outbound.name,
+  };
   const existing = (run.checkpointJson ?? null) as TeamRunCheckpoint | null;
   const base: TeamRunCheckpoint =
     existing ??
@@ -258,13 +289,13 @@ export async function persistPendingWaitOutbound(input: {
       waitReason: '',
     } satisfies TeamRunCheckpoint);
 
-  let next = enqueuePendingWaitOutbound(base, input.outbound);
-  if (input.outbound.jid) {
+  let next = enqueuePendingWaitOutbound(base, authoritativeOutbound);
+  if (authoritativeOutbound.jid) {
     next = upsertWaitContactInCheckpoint(next, {
-      jid: input.outbound.jid,
-      name: input.outbound.name,
-      phone: input.outbound.phone,
-      recipient: input.outbound.recipient,
+      jid: authoritativeOutbound.jid,
+      name: authoritativeOutbound.name,
+      phone: authoritativeOutbound.phone,
+      recipient: authoritativeOutbound.recipient,
     });
   }
   await repo.updateRunStatus(run.id, run.status, { checkpointJson: next });

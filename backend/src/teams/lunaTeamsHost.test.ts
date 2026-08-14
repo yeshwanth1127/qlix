@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  bindIntentRequirements,
   parseLunaTeamsHandback,
   DEFAULT_RESULT_CONTRACT,
   effectiveOutputContract,
   renderLunaTeamsFinal,
   renderResultHandbacks,
+  resolveDispatchKnowledgeMode,
   resolveDispatchAllowedScopes,
   skillsForLunaTeamsDispatch,
   TEAM_DISPATCH_ONLY_SKILL,
@@ -39,6 +41,16 @@ test('final response is deterministic and does not launch a recap agent', () => 
   ]);
   assert.match(final, /Final result from Writer/);
   assert.match(final, /final report/);
+});
+
+test('external WhatsApp reply result is not counted as a worker dispatch', () => {
+  const final = renderLunaTeamsFinal([
+    { agentName: 'Lead Filter', summary: 'Filtered leads', findings: 'leads', status: 'completed', subtaskId: 'filter' },
+    { agentName: 'WhatsApp Messenger', summary: 'Queued outreach', findings: 'queued', status: 'completed', subtaskId: 'outreach' },
+    { agentName: 'WhatsApp replies', summary: 'One reply', findings: 'one interested', status: 'completed', subtaskId: 'external_whatsapp_reply' },
+  ]);
+  assert.match(final, /Team completed 2 worker dispatches/);
+  assert.match(final, /Final result from WhatsApp replies/);
 });
 
 const incidentRun = {
@@ -186,6 +198,101 @@ test('whatsapp dispatches keep channel scopes and drop CRM', () => {
   assert.ok(skills.includes('whatsapp.auto_reply'));
   assert.ok(!skills.includes('crm.write'));
   assert.ok(!skills.includes(TEAM_DISPATCH_ONLY_SKILL));
+});
+
+test('explicit Brain brochure intent upgrades knowledge and preserves brain.query', () => {
+  const knowledgeMode = resolveDispatchKnowledgeMode({
+    objective: 'Send each Bangalore lead the brochure from Brain on WhatsApp',
+    task: 'Send a greeting, brochure, and poll to the validated leads',
+    proposed: 'reference_only',
+  });
+  assert.equal(knowledgeMode, 'required');
+  const allowed = resolveDispatchAllowedScopes({
+    role: 'outreach',
+    task: 'Send a WhatsApp greeting, brochure, and poll',
+    delegatedScopes: ['whatsapp.contact_send', 'brain.query', 'crm.write'],
+    knowledgeMode,
+    requested: ['whatsapp.contact_send'],
+  });
+  assert.deepEqual(allowed, ['whatsapp.contact_send', 'brain.query']);
+});
+
+test('host binds every intent requirement and restores required Brain scope', () => {
+  const dispatches = bindIntentRequirements(
+    [
+      {
+        dispatchId: 'd1',
+        agentId: 'filter',
+        agentName: 'Lead Filter',
+        role: 'filtering',
+        task: 'Filter the provided records',
+        delegatedScopes: [],
+        allowedScopes: [],
+        stageOrder: 1,
+        inputRefs: ['team-input:sheet'],
+        allowedSources: ['authoritative_input'],
+        knowledgeMode: 'none',
+        outputContract: DEFAULT_RESULT_CONTRACT,
+        requirementIds: [],
+      },
+      {
+        dispatchId: 'd2',
+        agentId: 'messenger',
+        agentName: 'WhatsApp Messenger',
+        role: 'messaging',
+        task: 'Send WhatsApp outreach',
+        delegatedScopes: ['whatsapp.contact_send', 'brain.query'],
+        allowedScopes: ['whatsapp.contact_send'],
+        stageOrder: 2,
+        inputRefs: [],
+        allowedSources: ['authoritative_input'],
+        knowledgeMode: 'none',
+        outputContract: DEFAULT_RESULT_CONTRACT,
+        requirementIds: [],
+      },
+    ],
+    [
+      { id: 'filter-city', text: 'Retain only Bangalore leads', source: 'original' },
+      { id: 'brain-brochure', text: 'Send the brochure from Brain on WhatsApp', source: 'original' },
+    ],
+    'Retain only Bangalore leads, then send the brochure from Brain on WhatsApp',
+  );
+  assert.deepEqual(dispatches.flatMap((item) => item.requirementIds).sort(), [
+    'brain-brochure',
+    'filter-city',
+  ]);
+  assert.match(dispatches[0]!.task, /filter-city/);
+  assert.match(dispatches[1]!.task, /brain-brochure/);
+  assert.equal(dispatches[1]!.knowledgeMode, 'required');
+  assert.ok(dispatches[1]!.allowedScopes.includes('brain.query'));
+});
+
+test('question and cancel follow-ups cannot receive external-action scopes', () => {
+  const base = {
+    dispatchId: 'd1',
+    agentId: 'messenger',
+    agentName: 'WhatsApp Messenger',
+    role: 'messaging',
+    task: 'Answer the follow-up',
+    delegatedScopes: ['whatsapp.contact_send', 'brain.query'],
+    allowedScopes: ['whatsapp.contact_send', 'brain.query'],
+    stageOrder: 1,
+    inputRefs: [],
+    allowedSources: ['authoritative_input'] as const,
+    knowledgeMode: 'required' as const,
+    outputContract: DEFAULT_RESULT_CONTRACT,
+    requirementIds: [],
+  };
+  for (const mode of ['question', 'cancel'] as const) {
+    const [dispatch] = bindIntentRequirements(
+      [{ ...base, allowedSources: [...base.allowedSources] }],
+      [{ id: 'follow-up', text: 'Answer without taking action', source: 'follow_up' }],
+      'Answer without taking action',
+      mode,
+    );
+    assert.deepEqual(dispatch!.allowedScopes, []);
+    assert.equal(dispatch!.knowledgeMode, 'none');
+  }
 });
 
 test('downstream stage may cite prior Result lineage without a new file', () => {

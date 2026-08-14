@@ -15,6 +15,12 @@ import {
   firstRealGoalInContinueChain,
   priorContextFromRun,
 } from './teamRunFollowUp.js';
+import {
+  createResolvedTeamIntent,
+  resolvedIntentForRun,
+  resolveTeamFollowUpIntent,
+} from './teamIntent.js';
+import type { ResolvedTeamIntent } from './teams.types.js';
 
 const FINISHED_RUN_STATUSES = new Set(['completed', 'failed', 'canceled']);
 
@@ -43,6 +49,7 @@ export interface LaunchTeamRunInput {
 
 async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
   goal: string;
+  resolvedIntent: ResolvedTeamIntent;
   continuesRunId: string | null;
   priorInputs: TeamRunInput[];
 }> {
@@ -52,7 +59,12 @@ async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
     continuesRunId = latest?.id ?? null;
   }
   if (!continuesRunId) {
-    return { goal: input.goal, continuesRunId: null, priorInputs: [] };
+    return {
+      goal: input.goal,
+      resolvedIntent: createResolvedTeamIntent({ userMessage: input.goal }),
+      continuesRunId: null,
+      priorInputs: [],
+    };
   }
 
   const priorRun = await teamsRepo.findRun(continuesRunId);
@@ -67,11 +79,22 @@ async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
   const chain = await loadContinueChain(continuesRunId, priorRun.teamId);
   const originalGoal = firstRealGoalInContinueChain(chain);
   const prior = priorContextFromRun(priorRun, events);
+  const baseIntent = resolvedIntentForRun({
+    ...priorRun,
+    goal: originalGoal || priorRun.goal,
+  });
+  const resolvedIntent = await resolveTeamFollowUpIntent({
+    userMessage: input.goal,
+    baseRunId: priorRun.id,
+    baseIntent,
+    previousResult: prior.synthesis ?? prior.errorMessage,
+  });
   return {
     goal: applyTeamRunFollowUp(input.goal, {
       ...prior,
       goal: originalGoal || prior.goal,
     }),
+    resolvedIntent,
     continuesRunId,
     priorInputs: firstInputsInContinueChain(chain),
   };
@@ -99,7 +122,7 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
   team: TeamDTO;
 }> {
   const sourceChannel = input.source?.channel ?? 'web';
-  const { goal, continuesRunId, priorInputs } = await resolveContinuedGoal(input);
+  const { goal, resolvedIntent, continuesRunId, priorInputs } = await resolveContinuedGoal(input);
   const inputs =
     input.inputs && input.inputs.length > 0 ? input.inputs : priorInputs;
   const run = await teamsService.startRun(
@@ -113,6 +136,7 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
       replyChannel: input.replyChannel,
       continuesRunId,
       inputs,
+      resolvedIntent,
     },
     input.backendUrl,
   );

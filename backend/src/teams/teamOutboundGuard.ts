@@ -72,9 +72,18 @@ export function assertTeamOutboundAllowed(
   run: TeamRunDTO,
   mailbox: TeamMailboxMessageDTO[],
   outbound: Pick<PendingWaitOutbound, 'recipient' | 'jid' | 'phone' | 'name'>,
-): void {
+): { phone: string; name?: string } {
   const targetPhone = digits(outbound.phone || outbound.jid || outbound.recipient);
-  const targetName = (outbound.name || outbound.recipient || '').trim().toLocaleLowerCase();
+  const requestedRecipient = outbound.recipient.trim();
+  const recipientLooksLikePhoneOrJid =
+    /^\+?\d[\d\s().-]{6,}$/.test(requestedRecipient) ||
+    /^\d+(?::\d+)?@(?:s\.whatsapp\.net|lid)$/i.test(requestedRecipient);
+  // `outbound.name` comes from WhatsApp contact metadata and may be a local
+  // nickname that legitimately differs from the authoritative source name.
+  // Only validate a name when the caller actually selected the recipient by name.
+  const requestedName = recipientLooksLikePhoneOrJid
+    ? ''
+    : requestedRecipient.toLocaleLowerCase();
   const contacts = validatedOutboundContacts(run, mailbox);
   const match = contacts.find((contact) => phonesEqual(contact.phone, targetPhone));
   if (!targetPhone || !match) {
@@ -82,15 +91,14 @@ export function assertTeamOutboundAllowed(
       `Blocked recipient ${outbound.recipient}: not present in authoritative Result data`,
     );
   }
-  const targetLooksLikePhone = /^\+?\d[\d\s().-]{6,}$/.test(targetName);
   if (
-    targetName &&
+    requestedName &&
     match.name &&
-    !targetLooksLikePhone &&
-    targetName !== match.name.toLocaleLowerCase()
+    requestedName !== match.name.toLocaleLowerCase()
   ) {
     throw new TeamOutboundProvenanceError(
       `Blocked recipient ${outbound.recipient}: name/phone mapping differs from source data`,
     );
   }
+  return match;
 }

@@ -150,6 +150,18 @@ describe('applyTeamRunFollowUp / resolveContinuedGoal', () => {
     ].join('\n');
     assert.equal(extractTeamRunUserGoal(wrapped), original);
   });
+
+  it('recognizes do-it-again as a repeat of the complete original intent', () => {
+    const original =
+      'filter Bangalore leads, send a greeting, Brain brochure and poll, collect replies in Excel';
+    const note = applyTeamRunFollowUp('do it again', {
+      goal: original,
+      synthesis: 'Prior run completed',
+      errorMessage: null,
+      userNotes: [],
+    });
+    assert.equal(extractTeamRunUserGoal(note), original);
+  });
 });
 
 describe('firstInputsInContinueChain', () => {

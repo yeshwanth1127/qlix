@@ -141,6 +141,40 @@ export type TeamRunSourceChannel = 'web' | 'whatsapp' | 'api' | 'slack' | 'teleg
 export type TeamRunReplyChannel = 'whatsapp' | 'none';
 export type TeamRunInputPurpose = 'authoritative_input' | 'reference_asset';
 
+export type TeamIntentMode =
+  | 'new'
+  | 'repeat'
+  | 'modify'
+  | 'continue'
+  | 'question'
+  | 'cancel'
+  | 'clarification_required';
+
+export interface TeamIntentRequirement {
+  id: string;
+  text: string;
+  source: 'original' | 'follow_up';
+}
+
+export interface TeamIntentChange {
+  operation: 'add' | 'remove' | 'replace';
+  requirementId?: string;
+  text?: string;
+}
+
+/** Canonical execution intent. Conversation envelopes remain display/audit context only. */
+export interface ResolvedTeamIntent {
+  version: 1;
+  mode: TeamIntentMode;
+  userMessage: string;
+  effectiveGoal: string;
+  baseRunId?: string;
+  requirements: TeamIntentRequirement[];
+  changes?: TeamIntentChange[];
+  confidence: number;
+  clarificationQuestion?: string;
+}
+
 export interface TeamRunInput {
   id: string;
   ref: string;
@@ -169,6 +203,7 @@ export interface TeamRunDTO {
   /** Durable state used to continue a paused external-event wait. */
   checkpointJson?: TeamRunCheckpoint | null;
   inputs: TeamRunInput[];
+  resolvedIntent?: ResolvedTeamIntent | null;
   result: unknown | null;
   errorMessage: string | null;
   continuesRunId?: string | null;
@@ -243,6 +278,8 @@ export interface SubtaskCheckpoint {
   allowedSources: TeamRunInputPurpose[];
   knowledgeMode: 'none' | 'reference_only' | 'required';
   outputContract: Record<string, unknown>;
+  /** Canonical intent requirements this dispatch owns. */
+  requirementIds?: string[];
 }
 
 export interface WorkerResultCheckpoint {
