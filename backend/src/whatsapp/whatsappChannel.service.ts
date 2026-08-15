@@ -642,6 +642,12 @@ async function handleContactTeamWaitInbound(
     }
   }
 
+  // A workflow-managed conversation already produced the appropriate branch
+  // response. Suppress the legacy fixed acknowledgement and auto-reply layer.
+  if (consumed.conversationHandled) {
+    return { reply: '', deliverTo: 'none', contactJid: remoteJid };
+  }
+
   if (contactAck === 'auto_reply') {
     const { touchAutoReplySessionOutbound } = await import('./whatsappAutoReply.service.js');
     await touchAutoReplySessionOutbound(connector.id, remoteJid).catch(() => {});

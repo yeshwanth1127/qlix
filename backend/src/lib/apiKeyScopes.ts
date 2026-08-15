@@ -11,6 +11,8 @@ export const API_KEY_SCOPES = [
   'runs:write',
   'teams:read',
   'teams:write',
+  'conversations:read',
+  'conversations:write',
   'brain:read',
   'brain:write',
   'builder:read',
@@ -66,6 +68,16 @@ type ScopeRule = {
  * Unlisted authenticated routes reject API keys (session JWT still works).
  */
 const DEVELOPER_API_SCOPE_RULES: readonly ScopeRule[] = [
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/v1\/conversations\/(threads|processes)\/[^/]+\/?$/,
+    scopes: ['conversations:read'],
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/conversations(\/.*)?\/?$/,
+    scopes: ['conversations:write'],
+  },
   // Agent runs (chat enqueue / stream / control)
   {
     methods: ['POST'],

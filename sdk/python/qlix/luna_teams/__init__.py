@@ -8,6 +8,10 @@ The backend team host owns execution of these contracts.
 """
 
 from .core import (
+    ConversationSignalRequest,
+    ConversationStartRequest,
+    ConversationStatus,
+    ConversationWorkflow,
     DispatchContract,
     DispatchRequest,
     InputPurpose,
@@ -31,6 +35,10 @@ from .core import (
 )
 
 __all__ = [
+    "ConversationSignalRequest",
+    "ConversationStartRequest",
+    "ConversationStatus",
+    "ConversationWorkflow",
     "DispatchContract",
     "DispatchRequest",
     "InputPurpose",

@@ -75,6 +75,8 @@ export interface TeamConfig {
   defaultReasoningEffort?: string;
   /** Declarative external-event waits (WhatsApp inbound + side effects). */
   waitSteps?: WaitStep[];
+  /** Published workflow used for every per-contact reply thread after outreach. */
+  conversationWorkflowVersionId?: string | null;
 }
 
 export interface TeamMemberDTO {

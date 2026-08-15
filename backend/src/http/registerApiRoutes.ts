@@ -46,6 +46,7 @@ import { createTelegramRouter } from '../routes/createTelegramRouter.js';
 import { createVcVerifyRouter } from '../routes/createVcVerifyRouter.js';
 import { createChannelDefaultsRouter } from '../routes/createChannelDefaultsRouter.js';
 import { createOpenApiRouter } from '../routes/createOpenApiRouter.js';
+import { createConversationsRouter } from '../routes/createConversationsRouter.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -73,6 +74,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/inference', createAutoRoutingInfoRouter());
   application.use('/api/v1/ai-brain', createAiBrainRouter());
   application.use('/api/v1/teams', createTeamsRouter());
+  application.use('/api/v1/conversations', createConversationsRouter());
   application.use('/api/v1/connectors', createConnectorsRouter());
   application.use('/api/v1/mcp', createMcpRouter());
   application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());

@@ -69,6 +69,17 @@ export interface TeamConfig {
   defaultReasoningEffort?: string;
   /** Declarative external-event waits (WhatsApp inbound + side effects). */
   waitSteps?: unknown[];
+  /** Published workflow used for managed per-contact conversations. */
+  conversationWorkflowVersionId?: string | null;
+}
+
+export interface ConversationWorkflowOption {
+  definitionId: string;
+  workflowVersionId: string;
+  key: string;
+  name: string;
+  description: string | null;
+  version: number;
 }
 
 export interface TeamMemberDTO {
@@ -409,7 +420,12 @@ export async function reorderTeamMembers(
 
 export async function updateTeamConfig(
   teamId: string,
-  patch: { autoSequence?: boolean; pipelineMode?: boolean; defaultModel?: string },
+  patch: {
+    autoSequence?: boolean;
+    pipelineMode?: boolean;
+    defaultModel?: string;
+    conversationWorkflowVersionId?: string | null;
+  },
 ): Promise<TeamDTO> {
   const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/config`, {
     method: "PATCH",
@@ -423,6 +439,18 @@ export async function updateTeamConfig(
   }
   const data = (await res.json()) as { team: TeamDTO };
   return data.team;
+}
+
+export async function listConversationWorkflows(): Promise<ConversationWorkflowOption[]> {
+  const res = await fetch(`${apiBase()}/api/v1/conversations/workflows`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new Error(err?.error?.message ?? "Failed to list conversation workflows");
+  }
+  const data = (await res.json()) as { workflows: ConversationWorkflowOption[] };
+  return data.workflows;
 }
 
 export async function listTeamRuns(teamId: string): Promise<TeamRunDTO[]> {

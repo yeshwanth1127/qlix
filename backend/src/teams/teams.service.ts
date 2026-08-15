@@ -9,6 +9,7 @@ import { CloudProvisionerService } from '../cloudRunners/cloudProvisioner.servic
 import { hasEmailConnector } from '../connectors/emailTool.service.js';
 import { GMAIL_CONNECT_SHORT } from '../connectors/connectorUserMessages.js';
 import { prisma } from '../lib/prisma.js';
+import { loadPublishedWorkflow } from '../conversations/conversationWorkflow.service.js';
 import {
   assertRunnersReady,
   buildTeamRunnersStatus,
@@ -376,11 +377,22 @@ export class TeamsService {
     orgId: string,
     userId: string,
     userRole: string,
-    patch: { autoSequence?: boolean; pipelineMode?: boolean; defaultModel?: string },
+    patch: {
+      autoSequence?: boolean;
+      pipelineMode?: boolean;
+      defaultModel?: string;
+      conversationWorkflowVersionId?: string | null;
+    },
   ): Promise<TeamDTO> {
     const team = await this.repo.findByIdAndOrg(teamId, orgId);
     if (!team) throw new TeamNotFoundError();
     this.assertCanManageTeam(team.createdByUserId, userId, userRole);
+    if (patch.conversationWorkflowVersionId) {
+      await loadPublishedWorkflow({
+        workflowVersionId: patch.conversationWorkflowVersionId,
+        orgId,
+      });
+    }
     return this.repo.updateConfig(teamId, patch);
   }
 

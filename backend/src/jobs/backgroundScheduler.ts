@@ -8,6 +8,7 @@ import { tickEmployeeSchedules } from '../employees/employeeSchedule.service.js'
 import { scheduleService } from '../schedules/schedule.service.js';
 import { WaitTriggerService } from '../teams/waitTrigger.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
+import { fireDueConversationTimers } from '../conversations/conversationWorkers.service.js';
 
 /**
  * In-process interval scheduler for jobs that previously had to be triggered by hand
@@ -129,6 +130,14 @@ export function startBackgroundScheduler(): void {
   every(reconcileStaleRuns, runReconcileIntervalMs, 90_000);
   every(runPruneJobs, pruneIntervalMs, 3 * MINUTE_MS);
   every(expireWaitTriggers, MINUTE_MS, 55_000);
+  every(async () => {
+    try {
+      const n = await fireDueConversationTimers();
+      if (n > 0) console.log(`[scheduler] conversation timers fired=${n}`);
+    } catch (err) {
+      console.error('[scheduler] conversation timers failed', err);
+    }
+  }, 5_000, 5_000);
   every(async () => {
     try {
       const n = await tickEmployeeSchedules();

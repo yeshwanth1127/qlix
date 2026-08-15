@@ -153,6 +153,7 @@ const updateConfigSchema = z.object({
   autoSequence: z.boolean().optional(),
   pipelineMode: z.boolean().optional(),
   defaultModel: z.string().trim().max(120).optional(),
+  conversationWorkflowVersionId: z.string().trim().min(1).nullable().optional(),
 });
 
 const setSupervisorSchema = z.object({

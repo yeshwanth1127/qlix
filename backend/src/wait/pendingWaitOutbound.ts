@@ -11,6 +11,32 @@ import {
   assertTeamOutboundAllowed,
   TeamOutboundProvenanceError,
 } from '../teams/teamOutboundGuard.js';
+import { loadPublishedWorkflow } from '../conversations/conversationWorkflow.service.js';
+
+async function managedWorkflowEntryMessage(
+  repo: TeamsRepository,
+  teamId: string,
+): Promise<string | null> {
+  const team = await repo.findById(teamId);
+  const config = team?.config as { conversationWorkflowVersionId?: string } | undefined;
+  if (!team || !config?.conversationWorkflowVersionId) return null;
+  try {
+    const { workflow } = await loadPublishedWorkflow({
+      workflowVersionId: config.conversationWorkflowVersionId,
+      orgId: team.orgId,
+    });
+    const entry = workflow.nodes.find((node) => node.id === workflow.entryNodeId);
+    return entry && (entry.type === 'ask' || entry.type === 'collect')
+      ? entry.content
+      : null;
+  } catch (error) {
+    console.warn(
+      '[pending-wait] managed workflow entry unavailable:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
 
 /** Durable staging root for queued contact documents (must stay under WA allowlist / tmpdir). */
 export function pendingWaitDocumentDir(teamRunId: string): string {
@@ -151,6 +177,13 @@ export async function fillMissingOutreachPack(input: {
   goal: string;
   pending: PendingWaitOutbound[];
 }): Promise<PendingWaitOutbound[]> {
+  const repo = new TeamsRepository();
+  const run = await repo.findRun(input.teamRunId);
+  const team = run ? await repo.findById(run.teamId) : null;
+  const teamConfig = team?.config as { conversationWorkflowVersionId?: string } | undefined;
+  // Managed workflows own branch timing. Never infer an up-front attachment
+  // merely because a later conditional branch mentions a brochure or poll.
+  if (teamConfig?.conversationWorkflowVersionId) return input.pending;
   const { goalRequestsBrochureFile, goalRequestsInterestPoll } = await import('./waitPolicy.js');
   const wantBrochure = goalRequestsBrochureFile(input.goal);
   const wantPoll = goalRequestsInterestPoll(input.goal);
@@ -254,6 +287,7 @@ export async function persistPendingWaitOutbound(input: {
   const repo = new TeamsRepository();
   const run = await repo.findRun(input.teamRunId);
   if (!run) throw new Error('Team run not found');
+  const existing = (run.checkpointJson ?? null) as TeamRunCheckpoint | null;
   let authoritativeContact: { phone: string; name?: string };
   try {
     const mailbox = await repo.listMailboxResults(run.id);
@@ -272,13 +306,30 @@ export async function persistPendingWaitOutbound(input: {
     }
     throw error;
   }
+  const managedEntryMessage =
+    (input.outbound.kind ?? 'text') === 'text'
+      ? await managedWorkflowEntryMessage(repo, run.teamId)
+      : null;
+  if (managedEntryMessage) {
+    const recipientKey = normalizeContactJid(
+      input.outbound.jid || input.outbound.recipient,
+    );
+    const alreadyQueued = existing?.pendingWaitOutbounds?.find(
+      (row) =>
+        (row.kind ?? 'text') === 'text' &&
+        normalizeContactJid(row.jid || row.recipient) === recipientKey,
+    );
+    if (alreadyQueued) return alreadyQueued;
+  }
   const authoritativeOutbound = {
     ...input.outbound,
+    ...(managedEntryMessage
+      ? { message: managedEntryMessage, replyInstructions: null }
+      : {}),
     // Preserve the source-of-truth name. WhatsApp may return a device-local
     // nickname for the same valid phone number.
     name: authoritativeContact.name ?? input.outbound.name,
   };
-  const existing = (run.checkpointJson ?? null) as TeamRunCheckpoint | null;
   const base: TeamRunCheckpoint =
     existing ??
     ({
@@ -433,8 +484,8 @@ export async function flushPendingWaitOutbounds(input: {
     checkpoint = upsertWaitContactInCheckpoint(checkpoint, {
       jid: result.jid,
       name:
-        result.name ??
         item.name ??
+        result.name ??
         (kind === 'document'
           ? item.documentFileName ?? item.message
           : inferNameFromOutreachMessage(item.message)),

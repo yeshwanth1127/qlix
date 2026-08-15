@@ -778,10 +778,12 @@ export function renderLunaTeamsFinal(
     throw new Error('All team dispatches failed');
   }
   const last = completed[completed.length - 1]!;
+  const isExternalWhatsAppResult = (result: (typeof completed)[number]) =>
+    result.subtaskId?.startsWith('external_whatsapp_') === true;
   const workerDispatches = completed.filter(
-    (result) => result.subtaskId !== 'external_whatsapp_reply',
+    (result) => !isExternalWhatsAppResult(result),
   );
-  const hasExternalResult = last.subtaskId === 'external_whatsapp_reply';
+  const hasExternalResult = isExternalWhatsAppResult(last);
   if (completed.length === 1) {
     return last.findings.trim() || last.summary.trim();
   }

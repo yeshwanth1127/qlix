@@ -46,6 +46,55 @@ class IntentMode(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
 
 
+class ConversationStatus(str, Enum):
+    CREATED = "created"
+    ACTIVE = "active"
+    WAITING_INPUT = "waiting_input"
+    WAITING_TIMER = "waiting_timer"
+    WAITING_ACTION = "waiting_action"
+    WAITING_APPROVAL = "waiting_approval"
+    HANDED_OFF = "handed_off"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True)
+class ConversationWorkflow:
+    """Provider-neutral, immutable workflow definition published by the backend."""
+
+    key: str
+    entry_node_id: str
+    nodes: tuple[Mapping[str, Any], ...]
+    version: int = 1
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ConversationStartRequest:
+    """Starts one logical thread; messages become events inside this thread."""
+
+    owner_type: str
+    workflow_key: str | None = None
+    workflow_version_id: str | None = None
+    process_id: str | None = None
+    parent_thread_id: str | None = None
+    owner_id: str | None = None
+    channel: str | None = None
+    variables: Mapping[str, Any] = field(default_factory=dict)
+    participants: tuple[Mapping[str, Any], ...] = ()
+    bindings: tuple[Mapping[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class ConversationSignalRequest:
+    thread_id: str
+    signal: Mapping[str, Any]
+    idempotency_key: str
+    provider_event_id: str | None = None
+
+
 @dataclass(frozen=True)
 class IntentRequirement:
     id: str

@@ -66,6 +66,32 @@ test('outbound guard matches capitalized Phone fields and country-code prefixes'
   );
 });
 
+test('outbound guard canonicalizes common spreadsheet phone aliases', () => {
+  for (const field of ['Phone Number', 'Mobile No', 'WhatsApp Number', 'Contact Number']) {
+    const aliased = [
+      {
+        status: 'completed',
+        payload: {
+          data: { findings: [{ Name: 'Karthik Rao', [field]: '+919980547804' }] },
+          provenance: {
+            inputRefs: ['team-input:sheet'],
+            recordRefs: ['team-input:sheet:row:3'],
+          },
+        },
+      },
+    ] as TeamMailboxMessageDTO[];
+    assert.doesNotThrow(() =>
+      assertTeamOutboundAllowed(run, aliased, {
+        recipient: '+919980547804',
+        phone: '+919980547804',
+        jid: '919980547804@s.whatsapp.net',
+        name: 'Karthik Rao',
+      }),
+      field,
+    );
+  }
+});
+
 test('outbound guard permits a validated authoritative contact', () => {
   assert.doesNotThrow(() =>
     assertTeamOutboundAllowed(run, mailbox, {

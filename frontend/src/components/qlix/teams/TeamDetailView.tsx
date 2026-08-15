@@ -23,6 +23,7 @@ import {
   deleteTeamSupervisor,
   getTeam,
   getTeamRunnersStatus,
+  listConversationWorkflows,
   reorderTeamMembers,
   setSupervisorAgent,
   updateTeamConfig,
@@ -31,6 +32,7 @@ import {
   type TeamMemberDTO,
   type TeamRunnerStatusEntry,
   type TeamRunnersStatusDTO,
+  type ConversationWorkflowOption,
 } from "@/lib/teams-api";
 import { listAgents, restartCloudRunner, type AgentDTO, type PermissionScope } from "@/lib/agents-api";
 import { cn } from "@/lib/utils/cn";
@@ -301,6 +303,9 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   const [editScopes, setEditScopes] = useState<PermissionScope[]>([]);
   const [reorderingId, setReorderingId] = useState<string | null>(null);
   const [togglingAutoSequence, setTogglingAutoSequence] = useState(false);
+  const [workflows, setWorkflows] = useState<ConversationWorkflowOption[]>([]);
+  const [workflowsLoading, setWorkflowsLoading] = useState(true);
+  const [savingConversationMode, setSavingConversationMode] = useState(false);
   const [savingMemberScopes, setSavingMemberScopes] = useState(false);
   const [copied, setCopied] = useState<"did" | "trigger" | null>(null);
 
@@ -308,6 +313,7 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   const allReady = runnersStatus?.allReady ?? false;
   const canRun = allReady;
   const autoSequence = Boolean(team.config.autoSequence);
+  const managedWorkflowId = team.config.conversationWorkflowVersionId ?? null;
 
   const runnerByAgentId = useCallback(
     (agentId: string) => runnersStatus?.runners.find((r) => r.agentId === agentId),
@@ -329,6 +335,18 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
     const interval = setInterval(() => void pollRunners(), 2500);
     return () => clearInterval(interval);
   }, [tab, pollRunners]);
+
+  useEffect(() => {
+    let active = true;
+    setWorkflowsLoading(true);
+    void listConversationWorkflows()
+      .then((items) => { if (active) setWorkflows(items); })
+      .catch((err) => {
+        if (active) setActionError(err instanceof Error ? err.message : "Failed to load workflows");
+      })
+      .finally(() => { if (active) setWorkflowsLoading(false); });
+    return () => { active = false; };
+  }, [team.orgId]);
 
   async function copyToClipboard(value: string, key: "did" | "trigger") {
     try {
@@ -564,6 +582,20 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
       setActionError(err instanceof Error ? err.message : "Failed to update team config");
     } finally {
       setTogglingAutoSequence(false);
+    }
+  }
+
+  async function handleConversationModeChange(workflowVersionId: string | null) {
+    if (savingConversationMode) return;
+    setSavingConversationMode(true);
+    setActionError(null);
+    try {
+      const updated = await updateTeamConfig(team.id, { conversationWorkflowVersionId: workflowVersionId });
+      onUpdated(updated);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to update conversation mode");
+    } finally {
+      setSavingConversationMode(false);
     }
   }
 
@@ -852,6 +884,76 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
                   No agents yet — add the ones this team should work with.
                 </p>
               )}
+            </Section>
+
+            <Section title="Conversation mode">
+              <div className="space-y-4 px-5 py-5">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleConversationModeChange(null)}
+                    disabled={savingConversationMode}
+                    className={cn(
+                      "rounded-xl border px-4 py-3 text-left transition-colors disabled:opacity-50",
+                      !managedWorkflowId ? "border-black bg-black/[0.04]" : cn(HAIRLINE, "hover:bg-black/[0.03]"),
+                    )}
+                  >
+                    <span className="block text-[13px] font-medium text-black">Standard</span>
+                    <span className={cn("mt-1 block text-[11.5px] leading-relaxed", INK_SOFT)}>
+                      Agents use their tools normally for each run.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = managedWorkflowId ?? workflows[0]?.workflowVersionId;
+                      if (next) void handleConversationModeChange(next);
+                    }}
+                    disabled={savingConversationMode || workflowsLoading || workflows.length === 0}
+                    className={cn(
+                      "rounded-xl border px-4 py-3 text-left transition-colors disabled:opacity-50",
+                      managedWorkflowId ? "border-black bg-black/[0.04]" : cn(HAIRLINE, "hover:bg-black/[0.03]"),
+                    )}
+                  >
+                    <span className="block text-[13px] font-medium text-black">Managed workflow</span>
+                    <span className={cn("mt-1 block text-[11.5px] leading-relaxed", INK_SOFT)}>
+                      Runs a tracked, branched conversation for every contact.
+                    </span>
+                  </button>
+                </div>
+
+                {managedWorkflowId && (
+                  <label className="block">
+                    <span className={cn("mb-1.5 block text-[11px] uppercase tracking-[0.14em]", INK_SOFT)}>
+                      Workflow
+                    </span>
+                    <select
+                      value={managedWorkflowId}
+                      onChange={(event) => void handleConversationModeChange(event.target.value)}
+                      disabled={savingConversationMode || workflowsLoading}
+                      className={cn(
+                        "w-full rounded-xl border bg-white/60 px-3.5 py-2.5 text-[13px] text-black outline-none focus:border-black disabled:opacity-50",
+                        HAIRLINE,
+                      )}
+                    >
+                      {workflows.map((workflow) => (
+                        <option key={workflow.workflowVersionId} value={workflow.workflowVersionId}>
+                          {workflow.name} · v{workflow.version}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {!workflowsLoading && workflows.length === 0 && (
+                  <p className={cn("text-[11.5px]", INK_SOFT)}>
+                    No published workflows are available. Standard mode remains active.
+                  </p>
+                )}
+                {savingConversationMode && (
+                  <p className={cn("text-[11.5px]", INK_SOFT)}>Saving conversation mode…</p>
+                )}
+              </div>
             </Section>
 
             <div className={cn("flex flex-wrap items-center justify-between gap-3 border-t pt-6", HAIRLINE)}>

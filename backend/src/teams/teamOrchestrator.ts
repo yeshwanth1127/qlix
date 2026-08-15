@@ -9,7 +9,11 @@ import type {
 } from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamAgentRunBridge } from './teamAgentRunBridge.js';
-import { WaitTriggerService, type WaitTriggerInbound } from './waitTrigger.service.js';
+import {
+  WaitTriggerService,
+  type TeamManagedConversationResult,
+  type WaitTriggerInbound,
+} from './waitTrigger.service.js';
 import {
   classifyReplyInterests,
   formatInterestFindings,
@@ -254,17 +258,18 @@ export class TeamOrchestrator {
             await this.abortPipelineRun(run, team, supervisorId, failed, emit);
             return;
           }
-          if (groupIndex < stageGroups.length - 1) {
-            const paused = await this.pauseForOpenWaits(
-              run,
-              team,
-              plan,
-              results,
-              groupIndex + 1,
-              emit,
-            );
-            if (paused) return;
-          }
+          // A wait may intentionally follow the final worker stage (for
+          // example, outbound outreach followed by a per-contact workflow).
+          // Always inspect durable waits/pending outbounds before finalizing.
+          const paused = await this.pauseForOpenWaits(
+            run,
+            team,
+            plan,
+            results,
+            groupIndex + 1,
+            emit,
+          );
+          if (paused) return;
 
         }
       } else {
@@ -332,6 +337,10 @@ export class TeamOrchestrator {
 
     try {
       const inbound = await this.waitTriggers.loadFulfilledInbound(run.id, checkpoint.waitTriggerIds);
+      const managedConversations = await this.waitTriggers.loadManagedConversationResults(
+        run.id,
+        checkpoint.waitTriggerIds,
+      );
       const allTerminal = await this.waitTriggers.areAllCheckpointTriggersTerminal(
         run.id,
         checkpoint.waitTriggerIds,
@@ -348,10 +357,12 @@ export class TeamOrchestrator {
       const timedOut = expiredCount > 0;
       const totalContacts = checkpoint.waitTriggerIds.length;
 
-      const classifications = await classifyReplyInterests(
-        inbound.map((reply) => ({ jid: reply.jid, text: reply.text })),
-        { userGoal: run.goal },
-      );
+      const classifications = managedConversations.length === 0
+        ? await classifyReplyInterests(
+            inbound.map((reply) => ({ jid: reply.jid, text: reply.text })),
+            { userGoal: run.goal },
+          )
+        : [];
       const interestSummary = summarizeInterestCounts(classifications);
       const liveArtifacts = liveArtifactsForResume(checkpoint);
       const liveArtifactContext =
@@ -364,18 +375,21 @@ export class TeamOrchestrator {
               .join('\n')}\n--- End live artifacts ---\n`
           : '';
 
-      const waitResult = this.externalReplyResult(inbound, classifications, {
-        timedOut,
-        totalContacts,
-        repliedCount: inbound.length,
-        liveArtifactContext,
-      });
+      const waitResult = managedConversations.length > 0
+        ? this.managedConversationResult(managedConversations, checkpoint)
+        : this.externalReplyResult(inbound, classifications, {
+            timedOut,
+            totalContacts,
+            repliedCount: inbound.length,
+            liveArtifactContext,
+          });
       const waitPayload = {
         kind: 'external_wait_result',
         triggerKind: 'whatsapp_inbound',
         timedOut,
         totalContacts,
         replies: inbound,
+        conversations: managedConversations,
         classifications,
         interestSummary,
         liveArtifacts,
@@ -395,7 +409,7 @@ export class TeamOrchestrator {
       // Direct the first resumed stage to sheet only included (interested + unclear) leads.
       const stageGroups = groupSubtasksByStage(plan);
       const resumeGroup = stageGroups[checkpoint.nextStageIndex];
-      if (resumeGroup) {
+      if (resumeGroup && managedConversations.length === 0) {
         for (const subtask of resumeGroup) {
           if (!subtask.goal.includes(INTEREST_STAGE_GOAL_APPEND)) {
             subtask.goal = `${subtask.goal}\n\n${INTEREST_STAGE_GOAL_APPEND}`;
@@ -540,6 +554,75 @@ export class TeamOrchestrator {
         (meta?.timedOut ? ' (wait timed out)' : '') +
         ` (${interestSummary.included} included for sheet, ${interestSummary.notInterested} declined).`,
       findings: findingsParts.join('\n\n'),
+      artifacts: [],
+      status: 'completed',
+    };
+  }
+
+  private managedConversationResult(
+    conversations: TeamManagedConversationResult[],
+    checkpoint: TeamRunCheckpoint,
+  ): WorkerResult {
+    const internalKeys = new Set([
+      'connectorId',
+      'contactJid',
+      'teamRunId',
+      'waitTriggerId',
+      'pushName',
+    ]);
+    const preferredOrder = ['interest', 'preference', 'city', 'degree', 'experience'];
+    const contacts = conversations.map((conversation) => {
+      const responses = Object.fromEntries(
+        Object.entries(conversation.variables)
+          .filter(([key]) => !internalKeys.has(key) && !key.endsWith('Classification'))
+          .sort(([left], [right]) => {
+            const leftIndex = preferredOrder.indexOf(left);
+            const rightIndex = preferredOrder.indexOf(right);
+            return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
+          }),
+      );
+      const contact = checkpoint.waitContacts?.[conversation.contactJid];
+      return {
+        contact: {
+          name: contact?.name ?? null,
+          phone: contact?.phone ?? conversation.contactJid.split('@')[0],
+          jid: conversation.contactJid,
+        },
+        status: conversation.status,
+        responses,
+        outcome: conversation.result,
+      };
+    });
+    const formatLabel = (value: string) =>
+      value
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/_/g, ' ')
+        .replace(/^./, (character) => character.toUpperCase());
+    const findings = contacts
+      .map((entry) => {
+        const responseLines = Object.entries(entry.responses)
+          .map(([key, value]) => `- **${formatLabel(key)}:** ${String(value)}`)
+          .join('\n');
+        const nextAction = entry.outcome.nextAction;
+        return [
+          `### ${entry.contact.name || 'WhatsApp contact'}`,
+          `- **Phone:** +${entry.contact.phone.replace(/^\+/, '')}`,
+          `- **Status:** ${formatLabel(entry.status)}`,
+          '',
+          '**Responses**',
+          responseLines || '- No responses collected',
+          ...(typeof nextAction === 'string'
+            ? ['', `**Next step:** ${formatLabel(nextAction)}`]
+            : []),
+        ].join('\n');
+      })
+      .join('\n\n');
+    return {
+      subtaskId: 'external_whatsapp_conversations',
+      agentId: '',
+      agentName: 'WhatsApp conversations',
+      summary: `${contacts.length} contact conversation${contacts.length === 1 ? '' : 's'} completed with collected responses.`,
+      findings,
       artifacts: [],
       status: 'completed',
     };
@@ -696,6 +779,9 @@ export class TeamOrchestrator {
       artifactCount: allArtifacts.length,
     }, emit);
 
+    // Terminal Team runs must never retain an inbound route. Otherwise later
+    // casual replies can be consumed by an old run and repeat its final ack.
+    await this.waitTriggers.cancelForTeamRun(run.id);
     await this.repo.updateRunStatus(run.id, 'completed', {
       completedAt: new Date(),
       result: { synthesis, artifactCount: allArtifacts.length },
@@ -1152,8 +1238,15 @@ User goal: ${runObjective(run)}`;
       knowledgeMode,
     });
     const toolsEnabled = workerSkills.some((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL);
+    const conversationWorkflowEnabled = Boolean(
+      (team.config as TeamConfig).conversationWorkflowVersionId,
+    );
     const replyWaitGuidance =
-      workerSkills.includes('whatsapp.contact_send') &&
+      conversationWorkflowEnabled && workerSkills.includes('whatsapp.contact_send')
+        ? '- This Team uses a managed per-contact conversation workflow. Send exactly one initial message per validated lead asking the first question only.\n' +
+          '- Do NOT send later branch messages, collect later answers, set auto-reply instructions, or delegate follow-up work. The conversation middleware owns every reply and next step.\n' +
+          '- Message only contacts present in the authoritative Luna-Teams Result handback, using the full phone number including country code.\n'
+        : workerSkills.includes('whatsapp.contact_send') &&
       workerSkills.includes('whatsapp.auto_reply') &&
       (goalRequestsOutreachPack(runObjective(run)) ||
         (Array.isArray((team.config as TeamConfig).waitSteps) &&

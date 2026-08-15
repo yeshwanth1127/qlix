@@ -3,37 +3,14 @@ import type {
   TeamMailboxMessageDTO,
   TeamRunDTO,
 } from './teams.types.js';
+import {
+  normalizeRecipientAddress,
+  recipientAddressesEqual,
+  resolveCanonicalRecipients,
+} from '../communications/recipientResolution.js';
 
 export class TeamOutboundProvenanceError extends Error {
   readonly code = 'team_outbound_provenance_blocked';
-}
-
-function digits(value: unknown): string {
-  return String(value ?? '').replace(/\D/g, '');
-}
-
-function recordField(record: Record<string, unknown>, names: RegExp): unknown {
-  for (const [key, value] of Object.entries(record)) {
-    if (names.test(key)) return value;
-  }
-  return undefined;
-}
-
-function phonesEqual(left: string, right: string): boolean {
-  if (!left || !right || left.length < 8 || right.length < 8) return false;
-  return left === right || left.endsWith(right) || right.endsWith(left);
-}
-
-function collectContactRecords(value: unknown): Record<string, unknown>[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((item) =>
-      item && typeof item === 'object' && !Array.isArray(item)
-        ? [item as Record<string, unknown>, ...collectContactRecords(item)]
-        : collectContactRecords(item),
-    );
-  }
-  if (!value || typeof value !== 'object') return [];
-  return Object.values(value as Record<string, unknown>).flatMap(collectContactRecords);
 }
 
 export function validatedOutboundContacts(
@@ -54,15 +31,20 @@ export function validatedOutboundContacts(
       ? envelope.provenance.inputRefs.filter((ref): ref is string => typeof ref === 'string')
       : [];
     const rows = Array.isArray(envelope.provenance?.recordRefs)
-      ? envelope.provenance.recordRefs
+      ? envelope.provenance.recordRefs.filter((ref): ref is string => typeof ref === 'string')
       : [];
-    if (!refs.some((ref) => authoritativeRefs.has(ref)) || rows.length === 0) continue;
-    for (const record of collectContactRecords(envelope.data)) {
-      const phone = digits(recordField(record, /^(phone|mobile|recipient|whatsapp)$/i));
-      if (!phone) continue;
-      const nameRaw = recordField(record, /^name$/i);
-      const name = typeof nameRaw === 'string' ? nameRaw.trim() : undefined;
-      contacts.push({ phone, ...(name ? { name } : {}) });
+    const trustedRefs = refs.filter((ref) => authoritativeRefs.has(ref));
+    if (trustedRefs.length === 0 || rows.length === 0) continue;
+    for (const recipient of resolveCanonicalRecipients({
+      value: envelope.data,
+      channel: 'whatsapp',
+      sourceRefs: trustedRefs,
+      rowRefs: rows,
+    })) {
+      contacts.push({
+        phone: recipient.address,
+        ...(recipient.displayName ? { name: recipient.displayName } : {}),
+      });
     }
   }
   return contacts;
@@ -73,7 +55,10 @@ export function assertTeamOutboundAllowed(
   mailbox: TeamMailboxMessageDTO[],
   outbound: Pick<PendingWaitOutbound, 'recipient' | 'jid' | 'phone' | 'name'>,
 ): { phone: string; name?: string } {
-  const targetPhone = digits(outbound.phone || outbound.jid || outbound.recipient);
+  const targetPhone = normalizeRecipientAddress(
+    'whatsapp',
+    outbound.phone || outbound.jid || outbound.recipient,
+  );
   const requestedRecipient = outbound.recipient.trim();
   const recipientLooksLikePhoneOrJid =
     /^\+?\d[\d\s().-]{6,}$/.test(requestedRecipient) ||
@@ -85,7 +70,9 @@ export function assertTeamOutboundAllowed(
     ? ''
     : requestedRecipient.toLocaleLowerCase();
   const contacts = validatedOutboundContacts(run, mailbox);
-  const match = contacts.find((contact) => phonesEqual(contact.phone, targetPhone));
+  const match = contacts.find((contact) =>
+    recipientAddressesEqual('whatsapp', contact.phone, targetPhone),
+  );
   if (!targetPhone || !match) {
     throw new TeamOutboundProvenanceError(
       `Blocked recipient ${outbound.recipient}: not present in authoritative Result data`,
