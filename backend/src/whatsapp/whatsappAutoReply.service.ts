@@ -521,7 +521,11 @@ export async function isContactArmed(connectorId: string, remoteJid: string): Pr
 /**
  * Phone JIDs currently armed / muted for this connector.
  * Used by the WhatsApp sidecar to reverse-map inbound @lid addresses and skip closed leads.
+ * Capped high enough for a 500-lead wait; warn if we ever hit the ceiling.
  */
+export const ARMED_CONTACTS_QUERY_LIMIT = Number(process.env.QLIX_ARMED_CONTACTS_LIMIT || 5000);
+const FULFILLED_WAIT_MUTE_LIMIT = 500;
+
 export async function listArmedAndMutedContactJids(connectorId: string): Promise<{
   contacts: string[];
   muted: string[];
@@ -531,7 +535,7 @@ export async function listArmedAndMutedContactJids(connectorId: string): Promise
     prisma.whatsAppAutoReplySession.findMany({
       where: { connectorId, status: 'active', expiresAt: { gt: now } },
       select: { contactJid: true, lastOutboundAt: true },
-      take: 50,
+      take: ARMED_CONTACTS_QUERY_LIMIT,
     }),
     prisma.waitTrigger.findMany({
       where: {
@@ -542,7 +546,7 @@ export async function listArmedAndMutedContactJids(connectorId: string): Promise
         contactJid: { not: null },
       },
       select: { contactJid: true },
-      take: 50,
+      take: ARMED_CONTACTS_QUERY_LIMIT,
     }),
     prisma.waitTrigger.findMany({
       where: {
@@ -553,9 +557,15 @@ export async function listArmedAndMutedContactJids(connectorId: string): Promise
       },
       select: { contactJid: true, fulfilledAt: true },
       orderBy: { fulfilledAt: 'desc' },
-      take: 100,
+      take: FULFILLED_WAIT_MUTE_LIMIT,
     }),
   ]);
+
+  if (sessions.length >= ARMED_CONTACTS_QUERY_LIMIT || openWaits.length >= ARMED_CONTACTS_QUERY_LIMIT) {
+    console.warn(
+      `[whatsapp-auto-reply] armed-contacts query hit limit=${ARMED_CONTACTS_QUERY_LIMIT} connector=${connectorId} sessions=${sessions.length} openWaits=${openWaits.length}`,
+    );
+  }
 
   const openSet = new Set<string>();
   for (const row of openWaits) {

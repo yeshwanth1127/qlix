@@ -17,7 +17,8 @@ import {
 import {
   classifyReplyInterests,
   formatInterestFindings,
-  INTEREST_STAGE_GOAL_APPEND,
+  INTEREST_STAGE_GOAL_MARKER,
+  interestStageGoalAppend,
   summarizeInterestCounts,
   type ReplyInterestResult,
 } from './replyInterestClassifier.js';
@@ -33,6 +34,7 @@ import {
   buildWaitPolicySnapshot,
   findWaitStepForStage,
   goalRequestsOutreachPack,
+  resolveReplyInclusion,
   resolveWaitStepsForTeam,
 } from '../wait/waitPolicy.js';
 import {
@@ -45,6 +47,8 @@ import {
   parseLunaTeamsHandback,
   DEFAULT_RESULT_CONTRACT,
   planLunaTeamsDispatches,
+  isEmptyFindings,
+  isRowStructuredInput,
   renderLunaTeamsFinal,
   renderResultHandbacks,
   resolveDispatchAllowedScopes,
@@ -53,9 +57,31 @@ import {
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
 import { effectiveRunGoal } from './teamIntent.js';
+import { repairCityAliasOmissions } from './rowAliasRepair.js';
+import { cityAliasHint } from './cityAliases.js';
 
 function runObjective(run: TeamRunDTO): string {
   return effectiveRunGoal(run);
+}
+
+/**
+ * Structured `findings` out of a completed handback. A validated Result is stored as
+ * `{ data, provenance }`, so the payload the next stage consumes sits one level in.
+ * `known: false` means the shape was not recognised — callers must not treat that as empty.
+ */
+export function handbackFindings(result: { payload?: unknown }): { known: boolean; value: unknown } {
+  const payload = result.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { known: false, value: undefined };
+  }
+  const outer = payload as Record<string, unknown>;
+  const container =
+    outer.data && typeof outer.data === 'object' && !Array.isArray(outer.data)
+      ? (outer.data as Record<string, unknown>)
+      : outer;
+  return 'findings' in container
+    ? { known: true, value: container.findings }
+    : { known: false, value: undefined };
 }
 
 function normalizeFindingsText(findings: unknown): string {
@@ -73,6 +99,24 @@ const TRUNCATION_FAILURE_RE =
 
 function isTruncationLikeFailure(message: string): boolean {
   return TRUNCATION_FAILURE_RE.test(message);
+}
+
+/** The worker produced a Result envelope and validation rejected it, as opposed to producing none. */
+const TEAM_RESULT_REJECTED = 'team_result_rejected';
+
+/** The worker described the work in its Result but never called the tool that performs it. */
+const TEAM_STAGE_DID_NOT_ACT = 'team_stage_did_not_act';
+
+/**
+ * Scopes whose whole purpose is to change something outside the run. A stage holding one of
+ * these has not finished by writing a Result about it — a Result saying "a WhatsApp message was
+ * prepared" is not a message anybody received.
+ */
+const ACTING_SCOPE_RE =
+  /^(whatsapp\.(contact_send|send.*)|email\.send|crm\.write|sheets\.write|drive\.write|notion\.write|slack\.(post|send).*)$/i;
+
+export function isActingScope(scope: string): boolean {
+  return ACTING_SCOPE_RE.test(scope);
 }
 
 function teamRunInferenceModel(
@@ -111,6 +155,8 @@ export interface SubtaskPlan {
   allowedSources: Array<'authoritative_input' | 'reference_asset'>;
   knowledgeMode: 'none' | 'reference_only' | 'required';
   outputContract: Record<string, unknown>;
+  /** Intent requirements this dispatch owns. Absent on the fallback plans, which decompose none. */
+  requirementIds?: string[];
 }
 
 interface WorkerResult {
@@ -360,10 +406,13 @@ export class TeamOrchestrator {
       const classifications = managedConversations.length === 0
         ? await classifyReplyInterests(
             inbound.map((reply) => ({ jid: reply.jid, text: reply.text })),
-            { userGoal: run.goal },
+            { userGoal: run.goal, model: checkpoint.inferenceModel },
           )
         : [];
-      const interestSummary = summarizeInterestCounts(classifications);
+      // Read the policy back off the run's own wait snapshot so the artifact, the resumed
+      // worker prompt and the run summary cannot drift apart.
+      const replyInclusion = resolveReplyInclusion(checkpoint.waitPolicySnapshot);
+      const interestSummary = summarizeInterestCounts(classifications, replyInclusion);
       const liveArtifacts = liveArtifactsForResume(checkpoint);
       const liveArtifactContext =
         liveArtifacts.length > 0
@@ -382,6 +431,7 @@ export class TeamOrchestrator {
             totalContacts,
             repliedCount: inbound.length,
             liveArtifactContext,
+            replyInclusion,
           });
       const waitPayload = {
         kind: 'external_wait_result',
@@ -392,6 +442,7 @@ export class TeamOrchestrator {
         conversations: managedConversations,
         classifications,
         interestSummary,
+        replyInclusion,
         liveArtifacts,
       };
       const waitMailbox = await this.repo.appendMailboxResult({
@@ -406,18 +457,22 @@ export class TeamOrchestrator {
       waitResult.mailboxMessageId = waitMailbox.id;
       results.push(waitResult);
 
-      // Direct the first resumed stage to sheet only included (interested + unclear) leads.
+      // Direct the first resumed stage to sheet exactly the leads this run's policy includes.
       const stageGroups = groupSubtasksByStage(plan);
       const resumeGroup = stageGroups[checkpoint.nextStageIndex];
       if (resumeGroup && managedConversations.length === 0) {
+        const stageAppend = interestStageGoalAppend(replyInclusion);
         for (const subtask of resumeGroup) {
-          if (!subtask.goal.includes(INTEREST_STAGE_GOAL_APPEND)) {
-            subtask.goal = `${subtask.goal}\n\n${INTEREST_STAGE_GOAL_APPEND}`;
+          if (!subtask.goal.includes(INTEREST_STAGE_GOAL_MARKER)) {
+            subtask.goal = `${subtask.goal}\n\n${stageAppend}`;
           }
         }
       }
 
-      await this.repo.updateRunStatus(run.id, 'running', { checkpointJson: null });
+      const claimed = await this.repo.claimRunStatus(run.id, 'paused', 'running', {
+        checkpointJson: null,
+      });
+      if (!claimed) return;
       const activeWaitStep = checkpoint.waitPolicySnapshot?.waitSteps.find(
         (step) => step.id === checkpoint.waitPolicySnapshot?.activeWaitStepId,
       );
@@ -528,6 +583,7 @@ export class TeamOrchestrator {
       totalContacts?: number;
       repliedCount?: number;
       liveArtifactContext?: string;
+      replyInclusion?: import('../wait/waitPolicy.types.js').ReplyInterestLabel[];
     },
   ): WorkerResult {
     const findingsParts: string[] = [];
@@ -543,8 +599,8 @@ export class TeamOrchestrator {
     if (meta?.liveArtifactContext?.trim()) {
       findingsParts.push(meta.liveArtifactContext.trim());
     }
-    findingsParts.push(formatInterestFindings(classifications));
-    const interestSummary = summarizeInterestCounts(classifications);
+    findingsParts.push(formatInterestFindings(classifications, meta?.replyInclusion));
+    const interestSummary = summarizeInterestCounts(classifications, meta?.replyInclusion);
     return {
       subtaskId: 'external_whatsapp_reply',
       agentId: '',
@@ -896,6 +952,7 @@ export class TeamOrchestrator {
         allowedScopes: resolveDispatchAllowedScopes({
           role: m.role,
           task: goal,
+          agentName: m.agent?.name ?? m.agentId,
           delegatedScopes: m.delegatedScopes,
           knowledgeMode: 'none',
         }),
@@ -1191,15 +1248,31 @@ User goal: ${runObjective(run)}`;
       : '';
     if (selectedInputs.length > 0) {
       const sourceLabels = selectedInputs.map((input) => {
-        const rows = input.extractedText
-          ? Math.max(0, input.extractedText.split(/\r?\n/).filter(Boolean).length - 1)
-          : 0;
+        // Line count is only a row count for a sheet. On a deck or a PDF it counted
+        // paragraphs and called them rows.
+        const rows =
+          input.extractedText && isRowStructuredInput(input)
+            ? Math.max(0, input.extractedText.split(/\r?\n/).filter(Boolean).length - 1)
+            : 0;
         return `${input.fileName}${rows > 0 ? ` (${rows} rows)` : ''}`;
       });
       await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
         message: `${subtask.agentName} used ${sourceLabels.join(', ')}`,
         provenance: true,
       }, emit);
+    }
+    // A stage with no file of its own is told to continue from the handbacks alone. If every
+    // one of them is empty there is nothing to continue from, and running anyway invites the
+    // worker to fill the gap from its own priors. Fail here rather than pay for that inference.
+    const priorFindings = completedPrior.map(handbackFindings);
+    if (
+      selectedInputs.length === 0 &&
+      priorFindings.length > 0 &&
+      priorFindings.every((found) => found.known && isEmptyFindings(found.value))
+    ) {
+      throw new Error(
+        `No usable output from the previous stage${completedPrior.length === 1 ? '' : 's'} to continue from`,
+      );
     }
     const validatedPriorRecords = completedPrior.reduce((count, result) => {
       const payload = result.payload as { provenance?: { recordRefs?: unknown[] } } | undefined;
@@ -1234,6 +1307,7 @@ User goal: ${runObjective(run)}`;
       allowedScopes: subtask.allowedScopes,
       role: subtask.role,
       task: subtask.goal,
+      agentName: subtask.agentName,
       delegatedScopes: subtask.delegatedScopes,
       knowledgeMode,
     });
@@ -1265,6 +1339,7 @@ User goal: ${runObjective(run)}`;
       /\bfilter\b/i.test(subtask.goal) ||
       /\bqualified\s+lead/i.test(subtask.goal)
         ? '- When filtering by city/region, treat common aliases as the SAME place (Bangalore = Bengaluru, Bombay = Mumbai, Madras = Chennai, Calcutta = Kolkata, Poona = Pune). Keep EVERY row that matches the intent — never drop a lead only because of alternate spelling or casing.\n' +
+          cityAliasHint(`${subtask.goal} ${runObjective(run)}`) +
           '- In findings, list every kept lead with **Name + full phone with country code + city** so the next stage can message all of them.\n'
         : '';
 
@@ -1310,7 +1385,17 @@ Dispatch: ${subtask.goal}`;
             ? workerPrompt
             : lastError && isTruncationLikeFailure(lastError.message) && toolsEnabled
               ? `Previous attempt was cut off while thinking. Call the required tools, then return the compact JSON Result.\n\n${workerPrompt}`
-              : `Previous attempt returned no Result. Do not call find_tools, call_tool, or any other tool. Return only the JSON Result object.\n\n${workerPrompt}`;
+              : lastError && (lastError as { code?: string }).code === TEAM_STAGE_DID_NOT_ACT
+                ? `Your previous attempt returned a Result describing work that never happened: ` +
+                  `you called no tool, so nothing was sent. Call find_tools to get the exact tool ` +
+                  `name, then call it once per record, and only then return the JSON Result.\n\n${workerPrompt}`
+              : lastError && (lastError as { code?: string }).code === TEAM_RESULT_REJECTED
+                ? `Your previous Result was returned but rejected by Qlix for this reason:\n` +
+                  `${lastError.message}\n\n` +
+                  `Fix exactly that and return the corrected JSON Result. Keep every other part of ` +
+                  `your previous answer. Do not drop content to get past the check, and do not ` +
+                  `invent provenance you cannot support.\n\n${workerPrompt}`
+                : `Previous attempt returned no Result. Do not call find_tools, call_tool, or any other tool. Return only the JSON Result object.\n\n${workerPrompt}`;
         if (attempt > 1 && inferenceModel && inferenceModel !== requestedModel) {
           await this.emitEvent(
             run,
@@ -1360,23 +1445,68 @@ Dispatch: ${subtask.goal}`;
         if (handback.truncated) {
           throw new Error('Worker Result JSON was cut off');
         }
+        // A filter stage that kept "Bangalore" and dropped "Bengaluru" split one city in two.
+        // The rows come back from the authoritative source here rather than from a retry —
+        // the prompt already asks for alias-aware matching and small models still miss it.
+        const repair =
+          selectedInputs.length > 0
+            ? repairCityAliasOmissions({ payload: handback.payload, inputs: selectedInputs })
+            : { payload: handback.payload, restored: [] };
+        if (repair.restored.length > 0) {
+          await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
+            message:
+              `Also kept ${repair.restored
+                .map((item) => `${item.label || `row ${item.row}`} (${item.city})`)
+                .join(', ')} — same city, different spelling`,
+            provenance: true,
+          }, emit);
+        }
         const handbackRecord =
-          handback.payload && typeof handback.payload === 'object' && !Array.isArray(handback.payload)
-            ? handback.payload as Record<string, unknown>
+          repair.payload && typeof repair.payload === 'object' && !Array.isArray(repair.payload)
+            ? repair.payload as Record<string, unknown>
             : null;
         const summary = handback.summary;
-        const findings = normalizeFindingsText(handbackRecord?.findings ?? handback.payload);
-        const validatedResult = validateLunaTeamsResult({
-          payload: handback.payload,
-          dispatch: {
-            inputRefs,
-            allowedSources,
-            knowledgeMode,
-            outputContract,
-          },
-          run,
-          priorHandbacks: completedPrior.map((result) => result.payload),
-        });
+        const findings = normalizeFindingsText(handbackRecord?.findings ?? repair.payload);
+        let validatedResult: ReturnType<typeof validateLunaTeamsResult>;
+        try {
+          validatedResult = validateLunaTeamsResult({
+            payload: repair.payload,
+            dispatch: {
+              inputRefs,
+              allowedSources,
+              knowledgeMode,
+              outputContract,
+              allowedScopes: subtask.allowedScopes,
+              requirementIds: subtask.requirementIds ?? [],
+            },
+            run,
+            priorHandbacks: completedPrior.map((result) => result.payload),
+            toolUrls: outcome.toolUrls,
+          });
+        } catch (err) {
+          // The worker answered; we rejected the answer. Marked so the retry can say why
+          // instead of telling a worker that produced a full Result it produced none.
+          throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
+            code: TEAM_RESULT_REJECTED,
+          });
+        }
+        // A stage that holds a sending tool and never called one did not do its job, however
+        // well it wrote the Result up. Completing here is worse than failing: the run reports
+        // success, the pipeline moves on, and nothing was ever sent.
+        const actingScopes = workerSkills.filter(isActingScope);
+        if (
+          actingScopes.length > 0 &&
+          outcome.actingTools.size === 0 &&
+          !isEmptyFindings(handbackFindings({ payload: validatedResult }).value)
+        ) {
+          throw Object.assign(
+            new Error(
+              `${subtask.agentName} finished without sending anything — it holds ` +
+                `${actingScopes.join(', ')} but called no tool that acts on it`,
+            ),
+            { code: TEAM_STAGE_DID_NOT_ACT },
+          );
+        }
         if (validatedResult.provenance.recordRefs.length > 0) {
           await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
             message:
@@ -1439,13 +1569,26 @@ Dispatch: ${subtask.goal}`;
           break;
         }
         if (attempt < maxAttempts) {
+          console.warn(
+            `[team-run] run=${run.id} stage="${subtask.agentName}" attempt ${attempt}/${maxAttempts} ` +
+              `failed: ${lastError.message}`,
+          );
           await this.emitEvent(
             run,
             team,
             subtask.agentId,
             'task_status_update',
-            { message: `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1})…` },
+            {
+              message: `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1})…`,
+              retry: true,
+              reason: lastError.message,
+            },
             emit,
+          );
+        } else {
+          console.warn(
+            `[team-run] run=${run.id} stage="${subtask.agentName}" gave up after ${maxAttempts} ` +
+              `attempt(s): ${lastError.message}`,
           );
         }
       }

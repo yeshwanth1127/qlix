@@ -1,14 +1,36 @@
 import type { TeamConfig } from '../teams/teams.types.js';
-import type { WaitPolicySnapshot, WaitSideEffect, WaitStep } from './waitPolicy.types.js';
-export const WHATSAPP_REPLY_LIVE_SHEET_EFFECT: WaitSideEffect = {
+import type {
+  ReplyInterestLabel,
+  WaitPolicySnapshot,
+  WaitSideEffect,
+  WaitStep,
+} from './waitPolicy.types.js';
+import {
+  DEFAULT_REPLY_INCLUSION,
+  inferReplyInclusionFromGoal,
+  normalizeReplyInclusion,
+} from './replyInclusion.js';
+
+export const REPLY_LIVE_SHEET_EFFECT: WaitSideEffect = {
   id: 'live_reply_sheet',
   kind: 'live_sandbox_artifact',
-  title: 'WhatsApp responders',
+  title: 'Responders',
   dedupeBy: 'contact_jid',
-  filter: { classifier: 'reply_interest', include: ['interested', 'unclear'] },
+  filter: { classifier: 'reply_interest', include: [...DEFAULT_REPLY_INCLUSION] },
   contactAck: 'fixed',
   deliver: { channel: 'whatsapp', when: 'on_resume' },
 };
+
+/** @deprecated Channel-neutral now — use {@link REPLY_LIVE_SHEET_EFFECT}. */
+export const WHATSAPP_REPLY_LIVE_SHEET_EFFECT = REPLY_LIVE_SHEET_EFFECT;
+
+/** The live-sheet effect with its inclusion policy resolved from the run goal. */
+export function replyLiveSheetEffectForGoal(goal: string): WaitSideEffect {
+  return {
+    ...REPLY_LIVE_SHEET_EFFECT,
+    filter: { classifier: 'reply_interest', include: inferReplyInclusionFromGoal(goal) },
+  };
+}
 
 const REPLY_WAIT_NOUN = String.raw`(?:reply|replies|respond|response|responses|poll\s+votes?)`;
 
@@ -56,26 +78,35 @@ export function goalRequestsLiveArtifact(goal: string): boolean {
   );
 }
 
-export function buildWhatsAppReplyWaitStep(afterStageOrder: number): WaitStep {
+export function buildWhatsAppReplyWaitStep(afterStageOrder: number, goal?: string): WaitStep {
   return {
     id: 'whatsapp_reply_wait',
     afterStageOrder,
     trigger: { kind: 'whatsapp_inbound', fulfillment: 'collect_until_timeout' },
-    sideEffects: [{ ...WHATSAPP_REPLY_LIVE_SHEET_EFFECT }],
+    sideEffects: [goal ? replyLiveSheetEffectForGoal(goal) : { ...REPLY_LIVE_SHEET_EFFECT }],
     resume: { injectAs: 'whatsapp_responses' },
   };
 }
 
 export function inferWaitStepsFromGoal(goal: string, afterStageOrder: number): WaitStep[] {
   if (!goalRequestsReplyWait(goal)) return [];
+  if (!goalRequestsLiveArtifact(goal)) return [];
 
-  const sideEffects: WaitSideEffect[] = [];
-  if (goalRequestsLiveArtifact(goal)) {
-    sideEffects.push({ ...WHATSAPP_REPLY_LIVE_SHEET_EFFECT });
-  }
-  if (sideEffects.length === 0) return [];
+  return [buildWhatsAppReplyWaitStep(afterStageOrder, goal)];
+}
 
-  return [buildWhatsAppReplyWaitStep(afterStageOrder)];
+/**
+ * Teams saved before live artifacts existed (and teams whose stored steps predate the goal) carry
+ * wait steps with no side effects. The stored step still decides *when* to wait, but it must not
+ * suppress the live file the goal explicitly asks for.
+ */
+function withGoalLiveArtifactEffect(steps: WaitStep[], goal: string): WaitStep[] {
+  if (!goalRequestsLiveArtifact(goal)) return steps;
+  return steps.map((step) => {
+    const sideEffects = step.sideEffects ?? [];
+    if (sideEffects.some((effect) => effect.kind === 'live_sandbox_artifact')) return step;
+    return { ...step, sideEffects: [...sideEffects, replyLiveSheetEffectForGoal(goal)] };
+  });
 }
 
 export function resolveWaitStepsForTeam(
@@ -84,7 +115,7 @@ export function resolveWaitStepsForTeam(
   outreachStageOrder: number,
 ): WaitStep[] {
   if (Array.isArray(teamConfig.waitSteps) && teamConfig.waitSteps.length > 0) {
-    return teamConfig.waitSteps;
+    return withGoalLiveArtifactEffect(teamConfig.waitSteps, goal);
   }
   return inferWaitStepsFromGoal(goal, outreachStageOrder);
 }
@@ -114,7 +145,21 @@ export function getActiveWaitStep(snapshot: WaitPolicySnapshot | null | undefine
 
 export function liveArtifactSideEffects(step: WaitStep | null): WaitSideEffect[] {
   if (!step) return [];
-  return step.sideEffects.filter((effect) => effect.kind === 'live_sandbox_artifact');
+  return (step.sideEffects ?? []).filter((effect) => effect.kind === 'live_sandbox_artifact');
+}
+
+/**
+ * The inclusion policy in force for a run, read back from its persisted wait policy so the
+ * artifact, the resumed worker prompt and the run summary all agree on who counts.
+ */
+export function resolveReplyInclusion(
+  source: WaitStep | WaitPolicySnapshot | null | undefined,
+): ReplyInterestLabel[] {
+  const step =
+    source && 'waitSteps' in source ? getActiveWaitStep(source) : (source as WaitStep | null);
+  const labels = liveArtifactSideEffects(step ?? null)
+    .flatMap((effect) => normalizeReplyInclusion(effect.filter?.include) ?? []);
+  return normalizeReplyInclusion(labels) ?? [...DEFAULT_REPLY_INCLUSION];
 }
 
 export function resolveContactAck(step: WaitStep | null): 'fixed' | 'none' | 'auto_reply' {

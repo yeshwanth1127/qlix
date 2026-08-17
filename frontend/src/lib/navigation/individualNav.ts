@@ -21,7 +21,6 @@ import {
   UsersRound,
   Wallet,
   Wand2,
-  Workflow,
 } from "lucide-react";
 
 export interface ConsoleNavItem {
@@ -32,13 +31,11 @@ export interface ConsoleNavItem {
 
 const PRIMARY_NAV_SUFFIXES = [
   "/agent-builder",
-  "/ai-employees",
   "/overview",
   "/agents",
   "/active-runs",
   "/schedules",
   "/teams",
-  "/visual-builder",
   "/ai-brain",
   "/knowledge",
   "/passports",
@@ -70,13 +67,11 @@ export function splitConsoleNavItems(items: ConsoleNavItem[]): {
 export function getConsoleNavItems(routePrefix: string, billingExempt = false): ConsoleNavItem[] {
   const core: ConsoleNavItem[] = [
     { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
-    { href: `${routePrefix}/ai-employees`, label: "AI Employees", icon: Bot },
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
     { href: `${routePrefix}/active-runs`, label: "Active runs", icon: PlayCircle },
     { href: `${routePrefix}/schedules`, label: "Schedules", icon: CalendarClock },
     { href: `${routePrefix}/teams`, label: "Teams", icon: UsersRound },
-    { href: `${routePrefix}/visual-builder`, label: "Visual Builder", icon: Workflow },
     { href: `${routePrefix}/ai-brain`, label: "exa (ai brain)", icon: Brain },
     { href: `${routePrefix}/knowledge`, label: "Knowledge", icon: BookOpen },
     { href: `${routePrefix}/passports`, label: "Passports", icon: Fingerprint },

@@ -53,6 +53,54 @@ export function buildTeamPromptEnvelope(params: {
   ].join('\n');
 }
 
+const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
+
+/**
+ * Harvest every URL an agent event carries, wherever it sits in the payload. Tools report
+ * sources in different shapes, so this walks the whole event rather than naming any one field —
+ * a new tool needs no change here. Over-collecting is the safe direction: these URLs only ever
+ * permit a citation, never reject one.
+ */
+export function collectToolUrls(data: unknown, into: Set<string>, depth = 0): Set<string> {
+  if (depth > 6 || into.size > 500) return into;
+  if (typeof data === 'string') {
+    for (const match of data.match(URL_IN_TEXT) ?? []) into.add(match);
+    return into;
+  }
+  if (Array.isArray(data)) {
+    for (const item of data) collectToolUrls(item, into, depth + 1);
+    return into;
+  }
+  if (data && typeof data === 'object') {
+    for (const value of Object.values(data as Record<string, unknown>)) {
+      collectToolUrls(value, into, depth + 1);
+    }
+  }
+  return into;
+}
+
+/** Always-on runner tools. None of them change anything outside the run. */
+const META_TOOLS = new Set(['think', 'done', 'find_tools', 'call_tool', 'delegate_task', 'brain_query']);
+
+/** Connector tools that only look something up. Everything else is assumed to change state. */
+const READ_ONLY_TOOL_RE =
+  /(^|_)(read|get|list|search|query|describe|status|history|find|fetch|download|preview|check)(_|$)/i;
+
+/**
+ * The name of a tool call that did something outside this run, or null.
+ *
+ * Unknown tool names count as acting on purpose: a stage is failed for having called nothing at
+ * all, and mistaking a new tool for a lookup would fail a run that did its job.
+ */
+export function actingToolCall(data: unknown): string | null {
+  const record = data as Record<string, unknown> | null;
+  if (!record || record.message !== 'tool_finished' || record.ok !== true) return null;
+  const tool =
+    typeof record.tool === 'string' ? record.tool : typeof record.name === 'string' ? record.name : null;
+  if (!tool || META_TOOLS.has(tool) || READ_ONLY_TOOL_RE.test(tool)) return null;
+  return tool;
+}
+
 export class TeamAgentRunBridge {
   private readonly teamsRepo = new TeamsRepository();
 
@@ -103,8 +151,18 @@ export class TeamAgentRunBridge {
     agentId: string;
     timeoutMs: number;
     emit: RunEventEmitter;
-  }): Promise<{ status: AgentRunTerminalStatus; result: unknown; errorMessage: string | null }> {
+  }): Promise<{
+    status: AgentRunTerminalStatus;
+    result: unknown;
+    errorMessage: string | null;
+    /** Every URL a tool returned during this run, for grounding cited sources. */
+    toolUrls: Set<string>;
+    /** Tools that succeeded and changed something outside the run, e.g. a message that went out. */
+    actingTools: Set<string>;
+  }> {
     let lastSeq = -1;
+    const toolUrls = new Set<string>();
+    const actingTools = new Set<string>();
     const cancelIfTeamStopped = async () => {
       const current = await this.teamsRepo.findRun(params.teamRun.id);
       if (current?.status === 'canceled' || current?.status === 'failed') {
@@ -116,6 +174,9 @@ export class TeamAgentRunBridge {
       const events = await listAgentRunEventsSince(params.agentRunId, lastSeq);
       for (const ev of events) {
         lastSeq = ev.seq;
+        collectToolUrls(ev.data, toolUrls);
+        const acted = actingToolCall(ev.data);
+        if (acted) actingTools.add(acted);
         await this.mapAgentEventToTeam(params, ev);
       }
     };
@@ -133,7 +194,8 @@ export class TeamAgentRunBridge {
     }, 400);
 
     try {
-      return await waitForAgentRunCompletion(params.agentRunId, params.timeoutMs);
+      const outcome = await waitForAgentRunCompletion(params.agentRunId, params.timeoutMs);
+      return { ...outcome, toolUrls, actingTools };
     } finally {
       clearInterval(bridgeInterval);
       try {

@@ -1,19 +1,28 @@
 import type { TeamRunArtifact, TeamRunCheckpoint } from '../teams/teams.types.js';
 import type { ReplyInterestResult } from '../teams/replyInterestClassifier.js';
-import {
-  classifyReplyInterestByKeywords,
-  shouldIncludeOnSheet,
-} from '../teams/replyInterestClassifier.js';
+import { classifyReplyInterestByKeywords } from '../teams/replyInterestClassifier.js';
 import type { WaitTriggerInbound } from '../teams/waitTrigger.service.js';
+import { TeamsRepository } from '../teams/teams.repository.js';
 import {
-  appendLiveArtifactRow,
-  buildWhatsAppReplyRow,
+  buildReplyRow,
   createLiveArtifact,
   findLiveArtifact,
   liveArtifactPreviewPayload,
+  rowContactJid,
   upsertLiveArtifactList,
+  upsertLiveArtifactRow,
 } from './liveArtifact.service.js';
-import { inferLiveSheetColumnsFromGoal } from './liveSheetColumns.js';
+import { withRunCheckpointLock } from './runCheckpointLock.js';
+import {
+  customLiveSheetColumns,
+  inferLiveSheetColumnsFromGoal,
+} from './liveSheetColumns.js';
+import { extractReplyFields } from './replyFieldExtraction.js';
+import {
+  DEFAULT_REPLY_INCLUSION,
+  normalizeReplyInclusion,
+  replyIncluded,
+} from './replyInclusion.js';
 import { lookupWaitContact } from './waitContacts.js';
 import {
   getActiveWaitStep,
@@ -54,6 +63,7 @@ export type WaitInboundSideEffectResult = {
 async function classifyInboundReply(
   inbound: WaitTriggerInbound,
   userGoal?: string | null,
+  model?: string | null,
 ): Promise<ReplyInterestResult> {
   const text = String(inbound.text ?? '');
   const byKeyword = classifyReplyInterestByKeywords(text);
@@ -63,7 +73,7 @@ async function classifyInboundReply(
   const { classifyReplyInterests } = await import('../teams/replyInterestClassifier.js');
   const [classified] = await classifyReplyInterests(
     [{ jid: inbound.jid, text }],
-    { userGoal },
+    { userGoal, model },
   );
   return (
     classified ?? {
@@ -82,7 +92,8 @@ function passesSideEffectFilter(
 ): boolean {
   if (!effect.filter) return true;
   if (effect.filter.classifier === 'reply_interest') {
-    return shouldIncludeOnSheet(classification.label);
+    const include = normalizeReplyInclusion(effect.filter.include) ?? DEFAULT_REPLY_INCLUSION;
+    return replyIncluded(classification.label, include);
   }
   return true;
 }
@@ -133,7 +144,10 @@ export async function initializeWaitSideEffects(input: {
       const columns =
         effect.columns?.length && !legacyPreset
           ? effect.columns
-          : await inferLiveSheetColumnsFromGoal(input.runGoal ?? '');
+          : await inferLiveSheetColumnsFromGoal(
+              input.runGoal ?? '',
+              input.checkpoint.inferenceModel,
+            );
       const created = await createLiveArtifact({
         sideEffect: { ...effect, columns },
         runId: input.runId,
@@ -157,6 +171,11 @@ export async function initializeWaitSideEffects(input: {
   };
 }
 
+type PreparedLiveSheetRow = {
+  effect: WaitSideEffect;
+  row: ReturnType<typeof buildReplyRow>;
+};
+
 /** Apply configured side effects for one inbound WhatsApp reply. */
 export async function applyWaitInboundSideEffects(input: {
   checkpoint: TeamRunCheckpoint;
@@ -168,80 +187,147 @@ export async function applyWaitInboundSideEffects(input: {
   const waitPolicy = input.checkpoint.waitPolicySnapshot;
   const step = getActiveWaitStep(waitPolicy);
   const effects = liveArtifactSideEffects(step);
-  const events: WaitInboundSideEffectResult['events'] = [];
+  const empty: WaitInboundSideEffectResult = {
+    checkpoint: input.checkpoint,
+    artifacts: [],
+    events: [],
+    classifications: [],
+  };
 
-  if (effects.length === 0) {
-    return {
-      checkpoint: input.checkpoint,
-      artifacts: [],
-      events,
-      classifications: [],
-    };
-  }
+  if (effects.length === 0) return empty;
 
-  const classification = await classifyInboundReply(input.inbound, input.userGoal);
-  let liveArtifacts = [...(input.checkpoint.liveArtifacts ?? [])];
-  const artifacts: TeamRunArtifact[] = [];
+  // Model work stays parallel across contacts. Only the sheet write is serialized.
+  const runModel = input.checkpoint.inferenceModel;
+  const classification = await classifyInboundReply(input.inbound, input.userGoal, runModel);
+  const prepared: PreparedLiveSheetRow[] = [];
 
   for (const effect of effects) {
-    const included = passesSideEffectFilter(effect, classification);
-    if (!included) continue;
+    if (!passesSideEffectFilter(effect, classification)) continue;
 
-    let artifact = findLiveArtifact(liveArtifacts, effect.id);
-    if (!artifact) {
+    const snapshot = findLiveArtifact(input.checkpoint.liveArtifacts, effect.id);
+    const columns = snapshot?.columns?.length
+      ? snapshot.columns
+      : effect.columns?.length
+        ? effect.columns
+        : ['Name', 'Phone', 'Reply', 'Interest', 'Replied at'];
+    const knownRow =
+      snapshot?.rows.find((existing) => rowContactJid(existing) === input.inbound.jid) ?? null;
+    const extracted = await extractReplyFields({
+      columns: customLiveSheetColumns(columns),
+      text: input.inbound.text,
+      goal: input.userGoal,
+      known: knownRow ?? undefined,
+      model: runModel,
+    });
+
+    prepared.push({
+      effect,
+      row: buildReplyRow({
+        columns,
+        jid: input.inbound.jid,
+        text: input.inbound.text,
+        pushName: input.inbound.pushName,
+        interest: classification.label,
+        contactHint: lookupWaitContact(input.checkpoint, input.inbound.jid) ?? undefined,
+        extracted,
+      }),
+    });
+  }
+
+  if (prepared.length === 0) {
+    return { ...empty, classifications: [classification] };
+  }
+
+  return commitPreparedLiveSheetRows({
+    runId: input.runId,
+    fallbackCheckpoint: input.checkpoint,
+    classification,
+    prepared,
+    userGoal: input.userGoal,
+    supervisorAgentId: input.supervisorAgentId,
+  });
+}
+
+/**
+ * Re-read the paused run, merge this contact's row into the latest sheet, rematerialize,
+ * and persist. Serialized per run so parallel inbound replies cannot clobber each other.
+ */
+async function commitPreparedLiveSheetRows(input: {
+  runId: string;
+  fallbackCheckpoint: TeamRunCheckpoint;
+  classification: ReplyInterestResult;
+  prepared: PreparedLiveSheetRow[];
+  userGoal?: string | null;
+  supervisorAgentId: string | null;
+}): Promise<WaitInboundSideEffectResult> {
+  return withRunCheckpointLock(input.runId, async () => {
+    const repo = new TeamsRepository();
+    const run = await repo.findRun(input.runId);
+    const latest =
+      run?.status === 'paused'
+        ? ((run.checkpointJson ?? null) as TeamRunCheckpoint | null)
+        : null;
+    const checkpoint = latest ?? input.fallbackCheckpoint;
+    let liveArtifacts = [...(checkpoint.liveArtifacts ?? [])];
+    const artifacts: TeamRunArtifact[] = [];
+    const events: WaitInboundSideEffectResult['events'] = [];
+
+    for (const { effect, row } of input.prepared) {
+      let artifact = findLiveArtifact(liveArtifacts, effect.id);
+      if (!artifact) {
+        try {
+          artifact = await createLiveArtifact({
+            sideEffect: effect,
+            runId: input.runId,
+            teamName: effect.title,
+            runGoal: input.userGoal,
+          });
+          liveArtifacts = upsertLiveArtifactList(liveArtifacts, artifact);
+        } catch (err) {
+          console.warn(
+            '[wait-side-effect] lazy live artifact create failed:',
+            err instanceof Error ? err.message : err,
+          );
+          continue;
+        }
+      }
+
       try {
-        artifact = await createLiveArtifact({
-          sideEffect: effect,
-          runId: input.runId,
-          teamName: effect.title,
-          runGoal: input.userGoal,
+        const updated = await upsertLiveArtifactRow({ artifact, sideEffect: effect, row });
+        liveArtifacts = upsertLiveArtifactList(liveArtifacts, updated);
+        artifacts.push(toRunArtifact(updated, input.supervisorAgentId));
+        events.push({
+          type: 'live_artifact_updated',
+          payload: {
+            ...liveArtifactPreviewPayload(updated),
+            jid: rowContactJid(row) ?? input.classification.jid,
+            interest: input.classification.label,
+            included: true,
+          },
         });
-        liveArtifacts = upsertLiveArtifactList(liveArtifacts, artifact);
       } catch (err) {
         console.warn(
-          '[wait-side-effect] lazy live artifact create failed:',
+          '[wait-side-effect] live artifact append failed:',
           err instanceof Error ? err.message : err,
         );
-        continue;
       }
     }
 
-    const row = buildWhatsAppReplyRow({
-      columns: artifact.columns,
-      jid: input.inbound.jid,
-      text: input.inbound.text,
-      pushName: input.inbound.pushName,
-      interest: classification.label,
-      contactHint: lookupWaitContact(input.checkpoint, input.inbound.jid) ?? undefined,
-    });
-
-    try {
-      const updated = await appendLiveArtifactRow({ artifact, sideEffect: effect, row });
-      liveArtifacts = upsertLiveArtifactList(liveArtifacts, updated);
-      artifacts.push(toRunArtifact(updated, input.supervisorAgentId));
-      events.push({
-        type: 'live_artifact_updated',
-        payload: {
-          ...liveArtifactPreviewPayload(updated),
-          jid: input.inbound.jid,
-          interest: classification.label,
-          included: true,
-        },
-      });
-    } catch (err) {
-      console.warn(
-        '[wait-side-effect] live artifact append failed:',
-        err instanceof Error ? err.message : err,
-      );
+    const nextCheckpoint: TeamRunCheckpoint = { ...checkpoint, liveArtifacts };
+    if (run?.status === 'paused') {
+      await repo.updateRunStatus(run.id, 'paused', { checkpointJson: nextCheckpoint });
+      for (const artifact of artifacts) {
+        await repo.upsertArtifactById(run.id, artifact);
+      }
     }
-  }
 
-  return {
-    checkpoint: { ...input.checkpoint, liveArtifacts },
-    artifacts,
-    events,
-    classifications: [classification],
-  };
+    return {
+      checkpoint: nextCheckpoint,
+      artifacts,
+      events,
+      classifications: [input.classification],
+    };
+  });
 }
 
 export function resolveWaitContactAck(

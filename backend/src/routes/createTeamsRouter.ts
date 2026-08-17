@@ -49,6 +49,7 @@ import {
   TeamContinuesRunError,
 } from '../teams/teams.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
+import { TeamIntentClarificationRequiredError } from '../teams/teamIntent.js';
 import { JitService } from '../jit/jit.service.js';
 import { stopInFlightTeamRunWorkers } from '../teams/teamRunCancel.js';
 import type { TeamRunInputPurpose } from '../teams/teams.types.js';
@@ -754,6 +755,18 @@ export function createTeamsRouter(): Router {
       if (err instanceof TeamRunnersNotReadyError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamEmailConnectorRequiredError) { res.status(409).json({ error: { code: err.code, message: err.message } }); return; }
       if (err instanceof TeamContinuesRunError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
+      if (err instanceof TeamIntentClarificationRequiredError) {
+        // Not a failure — the team is asking a question back, so the chat renders it as a reply.
+        res.status(409).json({
+          error: { code: err.code, message: err.message },
+          clarification: {
+            question: err.message,
+            ...(err.runId ? { runId: err.runId } : {}),
+            ...(err.eventId ? { eventId: err.eventId } : {}),
+          },
+        });
+        return;
+      }
       if (err instanceof ModelPolicyError) {
         res.status(400).json({ error: { code: 'invalid_model', message: err.message } });
         return;

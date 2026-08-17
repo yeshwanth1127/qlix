@@ -3,6 +3,7 @@ FROM python:3.12-slim
 
 ARG AGENT_BROWSER_VERSION=0.9.4
 ARG NODE_VERSION=22.16.0
+ARG GH_VERSION=2.97.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -40,18 +41,36 @@ RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
 ENV PATH="/root/.local/bin:${PATH}"
 
 # Agent Reach — curated research backends.
-# Core install (--env=server, no --channels) sets up mcporter/Exa, gh, and yt-dlp
-# config. Optional social channels are best-effort so a flaky upstream installer
-# can't break the image — unavailable sources degrade gracefully at runtime.
-RUN pip install --no-cache-dir pipx \
-    && pipx install https://github.com/Panniantong/agent-reach/archive/main.zip \
-    && /root/.local/bin/agent-reach install --env=server \
-    && pipx install yt-dlp \
-    && (/root/.local/bin/agent-reach install --env=server --channels twitter,reddit,bilibili || true) \
-    && /root/.local/bin/agent-reach doctor --json > /opt/agent-reach-boot-check.json \
-    && command -v mcporter >/dev/null \
-    && command -v agent-reach >/dev/null \
-    && command -v gh >/dev/null
+# `agent-reach install --env=server` used to install mcporter/Exa, gh and the yt-dlp
+# config. Upstream turned it into a read-only "safe mode" doctor check that reports
+# missing dependencies without installing them, which broke the trailing guards
+# (dash returns 127 from `command -v` on a missing binary). mcporter is not optional:
+# research_web_search shells out to it for Exa semantic search, so a runner without
+# it has no web search at all. Install the core dependencies explicitly and keep
+# agent-reach itself for the optional social channels, which stay best-effort.
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+      x86_64) gh_arch="amd64" ;; \
+      aarch64) gh_arch="arm64" ;; \
+      *) echo "unsupported arch: ${arch}"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
+      | tar -xz -C /tmp; \
+    mv "/tmp/gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf "/tmp/gh_${GH_VERSION}_linux_${gh_arch}"; \
+    npm install -g mcporter; \
+    pip install --no-cache-dir pipx; \
+    pipx install https://github.com/Panniantong/agent-reach/archive/main.zip; \
+    pipx install yt-dlp; \
+    mcporter config add exa https://mcp.exa.ai/mcp --scope home; \
+    mkdir -p /root/.config/yt-dlp; \
+    printf '%s\n' '--js-runtimes node' >> /root/.config/yt-dlp/config; \
+    (/root/.local/bin/agent-reach install --env=server --channels twitter,reddit,bilibili || true); \
+    (/root/.local/bin/agent-reach doctor --json > /opt/agent-reach-boot-check.json || true); \
+    command -v mcporter >/dev/null; \
+    command -v agent-reach >/dev/null; \
+    command -v gh >/dev/null
 
 COPY sdk/python /app/sdk/python
 RUN pip install --no-cache-dir reportlab openpyxl -e "/app/sdk/python"

@@ -41,6 +41,16 @@ function guessMimeType(fileName: string, reported?: string): string {
     return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   }
   if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.pptx')) {
+    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  }
+  if (lower.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
+  if (lower.endsWith('.doc')) return 'application/msword';
+  if (lower.endsWith('.odt')) return 'application/vnd.oasis.opendocument.text';
+  if (lower.endsWith('.ods')) return 'application/vnd.oasis.opendocument.spreadsheet';
+  if (lower.endsWith('.odp')) return 'application/vnd.oasis.opendocument.presentation';
+  if (lower.endsWith('.epub')) return 'application/epub+zip';
+  if (lower.endsWith('.rtf')) return 'application/rtf';
   if (lower.endsWith('.csv')) return 'text/csv';
   if (lower.endsWith('.txt')) return 'text/plain';
   if (lower.endsWith('.md')) return 'text/markdown';

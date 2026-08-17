@@ -45,7 +45,7 @@ const INK_FAINT = "text-[color:var(--ink-faint)]";
 const HAIRLINE = "border-[color:var(--ink-border)]";
 
 const FILE_ACCEPT =
-  ".pdf,.docx,.xls,.xlsx,.ods,.txt,.md,.csv,.tsv,.json,.jsonl,.ndjson,.ipynb,.html,.htm,.xml,.svg,.yaml,.yml,.rtf,.log,.sql,.js,.jsx,.ts,.tsx,.py,.java,.c,.cc,.cpp,.h,.hpp,.go,.rs,.rb,.php,.swift,.kt,.kts,.scala,.lua,.pl,.css,.scss,.less,.sh,.bash,.env,.toml,.ini,.conf,.config,.properties,.rst,.tex,.srt,.vtt,.eml,.ics,text/*,application/json,application/pdf";
+  ".pdf,.doc,.docx,.docm,.ppt,.pptx,.pptm,.pps,.ppsx,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.epub,.txt,.md,.csv,.tsv,.json,.jsonl,.ndjson,.ipynb,.html,.htm,.xml,.svg,.yaml,.yml,.rtf,.log,.sql,.js,.jsx,.ts,.tsx,.py,.java,.c,.cc,.cpp,.h,.hpp,.go,.rs,.rb,.php,.swift,.kt,.kts,.scala,.lua,.pl,.css,.scss,.less,.sh,.bash,.env,.toml,.ini,.conf,.config,.properties,.rst,.tex,.srt,.vtt,.eml,.ics,text/*,application/json,application/pdf";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

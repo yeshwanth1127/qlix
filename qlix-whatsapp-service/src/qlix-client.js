@@ -1,6 +1,6 @@
 const QLIX_URL = (process.env.QLIX_URL || 'http://localhost:4000').replace(/\/$/, '');
 const SERVICE_SECRET = process.env.SERVICE_SECRET || '';
-// 25s default. Inbound messages must complete fast so a hung backend doesn't freeze the inbound lock.
+// 25s default. A hung backend only occupies that contact's FIFO slot plus one concurrency slot.
 const REQUEST_TIMEOUT_MS = Number(process.env.QLIX_REQUEST_TIMEOUT_MS || 25_000);
 
 function headers() {

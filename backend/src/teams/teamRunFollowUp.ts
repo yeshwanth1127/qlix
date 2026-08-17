@@ -52,8 +52,23 @@ export function priorContextFromRun(
   };
 }
 
-const RETRY_ONLY_GOAL_RE =
-  /^(try again|do it again|do that again|repeat(?: that| it)?|same again|run it again|retry|again|please retry|re-?run(?: it)?|re-?try|proceed with the original intent)\.?!?$/i;
+// People ask for a repeat as a polite question ("can u do it again?"), not as a bare
+// command. The prefix/suffix wrappers stay loose because the core phrase is anchored on
+// both sides — anything with real instructions attached ("do it again for Chennai") falls
+// through to the intent classifier instead of being treated as a plain replay.
+const RETRY_REQUEST_PREFIX =
+  '(?:(?:hey|hi|ok|okay|yes|yeah)[,\\s]+)*(?:(?:can|could|would|will)\\s+)?(?:(?:you|u|we)\\s+)?(?:(?:please|pls|plz|kindly|just)\\s+)*';
+const RETRY_CORE =
+  '(?:try|do|run|start)\\s+(?:it|that|this|the same)?\\s*again' +
+  '|repeat(?:\\s+(?:that|it|the\\s+(?:same|process|workflow|run)))?' +
+  '|same again|retry|again|re-?run(?:\\s+(?:it|that))?|re-?try' +
+  '|proceed with the original intent';
+const RETRY_REQUEST_SUFFIX =
+  '(?:\\s+(?:again|once more|one more time))?(?:\\s+(?:please|pls|plz))?';
+const RETRY_ONLY_GOAL_RE = new RegExp(
+  `^${RETRY_REQUEST_PREFIX}(?:${RETRY_CORE})${RETRY_REQUEST_SUFFIX}[.!?]*$`,
+  'i',
+);
 
 export function isRetryOnlyUserText(text: string): boolean {
   return RETRY_ONLY_GOAL_RE.test(text.trim());

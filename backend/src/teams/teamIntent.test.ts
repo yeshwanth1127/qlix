@@ -3,10 +3,52 @@ import test from 'node:test';
 import {
   applyIntentChanges,
   createResolvedTeamIntent,
+  decideTeamIntent,
   effectiveRunGoal,
   requirementsFromGoal,
+  resolveTeamFollowUpIntent,
 } from './teamIntent.js';
 import type { TeamRunDTO } from './teams.types.js';
+
+test('a mode without a reported confidence is acted on, not questioned', () => {
+  const decision = decideTeamIntent({ mode: 'repeat', effectiveGoal: 'Send the brochure' });
+  assert.equal(decision.ok, true);
+  assert.equal(decision.ok && decision.mode, 'repeat');
+});
+
+test('an explicitly low confidence still asks the user', () => {
+  const decision = decideTeamIntent({ mode: 'modify', confidence: 0.2 });
+  assert.equal(decision.ok, false);
+  assert.match(decision.ok ? '' : decision.reason, /low_confidence/);
+});
+
+test('the model can ask its own question', () => {
+  const decision = decideTeamIntent({
+    mode: 'clarification_required',
+    confidence: 0.9,
+    clarificationQuestion: 'Should I message the same 40 leads or only the new ones?',
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.ok ? '' : decision.question, 'Should I message the same 40 leads or only the new ones?');
+});
+
+test('a plain repeat request replays the prior requirements without inference', async () => {
+  const baseIntent = createResolvedTeamIntent({
+    userMessage: 'Filter Bangalore leads, then send the brochure',
+    mode: 'new',
+  });
+  const resolved = await resolveTeamFollowUpIntent({
+    userMessage: 'can u do it again',
+    baseRunId: 'run-1',
+    baseIntent,
+  });
+  assert.equal(resolved.mode, 'repeat');
+  assert.equal(resolved.baseRunId, 'run-1');
+  assert.deepEqual(
+    resolved.requirements.map((item) => item.text),
+    baseIntent.requirements.map((item) => item.text),
+  );
+});
 
 test('atomizes sequential goals without losing compound action details', () => {
   const requirements = requirementsFromGoal(

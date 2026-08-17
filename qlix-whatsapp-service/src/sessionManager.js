@@ -27,6 +27,7 @@ import {
   shouldForwardPollVote,
   validatePollPayload,
 } from './pollStore.js';
+import { createInboundDedupe, createInboundQueue } from './inboundQueue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_ROOT = path.join(__dirname, '..', 'auth_info');
@@ -212,12 +213,77 @@ async function collectContactArmedCandidates(entry, msg, remoteJid) {
   return candidates;
 }
 
+function armedLookupKey(jid) {
+  if (!jid || typeof jid !== 'string') return '';
+  const pn = normalizePnJid(jid);
+  return (pn || jid).trim().toLowerCase();
+}
+
+function toArmedLookupSet(jids) {
+  const set = new Set();
+  for (const raw of Array.isArray(jids) ? jids : []) {
+    if (typeof raw !== 'string') continue;
+    const key = armedLookupKey(raw);
+    if (key) set.add(key);
+    const lower = raw.trim().toLowerCase();
+    if (lower) set.add(lower);
+  }
+  return set;
+}
+
+function firstArmedCandidate(candidates, armedSet, entry) {
+  for (const candidate of candidates) {
+    const pn =
+      normalizePnJid(candidate) ||
+      (candidate.endsWith('@lid') ? entry.lidToPn?.get(normalizeLid(candidate)) : null);
+    const keys = [armedLookupKey(candidate), armedLookupKey(pn), String(candidate).trim().toLowerCase()];
+    if (keys.some((key) => key && armedSet.has(key))) {
+      return pn || candidate;
+    }
+  }
+  return null;
+}
+
 /**
  * Returns the JID to forward to Qlix when any candidate is armed.
  * Prefers the phone (@s.whatsapp.net) form so WaitTrigger / auto-reply rows match.
  */
 async function resolveArmedContactJid(entry, connectorId, msg, remoteJid) {
   const candidates = await collectContactArmedCandidates(entry, msg, remoteJid);
+  const cached = await getArmedAndMutedContactJids(entry, connectorId);
+  const fromCache = firstArmedCandidate(candidates, cached.contacts, entry);
+  if (fromCache) {
+    return { armedJid: fromCache, remoteJid, candidates };
+  }
+
+  // Reverse path: inbound @lid often has no reverse mapping yet. Compare against
+  // LIDs for every phone currently armed on this connector.
+  if (remoteJid.endsWith('@lid')) {
+    const inboundLid = normalizeLid(remoteJid);
+    for (const phone of cached.contacts) {
+      const pn = normalizePnJid(phone) || phone;
+      let lid = entry.pnToLid?.get(pn) || null;
+      if (!lid) {
+        try {
+          lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(pn);
+          if (lid) rememberLidPnMapping(entry, lid, pn);
+        } catch {
+          lid = null;
+        }
+      }
+      if (inboundLid && lid && normalizeLid(lid) === inboundLid) {
+        candidates.push(pn);
+        return { armedJid: pn, remoteJid, candidates };
+      }
+    }
+  }
+
+  if (cached.fetched) {
+    return { armedJid: null, remoteJid, candidates };
+  }
+
+  // Cache fetch failed — fall back to per-candidate armed checks so a backend blip
+  // does not drop a live wait reply.
   for (const candidate of candidates) {
     let armed = false;
     try {
@@ -236,59 +302,41 @@ async function resolveArmedContactJid(entry, connectorId, msg, remoteJid) {
     };
   }
 
-  // Reverse path: inbound @lid often has no reverse mapping yet. Compare against
-  // LIDs for every phone currently armed on this connector.
-  if (remoteJid.endsWith('@lid')) {
-    const inboundLid = normalizeLid(remoteJid);
-    try {
-      const armedPhones = await qlix.listArmedContacts(connectorId);
-      for (const phone of armedPhones) {
-        const pn = normalizePnJid(phone) || phone;
-        let lid = entry.pnToLid?.get(pn) || null;
-        if (!lid) {
-          try {
-            lid = await entry.sock?.signalRepository?.lidMapping?.getLIDForPN?.(pn);
-            if (lid) rememberLidPnMapping(entry, lid, pn);
-          } catch {
-            lid = null;
-          }
-        }
-        if (inboundLid && lid && normalizeLid(lid) === inboundLid) {
-          candidates.push(pn);
-          return { armedJid: pn, remoteJid, candidates };
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[qlix-whatsapp] armed-contacts reverse lookup failed connector=${connectorId}:`,
-        err?.message ?? err,
-      );
-    }
-  }
-
   return { armedJid: null, remoteJid, candidates };
 }
 
 const MUTED_JIDS_TTL_MS = 5_000;
 
-async function getMutedContactJids(entry, connectorId) {
+async function getArmedAndMutedContactJids(entry, connectorId) {
   if (
+    entry.armedJids instanceof Set &&
     entry.mutedJids instanceof Set &&
-    typeof entry.mutedJidsAt === 'number' &&
-    Date.now() - entry.mutedJidsAt < MUTED_JIDS_TTL_MS
+    typeof entry.armedMutedAt === 'number' &&
+    Date.now() - entry.armedMutedAt < MUTED_JIDS_TTL_MS
   ) {
-    return entry.mutedJids;
+    return { contacts: entry.armedJids, muted: entry.mutedJids, fetched: true };
   }
   try {
-    const { muted } = await qlix.listArmedAndMutedContacts(connectorId);
-    entry.mutedJids = new Set(
-      (Array.isArray(muted) ? muted : []).map((j) => String(j).trim().toLowerCase()).filter(Boolean),
+    const { contacts, muted } = await qlix.listArmedAndMutedContacts(connectorId);
+    entry.armedJids = toArmedLookupSet(contacts);
+    entry.mutedJids = toArmedLookupSet(muted);
+    entry.mutedJidsAt = Date.now();
+    entry.armedMutedAt = entry.mutedJidsAt;
+    return { contacts: entry.armedJids, muted: entry.mutedJids, fetched: true };
+  } catch (err) {
+    console.warn(
+      `[qlix-whatsapp] armed-contacts cache refresh failed connector=${connectorId}:`,
+      err?.message ?? err,
     );
-  } catch {
+    entry.armedJids = entry.armedJids instanceof Set ? entry.armedJids : new Set();
     entry.mutedJids = entry.mutedJids instanceof Set ? entry.mutedJids : new Set();
+    return { contacts: entry.armedJids, muted: entry.mutedJids, fetched: false };
   }
-  entry.mutedJidsAt = Date.now();
-  return entry.mutedJids;
+}
+
+async function getMutedContactJids(entry, connectorId) {
+  const { muted } = await getArmedAndMutedContactJids(entry, connectorId);
+  return muted;
 }
 
 function phoneLocalFromJid(jid) {
@@ -563,11 +611,24 @@ export async function startSession(connectorId) {
     /** Post-ack muted phone JIDs (sidecar skip forward + buffer). */
     mutedJids: new Set(),
     mutedJidsAt: 0,
+    /** 5s cache of armed + muted phone JIDs so a reply storm does not N+1 the backend. */
+    armedJids: new Set(),
+    armedMutedAt: 0,
     /** Recent 1:1 chat messages buffered for agent read tools. */
     messagesByJid: new Map(),
-    inboundLock: false,
-    lastInboundKey: '',
-    lastInboundAt: 0,
+    /** Per-contact FIFO scheduling: one lead's slow turn never drops another lead's reply. */
+    inbound: createInboundQueue({
+      onDrop: (key, depth) =>
+        console.warn(
+          `[qlix-whatsapp] inbound queue full connector=${connectorId} contact=${key} pending=${depth} — message not handled`,
+        ),
+      onError: (key, err) =>
+        console.warn(
+          `[qlix-whatsapp] inbound handling failed connector=${connectorId} contact=${key}:`,
+          err instanceof Error ? err.message : err,
+        ),
+    }),
+    inboundDedupe: createInboundDedupe(),
     reconnectAttempts: 0,
   };
   sessions.set(connectorId, entry);
@@ -752,20 +813,23 @@ export async function startSession(connectorId) {
           if (!selfChat) continue;
         }
 
-        if (isEchoOfOurOutbound(entry, trimmed)) {
+        // The echo filter matches text we posted into the owner's own chat. A lead's reply is
+        // never that, and matching it against them costs real answers.
+        if (selfChat && isEchoOfOurOutbound(entry, trimmed)) {
           continue;
         }
 
-        const dedupeKey = `${msg.key.id ?? ''}:${trimmed.slice(0, 120)}`;
-        if (entry.lastInboundKey === dedupeKey && now - entry.lastInboundAt < 3000) continue;
-        entry.lastInboundKey = dedupeKey;
-        entry.lastInboundAt = now;
+        const dedupeKey = `${forwardJid}:${msg.key.id ?? ''}:${trimmed.slice(0, 120)}`;
+        if (entry.inboundDedupe.isDuplicate(dedupeKey, now)) continue;
 
-        if (entry.inboundLock) continue;
-        entry.inboundLock = true;
-        try {
+        // Self-chat runs on one chain (two agent runs at once would talk over each other);
+        // each contact gets their own, so leads are answered in parallel and in order.
+        const queueKey = selfChat ? 'self' : forwardJid;
+        const fromContact = contactArmed && !selfChat;
+        const pushName = typeof msg.pushName === 'string' ? msg.pushName : null;
+        const accepted = entry.inbound.run(queueKey, async () => {
           console.log(
-            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${fromMe} remote=${remoteJid} forward=${forwardJid} contactArmed=${contactArmed}`,
+            `[qlix-whatsapp] inbound connector=${connectorId} fromMe=${fromMe} remote=${remoteJid} forward=${forwardJid} contactArmed=${contactArmed} queued=${entry.inbound.pending(queueKey) - 1}`,
           );
           await handleInboundMessage(
             connectorId,
@@ -773,13 +837,13 @@ export async function startSession(connectorId) {
             forwardJid,
             trimmed,
             allowedSelfJidsForEntry(entry),
-            {
-              fromContact: contactArmed && !selfChat,
-              pushName: typeof msg.pushName === 'string' ? msg.pushName : null,
-            },
+            { fromContact, pushName },
           );
-        } finally {
-          entry.inboundLock = false;
+        });
+        if (!accepted) {
+          console.warn(
+            `[qlix-whatsapp] inbound dropped (contact flood) connector=${connectorId} contact=${queueKey} pending=${entry.inbound.pending(queueKey)}`,
+          );
         }
       }
     });
@@ -1315,9 +1379,9 @@ async function handlePollVoteUpdate(entry, connectorId, key, pollUpdates) {
 
   const selfJid = ownerJidForInbound(entry);
   if (!selfJid) return;
-  if (entry.inboundLock) return;
-  entry.inboundLock = true;
-  try {
+  // A tapped poll option is that contact's turn in the conversation, so it queues behind their
+  // own messages on the same chain rather than competing with every other lead's reply.
+  const accepted = entry.inbound.run(armed.armedJid, async () => {
     console.log(
       `[qlix-whatsapp] poll vote connector=${connectorId} remote=${chatJid} forward=${armed.armedJid} vote="${text}"`,
     );
@@ -1329,8 +1393,11 @@ async function handlePollVoteUpdate(entry, connectorId, key, pollUpdates) {
       allowedSelfJidsForEntry(entry),
       { fromContact: true, pushName: null },
     );
-  } finally {
-    entry.inboundLock = false;
+  });
+  if (!accepted) {
+    console.warn(
+      `[qlix-whatsapp] poll vote dropped (contact flood) connector=${connectorId} contact=${armed.armedJid} pending=${entry.inbound.pending(armed.armedJid)}`,
+    );
   }
 }
 

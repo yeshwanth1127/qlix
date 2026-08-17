@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "scan": "cross-env QR_ONLY=true node src/index.js",
-    "test": "node --test src/sessionManager.test.js"
+    "test": "node --test src/sessionManager.test.js src/inboundQueue.test.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

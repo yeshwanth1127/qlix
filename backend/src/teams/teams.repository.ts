@@ -533,6 +533,30 @@ export class TeamsRepository {
     });
   }
 
+  /** True when this process won the status flip (e.g. paused → running for resume). */
+  async claimRunStatus(
+    runId: string,
+    from: TeamRunStatus,
+    to: TeamRunStatus,
+    extra?: { checkpointJson?: unknown | null },
+  ): Promise<boolean> {
+    const result = await prisma.teamRun.updateMany({
+      where: { id: runId, status: from },
+      data: {
+        status: to,
+        ...(extra?.checkpointJson !== undefined
+          ? {
+              checkpointJson:
+                extra.checkpointJson === null
+                  ? Prisma.JsonNull
+                  : (extra.checkpointJson as Prisma.InputJsonValue),
+            }
+          : {}),
+      },
+    });
+    return result.count === 1;
+  }
+
   async appendSupervisorTrace(runId: string, step: unknown): Promise<void> {
     const run = await prisma.teamRun.findUnique({ where: { id: runId }, select: { supervisorTrace: true } });
     if (!run) return;

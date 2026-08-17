@@ -6,8 +6,10 @@ import type {
   TeamDTO,
   TeamMemberDTO,
   TeamRunDTO,
+  TeamRunInput,
   TeamRunInputPurpose,
 } from './teams.types.js';
+import { groundingPaths, groundingViolations } from './resultGrounding.js';
 import { lastResultFromEnvelope } from './teamRunFollowUp.js';
 import { effectiveRunGoal, resolvedIntentForRun } from './teamIntent.js';
 import type { TeamIntentMode, TeamIntentRequirement } from './teams.types.js';
@@ -18,7 +20,7 @@ export type LunaTeamsKnowledgeMode = 'none' | 'reference_only' | 'required';
 export const TEAM_DISPATCH_ONLY_SKILL = 'team.dispatch' as PermissionScope;
 
 const SCOPE_FAMILIES: Array<{ pattern: RegExp; match: (scope: string) => boolean }> = [
-  { pattern: /\b(whatsapp|outreach|poll|brochure|messenger)\b/i, match: (s) => s.startsWith('whatsapp') },
+  { pattern: /\b(whatsapp|outreach|poll|brochure|messenger|messag\w*|texting)\b/i, match: (s) => s.startsWith('whatsapp') },
   { pattern: /\bemail\b/i, match: (s) => s.startsWith('email.') },
   { pattern: /\bcrm\b/i, match: (s) => s.startsWith('crm.') },
   { pattern: /\b(sheet|excel|spreadsheet)\b/i, match: (s) => s.startsWith('sheets.') || s === 'drive.write' },
@@ -29,10 +31,10 @@ const SCOPE_FAMILIES: Array<{ pattern: RegExp; match: (scope: string) => boolean
 ];
 
 const CONNECTOR_DISPATCH_RE =
-  /\b(whatsapp|email|crm|send|outreach|poll|brochure|research|browse|schedule|sheet|excel|notion|slack|messenger)\b/i;
+  /\b(whatsapp|email|crm|send|outreach|poll|brochure|research|browse|schedule|sheet|excel|notion|slack|messenger|messag\w*|notify)\b/i;
 const FILTER_ONLY_RE = /\b(filter|filtering|qualify|qualifying)\b/i;
 const DOWNSTREAM_STAGE_RE =
-  /\b(whatsapp|messenger|outreach|contact|crm|send|message|poll|brochure)\b/i;
+  /\b(whatsapp|messenger|outreach|contact|crm|send|messag\w*|poll|brochure)\b/i;
 const BRAIN_SOURCE_RE = /\b(brain|company knowledge|knowledge base)\b/i;
 const KNOWLEDGE_ASSET_RE = /\b(brochure|document|file|asset)\b/i;
 
@@ -66,10 +68,17 @@ function withoutBrainUnlessRequired(
   return scopes.filter((scope) => scope !== 'brain.query' && !scope.startsWith('brain.'));
 }
 
-/** Smallest delegated-scope subset that can complete this task. Empty = JSON-only. */
+/**
+ * Smallest delegated-scope subset that can complete this task. Empty = JSON-only.
+ *
+ * `agentName` counts as task text. A dispatch written by the host reads "Perform the messaging
+ * part" and names no connector, so a member called "WhatsApp Messenger" would otherwise be sent
+ * to do its one job with no tools at all.
+ */
 export function heuristicAllowedScopes(params: {
   role: string;
   task: string;
+  agentName?: string;
   delegatedScopes: PermissionScope[];
   knowledgeMode: LunaTeamsKnowledgeMode;
 }): PermissionScope[] {
@@ -77,7 +86,7 @@ export function heuristicAllowedScopes(params: {
   const brainScopes = params.knowledgeMode === 'required'
     ? scopes.filter((scope) => scope === 'brain.query')
     : [];
-  const text = `${params.role} ${params.task}`;
+  const text = `${params.role} ${params.task} ${params.agentName ?? ''}`;
   if (FILTER_ONLY_RE.test(text) && !CONNECTOR_DISPATCH_RE.test(text)) return brainScopes;
   const matched = SCOPE_FAMILIES.flatMap((family) =>
     family.pattern.test(text) ? scopes.filter((scope) => family.match(scope)) : [],
@@ -96,6 +105,7 @@ export function heuristicAllowedScopes(params: {
 export function resolveDispatchAllowedScopes(params: {
   role: string;
   task: string;
+  agentName?: string;
   delegatedScopes: PermissionScope[];
   knowledgeMode: LunaTeamsKnowledgeMode;
   requested?: string[] | null;
@@ -125,6 +135,7 @@ export function resolveDispatchAllowedScopes(params: {
 export function skillsForLunaTeamsDispatch(params: {
   role?: string;
   task?: string;
+  agentName?: string;
   delegatedScopes?: PermissionScope[];
   knowledgeMode?: LunaTeamsKnowledgeMode;
   allowedScopes?: PermissionScope[];
@@ -134,6 +145,7 @@ export function skillsForLunaTeamsDispatch(params: {
     heuristicAllowedScopes({
       role: params.role ?? '',
       task: params.task ?? '',
+      ...(params.agentName ? { agentName: params.agentName } : {}),
       delegatedScopes: params.delegatedScopes ?? [],
       knowledgeMode: params.knowledgeMode ?? 'none',
     });
@@ -248,18 +260,26 @@ export function bindIntentRequirements(
           objective: effectiveGoal,
           proposed: dispatch.knowledgeMode,
         });
+    // Appending owned requirements can only widen what this dispatch has to do, so the grant it
+    // was planned with is kept and the re-resolved set is added to it. Recomputing from the task
+    // text alone would drop what the commander asked for and could leave an acting stage with no
+    // tools at all.
     return {
       ...dispatch,
       task,
       knowledgeMode,
       allowedScopes: readOnlyFollowUp
         ? []
-        : resolveDispatchAllowedScopes({
-            role: dispatch.role,
-            task,
-            delegatedScopes: dispatch.delegatedScopes,
-            knowledgeMode,
-          }),
+        : [...new Set([
+            ...dispatch.allowedScopes,
+            ...resolveDispatchAllowedScopes({
+              role: dispatch.role,
+              task,
+              agentName: dispatch.agentName,
+              delegatedScopes: dispatch.delegatedScopes,
+              knowledgeMode,
+            }),
+          ])],
     };
   });
 }
@@ -295,20 +315,25 @@ function fallbackDispatches(
     .map((input) => input.ref);
   const objective = effectiveRunGoal(run);
   return members.map((member, index) => {
+    // Later stages carry the objective too. Without it the dispatch says only "perform the
+    // messaging part", which tells the worker neither what to send nor — since scopes are read
+    // off the task text — that it needs a messaging tool to send it.
     const task =
       index === 0
         ? `Perform the ${member.role} part of this objective and return only the information the next specialist needs: ${objective}`
-        : `Continue the objective using only the Result handbacks supplied by Luna-Teams. Perform the ${member.role} part; do not repeat earlier work.`;
+        : `Continue the objective using only the Result handbacks supplied by Luna-Teams. Perform the ${member.role} part; do not repeat earlier work.\n\nObjective: ${objective}`;
+    const agentName = member.agent?.name ?? member.agentId;
     return {
       dispatchId: `dispatch_${index + 1}_${member.agentId.slice(0, 8)}`,
       agentId: member.agentId,
-      agentName: member.agent?.name ?? member.agentId,
+      agentName,
       role: member.role,
       task,
       delegatedScopes: member.delegatedScopes,
       allowedScopes: resolveDispatchAllowedScopes({
         role: member.role,
         task,
+        agentName,
         delegatedScopes: member.delegatedScopes,
         knowledgeMode: 'none',
       }),
@@ -363,6 +388,12 @@ allowedScopes must be a subset of that member's roster scopes. Use the smallest 
 Use only input refs from the supplied input catalog. Only the source/filter stage should receive authoritative_input refs. Later stages (WhatsApp, contacts, CRM) must set inputRefs to [] and use Result handbacks. Operational records must come from authoritative_input or those handbacks.
 Knowledge mode is "none" by default, "reference_only" when a selected reference asset is needed, or "required" only when Brain knowledge is explicitly necessary.
 Every active requirement id must appear in at least one dispatch.requirementIds array.
+Describe each dispatch's findings in its outputContract instead of leaving it open, and tag every field it names with where that value must come from:
+- "grounding":"input" — the value must already appear in this dispatch's input file or in a Result handback. Use it for the subject of the work: who or what is being processed, verified, or acted on.
+- "grounding":"tool" — the value must come back from a tool this dispatch calls. Use it for cited source URLs.
+- "grounding":"derived" — the worker's own judgement or calculation over the two above.
+Tag only fields you are sure about; leave a field untagged when its origin depends on how the worker approaches the task. A tagged field that cannot be traced fails the dispatch, so tag the subject of a verification task "input" — a worker must never introduce a subject that was not given to it.
+Example shape: "outputContract":{"type":"object","required":["summary","findings","provenance"],"properties":{"findings":{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"subject":{"type":"string","grounding":"input"},"sourceUrl":{"type":"string","grounding":"tool"},"assessment":{"type":"string","grounding":"derived"}}}}}}}}
 Return only a JSON array: [{"agentId":"...","task":"...","requirementIds":["req_..."],"inputRefs":["team-input:..."],"allowedSources":["authoritative_input"],"allowedScopes":[],"knowledgeMode":"none","contractId":"optional","outputContract":{...}}].
 ${preserveOrder ? 'Use every roster member exactly once and preserve roster order.' : 'You may reorder or omit members when their role is unnecessary.'}`,
           },
@@ -400,7 +431,16 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         retries: 1,
       },
     );
-    const parsed = JSON.parse(stripCodeFence(result.content)) as Array<{
+    // The commander is asked for a bare JSON array and sometimes adds a sentence after it.
+    // Parsing the raw text throws on that trailing prose and costs the whole plan, so the
+    // array is cut out of the response the same way a worker handback is.
+    const planJson = extractBalancedJson(stripCodeFence(result.content));
+    if (!planJson || planJson.truncated) {
+      throw new Error(
+        planJson ? 'commander plan JSON was cut off' : 'commander returned no JSON plan',
+      );
+    }
+    const parsed = JSON.parse(planJson.json) as Array<{
       agentId?: string;
       task?: string;
       contractId?: string;
@@ -446,6 +486,7 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         allowedScopes: resolveDispatchAllowedScopes({
           role: member.role,
           task,
+          agentName: member.agent?.name ?? member.agentId,
           delegatedScopes: member.delegatedScopes,
           knowledgeMode,
           requested: item.allowedScopes,
@@ -552,11 +593,72 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+/**
+ * Drop planner slips from a contract: `properties` entries holding an example value where a
+ * schema belongs (`"subject": "Bangalore leads"`). They declare no rule anyone can read, and left
+ * in place they turn a sketch into a shape no worker can satisfy.
+ */
+function sanitizeContract(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(sanitizeContract);
+  if (!node || typeof node !== 'object') return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const properties: Record<string, unknown> = {};
+      for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
+        if (child && typeof child === 'object' && !Array.isArray(child)) {
+          properties[name] = sanitizeContract(child);
+        }
+      }
+      out[key] = properties;
+      continue;
+    }
+    out[key] = sanitizeContract(value);
+  }
+  return out;
+}
+
 export function effectiveOutputContract(raw?: Record<string, unknown> | null): Record<string, unknown> {
   if (!raw || typeof raw !== 'object' || raw.type !== 'object') {
     return DEFAULT_RESULT_CONTRACT;
   }
-  return raw;
+  return sanitizeContract(raw) as Record<string, unknown>;
+}
+
+/**
+ * Reconcile the packaging of `findings` with the container the contract declares.
+ *
+ * The contract is written by one model and filled in by another, so the two disagree about
+ * wrappers: the plan says `findings: { items: [...] }`, the worker returns the list itself. The
+ * records, their values and their lineage are identical either way — failing the stage over the
+ * wrapper throws away a correct answer, so reshape it and carry on.
+ */
+export function reconcileFindingsShape(
+  payload: unknown,
+  contract: Record<string, unknown>,
+): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const record = payload as Record<string, unknown>;
+  const findings = record.findings;
+  if (findings == null) return payload;
+  const properties = contract.properties as Record<string, Record<string, unknown>> | undefined;
+  const declared = properties?.findings;
+  if (!declared || typeof declared !== 'object') return payload;
+
+  const declaredProperties = declared.properties as Record<string, Record<string, unknown>> | undefined;
+  if (declared.type === 'object' && Array.isArray(findings)) {
+    // Wrap under the key the contract itself names, so its grounding annotations still resolve.
+    const arrayKeys = Object.entries(declaredProperties ?? {})
+      .filter(([, child]) => child?.type === 'array')
+      .map(([name]) => name);
+    const key = arrayKeys[0] ?? Object.keys(declaredProperties ?? {})[0] ?? 'items';
+    return { ...record, findings: { [key]: findings } };
+  }
+  if (declared.type === 'array' && !Array.isArray(findings) && typeof findings === 'object') {
+    const arrayValues = Object.values(findings as Record<string, unknown>).filter(Array.isArray);
+    return { ...record, findings: arrayValues.length === 1 ? arrayValues[0] : [findings] };
+  }
+  return payload;
 }
 
 export function isEmptyWorkerHandback(payload: unknown): boolean {
@@ -571,43 +673,94 @@ export function isEmptyWorkerHandback(payload: unknown): boolean {
   return !hasResultKeys && (!text || /^no response generated\.?$/i.test(text));
 }
 
+/**
+ * The envelope is law; the contract's sketch of the interior of `findings` is guidance.
+ *
+ * A missing summary or absent provenance means the stage did not report its work, and the run
+ * must stop. A planner's guess at how the records inside `findings` should be arranged is not
+ * worth a correct answer: those values are already held to lineage and grounding checks that
+ * read the payload as it is, whatever shape the plan imagined.
+ */
+function isAdvisoryPath(path: string): boolean {
+  return path === 'result.findings' || path.startsWith('result.findings.') || path.startsWith('result.findings[');
+}
+
 function assertContract(value: unknown, schema: Record<string, unknown>, path = 'result'): void {
   const expected = schema.type;
+  const advisory = isAdvisoryPath(path);
   if (expected === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      if (advisory) return;
       throw new Error(`${path} must be an object`);
     }
     const record = value as Record<string, unknown>;
-    for (const key of (schema.required as string[] | undefined) ?? []) {
-      if (!(key in record)) throw new Error(`${path}.${key} is required`);
+    if (!advisory) {
+      for (const key of (schema.required as string[] | undefined) ?? []) {
+        if (!(key in record)) throw new Error(`${path}.${key} is required`);
+      }
     }
     const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
     for (const [key, child] of Object.entries(properties ?? {})) {
       if (key in record) assertContract(record[key], child, `${path}.${key}`);
     }
   } else if (expected === 'array') {
-    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    if (!Array.isArray(value)) {
+      if (advisory) return;
+      throw new Error(`${path} must be an array`);
+    }
     const itemSchema = schema.items as Record<string, unknown> | undefined;
     if (itemSchema) value.forEach((item, index) => assertContract(item, itemSchema, `${path}[${index}]`));
   } else if (expected === 'string' && typeof value !== 'string') {
+    if (advisory) return;
     throw new Error(`${path} must be a string`);
   }
 }
 
-function collectOperationalRecords(value: unknown, parentKey = ''): Record<string, unknown>[] {
+/**
+ * A stage that reports nothing has not done its work. `findings` is the payload the next
+ * stage consumes, so an empty one is indistinguishable from a failed dispatch.
+ */
+export function isEmptyFindings(findings: unknown): boolean {
+  if (findings == null) return true;
+  if (typeof findings === 'string') return !findings.trim();
+  if (Array.isArray(findings)) return findings.length === 0;
+  if (typeof findings === 'object') return Object.keys(findings).length === 0;
+  return false;
+}
+
+/**
+ * Arrays of records the run will act on, which must trace back to a real source.
+ *
+ * `strict` drops the parent-key allowlist. It is used for dispatches with no tools at all:
+ * such an agent has no way to learn a name or number that was not handed to it, so every
+ * record it emits must be traceable whatever the key is called. Tool-enabled dispatches keep
+ * the narrower allowlist, since a research stage legitimately discovers new facts.
+ */
+interface OperationalRecord {
+  record: Record<string, unknown>;
+  /** Canonical path of the array holding it, so declared groundings can be matched against it. */
+  path: string;
+}
+
+function collectOperationalRecords(
+  value: unknown,
+  parentKey = '',
+  strict = false,
+  path = '',
+): OperationalRecord[] {
   if (Array.isArray(value)) {
     if (
       value.length > 0 &&
       value.every((item) => item && typeof item === 'object' && !Array.isArray(item)) &&
-      /^(leads|contacts|recipients|targets|records|rows|findings|data)?$/i.test(parentKey)
+      (strict || /^(leads|contacts|recipients|targets|records|rows|findings|data)?$/i.test(parentKey))
     ) {
-      return value as Record<string, unknown>[];
+      return value.map((record) => ({ record: record as Record<string, unknown>, path: `${path}[]` }));
     }
-    return value.flatMap((item) => collectOperationalRecords(item, parentKey));
+    return value.flatMap((item) => collectOperationalRecords(item, parentKey, strict, `${path}[]`));
   }
   if (!value || typeof value !== 'object') return [];
   return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
-    collectOperationalRecords(child, key),
+    collectOperationalRecords(child, key, strict, path ? `${path}.${key}` : key),
   );
 }
 
@@ -629,11 +782,48 @@ function phonesMatch(source: string, value: string): boolean {
   );
 }
 
+/**
+ * Text extraction carries the source layout into the string: a table cell breaks a value
+ * across `<br>`, and emphasis wraps it in asterisks. A worker that reads "Okta for AI Agents"
+ * out of `**Okta for**<br>**AI Agents**` read it correctly, so markup and wrapping are removed
+ * from both sides before matching rather than counted as fabrication.
+ */
+function normalizeForMatch(text: string): string {
+  return text
+    .toLocaleLowerCase()
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/[*_`~]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function sourceContains(source: string, key: string, value: string | number): boolean {
   if (/phone|recipient|whatsapp|mobile/i.test(key)) {
     return phonesMatch(source, String(value));
   }
-  return source.toLocaleLowerCase().includes(String(value).trim().toLocaleLowerCase());
+  const needle = normalizeForMatch(String(value));
+  return needle.length > 0 && normalizeForMatch(source).includes(needle);
+}
+
+/**
+ * Row-structured sources carry addressable rows; documents do not.
+ *
+ * `provenance.recordRefs` is literally `"<input ref>:row:<n>"`, so demanding it of a stage
+ * whose source is a deck or a PDF asks for a citation that cannot exist. The distinction is
+ * the file's shape, never whether the stage happens to hold a tool.
+ */
+const ROW_STRUCTURED_MIME_RE =
+  /^(text\/csv|text\/tab-separated-values|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.spreadsheetml|application\/vnd\.oasis\.opendocument\.spreadsheet)/i;
+const ROW_STRUCTURED_EXT_RE = /\.(csv|tsv|xls|xlsx|xlsm|xlsb|ods)$/i;
+
+export function isRowStructuredInput(
+  input: Pick<TeamRunInput, 'fileName' | 'mimeType'>,
+): boolean {
+  return (
+    ROW_STRUCTURED_MIME_RE.test(input.mimeType ?? '') ||
+    ROW_STRUCTURED_EXT_RE.test(input.fileName ?? '')
+  );
 }
 
 function priorProvenanceRefs(priorHandbacks: unknown[] | undefined): {
@@ -665,9 +855,14 @@ function priorProvenanceRefs(priorHandbacks: unknown[] | undefined): {
 
 export function validateLunaTeamsResult(params: {
   payload: unknown;
-  dispatch: Pick<LunaTeamsDispatch, 'inputRefs' | 'allowedSources' | 'knowledgeMode' | 'outputContract'>;
+  dispatch: Pick<
+    LunaTeamsDispatch,
+    'inputRefs' | 'allowedSources' | 'knowledgeMode' | 'outputContract' | 'allowedScopes' | 'requirementIds'
+  >;
   run: TeamRunDTO;
   priorHandbacks?: unknown[];
+  /** URLs returned by tools during this dispatch, for contract fields declared `grounding: "tool"`. */
+  toolUrls?: Set<string>;
 }): ValidatedLunaTeamsResult {
   if (isEmptyWorkerHandback(params.payload)) {
     throw new Error('Worker did not return a Result envelope');
@@ -680,8 +875,18 @@ export function validateLunaTeamsResult(params: {
   ) {
     throw new Error('Worker Result JSON was cut off');
   }
-  assertContract(params.payload, effectiveOutputContract(params.dispatch.outputContract));
-  const record = params.payload as Record<string, unknown>;
+  const contract = effectiveOutputContract(params.dispatch.outputContract);
+  const payload = reconcileFindingsShape(params.payload, contract);
+  assertContract(payload, contract);
+  const record = payload as Record<string, unknown>;
+  // A stage that owns a requirement must produce something for it. Without this, a worker can
+  // report "I could not do this" as a completed dispatch and the pipeline carries on regardless.
+  if (params.dispatch.requirementIds.length > 0 && isEmptyFindings(record.findings)) {
+    throw new Error(
+      `Result has no findings for the requirement${params.dispatch.requirementIds.length === 1 ? '' : 's'} ` +
+        `this stage owns (${params.dispatch.requirementIds.join(', ')})`,
+    );
+  }
   const provenanceRaw = record.provenance as Record<string, unknown>;
   if (
     !isStringArray(provenanceRaw?.inputRefs) ||
@@ -716,25 +921,67 @@ export function validateLunaTeamsResult(params: {
   const authoritative = params.dispatch.inputRefs
     .map((ref) => inputByRef.get(ref))
     .filter((input) => input?.purpose === 'authoritative_input');
-  const operationalRecords = collectOperationalRecords(record.findings ?? record.data);
+  const authoritativeText = authoritative.map((input) => input!.extractedText ?? '').join('\n');
+  const priorText = JSON.stringify(params.priorHandbacks ?? []);
+
+  // Whatever the contract declares about where a field comes from is checked first, and wins:
+  // a field the contract has an opinion about is not second-guessed by the heuristic below.
+  // Grounding governs the payload a dispatch produces, never the Result envelope itself:
+  // `summary` is prose by definition and `provenance` is checked above on its own terms.
+  const declared = new Map(
+    [...groundingPaths(contract)].filter(([path]) =>
+      /^(findings|data)\b/.test(path),
+    ),
+  );
+  if (declared.size > 0) {
+    const violations = groundingViolations({
+      payload: record,
+      paths: declared,
+      givenText: [authoritativeText, priorText].filter(Boolean).join('\n'),
+      toolUrls: params.toolUrls ?? new Set<string>(),
+      contains: sourceContains,
+    });
+    if (violations.length > 0) {
+      throw new Error(`Result is not grounded — ${violations.slice(0, 3).join('; ')}`);
+    }
+  }
+
+  // With no scopes the worker has no tool to learn an outside fact from, so every record it
+  // returns is checked, not just the ones filed under a lead-shaped key.
+  const toolless = params.dispatch.allowedScopes.length === 0;
+  const operationalRecords = collectOperationalRecords(
+    record.findings ?? record.data,
+    '',
+    toolless,
+    record.findings === undefined && record.data !== undefined ? 'data' : 'findings',
+  );
   if (operationalRecords.length > 0) {
-    const sourceText =
+    const sourceText = authoritative.length > 0 ? authoritativeText : priorText;
+    // Lineage and value-grounding answer different questions. "Which row is this?" only has an
+    // answer when the source has rows; "did you make this up?" is worth asking of any source,
+    // and is enforced below whatever the file shape. A document stage is held to the second.
+    const rowAddressable =
       authoritative.length > 0
-        ? authoritative.map((input) => input!.extractedText ?? '').join('\n')
-        : JSON.stringify(params.priorHandbacks ?? []);
+        ? authoritative.some((input) => isRowStructuredInput(input!))
+        : priorRefs.recordRefs.size > 0;
     if (authoritative.length === 0) {
-      if (!params.priorHandbacks?.length || provenance.recordRefs.length === 0) {
+      if (!params.priorHandbacks?.length) {
+        throw new Error('Operational records require an authoritative input or a prior Result handback');
+      }
+      if (rowAddressable && provenance.recordRefs.length === 0) {
         throw new Error('Operational records require a prior Result handback and row lineage');
       }
       if (provenance.recordRefs.some((ref) => !priorRefs.recordRefs.has(ref))) {
         throw new Error('Result cites row lineage that is not in a prior Result');
       }
-    } else if (provenance.recordRefs.length === 0) {
+    } else if (rowAddressable && provenance.recordRefs.length === 0) {
       throw new Error('Operational records require authoritative input and row lineage');
     }
     const identityKeys = /^(name|phone|mobile|email|city|address|recipient|whatsapp)$/i;
-    for (const operationalRecord of operationalRecords) {
+    for (const { record: operationalRecord, path } of operationalRecords) {
       for (const [key, value] of Object.entries(operationalRecord)) {
+        // The contract already governs this field — do not apply the name-shaped guess on top.
+        if (declared.has(`${path}.${key}`)) continue;
         if (
           identityKeys.test(key) &&
           (typeof value === 'string' || typeof value === 'number') &&
@@ -749,7 +996,7 @@ export function validateLunaTeamsResult(params: {
       }
     }
   }
-  return { data: params.payload, provenance };
+  return { data: payload, provenance };
 }
 
 export function renderResultHandbacks(

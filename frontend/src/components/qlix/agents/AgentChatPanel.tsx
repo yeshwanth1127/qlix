@@ -1795,7 +1795,7 @@ export function AgentChatPanel({
                 key={fileInputKey}
                 type="file"
                 multiple
-                accept=".pdf,.docx,.xlsx,.xls,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml"
+                accept=".pdf,.doc,.docx,.docm,.ppt,.pptx,.pptm,.pps,.ppsx,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.epub,.rtf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml"
                 className="sr-only"
                 disabled={!conversationId || sending || editingMessageId != null || pendingFiles.length >= CHAT_MAX_FILES}
                 onChange={(e) => {

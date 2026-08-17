@@ -10,7 +10,8 @@ export type ReplyInterestLabel = 'interested' | 'unclear' | 'not_interested';
 
 export type ReplyInterestFilter = {
   classifier: 'reply_interest';
-  include: Array<'interested' | 'unclear'>;
+  /** Labels that earn a row. Resolved from the run goal; defaults to interested + unclear. */
+  include: ReplyInterestLabel[];
 };
 
 export type WaitContactAck = 'fixed' | 'none' | 'auto_reply';

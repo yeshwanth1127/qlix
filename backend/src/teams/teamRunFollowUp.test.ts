@@ -8,9 +8,40 @@ import {
   extractTeamRunUserGoal,
   firstInputsInContinueChain,
   firstRealGoalInContinueChain,
+  isRetryOnlyUserText,
   priorContextFromRun,
   resolveContinuedGoal,
 } from './teamRunFollowUp.js';
+
+describe('isRetryOnlyUserText', () => {
+  it('recognises a repeat asked as a polite question', () => {
+    for (const text of [
+      'can u do it again',
+      'Can you do it again?',
+      'could you please run it again',
+      'can we try that again?',
+      'pls do it again',
+      'do it again pls',
+      'okay, repeat that',
+      'Re-run it.',
+      'again?',
+    ]) {
+      assert.equal(isRetryOnlyUserText(text), true, text);
+    }
+  });
+
+  it('leaves anything carrying new instructions to the intent classifier', () => {
+    for (const text of [
+      'do it again for Chennai leads',
+      'can u do it again but skip the poll',
+      'again send the brochure to the new list',
+      'what did it do again',
+      'run the report',
+    ]) {
+      assert.equal(isRetryOnlyUserText(text), false, text);
+    }
+  });
+});
 
 describe('extractTeamRunUserGoal', () => {
   it('returns a plain goal unchanged', () => {

@@ -1,9 +1,10 @@
+import { LLM_APPLICATION_IDS } from '../llm/inferenceRouter.js';
+import { completeStructured } from '../wait/structuredCompletion.js';
 import {
-  chatCompletion,
-  defaultLlmProvider,
-  defaultModelForProvider,
-  LLM_APPLICATION_IDS,
-} from '../llm/inferenceRouter.js';
+  DEFAULT_REPLY_INCLUSION,
+  describeReplyInclusion,
+  replyIncluded,
+} from '../wait/replyInclusion.js';
 
 export type InterestLabel = 'interested' | 'not_interested' | 'unclear';
 export type InterestMethod = 'keyword' | 'llm' | 'default';
@@ -21,8 +22,6 @@ export type ReplyInterestResult = {
   method: InterestMethod;
 };
 
-const CLASSIFIER_PROVIDER = defaultLlmProvider();
-const CLASSIFIER_MODEL = defaultModelForProvider(CLASSIFIER_PROVIDER);
 const LLM_PROMPT_CHARS = 400;
 const LLM_GOAL_CHARS = 300;
 
@@ -158,73 +157,66 @@ export function classifyReplyInterestByKeywords(text: string): Omit<
   return null;
 }
 
-export function shouldIncludeOnSheet(label: InterestLabel): boolean {
-  return label === 'interested' || label === 'unclear';
+/**
+ * Back-compat shim for the fixed interested+unclear rule. Prefer passing the run's resolved
+ * policy to {@link replyIncluded} so the goal decides who counts.
+ */
+export function shouldIncludeOnSheet(
+  label: InterestLabel,
+  include: InterestLabel[] = DEFAULT_REPLY_INCLUSION,
+): boolean {
+  return replyIncluded(label, include);
 }
 
 async function classifyWithLlm(
   text: string,
   userGoal?: string | null,
+  model?: string | null,
 ): Promise<Omit<ReplyInterestResult, 'jid' | 'text'> | null> {
   const goalSnippet = (userGoal ?? '').trim().slice(0, LLM_GOAL_CHARS);
-  const system = `Classify whether a WhatsApp lead is interested in the outreach.
+  const system = `Classify whether a lead is interested in the outreach.
 Reply with ONLY one token: interested OR not_interested OR unclear.
 - interested: they want more info, said yes, asked a product/pricing/schedule question, or otherwise engage positively
 - not_interested: they decline, ask to stop, unsubscribe, or are hostile
 - unclear: cannot tell (greetings alone, unrelated chatter, language barrier without clear signal)
 ${goalSnippet ? `Outreach goal context: ${goalSnippet}` : ''}`.trim();
 
-  try {
-    const result = await chatCompletion(
-      {
-        model: CLASSIFIER_MODEL,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: text.trim().slice(0, LLM_PROMPT_CHARS) },
-        ],
-        temperature: 0.1,
-        max_tokens: 16,
-        stream: false,
-      },
-      {
-        provider: CLASSIFIER_PROVIDER,
-        applicationId: LLM_APPLICATION_IDS.replyInterest,
-        timeoutMs: 12_000,
-        retries: 1,
-      },
-    );
+  const raw = (
+    await completeStructured({
+      label: 'reply-interest',
+      applicationId: LLM_APPLICATION_IDS.replyInterest,
+      model,
+      temperature: 0.1,
+      maxTokens: 16,
+      timeoutMs: 12_000,
+      system,
+      user: text.trim().slice(0, LLM_PROMPT_CHARS),
+    })
+  )
+    .toLowerCase()
+    .replace(/[^a-z_]/g, ' ')
+    .trim();
+  if (!raw) return null;
 
-    const raw = String(result.content ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z_]/g, ' ')
-      .trim();
-    const token = raw.split(/\s+/)[0] ?? '';
-    if (token === 'interested' || token === 'not_interested' || token === 'unclear') {
-      return { label: token, reason: 'llm classification', method: 'llm' };
-    }
-    if (raw.includes('not_interested') || raw.includes('not interested')) {
-      return { label: 'not_interested', reason: 'llm classification', method: 'llm' };
-    }
-    if (raw.includes('interested')) {
-      return { label: 'interested', reason: 'llm classification', method: 'llm' };
-    }
-    if (raw.includes('unclear')) {
-      return { label: 'unclear', reason: 'llm classification', method: 'llm' };
-    }
-    return null;
-  } catch (err) {
-    console.warn(
-      '[reply-interest] LLM classify failed:',
-      err instanceof Error ? err.message : err,
-    );
-    return null;
+  const token = raw.split(/\s+/)[0] ?? '';
+  if (token === 'interested' || token === 'not_interested' || token === 'unclear') {
+    return { label: token, reason: 'llm classification', method: 'llm' };
   }
+  if (raw.includes('not_interested') || raw.includes('not interested')) {
+    return { label: 'not_interested', reason: 'llm classification', method: 'llm' };
+  }
+  if (raw.includes('interested')) {
+    return { label: 'interested', reason: 'llm classification', method: 'llm' };
+  }
+  if (raw.includes('unclear')) {
+    return { label: 'unclear', reason: 'llm classification', method: 'llm' };
+  }
+  return null;
 }
 
 export async function classifyReplyInterests(
   replies: ReplyInterestInput[],
-  opts?: { userGoal?: string | null },
+  opts?: { userGoal?: string | null; model?: string | null },
 ): Promise<ReplyInterestResult[]> {
   const out: ReplyInterestResult[] = [];
   for (const reply of replies) {
@@ -234,7 +226,7 @@ export async function classifyReplyInterests(
       out.push({ jid: reply.jid, text, ...byKeyword });
       continue;
     }
-    const byLlm = await classifyWithLlm(text, opts?.userGoal);
+    const byLlm = await classifyWithLlm(text, opts?.userGoal, opts?.model);
     if (byLlm) {
       out.push({ jid: reply.jid, text, ...byLlm });
       continue;
@@ -250,9 +242,12 @@ export async function classifyReplyInterests(
   return out;
 }
 
-export function formatInterestFindings(results: ReplyInterestResult[]): string {
-  const included = results.filter((r) => shouldIncludeOnSheet(r.label));
-  const excluded = results.filter((r) => !shouldIncludeOnSheet(r.label));
+export function formatInterestFindings(
+  results: ReplyInterestResult[],
+  include: InterestLabel[] = DEFAULT_REPLY_INCLUSION,
+): string {
+  const included = results.filter((r) => replyIncluded(r.label, include));
+  const excluded = results.filter((r) => !replyIncluded(r.label, include));
 
   const line = (r: ReplyInterestResult) =>
     `- ${r.jid} [${r.label}/${r.method}]: ${JSON.stringify(r.text.slice(0, 280))}${
@@ -260,8 +255,8 @@ export function formatInterestFindings(results: ReplyInterestResult[]): string {
     }`;
 
   const parts = [
-    'WhatsApp reply interest classification',
-    'Sheet policy: include interested + unclear; exclude not_interested.',
+    'Reply interest classification',
+    `Sheet policy: ${describeReplyInclusion(include)}.`,
     '',
     'Included leads (add these to the sheet):',
     ...(included.length > 0 ? included.map(line) : ['- (none)']),
@@ -282,11 +277,27 @@ export function formatInterestFindings(results: ReplyInterestResult[]): string {
   return parts.join('\n');
 }
 
-export const INTEREST_STAGE_GOAL_APPEND =
-  'Act only on "Included leads" from WhatsApp reply classification. Do not add excluded/not_interested contacts to any sheet. ' +
-  'If a live artifact URL appears in prior context, use whatsapp_send on that file. Do not call create_xlsx unless no live artifact exists.';
+/** Stable marker so the orchestrator can tell whether a subtask goal already carries the policy. */
+export const INTEREST_STAGE_GOAL_MARKER = 'Act only on "Included leads"';
 
-export function summarizeInterestCounts(results: ReplyInterestResult[]): {
+/** Policy-accurate instruction appended to the first stage resumed after a wait. */
+export function interestStageGoalAppend(
+  include: InterestLabel[] = DEFAULT_REPLY_INCLUSION,
+): string {
+  return (
+    `${INTEREST_STAGE_GOAL_MARKER} from the reply classification — the policy for this run is to ` +
+    `${describeReplyInclusion(include)}. Do not add excluded contacts to any sheet. ` +
+    'If a live artifact URL appears in prior context, send that file. Do not create a new file unless no live artifact exists.'
+  );
+}
+
+/** @deprecated Fixed-policy text — use {@link interestStageGoalAppend} with the run's policy. */
+export const INTEREST_STAGE_GOAL_APPEND = interestStageGoalAppend();
+
+export function summarizeInterestCounts(
+  results: ReplyInterestResult[],
+  include: InterestLabel[] = DEFAULT_REPLY_INCLUSION,
+): {
   interested: number;
   notInterested: number;
   unclear: number;
@@ -295,15 +306,17 @@ export function summarizeInterestCounts(results: ReplyInterestResult[]): {
   let interested = 0;
   let notInterested = 0;
   let unclear = 0;
+  let included = 0;
   for (const r of results) {
     if (r.label === 'interested') interested += 1;
     else if (r.label === 'not_interested') notInterested += 1;
     else unclear += 1;
+    if (replyIncluded(r.label, include)) included += 1;
   }
   return {
     interested,
     notInterested,
     unclear,
-    included: interested + unclear,
+    included,
   };
 }

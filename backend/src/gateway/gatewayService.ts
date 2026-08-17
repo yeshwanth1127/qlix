@@ -171,6 +171,7 @@ export class GatewayService {
 
     const { launchTeamRun } = await import('../teams/teamsRunLauncher.js');
     const { TeamContinuesRunError } = await import('../teams/teams.service.js');
+    const { TeamIntentClarificationRequiredError } = await import('../teams/teamIntent.js');
     const sourceChannel: TeamRunSourceChannel =
       msg.channel === 'whatsapp' ||
       msg.channel === 'api' ||
@@ -217,6 +218,17 @@ export class GatewayService {
       });
     } catch (err) {
       if (err instanceof TeamContinuesRunError) {
+        return {
+          status: 'rejected',
+          reason: err.message,
+          sessionKey,
+          ackReply: err.message,
+        };
+      }
+      // A follow-up we could not resolve is a question back to the user, not a failure.
+      // Chat surfaces (web) render it in the transcript from the thrown error; messaging
+      // channels have no such surface, so the question goes back as the reply itself.
+      if (err instanceof TeamIntentClarificationRequiredError && sourceChannel !== 'web') {
         return {
           status: 'rejected',
           reason: err.message,

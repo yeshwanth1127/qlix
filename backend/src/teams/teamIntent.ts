@@ -1,4 +1,5 @@
-import { chatCompletion, LLM_APPLICATION_IDS } from '../llm/inferenceRouter.js';
+import { isLlmProviderConfigured, LLM_APPLICATION_IDS } from '../llm/inferenceRouter.js';
+import { completeStructured } from '../wait/structuredCompletion.js';
 import type {
   ResolvedTeamIntent,
   TeamIntentChange,
@@ -161,6 +162,59 @@ function renderRequirementGoal(requirements: TeamIntentRequirement[]): string {
 export class TeamIntentClarificationRequiredError extends Error {
   readonly code = 'team_intent_clarification_required';
   readonly status = 409;
+  /** Run the clarification was recorded against, so the chat can show it in place. */
+  runId?: string;
+  eventId?: string;
+}
+
+/**
+ * Below this the classifier is telling us it guessed. Only applied when the model
+ * actually reports a number — a missing field means "not reported", not "no confidence".
+ */
+const INTENT_CONFIDENCE_FLOOR = 0.65;
+
+export type TeamIntentDecision =
+  | { ok: true; mode: TeamIntentMode; confidence: number }
+  | { ok: false; reason: string; question: string };
+
+/**
+ * Whether the classifier's answer is safe to act on.
+ *
+ * `confidence` is advisory: models routinely answer a clear "do it again" without it, and
+ * treating that absence as zero turned every terse-but-certain follow-up into a dead-end
+ * question. Only a number the model actually reported can block execution.
+ */
+export function decideTeamIntent(parsed: Record<string, unknown>): TeamIntentDecision {
+  const mode = INTENT_MODES.has(parsed.mode as TeamIntentMode)
+    ? (parsed.mode as TeamIntentMode)
+    : 'clarification_required';
+  const reported =
+    typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : null;
+  const question =
+    cleanText(parsed.clarificationQuestion) ||
+    'Please clarify whether to repeat, modify, or continue the previous workflow.';
+
+  if (mode === 'clarification_required') {
+    return { ok: false, reason: 'model_requested', question };
+  }
+  if (reported !== null && reported < INTENT_CONFIDENCE_FLOOR) {
+    return { ok: false, reason: `low_confidence:${String(reported)}`, question };
+  }
+  return { ok: true, mode, confidence: reported ?? 1 };
+}
+
+function clarificationRequired(
+  reason: string,
+  message: string,
+  context: { baseRunId: string; userMessage: string },
+): TeamIntentClarificationRequiredError {
+  console.warn(
+    `[team-intent] clarification required run=${context.baseRunId} reason=${reason} ` +
+      `message=${JSON.stringify(context.userMessage.slice(0, 200))}`,
+  );
+  return new TeamIntentClarificationRequiredError(message);
 }
 
 /** Resolve a completed-run follow-up before any plan or external action exists. */
@@ -169,6 +223,8 @@ export async function resolveTeamFollowUpIntent(input: {
   baseRunId: string;
   baseIntent: ResolvedTeamIntent;
   previousResult?: string | null;
+  /** Question we asked the user last turn, so their answer is read as the reply to it. */
+  pendingClarification?: string | null;
 }): Promise<ResolvedTeamIntent> {
   const userMessage = input.userMessage.trim();
   if (isRetryOnlyUserText(userMessage)) {
@@ -182,67 +238,64 @@ export async function resolveTeamFollowUpIntent(input: {
     });
   }
 
-  let result: Awaited<ReturnType<typeof chatCompletion>>;
-  try {
-    result = await chatCompletion(
-      {
-      model: 'openrouter/openai/gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You resolve a follow-up for an agent-team workflow before execution.
-Return one JSON object only: {"mode":"new|repeat|modify|continue|question|cancel|clarification_required","changes":[{"operation":"add|remove|replace","requirementId":"existing id when applicable","text":"new requirement text when applicable"}],"requirements":[{"id":"stable id","text":"atomic active requirement"}],"effectiveGoal":"concise complete goal","confidence":0.0,"clarificationQuestion":"optional"}.
+  const content = await completeStructured({
+    label: 'team-intent',
+    applicationId: LLM_APPLICATION_IDS.lunaTeams,
+    // Naming the model keeps this on a provider that answers a short JSON prompt quickly;
+    // the router otherwise rewrites it onto the default provider, where a timeout plus
+    // fallback made the user wait ~45s just to be asked a question. Without an OpenRouter
+    // key, fall through to whatever the workspace default is.
+    model: isLlmProviderConfigured('openrouter') ? 'openrouter/openai/gpt-4o-mini' : null,
+    temperature: 0,
+    maxTokens: 900,
+    timeoutMs: 20_000,
+    system: `You resolve a follow-up for an agent-team workflow before execution.
+Return one JSON object only: {"mode":"new|repeat|modify|continue|question|cancel|clarification_required","changes":[{"operation":"add|remove|replace","requirementId":"existing id when applicable","text":"new requirement text when applicable"}],"requirements":[{"id":"stable id","text":"atomic active requirement"}],"effectiveGoal":"concise complete goal","confidence":<number 0-1: how sure you are of the mode, NOT a fixed value>,"clarificationQuestion":"optional"}.
 Rules:
-- repeat means run every prior requirement again.
+- repeat means run every prior requirement again. A plain "do it again" style request is repeat with high confidence.
 - modify means preserve every prior requirement except explicit add/remove/replace operations.
 - continue means perform a new next action using the prior result; do not replay completed external actions.
 - question means answer from prior context without external writes.
 - cancel means do not perform external actions.
-- clarification_required when the requested change is ambiguous or contradictory.
+- clarification_required only when the request is genuinely ambiguous or contradictory, never as a default.
 - Never silently omit a prior requirement in modify mode.
 - For modify mode, return patch operations against the supplied stable IDs.`,
-        },
-        {
-          role: 'user',
-          content: [
-            `Previous effective goal: ${input.baseIntent.effectiveGoal}`,
-            `Previous requirements:\n${input.baseIntent.requirements.map((r) => `- ${r.id}: ${r.text}`).join('\n')}`,
-            input.previousResult ? `Previous validated result:\n${input.previousResult.slice(0, 1600)}` : null,
-            `Latest user message: ${userMessage}`,
-          ].filter(Boolean).join('\n\n'),
-        },
-      ],
-      temperature: 0,
-      max_tokens: 900,
-      stream: false,
-      reasoning_purpose: 'planning',
-      },
-      { applicationId: LLM_APPLICATION_IDS.lunaTeams, timeoutMs: 20_000, retries: 1 },
-    );
-  } catch {
-    throw new TeamIntentClarificationRequiredError(
+    user: [
+      `Previous effective goal: ${input.baseIntent.effectiveGoal}`,
+      `Previous requirements:\n${input.baseIntent.requirements.map((r) => `- ${r.id}: ${r.text}`).join('\n')}`,
+      input.previousResult ? `Previous validated result:\n${input.previousResult.slice(0, 1600)}` : null,
+      input.pendingClarification
+        ? `You already asked the user: ${input.pendingClarification}\nThe message below is their answer to that question.`
+        : null,
+      `Latest user message: ${userMessage}`,
+    ].filter(Boolean).join('\n\n'),
+  });
+  if (!content) {
+    throw clarificationRequired(
+      'inference_unavailable',
       'I could not safely resolve this follow-up. Please restate the complete intended workflow.',
+      { baseRunId: input.baseRunId, userMessage },
     );
   }
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(stripCodeFence(result.content)) as Record<string, unknown>;
+    parsed = JSON.parse(stripCodeFence(content)) as Record<string, unknown>;
   } catch {
-    throw new TeamIntentClarificationRequiredError(
+    throw clarificationRequired(
+      'unparseable_response',
       'I could not safely determine how this follow-up should change the previous workflow.',
+      { baseRunId: input.baseRunId, userMessage },
     );
   }
-  const mode = INTENT_MODES.has(parsed.mode as TeamIntentMode)
-    ? parsed.mode as TeamIntentMode
-    : 'clarification_required';
-  const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
-  const clarificationQuestion = cleanText(parsed.clarificationQuestion);
-  if (mode === 'clarification_required' || confidence < 0.65) {
-    throw new TeamIntentClarificationRequiredError(
-      clarificationQuestion || 'Please clarify whether to repeat, modify, or continue the previous workflow.',
-    );
+  const decision = decideTeamIntent(parsed);
+  if (!decision.ok) {
+    throw clarificationRequired(decision.reason, decision.question, {
+      baseRunId: input.baseRunId,
+      userMessage,
+    });
   }
+  const { mode, confidence } = decision;
 
   const changes = normalizeChanges(parsed.changes);
   if (mode === 'repeat') {
@@ -263,14 +316,18 @@ Rules:
         (!change.requirementId || !baseIds.has(change.requirementId)),
     );
     if (invalidChange) {
-      throw new TeamIntentClarificationRequiredError(
+      throw clarificationRequired(
+        'unknown_requirement_id',
         'The requested change did not match a known part of the previous workflow.',
+        { baseRunId: input.baseRunId, userMessage },
       );
     }
     const requirements = applyIntentChanges(input.baseIntent.requirements, changes);
     if (requirements.length === 0 || changes.length === 0) {
-      throw new TeamIntentClarificationRequiredError(
+      throw clarificationRequired(
+        'empty_modify_patch',
         'Please specify exactly which part of the previous workflow should change.',
+        { baseRunId: input.baseRunId, userMessage },
       );
     }
     return createResolvedTeamIntent({

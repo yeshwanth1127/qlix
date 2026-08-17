@@ -33,6 +33,7 @@ export type TeamRunEventType =
   | 'result_delivered'
   | 'outbound_blocked'
   | 'user_injection'
+  | 'clarification_requested'
   | 'wait_armed'
   | 'wait_ttl_requested'
   | 'wait_ttl_set'

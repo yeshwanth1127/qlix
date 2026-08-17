@@ -593,15 +593,8 @@ async function handleContactTeamWaitInbound(
         supervisorAgentId: null,
       });
 
-      if (sideEffectResult.checkpoint !== checkpoint) {
-        await teamsRepo.updateRunStatus(run.id, 'paused', {
-          checkpointJson: sideEffectResult.checkpoint,
-        });
-      }
-
-      for (const artifact of sideEffectResult.artifacts) {
-        await teamsRepo.upsertArtifactById(run.id, artifact);
-      }
+      // Checkpoint + artifact JSON are committed inside applyWaitInboundSideEffects
+      // under a per-run lock so parallel lead replies cannot clobber sheet rows.
 
       for (const event of sideEffectResult.events) {
         if (event.type === 'live_artifact_updated') {

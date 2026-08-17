@@ -22,6 +22,7 @@ import {
   Paperclip,
   PanelLeft,
   Phone,
+  RotateCw,
   Search,
   Send,
   ShieldCheck,
@@ -44,6 +45,8 @@ import {
   setTeamRunWaitTtl,
   startTeamRun,
   streamTeamRun,
+  TeamRunStartError,
+  TEAM_INTENT_CLARIFICATION_CODE,
   type TeamDTO,
   type TeamRunDTO,
   type TeamRunEventDTO,
@@ -142,6 +145,8 @@ type ProcessedEvent =
       timestampMs: number;
       agentId: string;
       label: string;
+      status: "done" | "error" | "retry";
+      detail?: string;
     }
   | {
       kind: "jit_pending";
@@ -204,6 +209,7 @@ type ProcessedEvent =
   | { kind: "wait_fulfilled"; eventId: string; timestampMs: number; responderCount: number; continuePipeline: boolean; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
   | { kind: "wait_expired"; eventId: string; timestampMs: number; reason: string }
   | { kind: "user_injection"; eventId: string; timestampMs: number; message: string; attachments?: ChatAttachmentChip[] }
+  | { kind: "clarification"; eventId: string; timestampMs: number; question: string; userMessage: string }
   | { kind: "result_delivered"; eventId: string; timestampMs: number; sent: boolean; reason?: string; boundary?: string; channel?: string }
   | { kind: "outbound_blocked"; eventId: string; timestampMs: number; message: string };
 
@@ -211,7 +217,7 @@ const TEAM_CHAT_MAX_FILES = 10;
 const TEAM_CHAT_MAX_FILE_MB = 50;
 const TEAM_CHAT_MAX_FILE_BYTES = TEAM_CHAT_MAX_FILE_MB * 1024 * 1024;
 const TEAM_CHAT_FILE_ACCEPT =
-  ".pdf,.docx,.xlsx,.xls,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml";
+  ".pdf,.doc,.docx,.docm,.ppt,.pptx,.pptm,.pps,.ppsx,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.epub,.rtf,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.html,.xml";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -938,6 +944,7 @@ function ActivityBody({
         const isJitPending = entry.kind === "jit_pending";
         const isRunningStep = entry.status === "running" || isJitPending;
         const isError = entry.status === "error";
+        const isRetry = entry.status === "retry";
         if (isJitPending) {
           return (
             <li key={entry.id} className="min-w-0">
@@ -971,13 +978,17 @@ function ActivityBody({
                   ? "border-violet-500/15 bg-violet-50/65"
                   : isError
                     ? "border-red-500/15 bg-red-50/60"
-                    : "border-emerald-600/10 bg-emerald-50/55",
+                    : isRetry
+                      ? "border-amber-500/20 bg-amber-50/60"
+                      : "border-emerald-600/10 bg-emerald-50/55",
               )}
             >
               {isRunningStep ? (
                 <Loader2 size={12} className="mt-0.5 shrink-0 text-violet-600 motion-safe:animate-spin" />
               ) : isError ? (
                 <XCircle size={11} className="mt-0.5 shrink-0 text-[color:var(--sketch-red)]/80" />
+              ) : isRetry ? (
+                <RotateCw size={11} className="mt-0.5 shrink-0 text-amber-700/80" />
               ) : (
                 <span className="relative mt-0.5 grid size-4 shrink-0 place-items-center text-emerald-700">
                   <ToolGlyph kind={entry.kind} tool={entry.tool} size={12} />
@@ -993,7 +1004,9 @@ function ActivityBody({
                         ? "text-[color:var(--sketch-red)]/85"
                         : isRunningStep
                           ? "text-violet-950/80"
-                          : "text-emerald-950/80",
+                          : isRetry
+                            ? "text-amber-950/80"
+                            : "text-emerald-950/80",
                     )}
                   >
                     {entry.label}
@@ -1005,10 +1018,18 @@ function ActivityBody({
                         ? "bg-violet-100 text-violet-700"
                         : isError
                           ? "bg-red-100 text-red-700"
-                          : "bg-emerald-100 text-emerald-800",
+                          : isRetry
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-emerald-100 text-emerald-800",
                     )}
                   >
-                    {isRunningStep ? "Running" : isError ? "Failed" : "Succeeded"}
+                    {isRunningStep
+                      ? "Running"
+                      : isError
+                        ? "Failed"
+                        : isRetry
+                          ? "Retrying"
+                          : "Succeeded"}
                   </span>
                 </div>
                 {entry.detail ? (
@@ -1259,7 +1280,8 @@ interface ActivityEntry {
   tool?: string;
   label: string;
   detail?: string;
-  status?: "running" | "done" | "error";
+  /** `retry` is neither success nor failure — the stage is being attempted again. */
+  status?: "running" | "done" | "error" | "retry";
   sources?: Array<{ url: string; title?: string }>;
   jitRequestId?: string;
   jitChannel?: "dashboard" | "whatsapp";
@@ -1312,6 +1334,7 @@ type ChatItem =
   | { kind: "wait_fulfilled"; id: string; ts: number; responderCount: number; continuePipeline: boolean; interestSummary?: { interested: number; notInterested: number; unclear: number; included: number } }
   | { kind: "wait_expired"; id: string; ts: number; reason: string }
   | { kind: "user"; id: string; ts: number; message: string; attachments?: ChatAttachmentChip[] }
+  | { kind: "clarification"; id: string; ts: number; question: string }
   | { kind: "delivered"; id: string; ts: number; sent: boolean; reason?: string; boundary?: string; channel?: string }
   | { kind: "blocked"; id: string; ts: number; message: string };
 
@@ -1655,12 +1678,16 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
           const msg = typeof p.message === "string" ? p.message : "";
           const label = statusStepLabel(msg, p);
           if (label) {
+            const failed = p.status === "failed" || typeof p.error === "string";
+            const reason = typeof p.reason === "string" ? p.reason : undefined;
             result.push({
               kind: "status_step",
               eventId: e.id,
               timestampMs: ts,
               agentId: e.agentId ?? "",
               label,
+              status: failed ? "error" : p.retry === true ? "retry" : "done",
+              ...(reason ? { detail: reason } : {}),
             });
           }
           break;
@@ -1812,6 +1839,15 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
             attachments: parseInjectionAttachments(p.attachments),
           });
           break;
+        case "clarification_requested":
+          result.push({
+            kind: "clarification",
+            eventId: e.id,
+            timestampMs: ts,
+            question: (p.question as string | undefined) ?? "",
+            userMessage: (p.userMessage as string | undefined) ?? "",
+          });
+          break;
         case "result_delivered":
           result.push({
             kind: "result_delivered",
@@ -1903,7 +1939,8 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
             id: ev.eventId,
             kind: "status",
             label: ev.label,
-            status: "done",
+            status: ev.status,
+            ...(ev.detail ? { detail: ev.detail } : {}),
           };
         }
 
@@ -2070,6 +2107,23 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
             ts: ev.timestampMs,
             message: ev.message,
             attachments: ev.attachments,
+          });
+          break;
+        case "clarification":
+          // The message never started a run, so it is replayed from the clarification itself.
+          if (ev.userMessage) {
+            items.push({
+              kind: "user",
+              id: `${ev.eventId}-message`,
+              ts: ev.timestampMs,
+              message: ev.userMessage,
+            });
+          }
+          items.push({
+            kind: "clarification",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            question: ev.question,
           });
           break;
         case "result_delivered":
@@ -2508,6 +2562,31 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
       });
       streamCleanup.current = cleanup;
     } catch (err) {
+      const clarification =
+        err instanceof TeamRunStartError && err.code === TEAM_INTENT_CLARIFICATION_CODE
+          ? (err.clarification ?? { question: err.message })
+          : null;
+      // A question back from the team belongs in the transcript, not in the header as an error.
+      if (clarification && isFollowUp && run) {
+        const eventId = clarification.eventId ?? `clarification-local-${Date.now()}`;
+        setEvents((prev) => [
+          ...prev.filter((e) => e.id !== localFollowUpId),
+          {
+            id: eventId,
+            runId: clarification.runId ?? run.id,
+            teamId: team.id,
+            agentId: null,
+            seq: (prev[prev.length - 1]?.seq ?? 0) + 1,
+            eventType: "clarification_requested",
+            payload: { question: clarification.question, userMessage: display },
+            prevHash: "local",
+            timestampMs: String(Date.now()),
+          },
+        ]);
+        setRunStatus(run.status);
+        setPendingFiles(files);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to start run");
       setRunStatus(isFollowUp ? (run?.status ?? "failed") : "failed");
       if (isFollowUp && localFollowUpId) {
@@ -3396,6 +3475,23 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                       text={item.message}
                       attachments={item.attachments}
                     />
+                  );
+
+                case "clarification":
+                  return (
+                    <ChatMessage
+                      key={item.id}
+                      name="Luna-Teams"
+                      role="supervisor"
+                      timestampMs={item.ts}
+                    >
+                      <div className="rounded-2xl border border-black/10 bg-[color:var(--sketch-paper)]/80 px-4 py-3">
+                        <p className="text-[13px] leading-relaxed text-black/85">{item.question}</p>
+                        <p className="mt-2 text-[11px] text-[color:var(--ink-faint)]">
+                          Nothing was run — reply here and we&apos;ll pick it up from there.
+                        </p>
+                      </div>
+                    </ChatMessage>
                   );
 
                 case "delivered":

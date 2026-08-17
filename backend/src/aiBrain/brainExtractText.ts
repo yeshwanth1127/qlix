@@ -1,9 +1,37 @@
 import path from 'node:path';
-import mammoth from 'mammoth';
+import { formatFromBytes, toMarkdownBytes } from '@firecrawl/anydoc';
 import * as XLSX from 'xlsx';
 import { PDFParse } from 'pdf-parse';
 
 const MAX_EXTRACT_CHARS = 2_000_000;
+
+/** Office and document formats anydoc renders to Markdown. */
+const ANYDOC_EXT = new Set([
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.docm',
+  '.ppt',
+  '.pps',
+  '.pot',
+  '.pptx',
+  '.pptm',
+  '.ppsx',
+  '.ppsm',
+  '.odt',
+  '.odp',
+  '.epub',
+  '.rtf',
+]);
+
+/**
+ * Spreadsheets stay on SheetJS CSV rendering: the Luna-Teams provenance guard greps
+ * that exact text and the row-count label counts its lines.
+ */
+const SPREADSHEET_EXT = new Set(['.xlsx', '.xls', '.xlsm', '.xlsb', '.ods']);
+
+/** The same set as anydoc's own format names, for when detection comes from the bytes. */
+const SPREADSHEET_FORMATS = new Set(['xlsx', 'xls', 'xlsm', 'xlsb', 'ods']);
 
 const TEXT_LIKE_EXT = new Set([
   '.txt',
@@ -62,7 +90,6 @@ const TEXT_LIKE_EXT = new Set([
   '.vtt',
   '.eml',
   '.ics',
-  '.rtf',
 ]);
 
 const JSON_EXT = new Set(['.json', '.jsonl', '.ndjson', '.ipynb']);
@@ -109,9 +136,49 @@ async function extractPdf(buffer: Buffer): Promise<string> {
   }
 }
 
-async function extractDocx(buffer: Buffer): Promise<string> {
-  const { value } = await mammoth.extractRawText({ buffer });
-  return (value ?? '').trim();
+/** Plain-language message per anydoc failure code — these surface in the AI Brain upload UI. */
+function anydocMessage(code: string | undefined, safeName: string, isPdf: boolean): string {
+  const name = path.basename(safeName);
+  switch (code) {
+    case 'encrypted':
+      return `"${name}" is password-protected. Remove the password and upload it again.`;
+    case 'unsupported':
+      return isPdf
+        ? `"${name}" looks like a scanned document with no selectable text in it.`
+        : `"${name}" is not in a format that can be read.`;
+    case 'malformed':
+    case 'missingPart':
+      return `"${name}" appears to be damaged and could not be read.`;
+    case 'resourceLimit':
+      return `"${name}" is too large or too complex to read.`;
+    default:
+      return `Could not read "${name}".`;
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : undefined;
+}
+
+/**
+ * Convert through anydoc. PDFs keep pdf-parse as a fallback so we never regress
+ * against what the previous extractor could already read.
+ */
+async function extractViaAnydoc(buffer: Buffer, ext: string, safeName: string): Promise<string> {
+  const isPdf = ext === '.pdf';
+  try {
+    // No format argument: anydoc reads it from the bytes, so a mislabeled file still converts.
+    return (await toMarkdownBytes(buffer)).trim();
+  } catch (error) {
+    const code = errorCode(error);
+    if (isPdf && (code === 'unsupported' || code === 'malformed')) {
+      const viaPdfParse = await extractPdf(buffer).catch(() => '');
+      if (viaPdfParse.trim()) return viaPdfParse;
+    }
+    throw new Error(anydocMessage(code, safeName, isPdf));
+  }
 }
 
 function extractSpreadsheet(buffer: Buffer): string {
@@ -170,16 +237,10 @@ function extractHtml(raw: string): string {
     .trim();
 }
 
-function extractRtf(raw: string): string {
-  return raw
-    .replace(/\\par[d]?\b/g, '\n')
-    .replace(/\\'[0-9a-f]{2}/gi, (hex) => String.fromCharCode(Number.parseInt(hex.slice(2), 16)))
-    .replace(/\\u(-?\d+)\??/g, (_match, value: string) => String.fromCharCode(Number(value) & 0xffff))
-    .replace(/\\[a-z]+-?\d* ?/gi, '')
-    .replace(/[{}]/g, '')
-    .replace(/\n\s*\n\s*\n+/g, '\n\n')
-    .trim();
-}
+const SUPPORTED_SUMMARY =
+  'PDF, Word (.doc, .docx), PowerPoint (.ppt, .pptx), spreadsheets (.xls, .xlsx, .ods), ' +
+  'OpenDocument (.odt, .odp), EPUB, RTF, JSON/JSONL, and text-based files such as TXT, ' +
+  'Markdown, CSV, HTML, XML, YAML, logs, source code, and config files.';
 
 /**
  * Best-effort text extraction for AI Brain ingest. Unsupported binary types throw a clear Error.
@@ -190,28 +251,35 @@ export async function extractTextFromUpload(buffer: Buffer, originalFilename: st
 
   let raw: string;
 
-  if (ext === '.pdf') {
-    raw = await extractPdf(buffer);
-  } else if (ext === '.docx') {
-    raw = await extractDocx(buffer);
-  } else if (ext === '.xlsx' || ext === '.xls' || ext === '.ods') {
+  if (ANYDOC_EXT.has(ext)) {
+    raw = await extractViaAnydoc(buffer, ext, safeName);
+  } else if (SPREADSHEET_EXT.has(ext)) {
     raw = extractSpreadsheet(buffer);
-  } else if (TEXT_LIKE_EXT.has(ext) || ext === '') {
+  } else if (TEXT_LIKE_EXT.has(ext)) {
     raw = decodeText(buffer);
     if (hasManyNulBytes(raw)) {
       throw new Error(
-        'This file looks binary and cannot be read as text. Supported binary documents include PDF, Word (.docx), and spreadsheets (.xls, .xlsx, .ods).',
+        `This file looks binary and cannot be read as text. Supported formats: ${SUPPORTED_SUMMARY}`,
       );
     }
     if (JSON_EXT.has(ext)) raw = extractJson(raw, ext, safeName);
     else if (HTML_EXT.has(ext)) raw = extractHtml(raw);
-    else if (ext === '.rtf') raw = extractRtf(raw);
   } else {
-    raw = decodeText(buffer);
-    if (!raw.trim() || hasManyNulBytes(raw)) {
-      throw new Error(
-        `Could not read "${path.basename(safeName)}". Supported: PDF, Word (.docx), spreadsheets (.xls, .xlsx, .ods), JSON/JSONL, and text-based files such as TXT, Markdown, CSV, HTML, XML, YAML, RTF, logs, source code, and config files.`,
-      );
+    // Missing or unknown extension — trust the bytes over the name, which email and
+    // WhatsApp attachments routinely get wrong, before falling back to reading it as text.
+    const detected = formatFromBytes(buffer);
+    if (detected && SPREADSHEET_FORMATS.has(detected)) {
+      // Keep the CSV shape the Luna-Teams provenance guard greps, whatever the file is called.
+      raw = extractSpreadsheet(buffer);
+    } else if (detected) {
+      raw = await extractViaAnydoc(buffer, `.${detected}`, safeName);
+    } else {
+      raw = decodeText(buffer);
+      if (!raw.trim() || hasManyNulBytes(raw)) {
+        throw new Error(
+          `Could not read "${path.basename(safeName)}". Supported: ${SUPPORTED_SUMMARY}`,
+        );
+      }
     }
   }
 

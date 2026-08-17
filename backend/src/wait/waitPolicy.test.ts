@@ -6,10 +6,13 @@ import {
   goalRequestsReplyWait,
   inferWaitStepsFromGoal,
   inferTeamWaitStepsFromSpec,
+  REPLY_LIVE_SHEET_EFFECT,
+  resolveReplyInclusion,
   resolveTeamWhatsAppWaitMode,
   resolveWaitStepsForTeam,
   WHATSAPP_REPLY_LIVE_SHEET_EFFECT,
 } from './waitPolicy.js';
+import { ALL_REPLY_LABELS, DEFAULT_REPLY_INCLUSION } from './replyInclusion.js';
 
 describe('goalRequestsReplyWait', () => {
   it('matches collect-the-response-via-the-poll language', () => {
@@ -82,6 +85,91 @@ describe('resolveWaitStepsForTeam', () => {
       2,
     );
     assert.deepEqual(resolved, explicit);
+  });
+
+  it('adds the live artifact effect to stored steps that declare none', () => {
+    const stored = [{ ...buildWhatsAppReplyWaitStep(2), sideEffects: [] }];
+    const resolved = resolveWaitStepsForTeam(
+      { waitSteps: stored } as import('../teams/teams.types.js').TeamConfig,
+      'message the leads, wait 1 hour for replies, then put the replies in an excel sheet',
+      2,
+    );
+    assert.equal(resolved.length, 1);
+    assert.equal(resolved[0]!.afterStageOrder, 2);
+    assert.equal(resolved[0]!.sideEffects.length, 1);
+    assert.equal(resolved[0]!.sideEffects[0]!.id, WHATSAPP_REPLY_LIVE_SHEET_EFFECT.id);
+    assert.deepEqual(stored[0]!.sideEffects, [], 'stored config is not mutated');
+  });
+
+  it('leaves stored steps alone when the goal asks for no file', () => {
+    const stored = [{ ...buildWhatsAppReplyWaitStep(2), sideEffects: [] }];
+    const resolved = resolveWaitStepsForTeam(
+      { waitSteps: stored } as import('../teams/teams.types.js').TeamConfig,
+      'message the leads and wait for replies',
+      2,
+    );
+    assert.deepEqual(resolved, stored);
+  });
+
+  it('carries the goal inclusion policy onto a step it repairs', () => {
+    const stored = [{ ...buildWhatsAppReplyWaitStep(2), sideEffects: [] }];
+    const resolved = resolveWaitStepsForTeam(
+      { waitSteps: stored } as import('../teams/teams.types.js').TeamConfig,
+      'wait for replies then log every reply in an excel sheet',
+      2,
+    );
+    assert.deepEqual(resolved[0]!.sideEffects[0]!.filter?.include, ALL_REPLY_LABELS);
+  });
+});
+
+describe('reply inclusion policy on wait steps', () => {
+  it('defaults to engaged leads when the goal is silent', () => {
+    const steps = inferWaitStepsFromGoal(
+      'send hi on whatsapp; if they respond, put them in a sheet',
+      2,
+    );
+    assert.deepEqual(steps[0]!.sideEffects[0]!.filter?.include, DEFAULT_REPLY_INCLUSION);
+  });
+
+  it('widens to everyone when the goal asks for all replies', () => {
+    const steps = inferWaitStepsFromGoal(
+      'if they reply, record every reply in a sheet regardless of interest',
+      2,
+    );
+    assert.deepEqual(steps[0]!.sideEffects[0]!.filter?.include, ALL_REPLY_LABELS);
+  });
+
+  it('narrows to declines when the goal asks only for the no replies', () => {
+    const steps = inferWaitStepsFromGoal(
+      'if they reply, put only the ones who said no in a sheet',
+      2,
+    );
+    assert.deepEqual(steps[0]!.sideEffects[0]!.filter?.include, ['not_interested']);
+  });
+
+  it('does not mutate the shared effect constant', () => {
+    inferWaitStepsFromGoal('if they reply, log every reply in a sheet', 2);
+    assert.deepEqual(REPLY_LIVE_SHEET_EFFECT.filter?.include, DEFAULT_REPLY_INCLUSION);
+    assert.equal(WHATSAPP_REPLY_LIVE_SHEET_EFFECT, REPLY_LIVE_SHEET_EFFECT);
+  });
+});
+
+describe('resolveReplyInclusion', () => {
+  it('reads the policy back off a persisted snapshot', () => {
+    const steps = inferWaitStepsFromGoal('if they reply, log every reply in a sheet', 2);
+    const snapshot = { waitSteps: steps, activeWaitStepId: steps[0]!.id };
+    assert.deepEqual(resolveReplyInclusion(snapshot), ALL_REPLY_LABELS);
+  });
+
+  it('accepts a bare step', () => {
+    const step = buildWhatsAppReplyWaitStep(2, 'sheet only the interested leads');
+    assert.deepEqual(resolveReplyInclusion(step), ['interested']);
+  });
+
+  it('falls back to the default for legacy steps with no filter', () => {
+    const legacy = { ...buildWhatsAppReplyWaitStep(2), sideEffects: [] };
+    assert.deepEqual(resolveReplyInclusion(legacy), DEFAULT_REPLY_INCLUSION);
+    assert.deepEqual(resolveReplyInclusion(null), DEFAULT_REPLY_INCLUSION);
   });
 });
 

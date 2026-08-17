@@ -35,6 +35,7 @@ export type TeamRunEventType =
   | "result_delivered"
   | "outbound_blocked"
   | "user_injection"
+  | "clarification_requested"
   | "wait_armed"
   | "wait_ttl_requested"
   | "wait_ttl_set"
@@ -562,6 +563,28 @@ export async function cancelTeamRun(teamId: string, runId: string): Promise<void
 
 
 
+/** The team answered with a question instead of starting a run — shown in the chat, not as an error. */
+export interface TeamRunClarification {
+  question: string;
+  /** Run the question was recorded against, so it survives a reload. */
+  runId?: string;
+  eventId?: string;
+}
+
+export const TEAM_INTENT_CLARIFICATION_CODE = "team_intent_clarification_required";
+
+export class TeamRunStartError extends Error {
+  readonly code?: string;
+  readonly clarification?: TeamRunClarification;
+
+  constructor(message: string, code?: string, clarification?: TeamRunClarification) {
+    super(message);
+    this.name = "TeamRunStartError";
+    this.code = code;
+    this.clarification = clarification;
+  }
+}
+
 export async function startTeamRun(
   teamId: string,
   goal: string,
@@ -605,8 +628,14 @@ export async function startTeamRun(
     });
   }
   if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
-    throw new Error(err?.error?.message ?? "Failed to start run");
+    const err = (await res.json().catch(() => null)) as
+      | (ApiErrorBody & { clarification?: TeamRunClarification })
+      | null;
+    throw new TeamRunStartError(
+      err?.error?.message ?? "Failed to start run",
+      err?.error?.code,
+      err?.clarification,
+    );
   }
   const data = (await res.json()) as {
     run: TeamRunDTO;

@@ -19,6 +19,7 @@ import {
   createResolvedTeamIntent,
   resolvedIntentForRun,
   resolveTeamFollowUpIntent,
+  TeamIntentClarificationRequiredError,
 } from './teamIntent.js';
 import type { ResolvedTeamIntent } from './teams.types.js';
 
@@ -27,6 +28,7 @@ const FINISHED_RUN_STATUSES = new Set(['completed', 'failed', 'canceled']);
 const orchestrator = new TeamOrchestrator();
 const teamsService = new TeamsService();
 const teamsRepo = new TeamsRepository();
+const resumeInFlight = new Set<string>();
 
 export interface LaunchTeamRunInput {
   teamId: string;
@@ -83,12 +85,23 @@ async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
     ...priorRun,
     goal: originalGoal || priorRun.goal,
   });
-  const resolvedIntent = await resolveTeamFollowUpIntent({
-    userMessage: input.goal,
-    baseRunId: priorRun.id,
-    baseIntent,
-    previousResult: prior.synthesis ?? prior.errorMessage,
-  });
+  let resolvedIntent: ResolvedTeamIntent;
+  try {
+    resolvedIntent = await resolveTeamFollowUpIntent({
+      userMessage: input.goal,
+      baseRunId: priorRun.id,
+      baseIntent,
+      previousResult: prior.synthesis ?? prior.errorMessage,
+      pendingClarification: latestClarificationQuestion(events),
+    });
+  } catch (err) {
+    if (err instanceof TeamIntentClarificationRequiredError) {
+      // No run exists to carry this question, so record it on the run being continued.
+      // Without it the user's message and our reply both vanish from the chat.
+      await recordClarification(priorRun.id, priorRun.teamId, input.goal.trim(), err);
+    }
+    throw err;
+  }
   return {
     goal: applyTeamRunFollowUp(input.goal, {
       ...prior,
@@ -98,6 +111,37 @@ async function resolveContinuedGoal(input: LaunchTeamRunInput): Promise<{
     continuesRunId,
     priorInputs: firstInputsInContinueChain(chain),
   };
+}
+
+/** The question we last asked and the message that triggered it, kept in the run timeline. */
+async function recordClarification(
+  runId: string,
+  teamId: string,
+  userMessage: string,
+  err: TeamIntentClarificationRequiredError,
+): Promise<void> {
+  err.runId = runId;
+  try {
+    const event = await teamsRepo.appendEvent(runId, teamId, null, 'clarification_requested', {
+      question: err.message,
+      userMessage,
+    });
+    err.eventId = event.id;
+  } catch (appendErr) {
+    console.error(`[team-run] could not record clarification for run ${runId}:`, appendErr);
+  }
+}
+
+function latestClarificationQuestion(
+  events: Array<{ eventType: string; payload: unknown }>,
+): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.eventType !== 'clarification_requested') continue;
+    const question = (event.payload as { question?: unknown } | null)?.question;
+    return typeof question === 'string' && question.trim() ? question.trim() : null;
+  }
+  return null;
 }
 
 async function loadContinueChain(
@@ -181,37 +225,43 @@ export async function resumeTeamRun(runId: string): Promise<void> {
   const run = await teamsRepo.findRun(runId);
   if (!run) throw new Error(`Team run ${runId} was not found`);
   if (run.status !== 'paused') return;
+  if (resumeInFlight.has(runId)) return;
+  resumeInFlight.add(runId);
 
-  const team = await teamsService.getTeam(run.teamId, run.orgId);
-  const checkpoint = run.checkpointJson as {
-    inferenceModel?: string | null;
-  } | null;
-  // Prefer: (1) model saved at pause, (2) model used by an earlier successful
-  // worker in this run, (3) team default. Do not let team default short-circuit
-  // recovery — that caused post-pause stages to fall onto Exora after OpenRouter runs.
-  let recoveredModel = checkpoint?.inferenceModel?.trim() || null;
-  if (!recoveredModel) {
-    recoveredModel = await teamsRepo.findLatestSuccessfulAgentInferenceModel(run.id);
+  try {
+    const team = await teamsService.getTeam(run.teamId, run.orgId);
+    const checkpoint = run.checkpointJson as {
+      inferenceModel?: string | null;
+    } | null;
+    // Prefer: (1) model saved at pause, (2) model used by an earlier successful
+    // worker in this run, (3) team default. Do not let team default short-circuit
+    // recovery — that caused post-pause stages to fall onto Exora after OpenRouter runs.
+    let recoveredModel = checkpoint?.inferenceModel?.trim() || null;
+    if (!recoveredModel) {
+      recoveredModel = await teamsRepo.findLatestSuccessfulAgentInferenceModel(run.id);
+    }
+    if (!recoveredModel) {
+      recoveredModel = (team.config as TeamConfig).defaultModel?.trim() || null;
+    }
+
+    const effectiveTeam: TeamDTO = recoveredModel
+      ? {
+          ...team,
+          config: {
+            ...(team.config as TeamConfig),
+            defaultModel: recoveredModel,
+          },
+        }
+      : team;
+
+    if (recoveredModel) {
+      console.info(`[team-run] resume=${run.id} inferenceModel=${recoveredModel}`);
+    }
+
+    await orchestrator.resume(run, effectiveTeam, () => {}).catch((err) => {
+      console.error(`[TeamOrchestrator] resume ${run.id} failed:`, err);
+    });
+  } finally {
+    resumeInFlight.delete(runId);
   }
-  if (!recoveredModel) {
-    recoveredModel = (team.config as TeamConfig).defaultModel?.trim() || null;
-  }
-
-  const effectiveTeam: TeamDTO = recoveredModel
-    ? {
-        ...team,
-        config: {
-          ...(team.config as TeamConfig),
-          defaultModel: recoveredModel,
-        },
-      }
-    : team;
-
-  if (recoveredModel) {
-    console.info(`[team-run] resume=${run.id} inferenceModel=${recoveredModel}`);
-  }
-
-  void orchestrator.resume(run, effectiveTeam, () => {}).catch((err) => {
-    console.error(`[TeamOrchestrator] resume ${run.id} failed:`, err);
-  });
 }

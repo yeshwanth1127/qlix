@@ -41,6 +41,18 @@ export function parseLlmProvider(value: unknown): LlmProviderId {
   return value === 'exora' ? 'exora' : 'openrouter';
 }
 
+/**
+ * Provider implied by a fully-qualified model id ("exora/…", "openrouter/…").
+ * Null when the id carries no prefix, so callers can fall back to their own default.
+ */
+export function providerForModel(model: string | null | undefined): LlmProviderId | null {
+  const trimmed = model?.trim().toLowerCase();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('exora/')) return 'exora';
+  if (trimmed.startsWith('openrouter/')) return 'openrouter';
+  return null;
+}
+
 export function isLlmProviderConfigured(provider: LlmProviderId): boolean {
   if (provider === 'exora') {
     const enabled = process.env.EXORA_LLM_ENABLED?.trim().toLowerCase();

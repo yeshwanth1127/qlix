@@ -3,10 +3,21 @@ import { describe, it } from 'node:test';
 import {
   classifyReplyInterestByKeywords,
   formatInterestFindings,
+  INTEREST_STAGE_GOAL_MARKER,
+  interestStageGoalAppend,
   shouldIncludeOnSheet,
   summarizeInterestCounts,
+  type InterestLabel,
   type ReplyInterestResult,
 } from './replyInterestClassifier.js';
+
+function sampleRows(): ReplyInterestResult[] {
+  return [
+    { jid: '9180@s.whatsapp.net', text: 'yes', label: 'interested', reason: 'exact', method: 'keyword' },
+    { jid: '9181@s.whatsapp.net', text: 'stop', label: 'not_interested', reason: 'exact', method: 'keyword' },
+    { jid: '9182@s.whatsapp.net', text: 'maybe', label: 'unclear', reason: 'llm', method: 'llm' },
+  ];
+}
 
 describe('classifyReplyInterestByKeywords', () => {
   it('marks clear affirmatives as interested', () => {
@@ -89,5 +100,36 @@ describe('sheet inclusion policy', () => {
       unclear: 1,
       included: 2,
     });
+  });
+
+  it('follows a record-everyone policy', () => {
+    const rows = sampleRows();
+    const everyone: InterestLabel[] = ['interested', 'unclear', 'not_interested'];
+    for (const label of everyone) {
+      assert.equal(shouldIncludeOnSheet(label, everyone), true, label);
+    }
+    const findings = formatInterestFindings(rows, everyone);
+    assert.match(findings, /record every reply/);
+    assert.match(findings, /Excluded leads[\s\S]*\(none\)/);
+    assert.equal(summarizeInterestCounts(rows, everyone).included, 3);
+  });
+
+  it('follows a declines-only policy', () => {
+    const rows = sampleRows();
+    const declinesOnly: InterestLabel[] = ['not_interested'];
+    assert.equal(shouldIncludeOnSheet('not_interested', declinesOnly), true);
+    assert.equal(shouldIncludeOnSheet('interested', declinesOnly), false);
+    const findings = formatInterestFindings(rows, declinesOnly);
+    assert.match(findings, /Included leads[\s\S]*9181@s\.whatsapp\.net/);
+    assert.equal(summarizeInterestCounts(rows, declinesOnly).included, 1);
+  });
+
+  it('states the active policy in the resumed stage instruction', () => {
+    assert.match(
+      interestStageGoalAppend(['interested', 'unclear', 'not_interested']),
+      /record every reply/,
+    );
+    assert.match(interestStageGoalAppend(['not_interested']), /leave out interested \+ unclear/);
+    assert.ok(interestStageGoalAppend().startsWith(INTEREST_STAGE_GOAL_MARKER));
   });
 });
