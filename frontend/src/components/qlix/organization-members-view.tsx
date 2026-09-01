@@ -190,7 +190,7 @@ export function OrganizationMembersView() {
             {inviteLink ? (
               <div className="mt-2">
                 <p className={sketchLabel}>Sign-up link (copy once)</p>
-                <code className="mt-1 block break-all border border-black bg-white p-2 text-[11px] text-black/60">
+                <code className="mt-1 block break-all border border-black bg-[#E2F0CC] p-2 text-[11px] text-black/60">
                   {inviteLink}
                 </code>
               </div>

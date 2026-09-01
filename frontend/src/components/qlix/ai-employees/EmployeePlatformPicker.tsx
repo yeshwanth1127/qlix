@@ -73,13 +73,13 @@ export function EmployeePlatformPicker({
                       "flex h-full w-full cursor-pointer items-start gap-3 rounded border p-4 text-left transition-colors",
                       checked
                         ? "border-black bg-black/[0.03] ring-1 ring-black/10"
-                        : "border-black/15 bg-white hover:border-black/30",
+                        : "border-black/15 bg-[#E2F0CC] hover:border-black/30",
                     )}
                   >
                     <span
                       className={cn(
                         "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border",
-                        checked ? "border-black bg-black text-white" : "border-black/30 bg-white",
+                        checked ? "border-black bg-black text-white" : "border-black/30 bg-[#E2F0CC]",
                       )}
                       aria-hidden
                     >
@@ -201,7 +201,7 @@ export function EmployeePlatformPicker({
               return (
                 <li
                   key={id}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/20 bg-white px-3 py-1.5 text-[12px] text-black"
+                  className="inline-flex items-center gap-2 rounded-full border border-black/20 bg-[#E2F0CC] px-3 py-1.5 text-[12px] text-black"
                 >
                   {entry ? <ConnectorLogo name={entry.name} logo={entry.logo} size="sm" /> : null}
                   {entry?.name ?? id}

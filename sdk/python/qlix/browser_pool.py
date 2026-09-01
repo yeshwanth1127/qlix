@@ -24,7 +24,18 @@ def cloudflare_failover_enabled() -> bool:
     raw = os.environ.get("QLIX_BROWSER_CF_FAILOVER", "1").strip().lower()
     if raw in ("0", "false", "off", "no"):
         return False
-    return resolve_cloudflare_failover() is not None
+    from .research_providers import available_providers_for
+
+    route = available_providers_for(
+        "browser",
+        runtime="cloud",
+        public_tool="browser",
+        include_browser_escalation=True,
+    )
+    return (
+        any(spec["id"] == "cloudflare_browser_run" for spec in route)
+        and resolve_cloudflare_failover() is not None
+    )
 
 
 def resolve_cloudflare_failover() -> dict[str, Any] | None:
@@ -67,16 +78,28 @@ def resolve_managed_cdp_url() -> str | None:
     Explicit QLIX_BROWSER_CDP_URL / Browserbase only — Cloudflare is failover-only
     and is not returned here.
     """
-    direct = (
-        os.environ.get("QLIX_BROWSER_CDP_URL", "").strip()
-        or os.environ.get("BROWSERBASE_CDP_URL", "").strip()
+    from .research_providers import available_providers_for
+
+    route = available_providers_for(
+        "browser",
+        runtime="cloud",
+        public_tool="browser",
+        include_browser_escalation=True,
     )
-    if direct:
-        return direct
+    provider_ids = tuple(str(spec["id"]) for spec in route)
+    if "generic_remote_cdp" in provider_ids:
+        direct = os.environ.get("QLIX_BROWSER_CDP_URL", "").strip()
+        if direct:
+            return direct
+    # Preserve the documented direct Browserbase URL override even when session
+    # creation credentials are intentionally absent.
+    browserbase_direct = os.environ.get("BROWSERBASE_CDP_URL", "").strip()
+    if browserbase_direct:
+        return browserbase_direct
 
     api_key = os.environ.get("BROWSERBASE_API_KEY", "").strip()
     project_id = os.environ.get("BROWSERBASE_PROJECT_ID", "").strip()
-    if not api_key or not project_id:
+    if "browserbase" not in provider_ids or not api_key or not project_id:
         return None
 
     try:

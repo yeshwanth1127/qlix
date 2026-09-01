@@ -151,7 +151,7 @@ export function AgentScopesEditor({ agent, orgId, onUpdated }: AgentScopesEditor
   }
 
   return (
-    <div className="mt-3 space-y-3 border border-black bg-white p-3">
+    <div className="mt-3 space-y-3 border border-black bg-[#E2F0CC] p-3">
       <div className="flex items-center justify-between gap-2">
         <p className={sketchLabel}>Manage permission scopes</p>
         {catalogLoading ? (

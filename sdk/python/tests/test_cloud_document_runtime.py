@@ -14,7 +14,7 @@ def _identity(**kwargs: object) -> AgentIdentity:
         "agent_id": "a1",
         "private_key_hex": "0" * 64,
         "public_key_hex": "1" * 64,
-        "permission_scopes": ("web.research",),
+        "permission_scopes": ("files.create",),
         "jit_scopes": (),
         "always_scopes": (),
         "backend_url": "http://localhost",
@@ -36,11 +36,18 @@ def _identity(**kwargs: object) -> AgentIdentity:
     )
 
 
-def test_document_tools_offered_with_research_scope() -> None:
-    defs = openai_document_tool_definitions(_identity(), None)
+def test_document_tools_offered_with_files_create_scope() -> None:
+    defs = openai_document_tool_definitions(_identity(permission_scopes=("files.create",)), None)
     names = {d["function"]["name"] for d in defs}
     assert "create_report_pdf" in names
     assert "create_xlsx" in names
+
+
+def test_document_tools_not_offered_with_research_alone() -> None:
+    defs = openai_document_tool_definitions(_identity(permission_scopes=("web.research",)), None)
+    names = {d["function"]["name"] for d in defs}
+    assert "create_report_pdf" not in names
+    assert "create_xlsx" not in names
 
 
 def test_create_xlsx_executor_writes_spreadsheet(monkeypatch) -> None:

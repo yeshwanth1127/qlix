@@ -37,7 +37,7 @@ function singleAgentPlan(
   };
 }
 
-const ALLOWED_CI = new Set(['web.read', 'web.research', 'brain.query']);
+const ALLOWED_CI = new Set(['web.read', 'web.research', 'files.create', 'brain.query']);
 
 describe('enrichCompetitorResearchPlan', () => {
   it('detects competitor / competitive-intelligence prompts', () => {
@@ -73,7 +73,7 @@ describe('enrichCompetitorResearchPlan', () => {
   it('strips hybrid-forcing file scopes and keeps the agent on cloud', () => {
     // Mirrors the builder screenshot: model added system.file_write for "make a PDF"
     // and got pushed to hybrid. Cloud has a built-in PDF tool, so strip + stay cloud.
-    const allowed = new Set(['web.research', 'brain.query', 'system.file_write']);
+    const allowed = new Set(['web.research', 'files.create', 'brain.query', 'system.file_write']);
     const plan = singleAgentPlan('Analyze Notion and make a PDF.', ['web.research', 'system.file_write'], 'hybrid');
     const out = enrichCompetitorResearchPlan('competitor analysis of Notion, send as PDF', plan, allowed);
     if (out.type !== 'single') {
@@ -83,6 +83,7 @@ describe('enrichCompetitorResearchPlan', () => {
     assert.ok(!out.agent.permissionScopes.includes('system.file_write'), 'file_write stripped');
     assert.equal(out.agent.runtime, 'cloud');
     assert.ok(out.agent.permissionScopes.includes('web.research'));
+    assert.ok(out.agent.permissionScopes.includes('files.create'));
   });
 
   it('is a no-op when web.research is not available to the org', () => {
@@ -191,6 +192,7 @@ describe('enrichCloudPreferPlan', () => {
   const ALLOWED = new Set([
     'web.read',
     'web.research',
+    'files.create',
     'whatsapp.read',
     'whatsapp.send',
     'system.file_read',
@@ -203,7 +205,7 @@ describe('enrichCloudPreferPlan', () => {
     assert.equal(isCloudHostedPrompt('scrape google maps leads'), false);
   });
 
-  it('strips system.file_* for excel intents and stays on cloud with web.research', () => {
+  it('strips system.file_* for excel intents and stays on cloud with files.create', () => {
     const plan = singleAgentPlan(
       'Track replies in Excel',
       ['whatsapp.read', 'whatsapp.send', 'system.file_write', 'system.file_read'],
@@ -220,7 +222,7 @@ describe('enrichCloudPreferPlan', () => {
     }
     assert.ok(!out.agent.permissionScopes.includes('system.file_write'));
     assert.ok(!out.agent.permissionScopes.includes('system.file_read'));
-    assert.ok(out.agent.permissionScopes.includes('web.research'));
+    assert.ok(out.agent.permissionScopes.includes('files.create'));
     assert.equal(out.agent.runtime, 'cloud');
   });
 

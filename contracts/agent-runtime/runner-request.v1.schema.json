@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/agent-runtime/runner-request.v1.schema.json",
+  "title": "Qlix Runner Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "runId", "agentId", "runtime", "payload"],
+  "properties": {
+    "contractVersion": { "const": "qlix.runner-request.v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "runtime": { "enum": ["local", "cloud", "hybrid"] },
+    "payload": { "type": "object" }
+  }
+}

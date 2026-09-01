@@ -33,6 +33,21 @@ the allowlisted `conversation.classify` action only when deterministic matching
 does not resolve the input. Low-confidence or invalid plugin output follows the
 node's `unclearNext` edge.
 
+## Prompts
+
+`send`, `ask`, and `collect` may declare an optional `prompt`:
+
+- `{ "kind": "text", "content": "..." }` (default when `prompt` is omitted)
+- `{ "kind": "choice", "content": "question", "options": ["A", "B"], "maxSelections": 1 }`
+
+The runtime emits that prompt on the send effect. **Channels render it**; the
+workflow never names WhatsApp polls, Slack blocks, or dashboard widgets.
+Inbound is always `{ type: "inbound", text }` — a poll tap, dashboard click, or
+typed reply all arrive as text.
+
+Each channel adapter maps to an **existing** agent send scope (`whatsapp` →
+`whatsapp.contact_send`). Choice is not a new catalog scope.
+
 ## Service API
 
 Authenticated endpoints are mounted under `/api/v1/conversations`:
@@ -60,5 +75,6 @@ New integrations should publish a workflow, create one process per campaign or
 parent job, start one thread per logical contact/case, and keep only process/thread
 IDs in their own checkpoints. Channel delivery and application actions are added
 through `ConversationPluginRegistry`; durable timers are fired by the background
-scheduler.
+scheduler. Team wait follow-ups call the same channel adapters (WhatsApp maps
+`choice` → native poll under `whatsapp.contact_send` JIT).
 

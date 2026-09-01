@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Sparkles, Users } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Globe, Loader2, ShieldCheck, Wrench, Users } from "lucide-react";
 import {
   type ActivityStep,
   collapseRetriedActivity,
@@ -23,11 +22,7 @@ function hostnameOf(url: string): string {
   }
 }
 
-/**
- * Chat-native activity stream. Steps appear as a lightly faded "thinking" feed —
- * minimal lines with icon + label, no heavy borders. Collapses to a pill summary
- * once the run finishes; click to expand.
- */
+/** Compact run details that stay open while work is active and collapse when done. */
 export function ActivityTimeline({
   steps,
   running = false,
@@ -39,7 +34,6 @@ export function ActivityTimeline({
   readonly defaultOpen?: boolean;
   readonly className?: string;
 }) {
-  const reduceMotion = useReducedMotion() ?? false;
   const visibleSteps = collapseRetriedActivity(steps);
   const jitPending = getPendingJitStep(steps);
   const activeSubagents = getActiveSubagentsFromSteps(steps);
@@ -65,10 +59,10 @@ export function ActivityTimeline({
         type="button"
         onClick={() => setCollapsed(false)}
         className={cn(
-          "mb-2 flex items-center gap-1.5 text-[10px] transition-opacity hover:opacity-90",
+          "mb-2 flex items-center gap-1.5 text-[11px] transition-colors hover:text-black/70",
           jitPending
             ? "font-medium text-black/70 opacity-100"
-            : "text-[--text-tertiary] opacity-50 hover:opacity-80",
+            : "text-black/40",
           className,
         )}
       >
@@ -80,7 +74,7 @@ export function ActivityTimeline({
         <span>
           {jitPending
             ? "Waiting for your approval"
-            : `${visibleSteps.length} step${visibleSteps.length === 1 ? "" : "s"}`}
+            : `Run details · ${visibleSteps.length} step${visibleSteps.length === 1 ? "" : "s"}`}
         </span>
         <ChevronDown className="size-3 shrink-0" aria-hidden />
       </button>
@@ -88,21 +82,12 @@ export function ActivityTimeline({
   }
 
   return (
-    <div className={cn("relative mb-2 pl-3", className)}>
-      {/* Left thinking line — a light travels down it while the agent works */}
-      <span
-        className={cn(
-          "pointer-events-none absolute bottom-0 left-0 top-0 w-px overflow-hidden transition-colors duration-500",
-          running || activeSubagents.length > 0 ? "bg-[--accent]/25" : "bg-[--border-subtle]/60",
-        )}
-        aria-hidden
-      >
-        {(running || activeSubagents.length > 0) && !reduceMotion ? (
-          <span className="qlix-think-line-travel absolute left-0 h-7 w-px" />
-        ) : null}
-      </span>
-
-      <AnimatePresence initial={false}>
+    <div className={cn("mb-3 border-l border-black/10 pl-3", className)}>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-black/55">
+        {keepOpen ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <Check className="size-3" aria-hidden />}
+        <span>{keepOpen ? "Working" : "Run details"}</span>
+      </div>
+      <div>
         {visibleSteps.map((s, i) => {
           const isLiveSubagent =
             s.kind === "subagent_running" &&
@@ -119,50 +104,32 @@ export function ActivityTimeline({
                 ? Users
                 : s.category
                   ? toolCategoryIcon(s.category)
-                  : Sparkles;
+                  : Wrench;
 
           return (
-            <motion.div
+            <div
               key={s.id}
-              layout={!reduceMotion}
-              initial={reduceMotion ? false : { opacity: 0, y: 3 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={reduceMotion ? undefined : { opacity: 0 }}
-              transition={{ duration: 0.18, ease: "easeOut" }}
               className={cn(
-                "flex items-baseline gap-1.5 py-[3px] text-[11px] transition-opacity duration-300",
+                "flex items-baseline gap-1.5 py-0.5 text-[11px]",
                 isError
-                  ? "opacity-80 text-red-400/90"
+                  ? "text-red-700/75"
                   : isJitPending
                     ? "opacity-100 font-medium text-black/80"
                     : isLiveSubagent || active
-                      ? "opacity-100 text-[--text-primary]"
-                      : "opacity-40 text-[--text-secondary]",
+                      ? "text-black/75"
+                      : "text-black/40",
               )}
             >
               <span className="flex size-3.5 shrink-0 translate-y-px items-center justify-center">
-                {(active || isLiveSubagent) && (running || isLiveSubagent) && !isJitPending && !reduceMotion ? (
-                  <span className="relative flex size-2 items-center justify-center" aria-hidden>
-                    <span className="qlix-orb-ping absolute inline-flex size-2 rounded-full bg-[--accent]/60" />
-                    <span className="qlix-orb-core relative inline-flex size-[7px] rounded-full bg-[--accent]" />
-                  </span>
+                {(active || isLiveSubagent) && (running || isLiveSubagent) && !isJitPending ? (
+                  <Loader2 className="size-3 animate-spin text-black/55" aria-hidden />
                 ) : (
                   <Icon className={cn("size-3", isJitPending && "text-black/55")} aria-hidden />
                 )}
               </span>
               <span className="flex min-w-0 flex-1 flex-col leading-snug">
                 <span>
-                  <span
-                    className={cn(
-                      (active || isLiveSubagent) &&
-                        (running || isLiveSubagent) &&
-                        !isJitPending &&
-                        !reduceMotion &&
-                        "qlix-text-shimmer",
-                    )}
-                  >
-                    {s.label}
-                  </span>
+                  <span>{s.label}</span>
                   {s.detail && s.detail !== s.toolId && !isJitPending ? (
                     <span className="opacity-60"> · {s.detail}</span>
                   ) : null}
@@ -185,17 +152,17 @@ export function ActivityTimeline({
                   </span>
                 ) : null}
               </span>
-            </motion.div>
+            </div>
           );
         })}
-      </AnimatePresence>
+      </div>
 
       {/* Collapse toggle when not running and not waiting on approval */}
       {!keepOpen && (
         <button
           type="button"
           onClick={() => setCollapsed(true)}
-          className="mt-0.5 flex items-center gap-1 text-[9px] text-[--text-tertiary] opacity-30 transition-opacity hover:opacity-60"
+          className="mt-1 flex items-center gap-1 text-[10px] text-black/35 transition-colors hover:text-black/60"
         >
           <ChevronDown className="size-2.5 rotate-180" aria-hidden />
           <span>collapse</span>
@@ -209,50 +176,21 @@ export function LiveToolBar({ steps }: { readonly steps: ActivityStep[] }) {
   const active = getActiveToolsFromSteps(steps);
   const subagents = getActiveSubagentsFromSteps(steps);
   if (active.length === 0 && subagents.length === 0) return null;
+
+  const summary = subagents.length > 0
+    ? `${subagents.length} sub-agent${subagents.length === 1 ? "" : "s"} working`
+    : active.length === 1
+      ? `Running ${active[0]?.short ?? "tool"}`
+      : `${active.length} tools running`;
+
   return (
-    <div className="flex flex-col gap-2">
-      {subagents.length > 0 ? (
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex flex-wrap items-center gap-2 rounded-lg border border-[--accent]/30 bg-[--accent]/10 px-3 py-2"
-        >
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-[--accent]" aria-hidden />
-          <Users className="size-3.5 shrink-0 text-[--accent]" aria-hidden />
-          <span className="text-[11px] font-medium text-[--text-primary]">
-            {subagents.length === 1 ? "Sub-agent running" : `${subagents.length} sub-agents running`}
-          </span>
-          {subagents.map((s) => (
-            <span
-              key={s.invocationId}
-              className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-full bg-black/20 px-2 py-0.5 text-[10px] font-medium text-[--text-primary] ring-1 ring-[--border-subtle]"
-              title={s.detail}
-            >
-              <span className="truncate">{s.label}</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {active.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[--accent]/25 bg-[--accent]/8 px-3 py-2">
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-[--accent]" aria-hidden />
-          <span className="text-[11px] font-medium text-[--text-primary]">Running</span>
-          {active.map((t) => {
-            const Icon = toolCategoryIcon(t.category);
-            return (
-              <span
-                key={t.toolId}
-                className="inline-flex items-center gap-1 rounded-full bg-black/20 px-2 py-0.5 text-[10px] font-medium text-[--text-primary] ring-1 ring-[--border-subtle]"
-              >
-                <Icon className="size-3 text-[--accent]" aria-hidden />
-                <span>{t.group}</span>
-                <span className="text-[--text-tertiary]">·</span>
-                <span className="text-[--text-secondary]">{t.short}</span>
-              </span>
-            );
-          })}
-        </div>
-      ) : null}
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-1.5 text-[11px] text-black/55"
+    >
+      <Loader2 className="size-3 animate-spin" aria-hidden />
+      <span>{summary}</span>
     </div>
   );
 }

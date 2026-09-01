@@ -14,15 +14,15 @@ import { canManageBrain } from "@/lib/org-permissions";
 import { cn } from "@/lib/utils/cn";
 import { SketchBox, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 
-const hostingCardSelected = "border-2 border-black bg-white";
-const hostingCardIdle = "border border-black bg-white hover:bg-black/5";
+const hostingCardSelected = "border-2 border-black bg-[#E2F0CC]";
+const hostingCardIdle = "border border-black bg-[#E2F0CC] hover:bg-black/5";
 
 function SetupShell({ children }: { readonly children: ReactNode }) {
   return (
     <div className="min-h-[calc(100vh-4rem)]">
       <div className="mx-auto max-w-xl space-y-6 px-4 pb-20 pt-10 md:pt-14">
         <header className="space-y-2 text-center">
-          <div className="mx-auto flex size-12 items-center justify-center rounded-full border border-black/15 bg-white/60 backdrop-blur-sm">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-full border border-black/15 bg-[#E2F0CC]/60 backdrop-blur-sm">
             <Brain className="size-6 stroke-[1.25] text-black" aria-hidden />
           </div>
           <h1 className={sketchLabel}>exa</h1>

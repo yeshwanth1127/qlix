@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { loadJwtSecret } from '../middleware/authenticateUser.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 
 export type BrainActionType =
   | 'brain.console_open'
@@ -81,18 +82,29 @@ export async function appendBrainActionLog(input: {
   const signature = brainServerSignature(secret, signaturePayload);
 
   const surface = input.auditSurface ?? 'console';
+  const tracedPayload = attachTrace(
+    {
+      ...input.payload,
+      brainOperatorSource: 'brain_module',
+      auditSurface: surface,
+      operatorUserId: input.userId,
+      ...(input.callingAgentId ? { callingAgentId: input.callingAgentId } : {}),
+    },
+    createTraceEnvelope({
+      traceId: String(input.payload.runId ?? input.callingAgentId ?? input.brainAgentId),
+      spanId: `brain:${input.actionType}:${timestampMs.toString()}`,
+      parentSpanId: String(input.payload.runId ?? input.callingAgentId ?? input.brainAgentId),
+      executionId: input.brainAgentId,
+      executionKind: 'brain',
+      agentId: input.callingAgentId ?? input.brainAgentId,
+    }),
+  );
   await prisma.actionLog.create({
     data: {
       agentId: input.brainAgentId,
       userId: input.userId,
       actionType: input.actionType,
-      payload: {
-        ...input.payload,
-        brainOperatorSource: 'brain_module',
-        auditSurface: surface,
-        operatorUserId: input.userId,
-        ...(input.callingAgentId ? { callingAgentId: input.callingAgentId } : {}),
-      } as Prisma.InputJsonValue,
+      payload: tracedPayload as Prisma.InputJsonValue,
       riskLevel: input.riskLevel,
       status: input.status,
       approvalStatus: 'not_required',

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/context-plane/context-pack.v1.schema.json",
+  "title": "Qlix Context Pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "packId", "snapshotVersion", "inline", "references", "omitted", "estimatedTokens"],
+  "properties": {
+    "contractVersion": { "const": "qlix.context-pack.v1" },
+    "packId": { "type": "string", "minLength": 1 },
+    "snapshotVersion": { "type": "integer", "minimum": 1 },
+    "goal": { "type": "string" },
+    "inline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "tokens", "text"],
+        "properties": {
+          "component": { "type": "string", "minLength": 1 },
+          "tokens": { "type": "integer", "minimum": 0 },
+          "text": { "type": "string" },
+          "data": {}
+        }
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "summary"],
+        "properties": {
+          "ref": { "type": "string", "pattern": "^ctx:" },
+          "component": { "type": "string" },
+          "summary": { "type": "string" },
+          "tokens": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "omitted": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "reason"],
+        "properties": {
+          "component": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "estimatedTokens": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -48,13 +48,27 @@ export const inferenceChatRequestSchema = z.object({
   /** Hash of the tool definitions; stable per agent once the tool array is scope-derived. */
   tools_hash: z.string().trim().max(16).optional(),
   /**
-   * Concrete model the router already chose for round 1 of this run. Auto routing
-   * re-scores complexity on every request, and after round 1 the "last user message"
-   * is a tool nudge — so the tier could flip mid-loop, switching provider and
-   * discarding the prompt-prefix cache. The runner echoes this back to pin the model
-   * for the remainder of the run.
+   * Concrete model the router already chose for this cascade *phase*.
+   * Scout pins stay on free; escalate / force_handoff clears free pins so paid can run.
    */
   pinned_model: z.string().trim().max(200).optional(),
+  /** Margin cascade phase from the runner. */
+  cascade_phase: z.enum(['scout', 'paid']).optional(),
+  /** Clear pin and re-route (rate limit / escalate). */
+  cascade_force_handoff: z.boolean().optional(),
+  cascade_escalate_reason: z
+    .enum([
+      'synthesis',
+      'high_complexity',
+      'tool_failures',
+      'length_retry_exhausted',
+      'free_unhealthy',
+      'forced',
+      'none',
+    ])
+    .optional(),
+  cascade_scout_failures: z.number().int().min(0).max(20).optional(),
+  cascade_synthesis_round: z.boolean().optional(),
   metadata: z
     .object({
       runId: z.string().trim().min(1).max(120).optional(),

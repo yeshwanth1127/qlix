@@ -1,0 +1,7539 @@
+{
+  "capabilities": {
+    "assessment_artifact_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read the content behind an evidence record \u2014 inline payload for small structured evidence, or the stored file's text (truncated) for larger artifacts like file snapshots or test/build output. Binary content returns metadata only, not bytes.",
+      "inputSchema": {
+        "properties": {
+          "evidenceId": {
+            "description": "Evidence record id whose content to read.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "evidenceId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.artifact.read"
+        ]
+      },
+      "name": "assessment_artifact_read",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.artifact.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_evidence_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read one evidence record by id (from assessment_evidence_search results).",
+      "inputSchema": {
+        "properties": {
+          "evidenceId": {
+            "description": "Evidence record id.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "evidenceId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.evidence.read"
+        ]
+      },
+      "name": "assessment_evidence_read",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.evidence.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_evidence_search": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search the evidence timeline collected for a Work Session, optionally filtered by kind.",
+      "inputSchema": {
+        "properties": {
+          "kind": {
+            "description": "Optional exact evidence kind filter. Use artifact_upload for uploaded artifacts.",
+            "enum": [
+              "file_snapshot",
+              "git_event",
+              "terminal_event",
+              "test_result",
+              "build_result",
+              "lint_result",
+              "ai_prompt",
+              "artifact_upload",
+              "manual_note"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max records to return (default 50).",
+            "type": "integer"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.evidence.search"
+        ]
+      },
+      "name": "assessment_evidence_search",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.evidence.search"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_framework_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read the evaluation framework (checklist/rubric criteria) assigned to a Work Session.",
+      "inputSchema": {
+        "properties": {
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.framework.read"
+        ]
+      },
+      "name": "assessment_framework_read",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.framework.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_record": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Record multiple criterion findings for a Work Session in one call. Send every finding this examiner owns as one batch. A repeated criterion from the same agent replaces its earlier finding.",
+      "inputSchema": {
+        "properties": {
+          "findings": {
+            "items": {
+              "properties": {
+                "confidence": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "criterionId": {
+                  "type": "string"
+                },
+                "evidenceRefs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "rationale": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "enum": [
+                    "met",
+                    "partially_met",
+                    "not_met",
+                    "unclear",
+                    "needs_review"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "criterionId",
+                "verdict",
+                "confidence",
+                "rationale"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "findings"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.record"
+        ]
+      },
+      "name": "assessment_record",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.record"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_report_create": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create the final evidence-backed readiness report for a Work Session from its assessment record findings. Requires human approval before it runs, and the created report is still only a draft \u2014 a human reviewer must separately confirm or override it before it is final. Never a substitute for that human confirmation.",
+      "inputSchema": {
+        "properties": {
+          "assessmentRecordId": {
+            "description": "AssessmentRecord id this report summarizes.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Evidence-backed readiness summary for the human reviewer.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "assessmentRecordId",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.report.create"
+        ]
+      },
+      "name": "assessment_report_create",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.report.create"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_review_ask": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Ask the assessment subject one defense-interview question grounded in their actual work. Fire-and-forget: this does not wait for the answer itself \u2014 the Team pipeline pauses automatically between stages until the subject answers, then the next stage receives the exchange as context. Do not call a 'wait' tool; there isn't one.",
+      "inputSchema": {
+        "properties": {
+          "criterionId": {
+            "description": "Criterion this question clarifies.",
+            "type": "string"
+          },
+          "questionId": {
+            "description": "Stable id for this question (e.g. 'q1').",
+            "type": "string"
+          },
+          "questionText": {
+            "description": "The question to ask, in plain language.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "criterionId",
+          "questionId",
+          "questionText"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.review.ask"
+        ]
+      },
+      "name": "assessment_review_ask",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.review.ask"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_review_request_demonstration": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Ask the assessment subject to make a small live change and demonstrate understanding \u2014 more consequential than a text question, so this requires human approval before it runs. Fire-and-forget like assessment_review_ask; the Team pipeline pauses until they respond.",
+      "inputSchema": {
+        "properties": {
+          "criterionId": {
+            "description": "Criterion this demonstration clarifies.",
+            "type": "string"
+          },
+          "instructions": {
+            "description": "What to change and demonstrate, in plain language.",
+            "type": "string"
+          },
+          "questionId": {
+            "description": "Stable id for this exchange (e.g. 'demo1').",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "criterionId",
+          "questionId",
+          "instructions"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.review.request_demonstration"
+        ]
+      },
+      "name": "assessment_review_request_demonstration",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.review.request_demonstration"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_session_get": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read the Work Session under assessment: status, recipe, and metadata.",
+      "inputSchema": {
+        "properties": {
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.session.get"
+        ]
+      },
+      "name": "assessment_session_get",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.session.get"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_snapshot_compare": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Diff two project snapshots by label; returns added/removed/changed file paths.",
+      "inputSchema": {
+        "properties": {
+          "labelA": {
+            "description": "Earlier snapshot label.",
+            "type": "string"
+          },
+          "labelB": {
+            "description": "Later snapshot label.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "labelA",
+          "labelB"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.snapshot.compare"
+        ]
+      },
+      "name": "assessment_snapshot_compare",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.snapshot.compare"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "assessment_snapshot_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read a project snapshot (folder structure, file hashes) by label, or the latest if omitted.",
+      "inputSchema": {
+        "properties": {
+          "label": {
+            "description": "e.g. 'start' | 'submission' | 'pre_demo' | 'post_demo' | 'completion'.",
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Work Session id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "assessment.snapshot.read"
+        ]
+      },
+      "name": "assessment_snapshot_read",
+      "provider": {
+        "id": "qlix.assessment",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "assessment.snapshot.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "brain_find_documents": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Find company-brain documents by title/keyword (e.g. brochure). Returns documentId values to pass to whatsapp_send_document as brain_document_id when sending a real file to a contact.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max results (default 8).",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search text (e.g. brochure, UWA, PDF title words).",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "brain.query"
+        ]
+      },
+      "name": "brain_find_documents",
+      "provider": {
+        "id": "qlix.brain",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "brain.query"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "brain_query": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Query the organization AI brain for policies and internal knowledge. Context is also injected automatically when enabled for the run.",
+      "inputSchema": {
+        "properties": {
+          "question": {
+            "description": "Question to search internal knowledge.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "brain.query"
+        ]
+      },
+      "name": "brain_query",
+      "provider": {
+        "id": "qlix.brain",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "brain.query"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "browser": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Control the browser. Pass action= to select the operation (navigate, snapshot, click, fill, type, extract/get, screenshot, wait, \u2026). Prefer snapshot before click/fill. Use extract/get for page Q&A without a full dump.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "Browser operation to perform",
+            "enum": [
+              "back",
+              "check",
+              "click",
+              "close",
+              "connect",
+              "console",
+              "cookies",
+              "dblclick",
+              "download",
+              "drag",
+              "errors",
+              "eval",
+              "extract",
+              "fill",
+              "find",
+              "focus",
+              "forward",
+              "get",
+              "highlight",
+              "hover",
+              "is",
+              "mouse",
+              "navigate",
+              "network",
+              "open",
+              "pdf",
+              "press",
+              "record",
+              "reload",
+              "screenshot",
+              "scroll",
+              "scrollintoview",
+              "select",
+              "session",
+              "set",
+              "snapshot",
+              "storage",
+              "tab",
+              "trace",
+              "type",
+              "uncheck",
+              "upload",
+              "wait"
+            ],
+            "type": "string"
+          },
+          "full_page": {
+            "description": "Full-page screenshot",
+            "type": "boolean"
+          },
+          "key": {
+            "description": "Key for press",
+            "type": "string"
+          },
+          "path": {
+            "description": "File path for upload/download/pdf",
+            "type": "string"
+          },
+          "query": {
+            "description": "Extract/query text for page Q&A",
+            "type": "string"
+          },
+          "selector": {
+            "description": "CSS/ARIA selector or ref",
+            "type": "string"
+          },
+          "text": {
+            "description": "Text to type/fill/find",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Wait timeout",
+            "type": "integer"
+          },
+          "url": {
+            "description": "URL for navigate/open",
+            "type": "string"
+          },
+          "value": {
+            "description": "Value for fill/select/set",
+            "type": "string"
+          },
+          "what": {
+            "description": "What to get (text, html, \u2026)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.click",
+          "web.read"
+        ]
+      },
+      "name": "browser",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.click",
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "any"
+    },
+    "browser_ab_back": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Browser back.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_back",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_check": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Check checkbox.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_check",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_click": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Click element by selector or @ref from snapshot.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_click",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_close": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Close browser session.",
+      "inputSchema": {
+        "properties": {
+          "all_sessions": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_close",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_connect": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Connect to browser via CDP port or URL.",
+      "inputSchema": {
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_connect",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_console": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "View browser console logs.",
+      "inputSchema": {
+        "properties": {
+          "clear": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_console",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_cookies": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Manage cookies: get, set, or clear.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get",
+              "set",
+              "clear"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_cookies",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_dblclick": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Double-click element.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_dblclick",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_download": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Download file by clicking element.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Save path in runner.",
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_download",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_drag": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Drag from source selector to target selector.",
+      "inputSchema": {
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_drag",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_errors": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "View page errors.",
+      "inputSchema": {
+        "properties": {
+          "clear": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_errors",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_eval": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run JavaScript in page context.",
+      "inputSchema": {
+        "properties": {
+          "js": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "js"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_eval",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_fill": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Clear field and fill (agent-browser fill).",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "text"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_fill",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_find": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Find element by locator (role, text, label, placeholder, alt, title, testid, first, last, nth) and act.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "click, fill, type, text, etc.",
+            "type": "string"
+          },
+          "locator": {
+            "enum": [
+              "role",
+              "text",
+              "label",
+              "placeholder",
+              "alt",
+              "title",
+              "testid",
+              "first",
+              "last",
+              "nth"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "For role locator (--name).",
+            "type": "string"
+          },
+          "text": {
+            "description": "Extra text for fill/type.",
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "locator",
+          "value",
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_find",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_focus": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Focus element.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_focus",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_forward": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Browser forward.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_forward",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_get": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Get page info: text, html, value, attr, title, url, count, box, styles. A selector is required for text/html/value/attr/count/box/styles (omit it for whole-page html/text); title/url/cdp-url take no selector.",
+      "inputSchema": {
+        "properties": {
+          "attribute": {
+            "description": "Required when what=attr.",
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "what": {
+            "enum": [
+              "text",
+              "html",
+              "value",
+              "attr",
+              "title",
+              "url",
+              "count",
+              "box",
+              "styles",
+              "cdp-url"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "what"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_get",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_highlight": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Highlight element (debug).",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_highlight",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_hover": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Hover element.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_hover",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_is": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Check visible, enabled, or checked.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "type": "string"
+          },
+          "what": {
+            "enum": [
+              "visible",
+              "enabled",
+              "checked"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "what",
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_is",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_mouse": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Mouse move, down, up, wheel.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "move",
+              "down",
+              "up",
+              "wheel"
+            ],
+            "type": "string"
+          },
+          "button": {
+            "type": "string"
+          },
+          "delta_x": {
+            "type": "number"
+          },
+          "delta_y": {
+            "type": "number"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_mouse",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_network": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Network route, unroute, or list requests.",
+      "inputSchema": {
+        "properties": {
+          "abort": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "route",
+              "unroute",
+              "requests"
+            ],
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_network",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_open": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Navigate with agent-browser `open <url>`. Prefer snapshot after open to get @refs.",
+      "inputSchema": {
+        "properties": {
+          "url": {
+            "description": "URL to open (https://...).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_open",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_pdf": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Save page as PDF.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_pdf",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_press": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Press a key (Enter, Tab, Control+a, etc.).",
+      "inputSchema": {
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_press",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_record": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Record video (WebM) of session.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_record",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_reload": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Reload page.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_reload",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_screenshot": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Screenshot; omit path to return image in JSON. Use full_page for full page.",
+      "inputSchema": {
+        "properties": {
+          "full_page": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_screenshot",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_scroll": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Scroll page (up/down/left/right) optional pixels.",
+      "inputSchema": {
+        "properties": {
+          "direction": {
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "pixels": {
+            "type": "integer"
+          },
+          "selector": {
+            "description": "Scroll within element (--selector).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_scroll",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_scrollintoview": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Scroll element into view.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_scrollintoview",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_select": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Select dropdown option(s).",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "type": "string"
+          },
+          "values": {
+            "description": "Option value(s) to select.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "selector",
+          "values"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_select",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_session": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Show or list agent-browser sessions.",
+      "inputSchema": {
+        "properties": {
+          "list": {
+            "description": "If true, session list.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_session",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_set": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Browser settings: viewport, device, geo, offline, headers, credentials, media.",
+      "inputSchema": {
+        "properties": {
+          "height": {
+            "type": "integer"
+          },
+          "json": {
+            "type": "string"
+          },
+          "latitude": {
+            "type": "number"
+          },
+          "longitude": {
+            "type": "number"
+          },
+          "password": {
+            "type": "string"
+          },
+          "setting": {
+            "enum": [
+              "viewport",
+              "device",
+              "geo",
+              "offline",
+              "headers",
+              "credentials",
+              "media"
+            ],
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_set",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_snapshot": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Accessibility tree with @refs (agent-browser snapshot). Use -i for interactive-only. Click/fill using @eN refs.",
+      "inputSchema": {
+        "properties": {
+          "compact": {
+            "description": "Maps to snapshot -c.",
+            "type": "boolean"
+          },
+          "depth": {
+            "description": "Max tree depth (-d).",
+            "type": "integer"
+          },
+          "interactive_only": {
+            "description": "Maps to snapshot -i.",
+            "type": "boolean"
+          },
+          "selector": {
+            "description": "Scope snapshot to CSS selector (-s).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_snapshot",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_storage": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Manage localStorage or sessionStorage.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "local",
+              "session"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_storage",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_tab": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Tab new, list, close, or switch by index.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "new",
+              "list",
+              "close"
+            ],
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_tab",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_trace": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Record Playwright trace (start/stop).",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_trace",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_type": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Type into element (append). Use browser_ab_fill to clear first.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "text"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_type",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_uncheck": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Uncheck checkbox.",
+      "inputSchema": {
+        "properties": {
+          "selector": {
+            "description": "CSS selector or @ref from snapshot.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_uncheck",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_upload": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Upload files to file input.",
+      "inputSchema": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "files"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read",
+          "web.click"
+        ]
+      },
+      "name": "browser_ab_upload",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read",
+        "web.click"
+      ],
+      "risk": {
+        "effects": [
+          "execute",
+          "read"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_ab_wait": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Wait for selector, ms, text, url, load state, or JS (--fn).",
+      "inputSchema": {
+        "properties": {
+          "js": {
+            "description": "Wait until JS truthy (--fn).",
+            "type": "string"
+          },
+          "load_state": {
+            "description": "Wait for load state (--load).",
+            "enum": [
+              "load",
+              "domcontentloaded",
+              "networkidle"
+            ],
+            "type": "string"
+          },
+          "milliseconds": {
+            "type": "integer"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "description": "Wait for text (--text).",
+            "type": "string"
+          },
+          "url_pattern": {
+            "description": "Wait for URL (--url).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_ab_wait",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "browser_exec": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run any allowed agent-browser CLI command. Pass argv as the command tokens after `agent-browser --json`, e.g. [\"find\", \"role\", \"button\", \"click\", \"--name\", \"Submit\"]. See agent-browser --help for full list. Prefer browser_ab_* tools when available.",
+      "inputSchema": {
+        "properties": {
+          "argv": {
+            "description": "CLI tokens: [verb, ...args]",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "flags": {
+            "description": "Optional flags as {full_page: true} -> --full-page",
+            "type": "object"
+          }
+        },
+        "required": [
+          "argv"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.read"
+        ]
+      },
+      "name": "browser_exec",
+      "provider": {
+        "id": "agent_browser",
+        "kind": "browser"
+      },
+      "requiredScopes": [
+        "web.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud"
+      ],
+      "scopeMode": "all"
+    },
+    "calendar_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read Google Calendar. action='list' lists upcoming events (optional timeMin/timeMax ISO-8601, query); action='get' fetches one event by eventId. Requires Calendar connected in Connectors \u2192 Google \u2192 Calendar.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "get"
+            ],
+            "type": "string"
+          },
+          "calendarId": {
+            "description": "Defaults to primary.",
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "maxResults": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "timeMax": {
+            "type": "string"
+          },
+          "timeMin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "calendar.read",
+          "calendar.write"
+        ]
+      },
+      "name": "calendar_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "calendar.read",
+        "calendar.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "calendar_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create, update, or delete Google Calendar events. action='create' needs summary, start, end (ISO-8601 or YYYY-MM-DD for all-day); optional attendees, description, location; set createMeetLink=true to attach a Meet URL (also requires meet.manage). action='update'/'delete' need eventId. Mutations may require JIT approval.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "attendees": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "calendarId": {
+            "type": "string"
+          },
+          "createMeetLink": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "end": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "calendar.write"
+        ]
+      },
+      "name": "calendar_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "calendar.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "call_tool": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Invoke a tool discovered via find_tools by exact name. Pass the catalog name only (for example crm_search), never find_tools, call_tool, or a functions.* prefix. Use when the tool is not in the default visible set.",
+      "inputSchema": {
+        "properties": {
+          "arguments": {
+            "description": "JSON arguments for the tool",
+            "type": "object"
+          },
+          "name": {
+            "description": "Exact tool name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": []
+      },
+      "name": "call_tool",
+      "provider": {
+        "id": "runner",
+        "kind": "builtin"
+      },
+      "requiredScopes": [],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "create_report_pdf": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Render a finished report to a PDF and return a shareable download link (plus a local path). Accepts a lightweight Markdown subset: # / ## / ### headings, **bold**, *italic*, and - bullet lists. Use this to package a competitor-research or research report as a document. Share the exact download link it returns with the user \u2014 never invent a link or a local file path (no sandbox: URLs). To also send it over WhatsApp, pass the returned local path to whatsapp_send.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "description": "The full report body as Markdown.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Report title \u2014 shown as the PDF heading and used for the file name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "files.create"
+        ]
+      },
+      "name": "create_report_pdf",
+      "provider": {
+        "id": "document_renderer",
+        "kind": "builtin"
+      },
+      "requiredScopes": [
+        "files.create"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "create_xlsx": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create a real Excel .xlsx spreadsheet and return a shareable download link (plus a local path). Use whenever the user asks for a spreadsheet, Excel file, or .xlsx export. Provide 'rows' as a list of lists (first row = headers) or a list of objects (keys become the header row). Share the exact download link it returns with the user \u2014 never invent a link. To also send it over WhatsApp, pass the returned local path to whatsapp_send.",
+      "inputSchema": {
+        "properties": {
+          "rows": {
+            "description": "Spreadsheet data: a list of rows where each row is a list of cell values, OR a list of objects (keys become the header row).",
+            "items": {},
+            "type": "array"
+          },
+          "sheet_name": {
+            "description": "Worksheet name (default 'Sheet1').",
+            "type": "string"
+          },
+          "title": {
+            "description": "Used for the file name when generating the spreadsheet.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "files.create"
+        ]
+      },
+      "name": "create_xlsx",
+      "provider": {
+        "id": "document_renderer",
+        "kind": "builtin"
+      },
+      "requiredScopes": [
+        "files.create"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_add_note": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Add a note/comment on a CRM record.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "content"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_add_note",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_bulk_create": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create multiple CRM records in one call (platform batch limits apply).",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "module",
+          "records"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_bulk_create",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_bulk_update": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Update multiple CRM records. Each record needs id in fields or parallel recordIds array.",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "recordIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "module",
+          "records"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_bulk_update",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_convert_lead": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Convert a lead to contact/account/deal (platform-specific; supported on Zoho, Salesforce, etc.).",
+      "inputSchema": {
+        "properties": {
+          "accountName": {
+            "type": "string"
+          },
+          "dealName": {
+            "type": "string"
+          },
+          "leadId": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "leadId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_convert_lead",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_create": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create a CRM record (Leads, Contacts, Deals, etc.). Use crm_describe_module for field API names. When the user asks to add or create a record, call this tool immediately with the fields they gave \u2014 do not tell them to check the dashboard first. If approval is required, an Approve/Deny card appears in this chat; after they approve once, later CRM writes in this conversation proceed automatically.",
+      "inputSchema": {
+        "properties": {
+          "fields": {
+            "type": "object"
+          },
+          "module": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_create",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_delete": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Delete a CRM record. Call this tool when the user asks to delete \u2014 an Approve/Deny prompt appears in this chat if approval is required; do not ask the user to check the dashboard.",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.delete"
+        ]
+      },
+      "name": "crm_delete",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.delete"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_describe_module": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Get field API names, types, and picklists for a CRM module. Use before create/update.",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "description": "CRM module API name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_describe_module",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_download_attachment": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Download a CRM attachment as base64.",
+      "inputSchema": {
+        "properties": {
+          "attachmentId": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "attachmentId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_download_attachment",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_get": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Fetch a single CRM record by module and record id.",
+      "inputSchema": {
+        "properties": {
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_get",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_link": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Link two related CRM records (e.g. deal to account).",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          },
+          "relatedModule": {
+            "type": "string"
+          },
+          "relatedRecordId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "relatedModule",
+          "relatedRecordId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_link",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_list_attachments": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List file attachments on a CRM record.",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_list_attachments",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_list_modules": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List available CRM modules/objects for the connected platform (Leads, Contacts, Deals, custom modules, etc.). Call this first when unsure of module names.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_list_modules",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_query": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run an advanced read-only query against the connected CRM (COQL on Zoho, provider-native query language returned by crm_list_modules). Use for filters, date ranges, and aggregations. On Zoho: every SELECT needs WHERE (e.g. WHERE id is not null); use COUNT(id) not COUNT(*) or count(id); write null checks as lowercase is not null / is null (not IS NOT NULL); use != not <>.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "description": "Provider-native SELECT query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_query",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_search": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Simple search or list records in a CRM module. Optional word filter.",
+      "inputSchema": {
+        "properties": {
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "module": {
+            "type": "string"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "perPage": {
+            "type": "integer"
+          },
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.read"
+        ]
+      },
+      "name": "crm_search",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_unlink": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Remove a link between two CRM records.",
+      "inputSchema": {
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          },
+          "relatedModule": {
+            "type": "string"
+          },
+          "relatedRecordId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "relatedModule",
+          "relatedRecordId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_unlink",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_update": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Update an existing CRM record. Provide only changed fields.",
+      "inputSchema": {
+        "properties": {
+          "fields": {
+            "type": "object"
+          },
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_update",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "crm_upload_attachment": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Upload a file attachment to a CRM record. Provide fileBase64 from a generated/sandbox file.",
+      "inputSchema": {
+        "properties": {
+          "fileBase64": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Zoho record id (long numeric string from crm_search), or name/ordinal \u2014 resolved automatically.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "recordId",
+          "fileName",
+          "fileBase64"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "crm.write"
+        ]
+      },
+      "name": "crm_upload_attachment",
+      "provider": {
+        "id": "crm",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "crm.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "delegate_task": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "DEPRECATED: prefer spawn_subagents. Fire-and-forget child AgentRun on the same agent (cannot safely await \u2014 runner deadlock). Returns the child run id.",
+      "inputSchema": {
+        "properties": {
+          "prompt": {
+            "description": "Subtask instructions",
+            "type": "string"
+          },
+          "skills": {
+            "description": "Optional skill/scope filter for the child",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": []
+      },
+      "name": "delegate_task",
+      "provider": {
+        "id": "runner",
+        "kind": "builtin"
+      },
+      "requiredScopes": [],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "docs_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read a Google Doc. action='get' returns title and plain text for documentId. Requires Docs connected in Connectors \u2192 Google \u2192 Docs.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get"
+            ],
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "documentId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "docs.read",
+          "docs.write"
+        ]
+      },
+      "name": "docs_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "docs.read",
+        "docs.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "docs_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create or update Google Docs. action='create' needs title (+ optional text); action='append' needs documentId + text; action='replace_all' needs documentId + findText (+ replaceText). Mutations may require JIT approval.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "append",
+              "replace_all"
+            ],
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "findText": {
+            "type": "string"
+          },
+          "matchCase": {
+            "type": "boolean"
+          },
+          "replaceText": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "docs.write"
+        ]
+      },
+      "name": "docs_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "docs.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "done": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Signal that the task is complete when no further tools are needed.",
+      "inputSchema": {
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": []
+      },
+      "name": "done",
+      "provider": {
+        "id": "runner",
+        "kind": "builtin"
+      },
+      "requiredScopes": [],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "drive_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read Google Drive or OneDrive. action='list' searches/lists files (optional query string; optional parentId to list a folder); action='get' returns metadata for fileId; action='get_content' downloads file text content. When drive_provider_selection_required is returned, ask the user which listed drive to use and retry this operation with provider='google' or provider='microsoft'. Do not assume a provider and do not carry a prior choice to another operation.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "get",
+              "get_content"
+            ],
+            "type": "string"
+          },
+          "fileId": {
+            "type": "string"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "pageToken": {
+            "type": "string"
+          },
+          "parentId": {
+            "description": "OneDrive/Google folder id to list children of (action=list).",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Drive provider selected by the user when both Google Drive and OneDrive are connected. google = Google Drive, microsoft = OneDrive.",
+            "enum": [
+              "google",
+              "microsoft"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Search/list query for action=list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "drive.read",
+          "drive.write"
+        ]
+      },
+      "name": "drive_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "drive.read",
+        "drive.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "drive_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create, update, or delete files in Google Drive or OneDrive. action='create' needs name (+ optional contentText/mimeType/parentId); action='update' needs fileId (+ optional name/contentText); action='delete' needs fileId. Mutations may pause for one-time Approve/Deny in chat (JIT). When drive_provider_selection_required is returned, ask the user which listed drive to use and retry this operation with provider='google' or provider='microsoft'. Do not assume a provider and do not carry a prior choice to another operation.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "contentText": {
+            "type": "string"
+          },
+          "fileId": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": "string"
+          },
+          "provider": {
+            "description": "Drive provider selected by the user when both Google Drive and OneDrive are connected. google = Google Drive, microsoft = OneDrive.",
+            "enum": [
+              "google",
+              "microsoft"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "drive.write"
+        ]
+      },
+      "name": "drive_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "drive.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "email_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read or search emails from a connected Gmail or Microsoft 365 account. Use query for mailbox search text (Gmail operators work only with Gmail). Provide messageId to fetch a single message. File attachments are downloaded into the Qlix sandbox (same store as agent-generated files), and extractable text (PDF/DOCX/XLSX/CSV/text) is included in each message's attachments[].extractedText for you to use. Also share attachments[].url download links with the user when relevant. Images may only have a URL (no text extract).",
+      "inputSchema": {
+        "properties": {
+          "includeAttachments": {
+            "description": "Download + extract attachments into the sandbox and return their text to you (default true). Set false only for a quick metadata scan without files.",
+            "type": "boolean"
+          },
+          "maxResults": {
+            "description": "Maximum messages to return (1-25). Defaults to 10.",
+            "type": "integer"
+          },
+          "messageId": {
+            "description": "Optional mailbox message id to fetch a single message.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Mailbox to use. Omit when one mailbox is connected. If the tool returns email_provider_selection_required, ask the user which listed mailbox to use, then retry with their selected provider.",
+            "enum": [
+              "google",
+              "microsoft"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Mailbox search query. Defaults to unread mail.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "email.read"
+        ]
+      },
+      "name": "email_read",
+      "provider": {
+        "id": "email",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "email.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "email_send": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send / draft / list drafts / delete draft via Gmail or Microsoft 365. ROUTE FROM THE USER MESSAGE using mode: mode='draft' to compose/prepare/write without sending; mode='send' to deliver; mode='list_drafts' to list existing mailbox drafts (use this before deleting when you don't already have a draftId); mode='delete_draft' to delete a draft (requires draftId from a prior draft create or list_drafts \u2014 never invent draftId). Default to mode='send' only when intent is clearly to deliver. IMPORTANT: mode=draft does NOT deliver mail. Tell the user the draft is in the connected mailbox's Drafts (see mailboxEmail in the tool result), and never say 'sent' for a draft. Recipients in 'to' only prefill the draft. CRITICAL for mode=send: only send to REAL email addresses provided by the user or obtained from trusted tools. NEVER invent or guess addresses (e.g. info@cafe1.com, contact@business2.com) \u2014 fabricated recipients are rejected by the server. Never use placeholder addresses like info@mysite.com. The first mode=send in a chat may pause for one-time Approve/Deny in this chat; draft / list_drafts / delete_draft never require approval. When email_provider_selection_required is returned, ask the user which listed mailbox to use and retry this operation with provider='google' or provider='microsoft'. Do not assume a provider and do not carry a prior choice to another operation.",
+      "inputSchema": {
+        "properties": {
+          "bodyText": {
+            "description": "Plain-text body. Required for send/draft.",
+            "type": "string"
+          },
+          "draftId": {
+            "description": "Mailbox draft resource id for mode=delete_draft. Get it from mode=draft response or mode=list_drafts.",
+            "type": "string"
+          },
+          "maxResults": {
+            "description": "For mode=list_drafts: max drafts to return (1-25).",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "send = deliver now (JIT may apply). draft = save to Gmail Drafts. list_drafts = list drafts (returns draftId values). delete_draft = permanently delete a draft by draftId.",
+            "enum": [
+              "send",
+              "draft",
+              "list_drafts",
+              "delete_draft"
+            ],
+            "type": "string"
+          },
+          "provider": {
+            "description": "Mailbox provider selected by the user when multiple mailboxes are connected.",
+            "enum": [
+              "google",
+              "microsoft"
+            ],
+            "type": "string"
+          },
+          "replyToMessageId": {
+            "description": "Optional mailbox message id to reply in-thread.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "Email subject. Required for send/draft.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Recipient email addresses. Required for mode=send; optional for mode=draft; unused for list/delete.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "email.send"
+        ]
+      },
+      "name": "email_send",
+      "provider": {
+        "id": "email",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "email.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "find_tools": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search the expanded tool catalog (MCP + browser_ab_* + connectors) when the default tool list is too large. Returns matching tool names and short docs.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max results (default 15)",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Keyword or substring to search tool names/descriptions",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": []
+      },
+      "name": "find_tools",
+      "provider": {
+        "id": "runner",
+        "kind": "builtin"
+      },
+      "requiredScopes": [],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "forms_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read Google Forms. action='get' returns form metadata/items including responderUri (the shareable respondent link \u2014 paste it for the user) and formId; action='list_responses' lists submitted responses. Use get when the user asks for an existing form's link and formId is known. Requires Forms connected in Connectors \u2192 Google \u2192 Forms.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get",
+              "list_responses"
+            ],
+            "type": "string"
+          },
+          "formId": {
+            "type": "string"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "pageToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "formId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "forms.read",
+          "forms.write"
+        ]
+      },
+      "name": "forms_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "forms.read",
+        "forms.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "forms_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create or update Google Forms. action='create' needs title and returns formId plus responderUri \u2014 always give the user responderUri as the shareable link. action='update_info' needs formId (+ title/description); action='add_question' needs formId + questionTitle. Do not create a new form just to recover a link; use forms_read get or recent conversation. Mutations may require JIT approval.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "update_info",
+              "add_question"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "formId": {
+            "type": "string"
+          },
+          "questionTitle": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "forms.write"
+        ]
+      },
+      "name": "forms_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "forms.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "gui_control": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Control desktop apps via Agent-S3 (screenshot + UI actions). Use for native apps; prefer luna_local_read_file / luna_local_bash for files.",
+      "inputSchema": {
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "max_steps": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goal"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.gui_control"
+        ]
+      },
+      "name": "gui_control",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.gui_control"
+      ],
+      "risk": {
+        "effects": [
+          "execute"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_bash": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run a shell command in the session cwd (PowerShell on Windows, bash on Mac/Linux). Safe inspect commands (ls, git status, \u2026) run without approval; destructive or unknown commands require JIT. Prefer luna_local_search_files / luna_local_patch for file work; use luna_local_cd to change cwd (cd in a subshell does not persist).",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_bash",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [
+          "execute"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_cd": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Change the hybrid session working directory. Relative paths for file tools and luna_local_bash use this cwd afterward. Prefer this over `cd` inside luna_local_bash (subshell).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Directory to make the new session cwd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_cd",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_code_task": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run a multi-step coding subtask via Agent-S3 CodeAgent (bash/python). Use for spreadsheet/doc automation; requires local LLM API keys.",
+      "inputSchema": {
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_code_task",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [
+          "execute"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_create_pdf": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create a real PDF file on the user's computer from text or markdown. Use this whenever the user asks to 'create/make/generate a PDF' or document \u2014 do NOT tell the user to copy-paste into Word. Supports markdown headings (#, ##, ###) and bullet lines ('- ' or '* '). Returns the absolute path of the created PDF, which you can then pass to luna_local_send_whatsapp_document.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "description": "Body text or markdown for the PDF.",
+            "type": "string"
+          },
+          "output_path": {
+            "description": "Optional absolute path for the .pdf. If omitted, it is saved to the user's Documents folder using a slug of the title.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Document title (rendered at the top).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_create_pdf",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_create_xlsx": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create a real Excel .xlsx spreadsheet on the user's computer. Use this whenever the user asks for a spreadsheet/Excel/xlsx file \u2014 do NOT use luna_local_write_file for .xlsx (that produces a corrupt file Excel cannot open). Provide 'rows' as a list of lists (first row = headers) or a list of objects. Returns the absolute path, which you can pass to luna_local_send_whatsapp_document.",
+      "inputSchema": {
+        "properties": {
+          "output_path": {
+            "description": "Optional absolute path for the .xlsx. If omitted, saved to the user's Documents folder using a slug of the title.",
+            "type": "string"
+          },
+          "rows": {
+            "description": "Spreadsheet data: a list of rows where each row is a list of cell values, OR a list of objects (keys become the header row).",
+            "items": {},
+            "type": "array"
+          },
+          "sheet_name": {
+            "description": "Worksheet name (default 'Sheet1').",
+            "type": "string"
+          },
+          "title": {
+            "description": "Used for the filename when output_path is omitted.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_create_xlsx",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_list_dir": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List files and folders in a directory on the user's computer.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Absolute or cwd-relative directory path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_list_dir",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_open_file": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Open a file or folder on the user's computer with the default app or File Explorer (like remote desktop \u2014 windows appear on their screen, not in Qlix). Use mode 'folder' to open a directory in Explorer/Finder; 'reveal' to highlight a file in its folder.",
+      "inputSchema": {
+        "properties": {
+          "application": {
+            "description": "Optional app name or path (e.g. notepad, code, excel). Windows only.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "default=launch with associated app; folder=open directory; reveal=show in file manager.",
+            "enum": [
+              "default",
+              "folder",
+              "reveal"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path to file or folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_open_file",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_patch": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Edit files on the host. mode=replace (default): exact old_string\u2192new_string in one file. mode=patch: Hermes V4A multi-file patch (*** Begin Patch \u2026 *** End Patch) with Add/Update/Delete/Move; validated atomically then applied. Prefer replace for single surgical edits; use patch for scaffolding or multi-file structural changes. On failure, re-read and use fuzzy 'Did you mean' hints; after repeated failures use luna_local_write_file.",
+      "inputSchema": {
+        "properties": {
+          "mode": {
+            "description": "replace=single-file exact swap (default); patch=V4A multi-file body",
+            "enum": [
+              "replace",
+              "patch"
+            ],
+            "type": "string"
+          },
+          "new_string": {
+            "description": "Replacement text (replace mode)",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "Exact text to find (replace mode)",
+            "type": "string"
+          },
+          "patch": {
+            "description": "V4A patch body (mode=patch). Example:\n*** Begin Patch\n*** Add File: src/main.py\n+print('hi')\n*** Update File: README.md\n@@\n-# Old\n+# New\n*** End Patch",
+            "type": "string"
+          },
+          "path": {
+            "description": "File to patch (replace mode; absolute or cwd-relative)",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "Replace every occurrence (replace mode; default false)",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_patch",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_pwd": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Return the hybrid session working directory used for relative paths and luna_local_bash.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_pwd",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_python": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Run a short Python snippet locally via Agent-S3 LocalEnv.",
+      "inputSchema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_python",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [
+          "execute"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_read_file": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read a text file on the user's computer. Provide the full absolute path (e.g. C:\\Users\\...\\file.log on Windows). Use max_lines for large logs; prefer this over luna_local_python for read-only log review.",
+      "inputSchema": {
+        "properties": {
+          "max_lines": {
+            "description": "Optional max lines to return.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Absolute path to the file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_read_file",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_search_files": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search file contents or find files by name (Hermes search_files). Prefer this over grep/find in luna_local_bash. target=content for regex in files; target=files for glob by name.",
+      "inputSchema": {
+        "properties": {
+          "context": {
+            "description": "Context lines around each match (content mode)",
+            "type": "integer"
+          },
+          "file_glob": {
+            "description": "Optional glob filter when target=content (e.g. '*.py')",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max results (default 50)",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Skip first N results",
+            "type": "integer"
+          },
+          "output_mode": {
+            "description": "For content search: matching lines, paths only, or counts",
+            "enum": [
+              "content",
+              "files_only",
+              "count"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Directory or file to search (default: session cwd)",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Regex for content search, or glob (e.g. '*.py') for file search",
+            "type": "string"
+          },
+          "target": {
+            "description": "content=grep inside files; files=find by name",
+            "enum": [
+              "content",
+              "files"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_search_files",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "luna_local_send_whatsapp_document": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a local file (e.g. a PDF created with luna_local_create_pdf) to the user's linked WhatsApp. Provide the absolute file_path. Use after creating a document when the user asked to send it on WhatsApp.",
+      "inputSchema": {
+        "properties": {
+          "file_name": {
+            "description": "Optional display name for the document in WhatsApp.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Absolute path to the file to send.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_read"
+        ]
+      },
+      "name": "luna_local_send_whatsapp_document",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_read"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "any"
+    },
+    "luna_local_write_file": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Write text to a file on the user's computer (overwrite).",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "system.file_write"
+        ]
+      },
+      "name": "luna_local_write_file",
+      "provider": {
+        "id": "agents3",
+        "kind": "local"
+      },
+      "requiredScopes": [
+        "system.file_write"
+      ],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "meet_manage": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Manage Google Meet spaces. action='create' makes a new meeting and returns meetingUri; action='get' loads a space by name (spaces/xxx); action='end' ends the active conference for that space. create/end may require JIT approval. Prefer calendar_write createMeetLink=true when scheduling a calendar event with a Meet link.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "get",
+              "end"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Space resource name for get/end, e.g. spaces/abc-defg-hij.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "meet.manage"
+        ]
+      },
+      "name": "meet_manage",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "meet.manage"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "notion_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read from the connected Notion workspace. action='search' finds pages/databases (optional query, filter='page'|'database'); action='get_page' returns page metadata + markdown content for pageId; action='query_database' lists rows in databaseId (optional filterJson/sorts). Requires Connectors \u2192 Notion.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "search",
+              "get_page",
+              "query_database"
+            ],
+            "type": "string"
+          },
+          "databaseId": {
+            "description": "Database id for action=query_database.",
+            "type": "string"
+          },
+          "filter": {
+            "description": "Optional object filter for action=search.",
+            "enum": [
+              "page",
+              "database"
+            ],
+            "type": "string"
+          },
+          "filterJson": {
+            "description": "Notion database query filter object.",
+            "type": "object"
+          },
+          "pageId": {
+            "description": "Page id for action=get_page.",
+            "type": "string"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query for action=search.",
+            "type": "string"
+          },
+          "sorts": {
+            "description": "Notion database query sorts.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "startCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "notion.read",
+          "notion.write"
+        ]
+      },
+      "name": "notion_read",
+      "provider": {
+        "id": "notion",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "notion.read",
+        "notion.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "notion_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create or update Notion content. action='create_page' needs title + parentPageId or parentDatabaseId (+ optional contentMarkdown/properties); action='update_page' needs pageId + contentMarkdown and/or title (appends markdown blocks); action='create_database_row' needs databaseId (+ title/properties/contentMarkdown). Pass page body as markdown \u2014 it is converted to Notion blocks. Mutations may pause for Approve/Deny in chat (JIT).",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create_page",
+              "update_page",
+              "create_database_row"
+            ],
+            "type": "string"
+          },
+          "contentMarkdown": {
+            "description": "Markdown / plain text converted to Notion blocks.",
+            "type": "string"
+          },
+          "databaseId": {
+            "type": "string"
+          },
+          "pageId": {
+            "type": "string"
+          },
+          "parentDatabaseId": {
+            "type": "string"
+          },
+          "parentPageId": {
+            "type": "string"
+          },
+          "properties": {
+            "description": "Database/page properties. Flat string/number/boolean values are coerced; Notion-shaped property objects are passed through.",
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "notion.write"
+        ]
+      },
+      "name": "notion_write",
+      "provider": {
+        "id": "notion",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "notion.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "research_github": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search GitHub repos or read a repo (owner/name) via gh CLI.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max search results (default 5).",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "search = find repos; repo = view one repo. Default search.",
+            "enum": [
+              "search",
+              "repo"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query OR owner/repo for repo view.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.research"
+        ]
+      },
+      "name": "research_github",
+      "provider": {
+        "id": "legacy.research_router",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "web.research"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "research_read_url": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read a URL as clean text. Uses Jina Reader for generic pages; auto-routes Twitter/GitHub/YouTube/Bilibili URLs to platform CLIs when available.",
+      "inputSchema": {
+        "properties": {
+          "url": {
+            "description": "Full https:// URL to read.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.research"
+        ]
+      },
+      "name": "research_read_url",
+      "provider": {
+        "id": "legacy.research_router",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "web.research"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "research_social_search": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search a social platform (Twitter/X, Reddit, Xiaohongshu). Requires platform login/cookies configured on the runner for some platforms.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max results (default 10).",
+            "type": "integer"
+          },
+          "platform": {
+            "description": "Target platform.",
+            "enum": [
+              "twitter",
+              "reddit",
+              "xiaohongshu"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Search keywords.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "platform"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.research"
+        ]
+      },
+      "name": "research_social_search",
+      "provider": {
+        "id": "legacy.research_router",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "web.research"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "research_video": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Extract video metadata and subtitles from YouTube or Bilibili URLs via yt-dlp / bili-cli (Agent Reach).",
+      "inputSchema": {
+        "properties": {
+          "url": {
+            "description": "YouTube or Bilibili video URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.research"
+        ]
+      },
+      "name": "research_video",
+      "provider": {
+        "id": "legacy.research_router",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "web.research"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "research_web_search": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Semantic web search via Exa (Agent Reach). Use for broad research, comparisons, and finding articles \u2014 not for login or form submission.",
+      "inputSchema": {
+        "properties": {
+          "num_results": {
+            "description": "Number of results (1-10). Default 5.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "web.research"
+        ]
+      },
+      "name": "research_web_search",
+      "provider": {
+        "id": "legacy.research_router",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "web.research"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "sheets_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read Google Sheets. action='get' returns spreadsheet metadata; action='get_values' needs range (e.g. Sheet1!A1:C10). Requires Sheets connected in Connectors \u2192 Google \u2192 Sheets.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get",
+              "get_values"
+            ],
+            "type": "string"
+          },
+          "range": {
+            "type": "string"
+          },
+          "spreadsheetId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "spreadsheetId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "sheets.read",
+          "sheets.write"
+        ]
+      },
+      "name": "sheets_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "sheets.read",
+        "sheets.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "sheets_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create or update Google Sheets. action='create' needs title; action='update_values'/'append_values' need spreadsheetId, range, and values (2D array of cells). Mutations may require JIT approval.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "update_values",
+              "append_values"
+            ],
+            "type": "string"
+          },
+          "range": {
+            "type": "string"
+          },
+          "sheetTitle": {
+            "type": "string"
+          },
+          "spreadsheetId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "sheets.write"
+        ]
+      },
+      "name": "sheets_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "sheets.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_create_channel": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create a public or private Slack channel on behalf of the connected user.",
+      "inputSchema": {
+        "properties": {
+          "isPrivate": {
+            "description": "True for a private channel.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Channel name without #.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_create_channel",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_create_list_item": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Add a task row to a channel project tracker / Slack List \u2014 not a chat message. Always pass channel (#todo). Never guess listId; omit listId unless returned by slack_find_channel_lists.",
+      "inputSchema": {
+        "properties": {
+          "assigneeUserId": {
+            "description": "Optional Slack user id (U\u2026).",
+            "type": "string"
+          },
+          "channel": {
+            "description": "Channel name (#todo) or id \u2014 required for project tracker tasks.",
+            "type": "string"
+          },
+          "completed": {
+            "description": "Mark completed on create.",
+            "type": "boolean"
+          },
+          "dueDate": {
+            "description": "Optional due date YYYY-MM-DD.",
+            "type": "string"
+          },
+          "listId": {
+            "description": "Only use when copied from slack_find_channel_lists.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional list/tab title when a channel has multiple lists.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Optional Status label, e.g. In progress.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Task title / primary column text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "title"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_create_list_item",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_delete_list_item": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Permanently delete a project-tracker task only after the user explicitly asked to delete it. Pass channel plus taskTitle; never delete a chat message.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id.",
+            "type": "string"
+          },
+          "itemId": {
+            "description": "Row id (Rec\u2026) if known.",
+            "type": "string"
+          },
+          "listId": {
+            "description": "Only if copied from Slack tool output.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional tracker/list title filter.",
+            "type": "string"
+          },
+          "taskTitle": {
+            "description": "Exact task title to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "taskTitle"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_delete_list_item",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_describe_list": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Describe a Slack List (project tracker). Prefer channel (#todo) \u2014 Qlix resolves the List id (F\u2026). Do not pass channel ids (C\u2026) or guessed F ids as listId.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id \u2014 preferred.",
+            "type": "string"
+          },
+          "listId": {
+            "description": "Slack List id (F\u2026) only if already known.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional list/tab title filter.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_describe_list",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_find_channel_lists": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Find Slack Lists attached to a channel (project tracker / List tab). Returns list ids (F\u2026) \u2014 use these with slack_create_list_item, not the channel id (C\u2026). Do not use slack_post_message for tracker tasks.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id (C\u2026).",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional list/tab title to pick (e.g. Project tracker).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_find_channel_lists",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_get_history": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read recent messages from a Slack channel or DM by channel id.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel id (C\u2026 or G\u2026 or D\u2026).",
+            "type": "string"
+          },
+          "latest": {
+            "description": "Latest message ts.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "oldest": {
+            "description": "Oldest message ts.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_get_history",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_list_channels": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List Slack channels the connected user can access. Use before posting when you need a channel id (starts with C or G).",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max channels (default 200).",
+            "type": "integer"
+          },
+          "types": {
+            "description": "Slack types filter, e.g. public_channel,private_channel",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_list_channels",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_list_list_items": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List or search tasks in a channel project tracker / Slack List, never channel messages.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id \u2014 preferred.",
+            "type": "string"
+          },
+          "completed": {
+            "description": "Optional completion-state filter.",
+            "type": "boolean"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "listId": {
+            "description": "Slack List id (F\u2026) if already known.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional tracker/list title filter.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Optional task-title search.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Optional status label filter.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_list_list_items",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_list_users": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List workspace members (use slack_open_dm with a user id to start a DM).",
+      "inputSchema": {
+        "properties": {
+          "cursor": {
+            "description": "Pagination cursor from a prior call.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_list_users",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_open_dm": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Open a direct message with a workspace member; returns channel id for slack_post_message.",
+      "inputSchema": {
+        "properties": {
+          "userId": {
+            "description": "Slack user id (U\u2026).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_open_dm",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_post_message": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Post a chat message to a Slack channel or DM as the connected Slack user. Use only when the user explicitly asks to send, post, or reply to chat; use slack_create_list_item for project-tracker tasks. Requires slack.send scope and user approval when JIT is enabled.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id to post in.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Message text (mrkdwn supported).",
+            "type": "string"
+          },
+          "threadTs": {
+            "description": "Optional thread timestamp to reply in a thread.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "text"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_post_message",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_search_messages": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search Slack messages across the workspace.",
+      "inputSchema": {
+        "properties": {
+          "count": {
+            "description": "Max results (default 20).",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Slack search query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.read"
+        ]
+      },
+      "name": "slack_search_messages",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_set_channel_topic": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Set the topic/description of a Slack channel.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel id.",
+            "type": "string"
+          },
+          "topic": {
+            "description": "New channel topic.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "topic"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_set_channel_topic",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_set_list_task_completion": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Complete or reopen a project-tracker task. Pass channel and taskTitle.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel name (#todo) or id.",
+            "type": "string"
+          },
+          "completed": {
+            "description": "True to complete; false to reopen.",
+            "type": "boolean"
+          },
+          "itemId": {
+            "description": "Row id (Rec\u2026) if known.",
+            "type": "string"
+          },
+          "listId": {
+            "description": "Only if copied from Slack tool output.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional tracker/list title filter.",
+            "type": "string"
+          },
+          "taskTitle": {
+            "description": "Exact existing task title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "taskTitle",
+          "completed"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_set_list_task_completion",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_set_presence": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Set the connected user's Slack presence to active (auto) or away.",
+      "inputSchema": {
+        "properties": {
+          "presence": {
+            "enum": [
+              "auto",
+              "away"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "presence"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_set_presence",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slack_update_list_item": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Update a project tracker task row. Pass channel (#todo) and taskTitle (task name). Use status for Status column (e.g. In progress, Done). Do not guess listId or use taskTitle as itemId \u2014 item ids start with Rec.",
+      "inputSchema": {
+        "properties": {
+          "assigneeUserId": {
+            "type": "string"
+          },
+          "channel": {
+            "description": "Channel name (#todo) or id.",
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "dueDate": {
+            "description": "YYYY-MM-DD",
+            "type": "string"
+          },
+          "itemId": {
+            "description": "Row id (Rec\u2026) if returned from create.",
+            "type": "string"
+          },
+          "listId": {
+            "description": "Only if copied from slack_find_channel_lists.",
+            "type": "string"
+          },
+          "listTitle": {
+            "description": "Optional list/tab title filter.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status label: Not started, In progress, Blocked, Done.",
+            "type": "string"
+          },
+          "taskTitle": {
+            "description": "Existing task name to find the row (e.g. yeshwanth).",
+            "type": "string"
+          },
+          "title": {
+            "description": "Rename the task (primary column).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "taskTitle"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slack.send"
+        ]
+      },
+      "name": "slack_update_list_item",
+      "provider": {
+        "id": "slack",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slack.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slides_read": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read a Google Slides presentation. action='get' returns title and per-slide text. Requires Slides connected in Connectors \u2192 Google \u2192 Slides.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get"
+            ],
+            "type": "string"
+          },
+          "presentationId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "presentationId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slides.read",
+          "slides.write"
+        ]
+      },
+      "name": "slides_read",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slides.read",
+        "slides.write"
+      ],
+      "risk": {
+        "effects": [
+          "read",
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "slides_write": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Create or update Google Slides. action='create' needs title; action='replace_all' needs presentationId + findText; action='insert_text' needs presentationId + text. Mutations may require JIT approval.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "replace_all",
+              "insert_text"
+            ],
+            "type": "string"
+          },
+          "findText": {
+            "type": "string"
+          },
+          "matchCase": {
+            "type": "boolean"
+          },
+          "pageObjectId": {
+            "type": "string"
+          },
+          "presentationId": {
+            "type": "string"
+          },
+          "replaceText": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "slides.write"
+        ]
+      },
+      "name": "slides_write",
+      "provider": {
+        "id": "google_workspace",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "slides.write"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "think": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Record a reasoning step without executing an external action.",
+      "inputSchema": {
+        "properties": {
+          "thought": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thought"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": []
+      },
+      "name": "think",
+      "provider": {
+        "id": "runner",
+        "kind": "builtin"
+      },
+      "requiredScopes": [],
+      "risk": {
+        "effects": [],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_auto_reply_set_instructions": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Set or update what this agent should do when a contact replies (auto-reply session). Call after messaging them, or with a resolvable name/phone/jid. Requires whatsapp.auto_reply.",
+      "inputSchema": {
+        "properties": {
+          "instructions": {
+            "description": "What to do when they reply, e.g. 'Book a 30-min call and confirm the time.'",
+            "type": "string"
+          },
+          "recipient": {
+            "description": "Contact name, phone with country code, or jid.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "instructions"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.auto_reply"
+        ]
+      },
+      "name": "whatsapp_auto_reply_set_instructions",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.auto_reply"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_auto_reply_status": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List contacts this agent is currently listening to for auto-reply (armed after whatsapp_send_message when whatsapp.auto_reply is granted).",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.auto_reply"
+        ]
+      },
+      "name": "whatsapp_auto_reply_status",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.auto_reply"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_auto_reply_stop": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Stop listening for auto-replies. Pass recipient (name/phone/jid) to stop one contact, or omit to stop all active listeners for this agent.",
+      "inputSchema": {
+        "properties": {
+          "recipient": {
+            "description": "Optional contact name, phone, or jid to stop.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.auto_reply"
+        ]
+      },
+      "name": "whatsapp_auto_reply_stop",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.auto_reply"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_list_contacts": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Search the user's WhatsApp phonebook/contacts by name or phone. Use only when the user asks about contacts or who to message. Requires whatsapp.read or whatsapp.contact_send.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max contacts to return (1\u2013100, default 50).",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Optional name or phone fragment to filter contacts.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.read",
+          "whatsapp.contact_send"
+        ]
+      },
+      "name": "whatsapp_list_contacts",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.read",
+        "whatsapp.contact_send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication",
+          "read"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_read_chat": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Read recent 1:1 WhatsApp messages with a contact. Pass a contact name, phone (with country code), or WhatsApp jid. Only use when the user explicitly asks to read/summarize a chat. Requires whatsapp.read. Messages are buffered while WhatsApp stays linked \u2014 older history may be empty until the chat is active.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max messages to return (1\u201380, default 30).",
+            "type": "integer"
+          },
+          "recipient": {
+            "description": "Contact name, phone with country code, or jid.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.read"
+        ]
+      },
+      "name": "whatsapp_read_chat",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.read"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_send": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a file (PDF, image, screenshot, document) produced during this run to the user's linked WhatsApp self-chat (Message yourself). Not for messaging other contacts \u2014 use whatsapp_send_document (file) or whatsapp_send_message (text). Requires the whatsapp.send scope.",
+      "inputSchema": {
+        "properties": {
+          "file_name": {
+            "description": "Optional display name shown in WhatsApp. Always include the real extension (e.g. .xlsx, .pdf); defaults to the file's name.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Absolute path to the file in the runner.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.send"
+        ]
+      },
+      "name": "whatsapp_send",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_send_document": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a real file (PDF brochure, spreadsheet, etc.) to a WhatsApp contact. REQUIRED when the user asks to send a brochure/document \u2014 never paste a link or placeholder like [Brochure Link] in a text message. Prefer brain_document_id from brain citations / brain_find_documents (company brain). Alternatively pass file_path for a runner-local file. Requires whatsapp.contact_send (+ brain.query when using brain_document_id). On team wait runs the file is queued and sent in order with other messages.",
+      "inputSchema": {
+        "properties": {
+          "brain_document_id": {
+            "description": "Brain document id (from brain context documentId=\u2026 or brain_find_documents). Preferred for brochures stored in the company brain.",
+            "type": "string"
+          },
+          "file_name": {
+            "description": "Optional display name (keep a real extension, e.g. .pdf).",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Runner-local path (alternative to brain_document_id).",
+            "type": "string"
+          },
+          "recipient": {
+            "description": "Contact name, phone with country code, or jid.",
+            "type": "string"
+          },
+          "reply_instructions": {
+            "description": "Optional. What this agent should do when that contact replies (requires whatsapp.auto_reply).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.contact_send"
+        ]
+      },
+      "name": "whatsapp_send_document",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.contact_send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_send_message": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a WhatsApp text message to a contact from the user's phonebook, or to a phone number with country code. ONLY call this when the user explicitly asked to message that person (never unsolicited outreach). Requires whatsapp.contact_send and dashboard/WhatsApp approval the first time in a chat. You may send several messages to the same contact in order \u2014 follow with whatsapp_send_document and/or whatsapp_send_poll when the user asked for a file or poll. If this agent also has whatsapp.auto_reply, sending arms a 24h listener so contact replies auto-route back to this agent. On team wait runs, messages are queued until the wait duration is set and then delivered in queue order.",
+      "inputSchema": {
+        "properties": {
+          "message": {
+            "description": "Text body to send (max ~4000 chars).",
+            "type": "string"
+          },
+          "recipient": {
+            "description": "Contact name, phone with country code, or jid.",
+            "type": "string"
+          },
+          "reply_instructions": {
+            "description": "Optional. What this agent should do when that contact replies (requires whatsapp.auto_reply). Stored on the listen session.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "message"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.contact_send"
+        ]
+      },
+      "name": "whatsapp_send_message",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.contact_send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "whatsapp_send_poll": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a native WhatsApp poll to a contact (name, phone with country code, or jid). REQUIRED when the user asks for an interest poll \u2014 do NOT replace this with a text message that says 'reply Interested/Not Interested'. Votes are captured as the contact's reply (selected option text). Requires whatsapp.contact_send and the same JIT approval as whatsapp_send_message. On team wait runs the poll is queued until the wait duration is set and sent in order.",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "description": "Poll question shown in WhatsApp (max 255 chars).",
+            "type": "string"
+          },
+          "recipient": {
+            "description": "Contact name, phone with country code, or jid.",
+            "type": "string"
+          },
+          "reply_instructions": {
+            "description": "Optional. What this agent should do when that contact votes or replies (requires whatsapp.auto_reply).",
+            "type": "string"
+          },
+          "selectableCount": {
+            "description": "How many options the contact can pick (default 1).",
+            "type": "integer"
+          },
+          "values": {
+            "description": "Poll options (2\u201312 unique strings).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "recipient",
+          "name",
+          "values"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "whatsapp.contact_send"
+        ]
+      },
+      "name": "whatsapp_send_poll",
+      "provider": {
+        "id": "whatsapp",
+        "kind": "connector"
+      },
+      "requiredScopes": [
+        "whatsapp.contact_send"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    }
+  },
+  "formatVersion": 1,
+  "semantics": "maximum supported managed-runtime surface; runtime selection, scopes, JIT policy, tool profile, configuration, credentials, and dependencies still gate availability",
+  "toolArrays": {
+    "cloudCollapsed": [
+      "research_web_search",
+      "research_read_url",
+      "research_social_search",
+      "research_video",
+      "research_github",
+      "create_report_pdf",
+      "create_xlsx",
+      "browser",
+      "email_read",
+      "email_send",
+      "drive_read",
+      "drive_write",
+      "docs_read",
+      "docs_write",
+      "sheets_read",
+      "sheets_write",
+      "slides_read",
+      "slides_write",
+      "forms_read",
+      "forms_write",
+      "calendar_read",
+      "calendar_write",
+      "meet_manage",
+      "crm_list_modules",
+      "crm_describe_module",
+      "crm_query",
+      "crm_search",
+      "crm_get",
+      "crm_list_attachments",
+      "crm_download_attachment",
+      "crm_create",
+      "crm_update",
+      "crm_delete",
+      "crm_bulk_create",
+      "crm_bulk_update",
+      "crm_convert_lead",
+      "crm_link",
+      "crm_unlink",
+      "crm_upload_attachment",
+      "crm_add_note",
+      "slack_list_channels",
+      "slack_list_users",
+      "slack_search_messages",
+      "slack_get_history",
+      "slack_describe_list",
+      "slack_find_channel_lists",
+      "slack_list_list_items",
+      "slack_post_message",
+      "slack_create_channel",
+      "slack_set_channel_topic",
+      "slack_open_dm",
+      "slack_set_presence",
+      "slack_create_list_item",
+      "slack_update_list_item",
+      "slack_delete_list_item",
+      "slack_set_list_task_completion",
+      "notion_read",
+      "notion_write",
+      "whatsapp_send",
+      "whatsapp_list_contacts",
+      "whatsapp_read_chat",
+      "whatsapp_send_message",
+      "whatsapp_send_document",
+      "whatsapp_send_poll",
+      "whatsapp_auto_reply_status",
+      "whatsapp_auto_reply_stop",
+      "whatsapp_auto_reply_set_instructions",
+      "brain_query",
+      "brain_find_documents",
+      "assessment_session_get",
+      "assessment_framework_read",
+      "assessment_evidence_search",
+      "assessment_evidence_read",
+      "assessment_artifact_read",
+      "assessment_snapshot_read",
+      "assessment_snapshot_compare",
+      "assessment_record",
+      "assessment_review_ask",
+      "assessment_review_request_demonstration",
+      "assessment_report_create",
+      "think",
+      "done",
+      "find_tools",
+      "call_tool",
+      "delegate_task"
+    ],
+    "cloudExpanded": [
+      "research_web_search",
+      "research_read_url",
+      "research_social_search",
+      "research_video",
+      "research_github",
+      "create_report_pdf",
+      "create_xlsx",
+      "browser_ab_open",
+      "browser_ab_snapshot",
+      "browser_ab_click",
+      "browser_ab_dblclick",
+      "browser_ab_type",
+      "browser_ab_fill",
+      "browser_ab_press",
+      "browser_ab_hover",
+      "browser_ab_focus",
+      "browser_ab_check",
+      "browser_ab_uncheck",
+      "browser_ab_select",
+      "browser_ab_drag",
+      "browser_ab_upload",
+      "browser_ab_download",
+      "browser_ab_scroll",
+      "browser_ab_scrollintoview",
+      "browser_ab_wait",
+      "browser_ab_screenshot",
+      "browser_ab_pdf",
+      "browser_ab_eval",
+      "browser_ab_find",
+      "browser_ab_get",
+      "browser_ab_is",
+      "browser_ab_back",
+      "browser_ab_forward",
+      "browser_ab_reload",
+      "browser_ab_mouse",
+      "browser_ab_set",
+      "browser_ab_network",
+      "browser_ab_tab",
+      "browser_ab_console",
+      "browser_ab_errors",
+      "browser_ab_highlight",
+      "browser_ab_cookies",
+      "browser_ab_storage",
+      "browser_ab_trace",
+      "browser_ab_record",
+      "browser_ab_session",
+      "browser_ab_connect",
+      "browser_ab_close",
+      "browser_exec",
+      "email_read",
+      "email_send",
+      "drive_read",
+      "drive_write",
+      "docs_read",
+      "docs_write",
+      "sheets_read",
+      "sheets_write",
+      "slides_read",
+      "slides_write",
+      "forms_read",
+      "forms_write",
+      "calendar_read",
+      "calendar_write",
+      "meet_manage",
+      "crm_list_modules",
+      "crm_describe_module",
+      "crm_query",
+      "crm_search",
+      "crm_get",
+      "crm_list_attachments",
+      "crm_download_attachment",
+      "crm_create",
+      "crm_update",
+      "crm_delete",
+      "crm_bulk_create",
+      "crm_bulk_update",
+      "crm_convert_lead",
+      "crm_link",
+      "crm_unlink",
+      "crm_upload_attachment",
+      "crm_add_note",
+      "slack_list_channels",
+      "slack_list_users",
+      "slack_search_messages",
+      "slack_get_history",
+      "slack_describe_list",
+      "slack_find_channel_lists",
+      "slack_list_list_items",
+      "slack_post_message",
+      "slack_create_channel",
+      "slack_set_channel_topic",
+      "slack_open_dm",
+      "slack_set_presence",
+      "slack_create_list_item",
+      "slack_update_list_item",
+      "slack_delete_list_item",
+      "slack_set_list_task_completion",
+      "notion_read",
+      "notion_write",
+      "whatsapp_send",
+      "whatsapp_list_contacts",
+      "whatsapp_read_chat",
+      "whatsapp_send_message",
+      "whatsapp_send_document",
+      "whatsapp_send_poll",
+      "whatsapp_auto_reply_status",
+      "whatsapp_auto_reply_stop",
+      "whatsapp_auto_reply_set_instructions",
+      "brain_query",
+      "brain_find_documents",
+      "assessment_session_get",
+      "assessment_framework_read",
+      "assessment_evidence_search",
+      "assessment_evidence_read",
+      "assessment_artifact_read",
+      "assessment_snapshot_read",
+      "assessment_snapshot_compare",
+      "assessment_record",
+      "assessment_review_ask",
+      "assessment_review_request_demonstration",
+      "assessment_report_create",
+      "think",
+      "done",
+      "find_tools",
+      "call_tool",
+      "delegate_task"
+    ],
+    "hybrid": [
+      "research_web_search",
+      "research_read_url",
+      "research_social_search",
+      "research_video",
+      "research_github",
+      "create_report_pdf",
+      "create_xlsx",
+      "luna_local_read_file",
+      "luna_local_write_file",
+      "luna_local_list_dir",
+      "luna_local_search_files",
+      "luna_local_patch",
+      "luna_local_open_file",
+      "luna_local_pwd",
+      "luna_local_cd",
+      "luna_local_bash",
+      "luna_local_python",
+      "luna_local_create_pdf",
+      "luna_local_create_xlsx",
+      "luna_local_send_whatsapp_document",
+      "luna_local_code_task",
+      "gui_control",
+      "email_read",
+      "email_send",
+      "drive_read",
+      "drive_write",
+      "docs_read",
+      "docs_write",
+      "sheets_read",
+      "sheets_write",
+      "slides_read",
+      "slides_write",
+      "forms_read",
+      "forms_write",
+      "calendar_read",
+      "calendar_write",
+      "meet_manage",
+      "crm_list_modules",
+      "crm_describe_module",
+      "crm_query",
+      "crm_search",
+      "crm_get",
+      "crm_list_attachments",
+      "crm_download_attachment",
+      "crm_create",
+      "crm_update",
+      "crm_delete",
+      "crm_bulk_create",
+      "crm_bulk_update",
+      "crm_convert_lead",
+      "crm_link",
+      "crm_unlink",
+      "crm_upload_attachment",
+      "crm_add_note",
+      "slack_list_channels",
+      "slack_list_users",
+      "slack_search_messages",
+      "slack_get_history",
+      "slack_describe_list",
+      "slack_find_channel_lists",
+      "slack_list_list_items",
+      "slack_post_message",
+      "slack_create_channel",
+      "slack_set_channel_topic",
+      "slack_open_dm",
+      "slack_set_presence",
+      "slack_create_list_item",
+      "slack_update_list_item",
+      "slack_delete_list_item",
+      "slack_set_list_task_completion",
+      "notion_read",
+      "notion_write",
+      "whatsapp_send",
+      "whatsapp_list_contacts",
+      "whatsapp_read_chat",
+      "whatsapp_send_message",
+      "whatsapp_send_document",
+      "whatsapp_send_poll",
+      "whatsapp_auto_reply_status",
+      "whatsapp_auto_reply_stop",
+      "whatsapp_auto_reply_set_instructions",
+      "brain_query",
+      "brain_find_documents",
+      "assessment_session_get",
+      "assessment_framework_read",
+      "assessment_evidence_search",
+      "assessment_evidence_read",
+      "assessment_artifact_read",
+      "assessment_snapshot_read",
+      "assessment_snapshot_compare",
+      "assessment_record",
+      "assessment_review_ask",
+      "assessment_review_request_demonstration",
+      "assessment_report_create",
+      "think",
+      "done",
+      "find_tools",
+      "call_tool",
+      "delegate_task"
+    ]
+  }
+}

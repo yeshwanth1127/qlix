@@ -52,6 +52,10 @@ import { TeamsRepository } from '../teams/teams.repository.js';
 import { JitService } from '../jit/jit.service.js';
 import { stopInFlightTeamRunWorkers } from '../teams/teamRunCancel.js';
 import type { TeamRunInputPurpose } from '../teams/teams.types.js';
+import {
+  answerDefenseInterviewQuestion,
+  loadDefenseInterviewForTeamRun,
+} from '../assessment/interactiveReview.service.js';
 
 /** Team-run uploads allow slightly more files than agent chat (8). */
 const TEAM_INJECT_MAX_FILES = 10;
@@ -152,7 +156,8 @@ const reorderMembersSchema = z
 const updateConfigSchema = z.object({
   autoSequence: z.boolean().optional(),
   pipelineMode: z.boolean().optional(),
-  defaultModel: z.string().trim().max(120).optional(),
+  defaultModel: z.string().trim().max(200).optional(),
+  defaultReasoningEffort: z.string().trim().max(40).optional(),
   conversationWorkflowVersionId: z.string().trim().min(1).nullable().optional(),
 });
 
@@ -519,6 +524,50 @@ export function createTeamsRouter(): Router {
     }
   });
 
+  router.get('/:id/runs/:runId/defense', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    try {
+      const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
+      if (run.startedByUserId !== req.auth!.userId) {
+        res.status(403).json({ error: { code: 'forbidden', message: 'Not your team run' } });
+        return;
+      }
+      res.json(await loadDefenseInterviewForTeamRun(req.auth!.orgId, run.id));
+    } catch (err) {
+      if (err instanceof TeamNotFoundError) {
+        res.status(404).json({ error: { code: 'not_found', message: err.message } });
+        return;
+      }
+      res.status(500).json({ error: { code: 'defense_load_failed', message: 'Failed to load defense interview' } });
+    }
+  });
+
+  router.post('/:id/runs/:runId/defense/:threadId/answer', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    const parsed = z.object({ text: z.string().trim().min(1).max(10_000) }).safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: { code: 'invalid_body', message: 'Answer text is required' } });
+      return;
+    }
+    try {
+      const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
+      if (run.startedByUserId !== req.auth!.userId) {
+        res.status(403).json({ error: { code: 'forbidden', message: 'Not your team run' } });
+        return;
+      }
+      const result = await answerDefenseInterviewQuestion({
+        orgId: req.auth!.orgId,
+        teamRunId: run.id,
+        threadId: req.params.threadId!,
+        text: parsed.data.text,
+        userId: req.auth!.userId,
+      });
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to answer defense interview';
+      const status = /not found/i.test(message) ? 404 : /not awaiting/i.test(message) ? 409 : 500;
+      res.status(status).json({ error: { code: 'defense_answer_failed', message } });
+    }
+  });
+
   /** Set how long a paused WhatsApp wait should collect replies before partial resume. */
   router.post(
     '/:id/runs/:runId/wait-ttl',
@@ -583,9 +632,19 @@ export function createTeamsRouter(): Router {
           return;
         }
         const tasks = await repo.listA2ATasks(run.id);
-        const agentRunIds = tasks
+        const fromTasks = tasks
           .map((t) => t.agentRunId)
           .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        // Also include every AgentRun linked to this team run (supervisor / workers
+        // that may not be on an A2A row yet when JIT fires).
+        const { prisma } = await import('../lib/prisma.js');
+        const linkedRuns = await prisma.agentRun.findMany({
+          where: { teamRunId: run.id },
+          select: { id: true },
+        });
+        const agentRunIds = [
+          ...new Set([...fromTasks, ...linkedRuns.map((r) => r.id)]),
+        ];
         const pending = await jitService.listPendingForAgentRuns({
           userId: req.auth!.userId,
           agentRunIds,
@@ -874,14 +933,18 @@ export function createTeamsRouter(): Router {
         res.status(409).json({ error: { code: 'run_not_cancelable', message: `Run is already ${run.status}` } });
         return;
       }
-      // Stop workers before flipping TeamRun status so WhatsApp tools cannot
-      // fall through from wait-queue to live send.
+      // Commit the terminal state first. Every tool gate treats a canceled team
+      // run as blocked, and the orchestrator can no longer enqueue another
+      // stage while worker cleanup is in progress.
+      await repo.updateRunStatus(run.id, 'canceled', {
+        completedAt: new Date(),
+        checkpointJson: null,
+      });
       await stopInFlightTeamRunWorkers(run.id);
-      await repo.updateRunStatus(run.id, 'canceled', { completedAt: new Date() });
       if (run.sourceConnectorId) {
         await repo.clearChannelSession(run.sourceConnectorId);
       }
-      await repo.appendEvent(run.id, req.params.id!, null, 'run_failed', { reason: 'canceled_by_user' });
+      await repo.appendEvent(run.id, req.params.id!, null, 'run_canceled', { reason: 'canceled_by_user' });
       res.json({ ok: true, status: 'canceled' });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
@@ -902,13 +965,18 @@ export function createTeamsRouter(): Router {
       const run = await service.getRun(req.params.id!, req.params.runId!, auth.orgId);
 
       res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders();
+      res.write('retry: 1500\n\n');
+      const flush = (): void => {
+        (res as Response & { flush?: () => void }).flush?.();
+      };
 
       const send = (event: string, data: unknown): void => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        flush();
       };
 
       // Replay past events
@@ -934,6 +1002,8 @@ export function createTeamsRouter(): Router {
       // Poll for new events every 800ms
       let lastSeq = pastEvents.length > 0 ? pastEvents[pastEvents.length - 1]!.seq : afterSeq;
       let closed = false;
+      let pausedSent = currentRun?.status === 'paused';
+      let lastHeartbeatAt = Date.now();
       req.on('close', () => { closed = true; });
 
       const poll = async (): Promise<void> => {
@@ -949,16 +1019,24 @@ export function createTeamsRouter(): Router {
           res.end();
           return;
         }
-        if (latest?.status === 'paused' && !closed) {
+        if (latest?.status === 'paused' && !closed && !pausedSent) {
           send('paused', {
             status: 'paused',
             teamRunId: latest.id,
           });
+          pausedSent = true;
+        } else if (latest?.status === 'running') {
+          pausedSent = false;
         }
-        if (!closed) setTimeout(() => { poll().catch(console.error); }, 800);
+        if (!closed && Date.now() - lastHeartbeatAt >= 12_000) {
+          res.write(`: heartbeat ${Date.now()}\n\n`);
+          flush();
+          lastHeartbeatAt = Date.now();
+        }
+        if (!closed) setTimeout(() => { poll().catch(console.error); }, 500);
       };
 
-      setTimeout(() => { poll().catch(console.error); }, 800);
+      setTimeout(() => { poll().catch(console.error); }, 500);
     } catch (err) {
       if (err instanceof TeamNotFoundError) {
         res.status(404).json({ error: { code: 'not_found', message: 'Team or run not found' } });

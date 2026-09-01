@@ -26,6 +26,7 @@ from .http_client import QlixHttpClient
 from .identity import AgentIdentity, load_identity
 from .jit import JITApproval, JITClient
 from .signer import sign_payload
+from .governed_execution import GovernedExecutionPipeline, ResultValidation
 
 ExecuteFn = Callable[[], Awaitable[Any]]
 RiskLevel = str  # "low" | "medium" | "high"
@@ -66,6 +67,11 @@ class QlixSDK:
         else:
             ident = load_identity(agent_file)
         self._bind_identity(ident, http=http)
+        self._run_context: dict[str, str] = {}
+        from qlix.luna.plugins import LunaPluginManager
+
+        self.plugins = LunaPluginManager()
+        self._runtime_plugin_ids: list[str] = []
         from qlix.luna._gate import set_active_sdk
 
         set_active_sdk(self)
@@ -80,6 +86,15 @@ class QlixSDK:
 
     async def aclose(self) -> None:
         from qlix.luna._gate import clear_active_sdk
+
+        # Luna systems are lifecycle-owned resources. Draining their owner closes
+        # engines, schedulers, skills, MCP clients and stores before HTTP teardown.
+        for plugin_id in reversed(self._runtime_plugin_ids):
+            try:
+                await self.plugins.dispose(plugin_id)
+            except Exception:
+                pass
+        self._runtime_plugin_ids.clear()
 
         # Close any MCP connection pools registered against this SDK (stdio subprocesses /
         # httpx sessions opened by build_mcp_tool_executors). Best-effort; never block close.
@@ -104,6 +119,24 @@ class QlixSDK:
     def reload_credentials(self, *, agent_file: str | os.PathLike[str] | None = None) -> None:
         """Re-load identity from ``agent_file`` or from ``QLIX_AGENT_FILE``."""
         self._bind_identity(load_identity(agent_file))
+
+    def set_run_context(
+        self,
+        *,
+        run_id: str | None = None,
+        conversation_id: str | None = None,
+        team_run_id: str | None = None,
+    ) -> None:
+        """Attach stable correlation IDs to every signed action in the active run."""
+        self._run_context = {
+            key: value
+            for key, value in {
+                "runId": run_id,
+                "conversationId": conversation_id,
+                "teamRunId": team_run_id,
+            }.items()
+            if value
+        }
 
     def _bind_identity(
         self,
@@ -147,6 +180,14 @@ class QlixSDK:
             builder = builder.engine("cloud")
         system = builder.build()
         wrap_tool_executor_with_qlix(system, self)
+        from qlix.luna.plugins import LunaPluginManifest
+
+        plugin_id = f"qlix.luna.system.{id(system)}"
+        self.plugins.register(
+            LunaPluginManifest(plugin_id=plugin_id, activate=lambda _config: system)
+        )
+        await self.plugins.activate(plugin_id)
+        self._runtime_plugin_ids.append(plugin_id)
         return system
 
     async def run(
@@ -156,43 +197,59 @@ class QlixSDK:
         execute_fn: ExecuteFn,
         *,
         risk_level: RiskLevel = "low",
+        result_validator: Callable[[Any], ResultValidation] | None = None,
     ) -> Any:
         identity = self._identity
 
-        if not identity.has_scope(action_type):
-            raise ScopeError(
-                f"action_type '{action_type}' is not in agent permission_scopes"
+        def authorize(_resolved: Any) -> None:
+            if not identity.has_scope(action_type):
+                raise ScopeError(
+                    f"action_type '{action_type}' is not in agent permission_scopes"
+                )
+
+        async def approve(_resolved: Any) -> Optional[JITApproval]:
+            if identity.is_jit(action_type):
+                return await self._jit.request_and_wait(
+                    action_type=action_type, payload=payload
+                )
+            return None
+
+        async def pre_log(_resolved: Any, approval: Optional[JITApproval]) -> str:
+            return await self.start_action(
+                action_type=action_type,
+                payload=payload,
+                risk_level=risk_level,
+                jit_token=approval.jit_token if approval else None,
             )
 
-        approval: Optional[JITApproval] = None
-        if identity.is_jit(action_type):
-            approval = await self._jit.request_and_wait(
-                action_type=action_type, payload=payload
+        async def complete_success(action_id: str, result: Any) -> None:
+            await self.complete_action_success(
+                action_id=action_id, action_type=action_type, result=result
             )
 
-        action_id = await self.start_action(
-            action_type=action_type,
-            payload=payload,
-            risk_level=risk_level,
-            jit_token=approval.jit_token if approval else None,
-        )
-
-        try:
-            result = await execute_fn()
-        except Exception as exc:
+        async def complete_failure(
+            action_id: str,
+            exc: BaseException | None,
+            validation: ResultValidation | None,
+        ) -> None:
             await self.complete_action_failure(
                 action_id=action_id,
                 action_type=action_type,
                 exc=exc,
+                error_message=validation.error_message if validation else None,
+                error_code=validation.error_code if validation else None,
+                result=validation.completion_result if validation else None,
             )
-            raise
-        else:
-            await self.complete_action_success(
-                action_id=action_id,
-                action_type=action_type,
-                result=result,
-            )
-            return result
+
+        return await GovernedExecutionPipeline[Any]().run(
+            authorize=authorize,
+            approve=approve,
+            pre_log=pre_log,
+            execute=lambda _resolved: execute_fn(),
+            validate_result=result_validator,
+            complete_success=complete_success,
+            complete_failure=complete_failure,
+        )
 
     async def start_action(
         self,
@@ -202,12 +259,15 @@ class QlixSDK:
         risk_level: RiskLevel,
         jit_token: str | None,
     ) -> str:
+        metadata = dict(payload)
+        if self._run_context:
+            metadata["_qlix"] = dict(self._run_context)
         signed: dict[str, Any] = {
             "did": self._identity.did,
             "actionType": action_type,
             "timestampMs": _now_ms(),
             "riskLevel": risk_level,
-            "metadata": payload,
+            "metadata": metadata,
         }
         if jit_token is not None:
             signed["jitToken"] = jit_token

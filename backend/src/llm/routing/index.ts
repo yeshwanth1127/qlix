@@ -13,7 +13,26 @@ export {
   tierForModelId,
   type ModelTierKey,
 } from './ladder.js';
-export { selectInferenceModel, type RouteDecision } from './selectModel.js';
+export {
+  selectInferenceModel,
+  OPENROUTER_FREE_ROUTER,
+  buildDecisionBrief,
+  buildDecisionBriefFromMessages,
+  classifyHandoffError,
+  isMarginCascadeEnabled,
+  isOpenRouterFreeModelId,
+  simulateCascadeSavings,
+  type CascadeHints,
+  type CascadePhase,
+  type RouteDecision,
+} from './selectModel.js';
+export {
+  estimateUsdFromTokens,
+  pickPaidLadderModel,
+  shouldEscalateToPaid,
+  type CascadeSimResult,
+  type CascadeSimRun,
+} from './cascade.js';
 export {
   REASONING_EFFORTS,
   REASONING_HEADROOM_TOKENS,

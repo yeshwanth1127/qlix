@@ -92,7 +92,7 @@ function PaletteItem({
       onDragStart={(event) => startDrag(event, payload)}
       title={tooltip}
       className={cn(
-        "flex cursor-grab items-start gap-2 rounded-xl border bg-white/60 px-2.5 py-1.5 transition-colors hover:border-[color:var(--sketch-purple)]/50 hover:bg-white/85 active:cursor-grabbing",
+        "flex cursor-grab items-start gap-2 rounded-xl border bg-[#E2F0CC]/60 px-2.5 py-1.5 transition-colors hover:border-[color:var(--sketch-purple)]/50 hover:bg-[#E2F0CC]/85 active:cursor-grabbing",
         HAIRLINE,
         muted && "opacity-65",
       )}
@@ -198,7 +198,7 @@ export function PaletteSidebar({
     return (
       <aside
         className={cn(
-          "flex w-11 shrink-0 flex-col items-center gap-2 border-r bg-white/45 py-3 backdrop-blur-sm",
+          "flex w-11 shrink-0 flex-col items-center gap-2 border-r bg-transparent py-3",
           HAIRLINE,
         )}
       >
@@ -220,7 +220,7 @@ export function PaletteSidebar({
   return (
     <aside
       className={cn(
-        "flex w-60 shrink-0 flex-col overflow-hidden border-r bg-white/45 backdrop-blur-sm",
+        "flex w-60 shrink-0 flex-col overflow-hidden border-r bg-transparent",
         HAIRLINE,
       )}
     >
@@ -240,7 +240,7 @@ export function PaletteSidebar({
       <div className={cn("border-b px-2 py-2", HAIRLINE)}>
         <div
           className={cn(
-            "flex items-center gap-1.5 rounded-xl border bg-white/70 px-2 py-1 focus-within:border-[color:var(--sketch-purple)]/50",
+            "flex items-center gap-1.5 rounded-xl border bg-[#E2F0CC]/70 px-2 py-1 focus-within:border-[color:var(--sketch-purple)]/50",
             HAIRLINE,
           )}
         >

@@ -217,6 +217,42 @@ def openai_always_tool_definitions(
         {
             "type": "function",
             "function": {
+                "name": "request_capability",
+                "description": (
+                    "Ask the user in chat to add a capability this agent does not have yet. "
+                    "Use when the user asks for something your current tools cannot do "
+                    "(for example create a PDF, send email, message WhatsApp, update CRM, "
+                    "browse the web, write files). The chat shows an Add / No card; if they "
+                    "say yes, the capability is added and this run continues with the new "
+                    "tools. Prefer this over claiming you are unable to help or returning "
+                    "a blocked/missing-tool JSON. "
+                    "PDF on cloud: scopes [\"files.create\"] (create_report_pdf / create_xlsx). "
+                    "PDF on hybrid: scopes [\"system.file_write\"] (luna_local_create_pdf)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "scopes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Permission scope ids to request, e.g. email.send, "
+                                "files.create, whatsapp.contact_send, web.research, "
+                                "crm.write, slack.send"
+                            ),
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Short explanation shown to the user of why you need this",
+                        },
+                    },
+                    "required": ["scopes", "reason"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "delegate_task",
                 "description": (
                     "DEPRECATED: prefer spawn_subagents. Fire-and-forget child AgentRun on the "

@@ -76,8 +76,44 @@ export function lastResultFromEnvelope(goal: string): string | null {
   const endIdx = text.indexOf(FOLLOW_UP_NOTE_END);
   if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) return null;
   const body = text.slice(startIdx + FOLLOW_UP_NOTE_START.length, endIdx);
-  const match = body.match(/^Result:\s*(.+)$/m);
-  return match?.[1]?.trim() || null;
+  // Result may be multiline JSON — capture until User notes or end of envelope body.
+  const header = /^Result:\s*/m.exec(body);
+  if (!header || header.index == null) return null;
+  const contentStart = header.index + header[0].length;
+  const notesIdx = body.indexOf('\nUser notes during that run:', contentStart);
+  const contentEnd = notesIdx >= 0 ? notesIdx : body.length;
+  const result = body.slice(contentStart, contentEnd).trim();
+  return result || null;
+}
+
+/** True when synthesis is a blocked/missing-tool failure, not usable source content. */
+export function isUnusableTeamSynthesis(text: string | null | undefined): boolean {
+  if (!text?.trim()) return true;
+  const t = text.trim();
+  if (/"status"\s*:\s*"blocked"/i.test(t)) return true;
+  if (/needed_to_proceed|required_to_proceed/i.test(t) && /missing|no pdf|no source|scopes:\s*none/i.test(t)) {
+    return true;
+  }
+  if (/Missing source content|no PDF-generation|delegated scopes:\s*none/i.test(t)) return true;
+  try {
+    const parsed = JSON.parse(t) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object' && parsed.status === 'blocked') return true;
+  } catch {
+    // plain text
+  }
+  return false;
+}
+
+/**
+ * Prefer a usable prior Result for follow-ups. Walk newest→oldest until we find
+ * real content (e.g. the drafted script), skipping blocked PDF failures.
+ */
+export function pickUsableSynthesis(candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    const text = typeof candidate === 'string' ? candidate.trim() : '';
+    if (text && !isUnusableTeamSynthesis(text)) return text;
+  }
+  return null;
 }
 
 /**
@@ -161,8 +197,20 @@ export function firstInputsInContinueChain(
   return [];
 }
 
-/** Walk newest→oldest follow-ups until the original user objective (not "try again"). */
+/** Walk newest→oldest until the original user objective (root run, not a follow-up envelope). */
 export function firstRealGoalInContinueChain(chain: Array<{ goal?: string | null }>): string {
+  // Prefer the oldest non-envelope goal (the root user ask).
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const goal = chain[i]?.goal ?? '';
+    if (goal.includes(FOLLOW_UP_NOTE_START)) continue;
+    const extracted = extractTeamRunUserGoal(goal).trim();
+    if (extracted && !isRetryOnlyUserText(extracted)) return extracted;
+  }
+  // Fall back to Intent: lines from envelopes (oldest first).
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const intent = intentFromEnvelope(chain[i]?.goal ?? '');
+    if (intent && !isRetryOnlyUserText(intent)) return intent;
+  }
   for (const run of chain) {
     const extracted = extractTeamRunUserGoal(run.goal ?? '').trim();
     if (extracted && !isRetryOnlyUserText(extracted)) return extracted;

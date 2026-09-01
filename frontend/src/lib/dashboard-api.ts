@@ -20,7 +20,7 @@ export interface DashboardAgentRow {
 
 export interface DashboardAuditEvent {
   readonly id: string;
-  readonly timeUtc: string;
+  readonly timeIst: string;
   readonly agentName: string;
   readonly action: AuditActionType;
   readonly result: AuditResultUi;
@@ -78,8 +78,8 @@ export type AuditRiskLevel = "low" | "medium" | "high";
 export interface AuditLogEvent {
   readonly id: string;
   readonly timestampMs: number;
-  readonly timeUtc: string;
-  readonly dateUtc: string;
+  readonly timeIst: string;
+  readonly dateIst: string;
   readonly actionType: string;
   readonly action: AuditActionType;
   readonly result: AuditResultUi;

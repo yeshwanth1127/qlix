@@ -23,7 +23,7 @@ function StepDot({ n, current }: { n: number; current: Step }) {
     <div
       className={cn(
         "flex h-6 w-6 items-center justify-center border border-black text-xs font-semibold",
-        done ? "bg-black text-white" : active ? "border-2 bg-white text-black" : "bg-white text-black/40",
+        done ? "bg-black text-white" : active ? "border-2 bg-[#E2F0CC] text-black" : "bg-[#E2F0CC] text-black/40",
       )}
     >
       {done ? <Check size={12} /> : n}
@@ -77,8 +77,8 @@ export function CreateTeamModal({ open, orgId: _orgId, onClose, onCreated }: Cre
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 p-4">
-      <div className="flex w-full max-w-lg flex-col border-2 border-black bg-white" style={{ maxHeight: "90vh" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#E2F0CC]/80 p-4">
+      <div className="flex w-full max-w-lg flex-col border-2 border-black bg-[#E2F0CC]" style={{ maxHeight: "90vh" }}>
         <div className="flex shrink-0 items-center justify-between border-b border-black px-6 py-4">
           <div>
             <h2 className={sketchLabel}>Create team</h2>
@@ -123,7 +123,7 @@ export function CreateTeamModal({ open, orgId: _orgId, onClose, onCreated }: Cre
                     onClick={() => setPipelineMode(true)}
                     className={cn(
                       "border px-3 py-2 text-left text-xs",
-                      pipelineMode ? "border-2 border-black bg-white" : "border-black/20 text-black/50",
+                      pipelineMode ? "border-2 border-black bg-[#E2F0CC]" : "border-black/20 text-black/50",
                     )}
                   >
                     <div className="font-medium text-black">Pipeline</div>
@@ -134,7 +134,7 @@ export function CreateTeamModal({ open, orgId: _orgId, onClose, onCreated }: Cre
                     onClick={() => setPipelineMode(false)}
                     className={cn(
                       "border px-3 py-2 text-left text-xs",
-                      !pipelineMode ? "border-2 border-black bg-white" : "border-black/20 text-black/50",
+                      !pipelineMode ? "border-2 border-black bg-[#E2F0CC]" : "border-black/20 text-black/50",
                     )}
                   >
                     <div className="font-medium text-black">Parallel</div>

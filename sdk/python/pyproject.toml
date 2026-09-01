@@ -26,6 +26,9 @@ classifiers = [
 dependencies = [
   "httpx>=0.27,<1.0",
   "cryptography>=42.0",
+  # Advertised by Luna's built-in web_search tool (Tavily -> DDGS fallback).
+  "tavily-python>=0.7,<1.0",
+  "ddgs>=9,<10",
   # IANA time zones for ZoneInfo on Windows (no system tz database).
   "tzdata>=2024.1",
   # Luna runtime is vendored under qlix.luna — not a separate pip dependency.

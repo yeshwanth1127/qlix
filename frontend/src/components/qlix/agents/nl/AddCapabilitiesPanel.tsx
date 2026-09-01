@@ -248,10 +248,10 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
   const empty = visibleGroups.length === 0 && filteredUngrouped.length === 0;
 
   return (
-    <div className="qlix-msg-in space-y-3 rounded-2xl border border-black/12 bg-white/75 p-3 backdrop-blur-xl">
+    <div className="qlix-msg-in space-y-3 rounded-2xl border border-black/12 bg-[#E2F0CC]/75 p-3 backdrop-blur-xl">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#1c1830]">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#012F13]">
             Add capabilities
           </p>
           <p className="mt-0.5 text-[11px] text-black/50">
@@ -277,8 +277,8 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium motion-safe:transition-colors",
                   active
-                    ? "border-[#1c1830] bg-[#1c1830] text-white"
-                    : "border-black/15 bg-white/80 text-[#1c1830] hover:border-[#1c1830]/40",
+                    ? "border-[#012F13] bg-[#012F13] text-white"
+                    : "border-black/15 bg-[#E2F0CC]/80 text-[#012F13] hover:border-[#012F13]/40",
                 )}
               >
                 {isSupervisor ? (
@@ -307,7 +307,7 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
         />
       </div>
 
-      <ul className="max-h-72 space-y-0.5 overflow-y-auto overscroll-contain rounded-xl border border-black/10 bg-white/90 py-1">
+      <ul className="max-h-72 space-y-0.5 overflow-y-auto overscroll-contain rounded-xl border border-black/10 bg-[#E2F0CC]/90 py-1">
         {empty ? (
           <li className="px-3 py-6 text-center text-[11px] text-black/45">No matching scopes</li>
         ) : (
@@ -329,7 +329,7 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
                     ) : (
                       <ChevronRight className="size-3.5 shrink-0 text-black/45" aria-hidden />
                     )}
-                    <span className="text-[12px] font-semibold text-[#1c1830]">{group.label}</span>
+                    <span className="text-[12px] font-semibold text-[#012F13]">{group.label}</span>
                     <span className="text-[10px] text-black/40">{group.products.length}</span>
                   </button>
                   {open ? (
@@ -353,11 +353,11 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
                                   if (el) el.indeterminate = state === "some";
                                 }}
                                 onChange={() => toggleProduct(product)}
-                                className="mt-0.5 size-3.5 shrink-0 accent-[#1c1830]"
+                                className="mt-0.5 size-3.5 shrink-0 accent-[#012F13]"
                               />
                               <span className="min-w-0 flex-1">
                                 <span className="flex flex-wrap items-center gap-1.5">
-                                  <span className="text-[12px] font-medium text-[#1c1830]">
+                                  <span className="text-[12px] font-medium text-[#012F13]">
                                     {product.label}
                                   </span>
                                   {needsApproval ? (
@@ -395,11 +395,11 @@ export function AddCapabilitiesPanel({ plan, orgId, onPlanChange }: AddCapabilit
                       type="checkbox"
                       checked={checked}
                       onChange={() => toggle(opt)}
-                      className="mt-0.5 size-3.5 shrink-0 accent-[#1c1830]"
+                      className="mt-0.5 size-3.5 shrink-0 accent-[#012F13]"
                     />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-mono text-[11px] text-[#1c1830]">{opt.id}</span>
+                        <span className="font-mono text-[11px] text-[#012F13]">{opt.id}</span>
                         {opt.forceJit ? (
                           <span className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wider text-black/45">
                             <ShieldAlert className="size-2.5" aria-hidden />

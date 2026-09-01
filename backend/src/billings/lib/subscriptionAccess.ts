@@ -146,6 +146,8 @@ export async function sessionOrganizationPayload(
   workspaceKind: string;
   plan: string;
   subscription: OrgSubscriptionSnapshot;
+  /** Plugin ids enabled from the dashboard's Plugins page — drives which optional nav items show up. */
+  enabledPluginIds: string[];
 }> {
   const skipGate =
     Boolean(opts?.isSuperAdmin) || (opts?.email ? isBillingExempt(opts.email) : false);
@@ -154,6 +156,8 @@ export async function sessionOrganizationPayload(
   if (skipGate) {
     subscription.access = 'allowed';
   }
+  const { getEnabledPluginIds } = await import('../../plugins/plugins.service.js');
+  const enabledPluginIds = await getEnabledPluginIds(organization.id);
   return {
     id: organization.id,
     name: organization.name,
@@ -161,5 +165,6 @@ export async function sessionOrganizationPayload(
     workspaceKind: organization.workspaceKind,
     plan: organization.plan,
     subscription,
+    enabledPluginIds,
   };
 }

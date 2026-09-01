@@ -42,6 +42,8 @@ export interface AuthSuccessResponse {
     /** Matches `organizations.plan` (e.g. trial, free, starter). */
     plan: string;
     subscription: OrgSubscriptionInfo;
+    /** Plugin ids enabled from the dashboard's Plugins page — drives which optional nav items show up. */
+    enabledPluginIds: string[];
   };
 }
 

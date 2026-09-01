@@ -6,6 +6,10 @@ ARG NODE_VERSION=22.16.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    HOME=/home/qlix \
+    XDG_CACHE_HOME=/home/qlix/.cache \
+    XDG_CONFIG_HOME=/home/qlix/.config \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     LUNA_BROWSER_HEADLESS=1 \
     LUNA_BROWSER_ENGINE=agent_browser \
     QLIX_BROWSER_LIVE_VIEW=1 \
@@ -29,7 +33,8 @@ RUN set -eux; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1
 
-RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
+RUN mkdir -p /home/qlix /ms-playwright \
+    && npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
     && npx --yes playwright install-deps chromium \
     && npx --yes playwright install chromium \
     && mkdir -p /tmp/agent-browser \
@@ -37,7 +42,8 @@ RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
        agent-browser --json open about:blank \
     && agent-browser --json close
 
-ENV PATH="/root/.local/bin:${PATH}"
+ENV PIPX_HOME=/opt/pipx \
+    PIPX_BIN_DIR=/usr/local/bin
 
 # Agent Reach — curated research backends.
 # Core install (--env=server, no --channels) sets up mcporter/Exa, gh, and yt-dlp
@@ -45,15 +51,23 @@ ENV PATH="/root/.local/bin:${PATH}"
 # can't break the image — unavailable sources degrade gracefully at runtime.
 RUN pip install --no-cache-dir pipx \
     && pipx install https://github.com/Panniantong/agent-reach/archive/main.zip \
-    && /root/.local/bin/agent-reach install --env=server \
+    && agent-reach install --env=server \
     && pipx install yt-dlp \
-    && (/root/.local/bin/agent-reach install --env=server --channels twitter,reddit,bilibili || true) \
-    && /root/.local/bin/agent-reach doctor --json > /opt/agent-reach-boot-check.json \
-    && command -v mcporter >/dev/null \
+    && npm install -g mcporter \
+    && (agent-reach install --env=server --channels twitter,reddit,bilibili || true) \
+    && (agent-reach doctor --json > /opt/agent-reach-boot-check.json || true) \
     && command -v agent-reach >/dev/null \
-    && command -v gh >/dev/null
+    && command -v mcporter >/dev/null
 
 COPY sdk/python /app/sdk/python
 RUN pip install --no-cache-dir reportlab openpyxl -e "/app/sdk/python"
+
+# The runner handles untrusted model output. It never needs host or container root.
+# Runtime writes are restricted by Docker to tmpfs mounts at /tmp and /home/qlix.
+RUN groupadd --gid 10001 qlix \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/qlix --shell /usr/sbin/nologin qlix \
+    && chown -R 10001:10001 /home/qlix /tmp /ms-playwright
+
+USER 10001:10001
 
 CMD ["python", "-m", "qlix.cloud_runner"]

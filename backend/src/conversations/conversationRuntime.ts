@@ -8,6 +8,11 @@ import type {
   TemplateValue,
   WorkflowNode,
 } from './workflow.types.js';
+import {
+  interpolateConversationPrompt,
+  promptFromNode,
+  type ConversationPrompt,
+} from './conversationPrompt.js';
 
 export type RuntimeTransition = {
   state: ConversationRuntimeState;
@@ -72,6 +77,27 @@ function effectIndex(state: ConversationRuntimeState, nodeId: string): number {
   return state.nodeVisits[nodeId] ?? 1;
 }
 
+function sendEffectForNode(
+  node: Extract<WorkflowNode, { type: 'send' | 'ask' | 'collect' }>,
+  operationIndex: number,
+  variables: Record<string, unknown>,
+  contentOverride?: string,
+): ConversationEffect {
+  const prompt: ConversationPrompt = interpolateConversationPrompt(
+    promptFromNode(node),
+    variables,
+    contentOverride,
+  );
+  return {
+    type: 'send',
+    nodeId: node.id,
+    operationIndex,
+    ...('channel' in node && node.channel ? { channel: node.channel } : {}),
+    content: prompt.content,
+    prompt,
+  };
+}
+
 function validateCollected(node: Extract<WorkflowNode, { type: 'collect' }>, text: string): boolean {
   const value = text.trim();
   if (node.validation?.required !== false && !value) return false;
@@ -109,12 +135,14 @@ function acceptSignal(
   if (signal.type === 'inbound' && (node.type === 'ask' || node.type === 'collect')) {
     if (node.type === 'collect' && !validateCollected(node, signal.text)) {
       visit(state, node.id);
-      effects.push({
-        type: 'send',
-        nodeId: node.id,
-        operationIndex: effectIndex(state, node.id),
-        content: interpolateString(node.validation?.retryPrompt ?? node.content, state.variables),
-      });
+      effects.push(
+        sendEffectForNode(
+          node,
+          effectIndex(state, node.id),
+          state.variables,
+          node.validation?.retryPrompt,
+        ),
+      );
       return {};
     }
     state.variables[node.variable] = signal.text.trim();
@@ -201,12 +229,12 @@ function drive(
 
     switch (node.type) {
       case 'send':
-        effects.push({ type: 'send', nodeId: node.id, operationIndex, channel: node.channel, content: interpolateString(node.content, state.variables) });
+        effects.push(sendEffectForNode(node, operationIndex, state.variables));
         state.currentNodeId = node.next;
         break;
       case 'ask':
       case 'collect':
-        effects.push({ type: 'send', nodeId: node.id, operationIndex, content: interpolateString(node.content, state.variables) });
+        effects.push(sendEffectForNode(node, operationIndex, state.variables));
         state.waiting = { kind: 'input', nodeId: node.id, variable: node.variable };
         state.status = 'waiting_input';
         break;

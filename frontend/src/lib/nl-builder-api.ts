@@ -88,6 +88,51 @@ export interface NlBuilderSessionSummary {
 
 export interface NlBuilderSessionDetail extends NlBuilderSessionSummary {
   transcript: unknown[];
+  phase?: BuilderPhase;
+  stateVersion?: number;
+  requirements?: BuilderRequirementsState;
+  readiness?: BuilderReadinessState;
+  rollingSummary?: string;
+}
+
+export type BuilderPhase =
+  | "discovering"
+  | "ready"
+  | "planning"
+  | "reviewing"
+  | "creating"
+  | "completed"
+  | "archived";
+
+export interface BuilderRequirementFact {
+  key: string;
+  category: string;
+  value: unknown;
+  confidence: number;
+  sourceMessageId: string;
+}
+
+export interface BuilderRequirementsState {
+  facts: BuilderRequirementFact[];
+  unresolved: Array<{ key: string; question: string; blocking: boolean }>;
+  assumptions: string[];
+}
+
+export interface BuilderReadinessState {
+  score: number;
+  canPlan: boolean;
+  blocking: string[];
+}
+
+export interface BuilderTurnResult {
+  message: { role: "assistant"; content: string };
+  phase: BuilderPhase;
+  requirements: BuilderRequirementsState;
+  readiness: BuilderReadinessState;
+  plan: AgentCreationPlan | null;
+  planId: string | null;
+  planningBrief: string | null;
+  stateVersion: number;
 }
 
 export async function listBuilderSessions(): Promise<NlBuilderSessionSummary[]> {
@@ -168,6 +213,103 @@ export async function deleteBuilderSession(sessionId: string): Promise<boolean> 
   }
 }
 
+type BuilderMessageFailure = { ok: false; errorMessage: string; status?: number };
+
+function builderMessageError(res: Response, body: ApiErrorBody | null): BuilderMessageFailure {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (res.status === 404 && !contentType.includes("application/json")) {
+    return {
+      ok: false,
+      status: res.status,
+      errorMessage:
+        "Builder conversation API is unavailable — the backend may need a rebuild and restart.",
+    };
+  }
+  return {
+    ok: false,
+    status: res.status,
+    errorMessage: body?.error?.message ?? `Builder conversation failed (${res.status})`,
+  };
+}
+
+export async function sendBuilderMessage(
+  sessionId: string,
+  content: string,
+  model?: string,
+  intent: "message" | "redesign" = "message",
+): Promise<{ ok: true; data: BuilderTurnResult } | BuilderMessageFailure> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/v1/nl-builder/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          content,
+          intent,
+          ...(model ? { model } : {}),
+        }),
+      },
+    );
+    const contentType = res.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json")
+      ? ((await res.json().catch(() => null)) as (BuilderTurnResult & ApiErrorBody) | null)
+      : null;
+    if (!res.ok) {
+      return builderMessageError(res, body);
+    }
+    if (!body?.message) {
+      return { ok: false, status: res.status, errorMessage: "Server returned an empty builder response" };
+    }
+    return { ok: true, data: body };
+  } catch {
+    return { ok: false, errorMessage: "Network error — check your connection" };
+  }
+}
+
+/** Creates a session when needed and retries once when the server cannot find it. */
+export async function sendBuilderTurn(input: {
+  sessionId: string | null;
+  content: string;
+  model?: string;
+  intent?: "message" | "redesign";
+  title?: string;
+}): Promise<
+  | { ok: true; data: BuilderTurnResult; sessionId: string }
+  | BuilderMessageFailure
+> {
+  let sessionId = input.sessionId;
+  if (!sessionId) {
+    const created = await createBuilderSession(input.title);
+    if (!created) {
+      return { ok: false, errorMessage: "Could not start the builder conversation" };
+    }
+    sessionId = created.id;
+  }
+
+  let result = await sendBuilderMessage(
+    sessionId,
+    input.content,
+    input.model,
+    input.intent ?? "message",
+  );
+  if (!result.ok && result.status === 404) {
+    const created = await createBuilderSession(input.title);
+    if (!created) return result;
+    sessionId = created.id;
+    result = await sendBuilderMessage(
+      sessionId,
+      input.content,
+      input.model,
+      input.intent ?? "message",
+    );
+  }
+
+  if (!result.ok) return result;
+  return { ok: true, data: result.data, sessionId };
+}
+
 type ParseResult =
   | { ok: true; plan: AgentCreationPlan }
   | { ok: false; errorMessage: string };
@@ -192,4 +334,3 @@ export async function nlParsePrompt(prompt: string, model: string): Promise<Pars
     return { ok: false, errorMessage: "Network error — check your connection" };
   }
 }
-

@@ -31,7 +31,7 @@ export default function PrivacyPolicyPage() {
                 Questions about this policy:{" "}
                 <a
                   href={`mailto:${CONTACT_EMAIL}`}
-                  className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                  className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
                 >
                   {CONTACT_EMAIL}
                 </a>
@@ -48,36 +48,36 @@ export default function PrivacyPolicyPage() {
               <p>We collect information in these categories:</p>
               <ul className="list-disc space-y-2 pl-5">
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Account data</span> —
+                  <span className="font-medium text-[#012F13]/80">Account data</span> —
                   name, email address, password hashes (never plaintext passwords),
                   workspace type (individual or organization), and profile settings.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Authentication data</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Authentication data</span>{" "}
                   — OAuth identifiers when you sign in with Google or GitHub, session
                   cookies, and optional passkey / WebAuthn credentials.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Organization data</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Organization data</span>{" "}
                   — organization name, membership, roles, team assignments, and invites.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Agent &amp; identity data</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Agent &amp; identity data</span>{" "}
                   — agent names, DIDs, credential metadata, key material references,
                   permission scopes, and configuration you provide.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Audit &amp; usage data</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Audit &amp; usage data</span>{" "}
                   — action logs (who did what, when, on whose behalf), API usage, billing
                   events, and connector activity needed to operate the ledger and console.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Technical data</span> —
+                  <span className="font-medium text-[#012F13]/80">Technical data</span> —
                   IP address, browser type, device information, and diagnostic logs
                   collected automatically when you use the Service.
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Payment data</span> —
+                  <span className="font-medium text-[#012F13]/80">Payment data</span> —
                   billing contact details and payment status. Card numbers are processed by
                   our payment processor; we do not store full card numbers on our servers.
                 </li>
@@ -114,22 +114,22 @@ export default function PrivacyPolicyPage() {
               <p>We may share information with:</p>
               <ul className="list-disc space-y-2 pl-5">
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Service providers</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Service providers</span>{" "}
                   that host infrastructure, send email, process payments, or provide
                   observability — under contracts that limit use to providing services to us
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Organization admins</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Organization admins</span>{" "}
                   and other members of a workspace you join, according to that
                   organization’s roles and settings
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Legal authorities</span>{" "}
+                  <span className="font-medium text-[#012F13]/80">Legal authorities</span>{" "}
                   when required by law, legal process, or to protect rights, safety, and the
                   integrity of the Service
                 </li>
                 <li>
-                  <span className="font-medium text-[#1c1830]/80">Successors</span> in
+                  <span className="font-medium text-[#012F13]/80">Successors</span> in
                   connection with a merger, acquisition, or asset transfer, subject to
                   appropriate confidentiality protections
                 </li>
@@ -181,7 +181,7 @@ export default function PrivacyPolicyPage() {
                 exercise these rights, contact{" "}
                 <a
                   href={`mailto:${CONTACT_EMAIL}`}
-                  className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                  className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
                 >
                   {CONTACT_EMAIL}
                 </a>
@@ -251,7 +251,7 @@ export default function PrivacyPolicyPage() {
               For privacy inquiries:{" "}
               <a
                 href={`mailto:${CONTACT_EMAIL}`}
-                className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
               >
                 {CONTACT_EMAIL}
               </a>
@@ -259,7 +259,7 @@ export default function PrivacyPolicyPage() {
               contact channels published on{" "}
               <a
                 href="https://qlix.exora.solutions"
-                className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
               >
                 qlix.exora.solutions
               </a>

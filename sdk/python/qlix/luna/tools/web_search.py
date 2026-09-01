@@ -9,6 +9,7 @@ from typing import Any
 from qlix.luna.core.registry import ToolRegistry
 from qlix.luna.core.types import ToolResult
 from qlix.luna.security.ssrf import check_ssrf
+from qlix.luna.security.safe_http import request_with_ssrf_protection
 from qlix.luna.tools._stubs import BaseTool, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -84,9 +85,9 @@ class WebSearchTool(BaseTool):
         ssrf_error = check_ssrf(url)
         if ssrf_error:
             raise ValueError(ssrf_error)
-        resp = httpx.get(
+        resp = request_with_ssrf_protection(
+            "GET",
             url.strip(),
-            follow_redirects=True,
             timeout=30.0,
             headers={
                 "User-Agent": "Mozilla/5.0 (compatible; Luna/1.0; +https://github.com/luna)"
@@ -140,6 +141,24 @@ class WebSearchTool(BaseTool):
         # If the query contains a URL, fetch it directly instead of searching
         url = self._extract_url(query) if not self._is_url(query) else query.strip()
         if url:
+            from qlix.research_providers import available_providers_for, log_shadow_route
+
+            log_shadow_route(
+                logger,
+                "read",
+                runtime="local",
+                public_tool="web_search",
+                legacy_providers=("direct_http",),
+            )
+            route = available_providers_for(
+                "read", runtime="local", public_tool="web_search"
+            )
+            if not any(spec["id"] == "direct_http" for spec in route):
+                return ToolResult(
+                    tool_name="web_search",
+                    content="Secure URL reader is unavailable in this installation.",
+                    success=False,
+                )
             try:
                 content = self._fetch_url(url)
                 return ToolResult(
@@ -156,37 +175,45 @@ class WebSearchTool(BaseTool):
                 )
 
         max_results = params.get("max_results", self._max_results)
+        from qlix.research_providers import available_providers_for, log_shadow_route
+
+        log_shadow_route(
+            logger,
+            "search",
+            runtime="local",
+            public_tool="web_search",
+            legacy_providers=("tavily", "duckduckgo"),
+        )
+        route = available_providers_for(
+            "search", runtime="local", public_tool="web_search"
+        )
+        for provider in route:
+            provider_id = str(provider["id"])
+            try:
+                if provider_id == "tavily":
+                    from tavily import TavilyClient
+
+                    response = TavilyClient(api_key=self._api_key).search(query, max_results=max_results)
+                    results = response.get("results", [])
+                    formatted = "\n\n".join(
+                        f"**{r.get('title', 'Untitled')}**\n{r.get('url', '')}\n{r.get('content', '')}"
+                        for r in results
+                    )
+                    return ToolResult("web_search", formatted or "No results found.", True,
+                                      metadata={"num_results": len(results), "engine": provider_id})
+                if provider_id == "duckduckgo":
+                    formatted = self._duckduckgo_search(query, max_results)
+                    return ToolResult("web_search", formatted or "No results found.", True,
+                                      metadata={"engine": provider_id})
+            except Exception as exc:
+                logger.debug("Research provider %s failed (%s); trying next provider", provider_id, type(exc).__name__)
 
         try:
-            from tavily import TavilyClient
-
-            client = TavilyClient(api_key=self._api_key)
-            response = client.search(query, max_results=max_results)
-            results = response.get("results", [])
-            formatted = "\n\n".join(
-                f"**{r.get('title', 'Untitled')}**\n"
-                f"{r.get('url', '')}\n{r.get('content', '')}"
-                for r in results
-            )
-            return ToolResult(
-                tool_name="web_search",
-                content=formatted or "No results found.",
-                success=True,
-                metadata={"num_results": len(results), "engine": "tavily"},
-            )
-        except Exception as exc:
-            logger.debug(
-                "Tavily error (%s), falling back to DuckDuckGo", type(exc).__name__
-            )
-
-        try:
+            # Preserve the legacy final fallback for installations whose optional
+            # dependency probe cannot see a lazily installed DDGS package.
             formatted = self._duckduckgo_search(query, max_results)
-            return ToolResult(
-                tool_name="web_search",
-                content=formatted or "No results found.",
-                success=True,
-                metadata={"engine": "duckduckgo"},
-            )
+            return ToolResult("web_search", formatted or "No results found.", True,
+                              metadata={"engine": "duckduckgo"})
         except ImportError:
             return ToolResult(
                 tool_name="web_search",

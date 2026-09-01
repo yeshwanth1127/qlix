@@ -2,7 +2,6 @@
 
 import { Suspense } from "react";
 import { ConnectorsView } from "@/components/qlix/connectors/ConnectorsView";
-import { McpServersView } from "@/components/qlix/mcp/McpServersView";
 
 function ConnectorsFallback() {
   return (
@@ -15,11 +14,8 @@ function ConnectorsFallback() {
 
 export default function IndividualConnectorsPage() {
   return (
-    <>
-      <Suspense fallback={<ConnectorsFallback />}>
-        <ConnectorsView isOrgWorkspace={false} />
-      </Suspense>
-      <McpServersView />
-    </>
+    <Suspense fallback={<ConnectorsFallback />}>
+      <ConnectorsView isOrgWorkspace={false} />
+    </Suspense>
   );
 }

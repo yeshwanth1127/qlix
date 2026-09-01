@@ -1,4 +1,8 @@
-import { chatCompletion, LLM_APPLICATION_IDS } from '../llm/inferenceRouter.js';
+import {
+  chatCompletion,
+  LLM_APPLICATION_IDS,
+} from '../llm/inferenceRouter.js';
+import { llmProviderFromModelId } from '../llm/modelPolicy.js';
 import type {
   ResolvedTeamIntent,
   TeamIntentChange,
@@ -17,6 +21,90 @@ const INTENT_MODES = new Set<TeamIntentMode>([
   'cancel',
   'clarification_required',
 ]);
+
+const FOLLOW_UP_TOOL_NAME = 'resolve_team_follow_up';
+
+const FOLLOW_UP_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: FOLLOW_UP_TOOL_NAME,
+    description: 'Classify a completed-run follow-up before the team executes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: [
+            'new',
+            'repeat',
+            'modify',
+            'continue',
+            'question',
+            'cancel',
+            'clarification_required',
+          ],
+        },
+        changes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              operation: { type: 'string', enum: ['add', 'remove', 'replace'] },
+              requirementId: { type: 'string' },
+              text: { type: 'string' },
+            },
+            required: ['operation'],
+          },
+        },
+        requirements: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' },
+            },
+            required: ['text'],
+          },
+        },
+        effectiveGoal: { type: 'string' },
+        confidence: { type: 'number' },
+        clarificationQuestion: { type: 'string' },
+      },
+      required: ['mode', 'effectiveGoal', 'confidence'],
+    },
+  },
+};
+
+/**
+ * Short next-action follow-ups that clearly build on a prior result
+ * (export/PDF/convert/send of "that") — skip the LLM.
+ */
+export function isContinueNextActionUserText(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 280) return false;
+  if (
+    /\b(create|make|export|convert|generate|produce|render|save|write)\b[\s\S]{0,60}\b(pdf|document|docx?|pptx?|spreadsheet|excel|csv|file|brochure|report)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(pdf|document|docx?|pptx?|spreadsheet|excel|csv)\b[\s\S]{0,40}\b(of|from|for)\s+(that|it|this|the)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(please\s+)?(also\s+)?(now\s+)?(create|make|export|convert|send|email|download)\b/i.test(t) &&
+    t.length < 140
+  ) {
+    return true;
+  }
+  return false;
+}
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
@@ -158,6 +246,31 @@ function renderRequirementGoal(requirements: TeamIntentRequirement[]): string {
   return requirements.map((item) => item.text.replace(/[.]+$/g, '')).join('. Then ');
 }
 
+function continueFromUserMessage(
+  userMessage: string,
+  baseRunId: string,
+): ResolvedTeamIntent {
+  return createResolvedTeamIntent({
+    userMessage,
+    effectiveGoal: userMessage,
+    mode: 'continue',
+    baseRunId,
+    requirements: requirementsFromGoal(userMessage, 'follow_up'),
+    confidence: 1,
+  });
+}
+
+function parseFollowUpPayload(result: {
+  content: string;
+  toolCalls?: Array<{ function: { name: string; arguments: string } }> | null;
+}): Record<string, unknown> {
+  const call = result.toolCalls?.find((c) => c.function.name === FOLLOW_UP_TOOL_NAME);
+  if (call) {
+    return JSON.parse(call.function.arguments) as Record<string, unknown>;
+  }
+  return JSON.parse(stripCodeFence(result.content)) as Record<string, unknown>;
+}
+
 export class TeamIntentClarificationRequiredError extends Error {
   readonly code = 'team_intent_clarification_required';
   readonly status = 409;
@@ -169,6 +282,10 @@ export async function resolveTeamFollowUpIntent(input: {
   baseRunId: string;
   baseIntent: ResolvedTeamIntent;
   previousResult?: string | null;
+  /** User/team model for this conversation — required for LLM classify. */
+  inferenceModel?: string | null;
+  /** Test seam; production uses inferenceRouter.chatCompletion. */
+  complete?: typeof chatCompletion;
 }): Promise<ResolvedTeamIntent> {
   const userMessage = input.userMessage.trim();
   if (isRetryOnlyUserText(userMessage)) {
@@ -182,66 +299,105 @@ export async function resolveTeamFollowUpIntent(input: {
     });
   }
 
+  if (isContinueNextActionUserText(userMessage)) {
+    return continueFromUserMessage(userMessage, input.baseRunId);
+  }
+
+  const model = input.inferenceModel?.trim();
+  if (!model) {
+    console.warn(
+      `[team-intent] no inferenceModel for follow-up baseRun=${input.baseRunId}; defaulting to continue`,
+    );
+    return continueFromUserMessage(userMessage, input.baseRunId);
+  }
+
+  const provider = llmProviderFromModelId(model);
+  const complete = input.complete ?? chatCompletion;
   let result: Awaited<ReturnType<typeof chatCompletion>>;
   try {
-    result = await chatCompletion(
+    result = await complete(
       {
-      model: 'openrouter/openai/gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You resolve a follow-up for an agent-team workflow before execution.
-Return one JSON object only: {"mode":"new|repeat|modify|continue|question|cancel|clarification_required","changes":[{"operation":"add|remove|replace","requirementId":"existing id when applicable","text":"new requirement text when applicable"}],"requirements":[{"id":"stable id","text":"atomic active requirement"}],"effectiveGoal":"concise complete goal","confidence":0.0,"clarificationQuestion":"optional"}.
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: `You resolve a follow-up for an agent-team workflow before execution.
+Call ${FOLLOW_UP_TOOL_NAME} with the classification.
 Rules:
 - repeat means run every prior requirement again.
 - modify means preserve every prior requirement except explicit add/remove/replace operations.
 - continue means perform a new next action using the prior result; do not replay completed external actions.
+- Producing a new artifact from the prior result (PDF, export, email, convert, download) is continue — not clarification.
 - question means answer from prior context without external writes.
 - cancel means do not perform external actions.
-- clarification_required when the requested change is ambiguous or contradictory.
+- clarification_required when the requested change is ambiguous or contradictory; include clarificationQuestion.
 - Never silently omit a prior requirement in modify mode.
 - For modify mode, return patch operations against the supplied stable IDs.`,
-        },
-        {
-          role: 'user',
-          content: [
-            `Previous effective goal: ${input.baseIntent.effectiveGoal}`,
-            `Previous requirements:\n${input.baseIntent.requirements.map((r) => `- ${r.id}: ${r.text}`).join('\n')}`,
-            input.previousResult ? `Previous validated result:\n${input.previousResult.slice(0, 1600)}` : null,
-            `Latest user message: ${userMessage}`,
-          ].filter(Boolean).join('\n\n'),
-        },
-      ],
-      temperature: 0,
-      max_tokens: 900,
-      stream: false,
-      reasoning_purpose: 'planning',
+          },
+          {
+            role: 'user',
+            content: [
+              `Previous effective goal: ${input.baseIntent.effectiveGoal}`,
+              `Previous requirements:\n${input.baseIntent.requirements.map((r) => `- ${r.id}: ${r.text}`).join('\n')}`,
+              input.previousResult
+                ? `Previous validated result:\n${input.previousResult.slice(0, 1600)}`
+                : null,
+              `Latest user message: ${userMessage}`,
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+          },
+        ],
+        temperature: 0,
+        max_tokens: 900,
+        stream: false,
+        reasoning_purpose: 'micro',
+        tools: [FOLLOW_UP_TOOL],
+        tool_choice: { type: 'function', function: { name: FOLLOW_UP_TOOL_NAME } },
       },
-      { applicationId: LLM_APPLICATION_IDS.lunaTeams, timeoutMs: 20_000, retries: 1 },
+      {
+        provider,
+        applicationId: LLM_APPLICATION_IDS.lunaTeams,
+        timeoutMs: 20_000,
+        retries: 1,
+      },
     );
-  } catch {
-    throw new TeamIntentClarificationRequiredError(
-      'I could not safely resolve this follow-up. Please restate the complete intended workflow.',
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[team-intent] LLM failed for follow-up baseRun=${input.baseRunId} model=${model}: ${detail}; defaulting to continue`,
     );
+    return continueFromUserMessage(userMessage, input.baseRunId);
   }
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(stripCodeFence(result.content)) as Record<string, unknown>;
-  } catch {
-    throw new TeamIntentClarificationRequiredError(
-      'I could not safely determine how this follow-up should change the previous workflow.',
+    parsed = parseFollowUpPayload(result);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[team-intent] bad follow-up payload baseRun=${input.baseRunId}: ${detail}; defaulting to continue`,
     );
+    return continueFromUserMessage(userMessage, input.baseRunId);
   }
+
   const mode = INTENT_MODES.has(parsed.mode as TeamIntentMode)
-    ? parsed.mode as TeamIntentMode
+    ? (parsed.mode as TeamIntentMode)
     : 'clarification_required';
   const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
   const clarificationQuestion = cleanText(parsed.clarificationQuestion);
+
   if (mode === 'clarification_required' || confidence < 0.65) {
-    throw new TeamIntentClarificationRequiredError(
-      clarificationQuestion || 'Please clarify whether to repeat, modify, or continue the previous workflow.',
+    if (isContinueNextActionUserText(userMessage)) {
+      return continueFromUserMessage(userMessage, input.baseRunId);
+    }
+    if (clarificationQuestion) {
+      throw new TeamIntentClarificationRequiredError(clarificationQuestion);
+    }
+    console.warn(
+      `[team-intent] low-confidence follow-up without question baseRun=${input.baseRunId}; defaulting to continue`,
     );
+    return continueFromUserMessage(userMessage, input.baseRunId);
   }
 
   const changes = normalizeChanges(parsed.changes);
@@ -300,9 +456,10 @@ Rules:
     effectiveGoal,
     mode,
     baseRunId: input.baseRunId,
-    requirements: rawRequirements.length > 0
-      ? rawRequirements
-      : requirementsFromGoal(effectiveGoal, 'follow_up'),
+    requirements:
+      rawRequirements.length > 0
+        ? rawRequirements
+        : requirementsFromGoal(effectiveGoal, 'follow_up'),
     changes,
     confidence,
   });

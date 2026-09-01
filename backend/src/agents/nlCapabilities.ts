@@ -20,6 +20,7 @@ const AGENT_REQUIRED = [
 const BUILDER_HINTS: Record<string, string> = {
   'web.read': 'Browse pages / fetch URLs',
   'web.research': 'Structured web/social research APIs',
+  'files.create': 'Create PDF / Excel in sandbox (download link)',
   'web.click': 'Click links/buttons',
   'web.transaction': 'Submit forms / checkouts',
   'system.file_read': 'Read local files',
@@ -59,6 +60,17 @@ const BUILDER_HINTS: Record<string, string> = {
   'slack.send': 'Write Slack',
   'notion.read': 'Read Notion pages/databases',
   'notion.write': 'Write Notion pages/databases',
+  'assessment.session.get': 'Read Work Session status',
+  'assessment.evidence.search': 'Search assessment evidence',
+  'assessment.evidence.read': 'Read one evidence record',
+  'assessment.artifact.read': 'Read a submitted project artifact',
+  'assessment.snapshot.read': 'Read a project snapshot',
+  'assessment.snapshot.compare': 'Diff two project snapshots',
+  'assessment.framework.read': 'Read evaluation checklist/rubric',
+  'assessment.record': 'Record a criterion finding',
+  'assessment.review.ask': 'Ask a defense-interview question',
+  'assessment.review.request_demonstration': 'Request a live demo task',
+  'assessment.report.create': 'Create the final readiness report',
 };
 
 function builderHint(scope: ScopeDef): string {
@@ -223,7 +235,7 @@ ${scopeList}
 
 ## Common combos
 - Web research: web.research. Browse: web.read+web.click. Forms: +web.transaction.
-- Excel / spreadsheet / PDF on cloud: web.research unlocks create_xlsx + create_report_pdf (Qlix sandbox download link). Do NOT add system.file_* for sheets or PDFs unless the user wants local filesystem/desktop (hybrid).
+- Excel / spreadsheet / PDF on cloud: files.create unlocks create_xlsx + create_report_pdf (Qlix sandbox download link). Do NOT add web.research just for PDF/Excel. Do NOT add system.file_* for sheets or PDFs unless the user wants local filesystem/desktop (hybrid).
 - Request every scope the core task needs. Connector scopes OK before link. mcp.<server>.<tool> = MCP tools (bindings auto-created).
 
 ## JIT

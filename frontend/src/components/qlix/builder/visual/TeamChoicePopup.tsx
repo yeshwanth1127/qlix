@@ -48,7 +48,7 @@ export function TeamChoicePopup({
       role="dialog"
       aria-label="How should these agents work together?"
       className={cn(
-        "w-72 rounded-2xl border bg-white/90 p-3 shadow-[0_16px_40px_-18px_rgba(16,14,22,0.55)] backdrop-blur-md",
+        "w-72 rounded-2xl border bg-[#E2F0CC]/90 p-3 shadow-[0_16px_40px_-18px_rgba(16,14,22,0.55)] backdrop-blur-md",
         HAIRLINE,
       )}
     >
@@ -65,7 +65,7 @@ export function TeamChoicePopup({
           autoFocus
           maxLength={120}
           className={cn(
-            "mt-1 w-full rounded-xl border bg-white/80 px-2.5 py-1.5 text-[12.5px] text-black outline-none transition-colors focus:border-[color:var(--sketch-purple)]/55",
+            "mt-1 w-full rounded-xl border bg-[#E2F0CC]/80 px-2.5 py-1.5 text-[12.5px] text-black outline-none transition-colors focus:border-[color:var(--sketch-purple)]/55",
             HAIRLINE,
           )}
         />
@@ -77,7 +77,7 @@ export function TeamChoicePopup({
           disabled={!trimmed}
           onClick={() => onChoose({ kind: "team", name: trimmed })}
           className={cn(
-            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-white disabled:pointer-events-none disabled:opacity-40",
+            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-[#E2F0CC] disabled:pointer-events-none disabled:opacity-40",
             HAIRLINE,
           )}
         >
@@ -94,7 +94,7 @@ export function TeamChoicePopup({
           type="button"
           onClick={() => onChoose({ kind: "helper", name: trimmed || helperName })}
           className={cn(
-            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-white",
+            "flex items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors hover:border-[color:var(--sketch-purple)]/55 hover:bg-[#E2F0CC]",
             HAIRLINE,
           )}
         >

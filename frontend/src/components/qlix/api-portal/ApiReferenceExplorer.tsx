@@ -152,7 +152,7 @@ export function ApiReferenceExplorer({
             {selected.scopes.map((scope) => (
               <span
                 key={scope}
-                className="rounded-full border border-black/10 bg-white/70 px-2 py-0.5 font-mono text-[10px] text-black/65"
+                className="rounded-full border border-black/10 bg-[#E2F0CC]/70 px-2 py-0.5 font-mono text-[10px] text-black/65"
               >
                 {scope}
               </span>
@@ -232,7 +232,7 @@ export function ApiReferenceExplorer({
               className={
                 snippetKind === kind
                   ? "rounded-full border border-black bg-black px-3 py-1 text-[11px] uppercase tracking-widest text-white"
-                  : "rounded-full border border-black/15 bg-white/70 px-3 py-1 text-[11px] uppercase tracking-widest text-black/60"
+                  : "rounded-full border border-black/15 bg-[#E2F0CC]/70 px-3 py-1 text-[11px] uppercase tracking-widest text-black/60"
               }
             >
               {kind}

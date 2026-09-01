@@ -151,7 +151,7 @@ export default function IndividualWalletPage() {
                       <span
                         className={cn(
                           "inline-flex border border-black px-2 py-1 font-serif text-[10px] uppercase tracking-widest",
-                          tx.type === "manual_credit" ? "bg-white text-black" : "bg-black text-white",
+                          tx.type === "manual_credit" ? "bg-[#E2F0CC] text-black" : "bg-black text-white",
                         )}
                       >
                         {tx.type === "manual_credit" ? "Credit" : "Debit"}

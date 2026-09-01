@@ -86,6 +86,38 @@ def test_compaction_leaves_small_results_alone() -> None:
     assert all(m["content"] == "small" for m in messages)
 
 
+def test_compaction_enforces_cumulative_stale_result_budget() -> None:
+    """Medium results must not evade compaction by staying below a per-item limit."""
+    messages = [{"role": "tool", "content": str(i) * 4_000} for i in range(6)]
+    artifacts = compact_history(
+        messages,
+        keep_tool_msgs=2,
+        keep_arg_calls=1,
+        clear_result_over=8_000,
+        clear_args_over=4_000,
+        max_retained_tool_chars=10_000,
+    )
+    assert len(artifacts) == 4
+    assert all(messages[i]["content"].startswith("[cleared:") for i in range(4))
+    assert messages[4]["content"] == "4" * 4_000
+    assert messages[5]["content"] == "5" * 4_000
+
+
+def test_compaction_never_clears_protected_recent_results_for_cumulative_budget() -> None:
+    messages = [{"role": "tool", "content": str(i) * 6_000} for i in range(3)]
+    compact_history(
+        messages,
+        keep_tool_msgs=2,
+        keep_arg_calls=1,
+        clear_result_over=20_000,
+        clear_args_over=4_000,
+        max_retained_tool_chars=4_000,
+    )
+    assert messages[0]["content"].startswith("[cleared:")
+    assert messages[1]["content"] == "1" * 6_000
+    assert messages[2]["content"] == "2" * 6_000
+
+
 def test_compaction_clears_stale_oversized_tool_call_arguments() -> None:
     """A generated document body must not be re-sent on every remaining round."""
     body = json.dumps({"content": "P" * 9000})

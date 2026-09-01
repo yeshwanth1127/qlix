@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { formatClockInDisplayTz, formatDateInDisplayTz } from '../lib/displayTimezone.js';
 import { prisma } from '../lib/prisma.js';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 
@@ -210,13 +211,9 @@ export function createDashboardRouter(): Router {
 
       const auditEvents = auditLogs.map((log) => {
         const ms = Number(log.timestampMs);
-        const d = new Date(ms);
-        const hh = `${d.getUTCHours()}`.padStart(2, '0');
-        const mm = `${d.getUTCMinutes()}`.padStart(2, '0');
-        const ss = `${d.getUTCSeconds()}`.padStart(2, '0');
         return {
           id: log.id,
-          timeUtc: `${hh}:${mm}:${ss}`,
+          timeIst: formatClockInDisplayTz(ms),
           agentName: log.agent?.name ?? 'Deleted agent',
           action: normalizeAuditAction(log.actionType),
           result: normalizeAuditResult(log.status),
@@ -307,8 +304,8 @@ export function createDashboardRouter(): Router {
         events: Array<{
           id: string;
           timestampMs: number;
-          timeUtc: string;
-          dateUtc: string;
+          timeIst: string;
+          dateIst: string;
           actionType: string;
           action: 'READ' | 'WRITE' | 'AUTH';
           result: 'Success' | 'Blocked' | 'Flagged';
@@ -327,13 +324,6 @@ export function createDashboardRouter(): Router {
         if (!log.agentId || !log.agent) continue;
 
         const ms = Number(log.timestampMs);
-        const d = new Date(ms);
-        const hh = `${d.getUTCHours()}`.padStart(2, '0');
-        const mm = `${d.getUTCMinutes()}`.padStart(2, '0');
-        const ss = `${d.getUTCSeconds()}`.padStart(2, '0');
-        const yyyy = d.getUTCFullYear();
-        const mon = `${d.getUTCMonth() + 1}`.padStart(2, '0');
-        const day = `${d.getUTCDate()}`.padStart(2, '0');
 
         let group = groups.get(log.agentId);
         if (!group) {
@@ -352,8 +342,8 @@ export function createDashboardRouter(): Router {
         group.events.push({
           id: log.id,
           timestampMs: ms,
-          timeUtc: `${hh}:${mm}:${ss}`,
-          dateUtc: `${yyyy}-${mon}-${day}`,
+          timeIst: formatClockInDisplayTz(ms),
+          dateIst: formatDateInDisplayTz(ms),
           actionType: log.actionType,
           action: normalizeAuditAction(log.actionType),
           result: normalizeAuditResult(log.status),

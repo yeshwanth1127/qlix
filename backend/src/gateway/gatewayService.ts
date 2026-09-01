@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { enqueueAgentRun } from '../agentChat/agentRunService.js';
 import { buildMemoryBlock } from '../agentChat/agentMemory.service.js';
 import { prisma } from '../lib/prisma.js';
@@ -8,6 +9,7 @@ import { GatewayDrainingError, isGatewayDraining } from './drain.js';
 import { putPrefetchedMemory } from './memoryPrefetch.js';
 import { replyDispatcher } from './replyDispatcher.js';
 import { GatewayRouteError, resolveRoute } from './resolveRoute.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 import { buildSessionKeyFromInbound } from './sessionKey.js';
 import { setActiveRun, withSessionLane } from './sessionLane.js';
 import type {
@@ -270,12 +272,22 @@ async function injectSteerNote(runId: string, note: string): Promise<void> {
     select: { seq: true },
   });
   const seq = (last?.seq ?? 0) + 1;
+  const stamped = attachTrace(
+    { text: cleaned, source: 'gateway_steer' },
+    createTraceEnvelope({
+      traceId: runId,
+      spanId: `gateway:${runId}:steer`,
+      parentSpanId: runId,
+      executionId: runId,
+      executionKind: 'gateway',
+    }),
+  );
   await prisma.agentRunEvent.create({
     data: {
       runId,
       seq,
       type: 'injection',
-      data: { text: cleaned, source: 'gateway_steer' },
+      data: stamped as Prisma.InputJsonValue,
     },
   });
   void import('./runEventBus.js')
@@ -284,7 +296,7 @@ async function injectSteerNote(runId: string, note: string): Promise<void> {
         runId,
         seq,
         type: 'injection',
-        data: { text: cleaned, source: 'gateway_steer' },
+        data: stamped,
         createdAt: new Date().toISOString(),
       }),
     )
@@ -320,15 +332,26 @@ async function logGatewayRoute(meta: {
         runId: meta.runId,
         seq: (last?.seq ?? 0) + 1,
         type: 'gateway_route',
-        data: {
-          sessionKey: meta.sessionKey,
-          channel: meta.channel,
-          targetType: meta.targetType,
-          agentId: meta.agentId ?? null,
-          teamId: meta.teamId ?? null,
-          orgId: meta.orgId,
-          userId: meta.userId,
-        },
+        data: attachTrace(
+          {
+            sessionKey: meta.sessionKey,
+            channel: meta.channel,
+            targetType: meta.targetType,
+            agentId: meta.agentId ?? null,
+            teamId: meta.teamId ?? null,
+            orgId: meta.orgId,
+            userId: meta.userId,
+          },
+          createTraceEnvelope({
+            traceId: meta.teamId ?? meta.runId,
+            spanId: `gateway:${meta.runId}:route`,
+            parentSpanId: meta.teamId ?? meta.runId,
+            executionId: meta.runId,
+            executionKind: 'gateway',
+            ...(meta.orgId ? { orgId: meta.orgId } : {}),
+            ...(meta.agentId ? { agentId: meta.agentId } : {}),
+          }),
+        ) as Prisma.InputJsonValue,
       },
     });
   } catch {

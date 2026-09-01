@@ -8,3 +8,4 @@ export * from './conversationRouter.service.js';
 export * from './conversationProcess.service.js';
 export * from './conversationWorkers.service.js';
 export * from './conversationPlugins.js';
+export * from './conversationPrompt.js';

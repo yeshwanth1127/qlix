@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "team",
+  "run": {
+    "runId": "fixture-run-worker",
+    "teamRunId": "fixture-team-run",
+    "agentId": "fixture-worker",
+    "conversationId": "fixture-dispatch-conversation",
+    "inputMessageId": "fixture-team-message-in",
+    "outputMessageId": "fixture-team-message-out"
+  },
+  "expectedOrder": [
+    "run_started",
+    "task_delegated",
+    "replay_snapshot",
+    "subagent_running",
+    "result_received",
+    "subtask_completed",
+    "model_usage",
+    "run_success",
+    "run_completed"
+  ],
+  "privacy": {
+    "promptStorage": "hash_only_in_diagnostics",
+    "hiddenReasoning": "excluded",
+    "credentials": "redacted"
+  }
+}

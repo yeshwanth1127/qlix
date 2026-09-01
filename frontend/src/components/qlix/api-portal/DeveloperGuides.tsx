@@ -47,7 +47,7 @@ const SCOPE_BLURB: Record<string, string> = {
 export function GuideCreateKeyCta({ variant }: { readonly variant: PortalVariant }) {
   if (variant !== "docs") return null;
   return (
-    <p className="rounded-lg border border-black/10 bg-white/50 p-3 text-[13px] text-black/65">
+    <p className="rounded-lg border border-black/10 bg-[#E2F0CC]/50 p-3 text-[13px] text-black/65">
       Create a <code className="font-mono text-[12px]">qlix_live_…</code> key in the console under{" "}
       <a href="/sign-in" className="underline underline-offset-2">
         API

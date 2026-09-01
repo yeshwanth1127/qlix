@@ -10,6 +10,7 @@ import { createInitialConversationState, transitionConversation } from './conver
 import type { ConversationWorkflow } from './workflow.types.js';
 import { compileConversationWorkflow } from './workflowCompiler.js';
 import { loadPublishedWorkflow } from './conversationWorkflow.service.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 
 export class ConversationVersionConflictError extends Error {
   constructor() {
@@ -61,8 +62,8 @@ function eventTypeForSignal(signal: ConversationSignal): string {
   }
 }
 
-function eventPayload(signal: ConversationSignal): Prisma.InputJsonValue {
-  return signal as unknown as Prisma.InputJsonValue;
+function eventPayload(signal: ConversationSignal, envelope: ReturnType<typeof createTraceEnvelope>): Prisma.InputJsonValue {
+  return attachTrace(signal, envelope) as Prisma.InputJsonValue;
 }
 
 async function enqueueEffects(
@@ -243,7 +244,17 @@ export async function signalConversation(input: {
         channel: thread.channel,
         idempotencyKey: input.idempotencyKey,
         providerEventId: input.providerEventId ?? null,
-        payload: eventPayload(input.signal),
+        payload: eventPayload(
+          input.signal,
+          createTraceEnvelope({
+            traceId: thread.processId ?? thread.id,
+            spanId: `conversation:${thread.id}:${nextVersion}`,
+            parentSpanId: thread.processId ?? thread.id,
+            executionId: thread.id,
+            executionKind: 'conversation',
+            orgId: thread.orgId,
+          }),
+        ),
         occurredAt: now,
       },
     });
@@ -281,7 +292,17 @@ export async function signalConversation(input: {
           seq: nextVersion + 1,
           eventType: 'outbound_requested',
           idempotencyKey: `${input.idempotencyKey}:effects`,
-          payload: transition.effects as unknown as Prisma.InputJsonValue,
+          payload: attachTrace(
+            transition.effects,
+            createTraceEnvelope({
+              traceId: thread.processId ?? thread.id,
+              spanId: `conversation:${thread.id}:${nextVersion + 1}`,
+              parentSpanId: thread.processId ?? thread.id,
+              executionId: thread.id,
+              executionKind: 'conversation',
+              orgId: thread.orgId,
+            }),
+          ) as Prisma.InputJsonValue,
           occurredAt: now,
         },
       });

@@ -18,6 +18,8 @@ import {
   type JitDeliveryChannel,
 } from './jitDelivery.js';
 import { JIT_MAX_ATTEMPTS, jitAttemptFromPayload, nextJitAttempt } from './jitRetry.js';
+import { TeamsRepository } from '../teams/teams.repository.js';
+import { labelsForCapabilityScopes } from '../capabilityGrant/capabilityGrantLabels.js';
 
 /** ±5 minutes — same window as actions. */
 const SIGNATURE_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
@@ -153,6 +155,10 @@ function extractRunId(payload: unknown): string | null {
 function formatJitApprovalContext(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return String(payload ?? '');
   const p = payload as Record<string, unknown>;
+  if (p.kind === 'capability_grant' || typeof p.reason === 'string') {
+    const reason = typeof p.reason === 'string' ? p.reason.trim() : '';
+    if (reason) return reason.slice(0, 500);
+  }
   const subject = typeof p.subject === 'string' ? p.subject.trim() : '';
   const to = Array.isArray(p.to) ? p.to.filter((x) => typeof x === 'string').slice(0, 3) : [];
   if (subject || to.length > 0) {
@@ -402,7 +408,24 @@ async function touchConversationScopedGrant(conversationId: string, scope: strin
   });
 }
 
-function formatScopeLabel(scope: string): string {
+function formatScopeLabel(scope: string, payload?: unknown): string {
+  if (scope === 'agent.capability_grant') {
+    const pl =
+      payload && typeof payload === 'object'
+        ? (payload as Record<string, unknown>)
+        : null;
+    const tool =
+      pl && pl.toolPayload && typeof pl.toolPayload === 'object'
+        ? (pl.toolPayload as Record<string, unknown>)
+        : pl;
+    const scopesRaw = tool?.scopes ?? tool?.missingScopes;
+    const scopes = Array.isArray(scopesRaw)
+      ? scopesRaw.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : [];
+    const reason = typeof tool?.reason === 'string' ? tool.reason : null;
+    if (scopes.length > 0) return labelsForCapabilityScopes(scopes, reason);
+    return 'Add capability';
+  }
   const labels: Record<string, string> = {
     'system.file_write': 'Write files',
     'system.file_read': 'Read files',
@@ -435,7 +458,7 @@ async function emitJitRunLog(
   }
   const run = await prisma.agentRun.findUnique({
     where: { id: runId },
-    select: { id: true },
+    select: { id: true, agentId: true, teamRunId: true, teamId: true },
   });
   if (!run) {
     console.warn(`[jit] emitJitRunLog skipped: unknown runId=${runId}`, data.message ?? '');
@@ -446,6 +469,80 @@ async function emitJitRunLog(
   } catch (err) {
     console.warn('[jit] failed to append run activity log:', err);
   }
+  await mirrorJitLogToTeamRun(run, data);
+}
+
+/**
+ * Team run SSE only sees TeamRunEvent rows. Bridge polling can miss short-lived
+ * JIT logs — mirror pending/resolved JIT onto the parent team run immediately.
+ */
+async function mirrorJitLogToTeamRun(
+  run: { agentId: string; teamRunId: string | null; teamId: string | null },
+  data: Record<string, unknown>,
+): Promise<void> {
+  const teamRunId = run.teamRunId?.trim();
+  const teamId = run.teamId?.trim();
+  if (!teamRunId || !teamId) return;
+
+  const message = typeof data.message === 'string' ? data.message : '';
+  const pending =
+    message === 'jit_approval_pending' || message === 'capability_grant_pending';
+  const resolved =
+    message === 'jit_approval_granted' ||
+    message === 'jit_approval_denied' ||
+    message === 'jit_approval_expired' ||
+    message === 'capability_grant_granted' ||
+    message === 'capability_grant_denied' ||
+    message === 'capability_grant_expired';
+  if (!pending && !resolved) return;
+
+  const jitRequestId =
+    typeof data.jitRequestId === 'string' && data.jitRequestId.trim()
+      ? data.jitRequestId.trim()
+      : null;
+  if (jitRequestId) {
+    const existing = await prisma.teamRunEvent.findFirst({
+      where: {
+        runId: teamRunId,
+        eventType: pending ? 'scope_requested' : 'approval_granted',
+        payload: { path: ['jitRequestId'], equals: jitRequestId },
+      },
+      select: { id: true },
+    });
+    if (existing) return;
+  }
+
+  try {
+    const teamsRepo = new TeamsRepository();
+    const payload = pending
+      ? data
+      : {
+          ...data,
+          decision:
+            message.endsWith('_granted')
+              ? 'approved'
+              : message.endsWith('_denied')
+                ? 'denied'
+                : 'expired',
+        };
+    await teamsRepo.appendEvent(
+      teamRunId,
+      teamId,
+      run.agentId,
+      pending ? 'scope_requested' : 'approval_granted',
+      payload,
+    );
+  } catch (err) {
+    console.warn('[jit] failed to mirror JIT onto team run:', err);
+  }
+}
+
+/** Public entry used by capability-grant (and tests) so team UI always gets the card. */
+export async function publishJitRunActivity(
+  runId: string | null,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await emitJitRunLog(runId, data);
 }
 
 /** Pending JIT rows surface on the originating channel (run SSE / pending API / chat). */
@@ -787,12 +884,19 @@ export class JitService {
           );
         }
       }
-      void emitJitRunLog(runId, {
-        message: 'jit_approval_granted',
-        scope: row.actionType,
-        scopeLabel: formatScopeLabel(row.actionType),
-        channel: 'whatsapp',
-      });
+      if (row.actionType === 'agent.capability_grant') {
+        const { CapabilityGrantService } = await import(
+          '../capabilityGrant/capabilityGrant.service.js'
+        );
+        await new CapabilityGrantService().applyApprovedGrant(row.id);
+      } else {
+        void emitJitRunLog(runId, {
+          message: 'jit_approval_granted',
+          scope: row.actionType,
+          scopeLabel: formatScopeLabel(row.actionType),
+          channel: 'whatsapp',
+        });
+      }
       return { ok: true, status: 'approved' };
     }
 
@@ -818,13 +922,20 @@ export class JitService {
       }),
     ]);
 
-    void emitJitRunLog(runId, {
-      message: decision === 'expired' ? 'jit_approval_expired' : 'jit_approval_denied',
-      scope: row.actionType,
-      scopeLabel: formatScopeLabel(row.actionType),
-      channel: 'whatsapp',
-      reason: input.reason ?? decision,
-    });
+    if (row.actionType === 'agent.capability_grant') {
+      const { CapabilityGrantService } = await import(
+        '../capabilityGrant/capabilityGrant.service.js'
+      );
+      await new CapabilityGrantService().emitDenied(row.id, decision);
+    } else {
+      void emitJitRunLog(runId, {
+        message: decision === 'expired' ? 'jit_approval_expired' : 'jit_approval_denied',
+        scope: row.actionType,
+        scopeLabel: formatScopeLabel(row.actionType),
+        channel: 'whatsapp',
+        reason: input.reason ?? decision,
+      });
+    }
 
     return { ok: true, status: decision };
   }
@@ -940,6 +1051,11 @@ export class JitService {
   async poll(jitRequestId: string, pollToken: string): Promise<{
     status: 'pending' | 'approved' | 'denied' | 'expired';
     jitToken?: string;
+    kind?: 'capability_grant';
+    grantedScopes?: string[];
+    permissionScopes?: string[];
+    jitScopes?: string[];
+    alwaysScopes?: string[];
   }> {
     // Backward compatibility: the poll token is a capability check layered on top of
     // the real gate — /api/v1/actions/start re-verifies the agent's Ed25519 signature
@@ -1026,7 +1142,38 @@ export class JitService {
     }
     if (row.approval.decision === 'approved') {
       const token = row.approval.jitToken ?? undefined;
-      return { status: 'approved', ...(token ? { jitToken: token } : {}) };
+      const base: {
+        status: 'approved';
+        jitToken?: string;
+        kind?: 'capability_grant';
+        grantedScopes?: string[];
+        permissionScopes?: string[];
+        jitScopes?: string[];
+        alwaysScopes?: string[];
+      } = { status: 'approved', ...(token ? { jitToken: token } : {}) };
+      if (row.actionType === 'agent.capability_grant' && row.agentId) {
+        const agent = await prisma.agent.findUnique({
+          where: { id: row.agentId },
+          select: { permissionScopes: true, jitScopes: true, alwaysScopes: true },
+        });
+        const payload =
+          row.payload && typeof row.payload === 'object'
+            ? (row.payload as Record<string, unknown>)
+            : {};
+        const tool =
+          payload.toolPayload && typeof payload.toolPayload === 'object'
+            ? (payload.toolPayload as Record<string, unknown>)
+            : payload;
+        const granted = Array.isArray(tool.scopes)
+          ? tool.scopes.filter((s): s is string => typeof s === 'string')
+          : [];
+        base.kind = 'capability_grant';
+        base.grantedScopes = granted;
+        base.permissionScopes = (agent?.permissionScopes as string[]) ?? [];
+        base.jitScopes = (agent?.jitScopes as string[]) ?? [];
+        base.alwaysScopes = (agent?.alwaysScopes as string[]) ?? [];
+      }
+      return base;
     }
 
     return { status: 'pending' };
@@ -1229,7 +1376,7 @@ export class JitService {
         jitRequestId: row.actionLog.id,
         agentId: input.agentId,
         scope: row.actionLog.actionType,
-        scopeLabel: formatScopeLabel(row.actionLog.actionType),
+        scopeLabel: formatScopeLabel(row.actionLog.actionType, pl),
         context: formatJitApprovalContext(pl.toolPayload ?? pl),
         runId,
         conversationId: storedConvo ?? input.conversationId,
@@ -1287,7 +1434,7 @@ export class JitService {
         jitRequestId: row.actionLog.id,
         agentId,
         scope: row.actionLog.actionType,
-        scopeLabel: formatScopeLabel(row.actionLog.actionType),
+        scopeLabel: formatScopeLabel(row.actionLog.actionType, pl),
         context: formatJitApprovalContext(pl.toolPayload ?? pl),
         runId,
         conversationId: storedConvo,

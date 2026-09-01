@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/agent-runtime/capability-descriptor.v1.schema.json",
+  "title": "Qlix Capability Descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "name", "description", "inputSchema", "requiredScopes", "scopeMode", "jit", "runtimes", "risk", "provider"],
+  "properties": {
+    "contractVersion": { "const": "qlix.capability.v1" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "inputSchema": { "type": "object" },
+    "requiredScopes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "scopeMode": { "enum": ["all", "any"] },
+    "jit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "scopes"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "scopes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "runtimes": { "type": "array", "items": { "enum": ["local", "cloud", "hybrid"] }, "minItems": 1, "uniqueItems": true },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "effects"],
+      "properties": {
+        "level": { "enum": ["low", "moderate", "high", "critical"] },
+        "effects": { "type": "array", "items": { "enum": ["read", "write", "execute", "external_communication", "financial"] }, "uniqueItems": true }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["builtin", "local", "backend_proxy", "connector", "mcp", "browser"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] }
+  }
+}

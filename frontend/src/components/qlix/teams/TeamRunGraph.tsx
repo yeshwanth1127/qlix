@@ -188,7 +188,7 @@ function GraphNode({ status }: { readonly status: AgentStatus }) {
             ? "border-emerald-700/20 bg-gradient-to-br from-emerald-50/85 to-white/50 shadow-[0_6px_20px_-14px_rgba(16,185,129,0.35)]"
             : isActive
               ? "border-[color:var(--sketch-purple)]/35 bg-gradient-to-br from-orange-50/85 to-white/55 shadow-[0_10px_26px_-14px_rgba(249,115,22,0.4)]"
-              : cn(HAIRLINE, "bg-white/45"),
+              : cn(HAIRLINE, "bg-[#E2F0CC]/45"),
       )}
     >
       <div className="flex items-center gap-2">
@@ -204,7 +204,7 @@ function GraphNode({ status }: { readonly status: AgentStatus }) {
               "relative grid size-7 place-items-center rounded-full text-[10px] font-semibold shadow-sm transition-transform duration-300",
               isSupervisor
                 ? "bg-gradient-to-br from-black to-[#2b2b2e] text-white"
-                : cn("border bg-white/85 text-black", HAIRLINE),
+                : cn("border bg-[#E2F0CC]/85 text-black", HAIRLINE),
               isActive && "scale-[1.08]",
             )}
           >

@@ -1,0 +1,34 @@
+.root {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0.95;
+  white-space: nowrap;
+}
+
+.measure {
+  display: block;
+  color: transparent;
+  font-family: inherit;
+  line-height: inherit;
+  user-select: none;
+}
+
+.outline,
+.fill {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+  font-family: inherit;
+  line-height: inherit;
+  user-select: none;
+}
+
+.outline {
+  transform: translate(0.06em, 0.06em);
+}
+
+.fill {
+  color: #011207;
+}

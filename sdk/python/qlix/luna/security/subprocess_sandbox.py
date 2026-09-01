@@ -92,6 +92,7 @@ def run_sandboxed(
     cwd = working_dir if working_dir and os.path.isdir(working_dir) else None
 
     result = SandboxResult()
+    unregister_cleanup = None
     try:
         proc = subprocess.Popen(
             command,
@@ -103,11 +104,26 @@ def run_sandboxed(
             cwd=cwd,
             preexec_fn=os.setsid,  # New process group
         )
+        token = None
+        try:
+            from qlix.cancellation import current_cancellation_token
+
+            token = current_cancellation_token()
+            if token is not None:
+                unregister_cleanup = token.register_cleanup(
+                    lambda: kill_process_tree(proc.pid)
+                )
+                if token.canceled:
+                    kill_process_tree(proc.pid)
+        except Exception:
+            pass
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             result.stdout = stdout[:max_output_bytes] if stdout else ""
             result.stderr = stderr[:max_output_bytes] if stderr else ""
             result.returncode = proc.returncode
+            if token is not None and token.canceled:
+                result.killed = True
         except subprocess.TimeoutExpired:
             kill_process_tree(proc.pid)
             proc.wait(timeout=5)
@@ -119,6 +135,9 @@ def run_sandboxed(
     except OSError as exc:
         result.stderr = f"Execution error: {exc}"
         result.returncode = -1
+    finally:
+        if unregister_cleanup is not None:
+            unregister_cleanup()
 
     return result
 

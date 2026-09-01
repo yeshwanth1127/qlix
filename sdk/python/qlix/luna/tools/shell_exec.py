@@ -168,17 +168,39 @@ class ShellExecTool(BaseTool):
                 },
             )
         try:
-            run_kwargs: dict[str, Any] = {
-                "shell": True,
-                "capture_output": True,
-                "text": True,
-                "timeout": timeout,
-                "cwd": working_dir,
-                "env": env,
-            }
-            if platform.system() == "Windows":
-                run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            result = subprocess.run(command, **run_kwargs)
+            # Preserve the long-standing subprocess.run behavior outside an agent
+            # run. During a managed run, use the process-group wrapper so the shared
+            # cancellation token can terminate this command and its children.
+            active_token = None
+            if platform.system() != "Windows":
+                from qlix.cancellation import current_cancellation_token
+
+                active_token = current_cancellation_token()
+            if active_token is not None:
+                from qlix.luna.security.subprocess_sandbox import run_sandboxed
+
+                sandboxed = run_sandboxed(
+                    command,
+                    timeout=timeout,
+                    working_dir=working_dir,
+                    env_passthrough=env_passthrough,
+                    max_output_bytes=_MAX_OUTPUT_BYTES,
+                )
+                if sandboxed.timed_out:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                result = sandboxed
+            else:
+                run_kwargs: dict[str, Any] = {
+                    "shell": True,
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": timeout,
+                    "cwd": working_dir,
+                    "env": env,
+                }
+                if platform.system() == "Windows":
+                    run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                result = subprocess.run(command, **run_kwargs)
         except subprocess.TimeoutExpired:
             return ToolResult(
                 tool_name="shell_exec",

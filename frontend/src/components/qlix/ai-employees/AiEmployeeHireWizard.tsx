@@ -103,7 +103,7 @@ function StepIndicator({
                     ? "border-black bg-black text-white"
                     : done
                       ? "border-green-700/40 bg-green-50 text-green-800"
-                      : "border-black/20 bg-white text-black/45",
+                      : "border-black/20 bg-[#E2F0CC] text-black/45",
                 )}
               >
                 {done ? <Check className="size-3.5" aria-hidden /> : <Icon className="size-3.5" aria-hidden />}
@@ -586,7 +586,7 @@ export function AiEmployeeHireWizard({
           </div>
 
           {/* Sticky footer */}
-          <footer className="shrink-0 border-t border-black/10 bg-white/80 px-4 py-3 backdrop-blur-sm sm:px-6 lg:px-8">
+          <footer className="shrink-0 border-t border-black/10 bg-[#E2F0CC]/80 px-4 py-3 backdrop-blur-sm sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 {step > 0 ? (

@@ -64,7 +64,7 @@ export function LiveArtifactPanel({
       aria-label="Live document"
     >
       <div className={cn("flex shrink-0 items-center gap-2 border-b px-3 py-2.5", HAIRLINE)}>
-        <Icon size={14} className="shrink-0 text-[#2563eb]" aria-hidden />
+        <Icon size={14} className="shrink-0 text-[#8BC53D]" aria-hidden />
         <div className="min-h-0 flex-1">
           <p className="truncate text-[13px] font-medium text-black">{artifact.fileName}</p>
           <p className={cn("truncate text-[10.5px]", INK_SOFT)}>
@@ -75,8 +75,8 @@ export function LiveArtifactPanel({
           </p>
         </div>
         {isLive ? (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[#2563eb]/25 bg-[#2563eb]/10 px-2 py-0.5 text-[10px] font-medium text-[#2563eb]">
-            <span className="size-1.5 animate-pulse rounded-full bg-[#2563eb]" aria-hidden />
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[#8BC53D]/25 bg-[#8BC53D]/10 px-2 py-0.5 text-[10px] font-medium text-[#8BC53D]">
+            <span className="size-1.5 animate-pulse rounded-full bg-[#8BC53D]" aria-hidden />
             Live
           </span>
         ) : null}
@@ -103,7 +103,7 @@ export function LiveArtifactPanel({
         ) : null}
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-white">
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#E2F0CC]">
         {artifact.previewKind === "pdf" && artifact.url ? (
           <iframe
             title={artifact.fileName}
@@ -146,7 +146,7 @@ export function LiveArtifactPanel({
             href={artifact.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#2563eb] hover:underline"
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#8BC53D] hover:underline"
           >
             <Download size={12} aria-hidden />
             Download {artifact.fileName.split(".").pop()?.toUpperCase() ?? "file"}

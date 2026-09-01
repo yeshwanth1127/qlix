@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from . import research_sources
 from .cloud_browser_runtime import smart_truncate_tool_result
 from .identity import AgentIdentity
+from .luna.security.ssrf import check_ssrf
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +553,9 @@ def _youtube_video_id(url: str) -> str | None:
 
 
 def _jina_read_url(url: str) -> tuple[bool, str]:
+    ssrf_error = check_ssrf(url)
+    if ssrf_error:
+        return False, f"SSRF protection blocked URL: {ssrf_error}"
     if shutil.which("curl") is None:
         return False, "curl not available"
     return _run_cmd(["curl", "-sL", f"https://r.jina.ai/{url}"], timeout=90)
@@ -575,7 +579,13 @@ def execute_research_web_search(params: dict[str, Any]) -> str:
         return "[failed] query is required"
     num = int(params.get("num_results") or 5)
     num = max(1, min(10, num))
-    if shutil.which("mcporter"):
+    from .research_providers import available_providers_for, log_shadow_route
+
+    log_shadow_route(logger, "search", runtime="cloud", public_tool="research_web_search", legacy_providers=("exa_agent_reach",))
+    route = available_providers_for(
+        "search", runtime="cloud", public_tool="research_web_search"
+    )
+    if any(spec["id"] == "exa_agent_reach" for spec in route):
         ok, out = _run_cmd(
             [
                 "mcporter",
@@ -596,19 +606,48 @@ def execute_research_read_url(params: dict[str, Any]) -> str:
     url = str(params.get("url", "")).strip()
     if not url.startswith(("http://", "https://")):
         return "[failed] url must start with http:// or https://"
+    ssrf_error = check_ssrf(url)
+    if ssrf_error:
+        return f"[failed] SSRF protection blocked URL: {ssrf_error}"
 
     platform = _detect_url_platform(url)
-    if platform == "twitter" and shutil.which("twitter"):
+    from .research_providers import available_providers_for, log_shadow_route
+
+    legacy_read = {
+        "twitter": ("twitter_cli", "jina_reader"),
+        "github": ("github_cli", "jina_reader"),
+        "youtube": ("youtube_ytdlp", "jina_reader"),
+        "bilibili": ("bilibili_cli", "jina_reader"),
+        "generic": ("jina_reader",),
+    }[platform]
+    log_shadow_route(
+        logger,
+        "read",
+        runtime="cloud",
+        public_tool="research_read_url",
+        legacy_providers=legacy_read,
+        platform=None if platform == "generic" else platform,
+    )
+    route = {
+        str(spec["id"])
+        for spec in available_providers_for(
+            "read",
+            runtime="cloud",
+            public_tool="research_read_url",
+            platform=None if platform == "generic" else platform,
+        )
+    }
+    if platform == "twitter" and "twitter_cli" in route:
         ok, out = _run_cmd(["twitter", "tweet", url], timeout=60)
         if ok:
             return _truncate("research_read_url", out)
-    if platform == "github" and shutil.which("gh"):
+    if platform == "github" and "github_cli" in route:
         m = re.search(r"github\.com/([^/]+/[^/#?]+)", url)
         if m:
             ok, out = _run_cmd(["gh", "repo", "view", m.group(1), "--json", "name,description,url"], timeout=60)
             if ok:
                 return _truncate("research_read_url", out)
-    if platform == "youtube" and shutil.which("yt-dlp"):
+    if platform == "youtube" and "youtube_ytdlp" in route:
         ok, out = _run_cmd(
             _yt_dlp_argv(["yt-dlp", "--dump-json", "--skip-download", url]),
             timeout=120,
@@ -617,12 +656,12 @@ def execute_research_read_url(params: dict[str, Any]) -> str:
             return _truncate("research_read_url", out)
         if _is_platform_session_error(out):
             return _platform_session_blocked(out)
-    if platform == "bilibili" and shutil.which("bili"):
+    if platform == "bilibili" and "bilibili_cli" in route:
         ok, out = _run_cmd(["bili", "video", url], timeout=90)
         if ok:
             return _truncate("research_read_url", out)
 
-    if shutil.which("curl"):
+    if "jina_reader" in route:
         ok, out = _run_cmd(["curl", "-sL", f"https://r.jina.ai/{url}"], timeout=90)
         if ok:
             return _truncate("research_read_url", out)
@@ -637,6 +676,28 @@ def execute_research_social_search(params: dict[str, Any]) -> str:
     limit = max(1, min(25, limit))
     if not query or not platform:
         return "[failed] query and platform are required"
+    from .research_providers import available_providers_for, log_shadow_route
+
+    provider_id = {"twitter": "twitter_cli", "reddit": "reddit_cli", "xiaohongshu": "xiaohongshu_cli"}.get(platform)
+    if provider_id:
+        log_shadow_route(
+            logger,
+            "platform_search",
+            runtime="cloud",
+            public_tool="research_social_search",
+            legacy_providers=(provider_id,),
+            platform=platform,
+        )
+
+    route = {
+        str(spec["id"])
+        for spec in available_providers_for(
+            "platform_search",
+            runtime="cloud",
+            public_tool="research_social_search",
+            platform=platform,
+        )
+    }
 
     source = research_sources.SOURCES_BY_ID.get(platform)
     attempts = (source or {}).get("search") or []
@@ -647,7 +708,7 @@ def execute_research_social_search(params: dict[str, Any]) -> str:
     for attempt in attempts:
         bin_name = str(attempt.get("bin") or "").strip()
         template = [str(t) for t in (attempt.get("command") or [])]
-        if not bin_name or not template or shutil.which(bin_name) is None:
+        if provider_id not in route or not bin_name or not template or shutil.which(bin_name) is None:
             continue
         found_any = True
         argv = research_sources.render_search(template, query=query, limit=limit)
@@ -674,10 +735,35 @@ def execute_research_video(params: dict[str, Any]) -> str:
     url = str(params.get("url", "")).strip()
     if not url.startswith(("http://", "https://")):
         return "[failed] url is required"
+    ssrf_error = check_ssrf(url)
+    if ssrf_error:
+        return f"[failed] SSRF protection blocked URL: {ssrf_error}"
     platform = _detect_url_platform(url)
+    from .research_providers import available_providers_for, log_shadow_route
+
+    video_provider = {"youtube": "youtube_ytdlp", "bilibili": "bilibili_cli"}.get(platform)
+    if video_provider:
+        log_shadow_route(
+            logger,
+            "platform_research",
+            runtime="cloud",
+            public_tool="research_video",
+            legacy_providers=(video_provider,),
+            platform=platform,
+        )
+
+    route = {
+        str(spec["id"])
+        for spec in available_providers_for(
+            "platform_research",
+            runtime="cloud",
+            public_tool="research_video",
+            platform=platform,
+        )
+    }
 
     if platform == "youtube":
-        if shutil.which("yt-dlp") is None:
+        if "youtube_ytdlp" not in route:
             return _blocked_payload(
                 "yt-dlp not installed on runner.",
                 user_message=(
@@ -744,7 +830,7 @@ def execute_research_video(params: dict[str, Any]) -> str:
             )
         return _platform_session_blocked(meta)
 
-    if platform == "bilibili" and shutil.which("bili"):
+    if platform == "bilibili" and "bilibili_cli" in route:
         ok, out = _run_cmd(["bili", "video", url], timeout=90)
         if ok:
             return _truncate("research_video", out)
@@ -757,7 +843,23 @@ def execute_research_github(params: dict[str, Any]) -> str:
     query = str(params.get("query", "")).strip()
     if not query:
         return "[failed] query is required"
-    if shutil.which("gh") is None:
+    from .research_providers import available_providers_for, log_shadow_route
+
+    log_shadow_route(
+        logger,
+        "platform_research",
+        runtime="cloud",
+        public_tool="research_github",
+        legacy_providers=("github_cli",),
+        platform="github",
+    )
+    route = available_providers_for(
+        "platform_research",
+        runtime="cloud",
+        public_tool="research_github",
+        platform="github",
+    )
+    if not any(spec["id"] == "github_cli" for spec in route):
         return _blocked_payload("gh CLI not installed on runner.")
 
     mode = str(params.get("mode") or "").strip().lower()

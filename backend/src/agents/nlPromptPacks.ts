@@ -35,7 +35,7 @@ const PACK_TEXT: Record<NlPromptPackId, string> = {
 - Flow: upsert/stage resume → queue/search → get_apply_brief → browser fill → JIT submit → record_application_result.`,
 
   competitor: `## Competitor research
-- Prefer web.research (+ brain.query if internal context). Stay cloud; do not add system.file_* for PDF (built-in cloud PDF).
+- Prefer web.research (+ brain.query if internal context). Stay cloud; for PDF add files.create (built-in cloud PDF), not system.file_*.
 - Cited SWOT/executive report from research tools, not browsing-only.`,
 
   crm: `## CRM
@@ -62,7 +62,7 @@ const PACK_TEXT: Record<NlPromptPackId, string> = {
 - If the user says “wait for a reply”, “when they respond”, or “if they reply”, add whatsapp.auto_reply to the SAME worker that has whatsapp.contact_send. In a pipeline this pauses after outreach and resumes the next stage with the inbound replies.
 - If the user says “if interested”, “only interested”, or similar, keep a later Contact Manager / CRM worker that builds the sheet from responders — runtime classifies reply interest on resume (keywords then LLM) and only sheets interested + unclear leads.
 - Reply-wait + sheet language: persist structured waitSteps on the team (live sandbox xlsx updated on each included reply while waiting; deliver on resume).
-- Spreadsheets/Excel on cloud: web.research → create_xlsx (sandbox); deliver with whatsapp_send. Never system.file_write for sheets unless the user wants local files.
+- Spreadsheets/Excel on cloud: files.create → create_xlsx (sandbox); deliver with whatsapp_send. Never system.file_write for sheets unless the user wants local files. Never add web.research only to unlock spreadsheets.
 - social.read / social.publish (publish JIT) via Orbit. Request only channels the task needs.`,
 };
 

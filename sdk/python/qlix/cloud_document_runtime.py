@@ -1,6 +1,6 @@
 """Document tools (cloud + hybrid): generate PDFs and spreadsheets in the runner sandbox.
 
-Offered alongside the research tools (gated on ``web.research``). Generated files
+Gated on ``files.create`` (separate from ``web.research``). Generated files
 are uploaded to the Qlix sandbox store and return a shareable download link. To
 deliver a file on WhatsApp, pass the returned local runner path to ``whatsapp_send``.
 Rendering is a local, no-cost operation — not wrapped in a signed action.
@@ -18,10 +18,10 @@ from .identity import AgentIdentity
 from .pdf_render import render_markdown_pdf
 from .xlsx_render import render_xlsx
 
-# Gated by the research scope so research / document agents get file generation.
+# Own scope — not web.research — so document export is grantable independently.
 DOCUMENT_TOOL_SCOPES: dict[str, tuple[str, ...]] = {
-    "create_report_pdf": ("web.research",),
-    "create_xlsx": ("web.research",),
+    "create_report_pdf": ("files.create",),
+    "create_xlsx": ("files.create",),
 }
 
 DOCUMENT_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {

@@ -80,14 +80,14 @@ export function ClaimAccountModal({ open, onClose, onClaimed }: ClaimAccountModa
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="Your name (optional)"
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
+            className="w-full rounded-lg border border-white/10 bg-[#E2F0CC]/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
           />
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
+            className="w-full rounded-lg border border-white/10 bg-[#E2F0CC]/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
           />
           <input
             type="password"
@@ -95,7 +95,7 @@ export function ClaimAccountModal({ open, onClose, onClaimed }: ClaimAccountModa
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Password (min 8 characters)"
             onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
+            className="w-full rounded-lg border border-white/10 bg-[#E2F0CC]/5 px-3.5 py-2.5 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-violet-500/60"
           />
         </div>
 

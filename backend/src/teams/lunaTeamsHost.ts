@@ -7,10 +7,13 @@ import type {
   TeamMemberDTO,
   TeamRunDTO,
   TeamRunInputPurpose,
+  TeamResultPolicy,
 } from './teams.types.js';
 import { lastResultFromEnvelope } from './teamRunFollowUp.js';
 import { effectiveRunGoal, resolvedIntentForRun } from './teamIntent.js';
 import type { TeamIntentMode, TeamIntentRequirement } from './teams.types.js';
+import { FULL_STACK_EXAMINER_TEAM_NAME } from '../assessment/examinerTeamRecipe.js';
+import { decodeNestedJsonValue } from '../contracts/agentRuntimeContracts.js';
 
 export type LunaTeamsKnowledgeMode = 'none' | 'reference_only' | 'required';
 
@@ -18,10 +21,22 @@ export type LunaTeamsKnowledgeMode = 'none' | 'reference_only' | 'required';
 export const TEAM_DISPATCH_ONLY_SKILL = 'team.dispatch' as PermissionScope;
 
 const SCOPE_FAMILIES: Array<{ pattern: RegExp; match: (scope: string) => boolean }> = [
+  {
+    pattern: /\b(assessment|assess|examiner|examine|work session|sessionid|evidence|artifact|snapshot|framework|criterion|criteria)\b/i,
+    match: (s) => s.startsWith('assessment.'),
+  },
   { pattern: /\b(whatsapp|outreach|poll|brochure|messenger)\b/i, match: (s) => s.startsWith('whatsapp') },
   { pattern: /\bemail\b/i, match: (s) => s.startsWith('email.') },
   { pattern: /\bcrm\b/i, match: (s) => s.startsWith('crm.') },
-  { pattern: /\b(sheet|excel|spreadsheet)\b/i, match: (s) => s.startsWith('sheets.') || s === 'drive.write' },
+  {
+    pattern: /\b(sheet|excel|spreadsheet|xlsx|csv)\b/i,
+    match: (s) =>
+      s.startsWith('sheets.') || s === 'drive.write' || s === 'files.create' || s === 'system.file_write',
+  },
+  {
+    pattern: /\b(pdf|create[_ ]?report[_ ]?pdf|make a pdf|create a pdf|export(?:\s+as)?\s+pdf|document export)\b/i,
+    match: (s) => s === 'files.create' || s === 'system.file_write',
+  },
   { pattern: /\b(notion)\b/i, match: (s) => s.startsWith('notion.') },
   { pattern: /\bslack\b/i, match: (s) => s.startsWith('slack.') },
   { pattern: /\b(research|browse|scrape)\b/i, match: (s) => s === 'web.research' || s.startsWith('web.') },
@@ -29,7 +44,7 @@ const SCOPE_FAMILIES: Array<{ pattern: RegExp; match: (scope: string) => boolean
 ];
 
 const CONNECTOR_DISPATCH_RE =
-  /\b(whatsapp|email|crm|send|outreach|poll|brochure|research|browse|schedule|sheet|excel|notion|slack|messenger)\b/i;
+  /\b(whatsapp|email|crm|send|outreach|poll|brochure|research|browse|schedule|sheet|excel|xlsx|pdf|notion|slack|messenger)\b/i;
 const FILTER_ONLY_RE = /\b(filter|filtering|qualify|qualifying)\b/i;
 const DOWNSTREAM_STAGE_RE =
   /\b(whatsapp|messenger|outreach|contact|crm|send|message|poll|brochure)\b/i;
@@ -158,6 +173,31 @@ export const DEFAULT_RESULT_CONTRACT: Record<string, unknown> = {
   },
 };
 
+export const TOOL_EVIDENCE_RESULT_CONTRACT: Record<string, unknown> = {
+  type: 'object',
+  required: ['summary', 'findings', 'provenance'],
+  properties: {
+    summary: { type: 'string' },
+    findings: {},
+    provenance: {
+      type: 'object',
+      required: ['toolRefs', 'evidenceRefs', 'artifactRefs'],
+      properties: {
+        inputRefs: { type: 'array', items: { type: 'string' } },
+        recordRefs: { type: 'array', items: { type: 'string' } },
+        knowledgeRefs: { type: 'array', items: { type: 'string' } },
+        toolRefs: { type: 'array', items: { type: 'string' } },
+        evidenceRefs: { type: 'array', items: { type: 'string' } },
+        artifactRefs: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+};
+
+export function resultContractForPolicy(policy?: TeamResultPolicy): Record<string, unknown> {
+  return policy === 'tool_evidence.v1' ? TOOL_EVIDENCE_RESULT_CONTRACT : DEFAULT_RESULT_CONTRACT;
+}
+
 export interface LunaTeamsDispatch {
   dispatchId: string;
   agentId: string;
@@ -169,6 +209,7 @@ export interface LunaTeamsDispatch {
   allowedScopes: PermissionScope[];
   stageOrder: number;
   contractId?: string;
+  resultPolicy: TeamResultPolicy;
   inputRefs: string[];
   allowedSources: TeamRunInputPurpose[];
   knowledgeMode: LunaTeamsKnowledgeMode;
@@ -275,11 +316,48 @@ export interface LunaTeamsProvenance {
   inputRefs: string[];
   recordRefs: string[];
   knowledgeRefs: string[];
+  toolRefs: string[];
+  evidenceRefs: string[];
+  artifactRefs: string[];
 }
 
 export interface ValidatedLunaTeamsResult {
   data: unknown;
   provenance: LunaTeamsProvenance;
+}
+
+/** Select provenance from the dispatch's real data source, never a stale Team default. */
+export function resolveDispatchResultPolicy(params: {
+  configured?: TeamResultPolicy;
+  role?: string;
+  task?: string;
+  allowedScopes?: readonly string[];
+  delegatedScopes?: readonly string[];
+}): TeamResultPolicy {
+  const scopes = [...(params.allowedScopes ?? []), ...(params.delegatedScopes ?? [])];
+  const toolSourcedAssessment = scopes.some((scope) => scope.startsWith('assessment.')) ||
+    /\b(assessment|assess|examiner|examine|work session|evidence|artifact_upload|snapshot|framework criterion)\b/i.test(
+      `${params.role ?? ''} ${params.task ?? ''}`,
+    );
+  return toolSourcedAssessment ? 'tool_evidence.v1' : params.configured ?? 'lineage.v1';
+}
+
+export function resultRepairPrompt(params: {
+  validationError: string;
+  previousCandidate: string;
+  originalPrompt: string;
+}): string {
+  const candidate = params.previousCandidate.slice(0, 16_000);
+  return `The previous Result was rejected for exactly this reason: ${params.validationError}
+
+Repair only the JSON Result below. Do not call tools, repeat research, or add invented references.
+Keep its valid findings. Return only one corrected JSON object matching the contract.
+
+Previous Result:
+${candidate}
+
+Contract and dispatch instructions:
+${params.originalPrompt}`;
 }
 
 function stripCodeFence(raw: string): string {
@@ -289,6 +367,7 @@ function stripCodeFence(raw: string): string {
 function fallbackDispatches(
   run: TeamRunDTO,
   members: TeamMemberDTO[],
+  resultPolicy: TeamResultPolicy = 'lineage.v1',
 ): LunaTeamsDispatch[] {
   const authoritativeRefs = run.inputs
     .filter((input) => input.purpose === 'authoritative_input')
@@ -299,6 +378,19 @@ function fallbackDispatches(
       index === 0
         ? `Perform the ${member.role} part of this objective and return only the information the next specialist needs: ${objective}`
         : `Continue the objective using only the Result handbacks supplied by Luna-Teams. Perform the ${member.role} part; do not repeat earlier work.`;
+    const allowedScopes = resolveDispatchAllowedScopes({
+      role: member.role,
+      task,
+      delegatedScopes: member.delegatedScopes,
+      knowledgeMode: 'none',
+    });
+    const dispatchPolicy = resolveDispatchResultPolicy({
+      configured: resultPolicy,
+      role: member.role,
+      task,
+      allowedScopes,
+      delegatedScopes: member.delegatedScopes,
+    });
     return {
       dispatchId: `dispatch_${index + 1}_${member.agentId.slice(0, 8)}`,
       agentId: member.agentId,
@@ -306,17 +398,14 @@ function fallbackDispatches(
       role: member.role,
       task,
       delegatedScopes: member.delegatedScopes,
-      allowedScopes: resolveDispatchAllowedScopes({
-        role: member.role,
-        task,
-        delegatedScopes: member.delegatedScopes,
-        knowledgeMode: 'none',
-      }),
+      allowedScopes,
       stageOrder: member.stageOrder,
+      resultPolicy: dispatchPolicy,
+      ...(dispatchPolicy === 'tool_evidence.v1' ? { contractId: 'qlix.assessment.result.v1' } : {}),
       inputRefs: index === 0 ? authoritativeRefs : [],
       allowedSources: ['authoritative_input'] as TeamRunInputPurpose[],
       knowledgeMode: 'none' as const,
-      outputContract: DEFAULT_RESULT_CONTRACT,
+      outputContract: resultContractForPolicy(dispatchPolicy),
       requirementIds: [],
     };
   });
@@ -334,6 +423,17 @@ export async function planLunaTeamsDispatches(
   const intent = resolvedIntentForRun(run);
   const objective = intent.effectiveGoal;
   const preserveOrder = !(team.config as TeamConfig).autoSequence;
+  const resultPolicy = (team.config as TeamConfig).resultPolicy ?? 'lineage.v1';
+  // This team is a fixed seven-stage recipe. Asking a commander model to rediscover
+  // that order adds a full inference and repeats the objective without changing it.
+  if (team.name === FULL_STACK_EXAMINER_TEAM_NAME) {
+    return bindIntentRequirements(
+      fallbackDispatches(run, orderedMembers, resultPolicy),
+      intent.requirements,
+      objective,
+      intent.mode,
+    );
+  }
   const roster = orderedMembers
     .map(
       (member) =>
@@ -436,6 +536,20 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         proposed: item.knowledgeMode,
       });
       seen.add(member.agentId);
+      const allowedScopes = resolveDispatchAllowedScopes({
+        role: member.role,
+        task,
+        delegatedScopes: member.delegatedScopes,
+        knowledgeMode,
+        requested: item.allowedScopes,
+      });
+      const dispatchPolicy = resolveDispatchResultPolicy({
+        configured: resultPolicy,
+        role: member.role,
+        task,
+        allowedScopes,
+        delegatedScopes: member.delegatedScopes,
+      });
       return [{
         dispatchId: `dispatch_${index + 1}_${member.agentId.slice(0, 8)}`,
         agentId: member.agentId,
@@ -443,19 +557,18 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         role: member.role,
         task,
         delegatedScopes: member.delegatedScopes,
-        allowedScopes: resolveDispatchAllowedScopes({
-          role: member.role,
-          task,
-          delegatedScopes: member.delegatedScopes,
-          knowledgeMode,
-          requested: item.allowedScopes,
-        }),
+        allowedScopes,
         stageOrder: preserveOrder ? member.stageOrder : index + 1,
-        ...(item.contractId?.trim() ? { contractId: item.contractId.trim() } : {}),
+        resultPolicy: dispatchPolicy,
+        ...(dispatchPolicy === 'tool_evidence.v1'
+          ? { contractId: 'qlix.assessment.result.v1' }
+          : item.contractId?.trim() ? { contractId: item.contractId.trim() } : {}),
         inputRefs,
         allowedSources: allowedSources.length > 0 ? allowedSources : ['authoritative_input'],
         knowledgeMode,
-        outputContract: effectiveOutputContract(item.outputContract),
+        outputContract: dispatchPolicy === 'lineage.v1'
+          ? effectiveOutputContract(item.outputContract)
+          : resultContractForPolicy(dispatchPolicy),
         requirementIds: [...new Set(
           (item.requirementIds ?? []).filter((id) => intent.requirements.some((r) => r.id === id)),
         )],
@@ -479,7 +592,7 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
     );
   }
   return bindIntentRequirements(
-    fallbackDispatches(run, orderedMembers),
+    fallbackDispatches(run, orderedMembers, resultPolicy),
     intent.requirements,
     objective,
     intent.mode,
@@ -523,17 +636,24 @@ function extractBalancedJson(text: string): { json: string; truncated: boolean }
 
 export function parseLunaTeamsHandback(raw: string): LunaTeamsHandback {
   const text = raw.trim();
-  const extracted = extractBalancedJson(text);
+  const decoded = decodeNestedJsonValue(text);
+  if (decoded && typeof decoded === 'object') {
+    const record = !Array.isArray(decoded) ? decoded as Record<string, unknown> : null;
+    const summary = typeof record?.summary === 'string' ? record.summary : text.slice(0, 200);
+    return { summary, payload: decoded, text };
+  }
+  const normalizedText = typeof decoded === 'string' ? decoded.trim() : text;
+  const extracted = extractBalancedJson(normalizedText);
   if (extracted?.truncated) {
     return {
-      summary: text.slice(0, 200),
-      payload: { text, truncated: true },
+      summary: normalizedText.slice(0, 200),
+      payload: { text: normalizedText, truncated: true },
       text,
       truncated: true,
     };
   }
   try {
-    const payload = JSON.parse(extracted?.json ?? text) as unknown;
+    const payload = JSON.parse(extracted?.json ?? normalizedText) as unknown;
     const record =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -541,10 +661,10 @@ export function parseLunaTeamsHandback(raw: string): LunaTeamsHandback {
     const summary =
       typeof record?.summary === 'string'
         ? record.summary
-        : text.slice(0, 200);
+        : normalizedText.slice(0, 200);
     return { summary, payload, text };
   } catch {
-    return { summary: text.slice(0, 200), payload: { text }, text };
+    return { summary: normalizedText.slice(0, 200), payload: { text: normalizedText }, text };
   }
 }
 
@@ -665,9 +785,12 @@ function priorProvenanceRefs(priorHandbacks: unknown[] | undefined): {
 
 export function validateLunaTeamsResult(params: {
   payload: unknown;
-  dispatch: Pick<LunaTeamsDispatch, 'inputRefs' | 'allowedSources' | 'knowledgeMode' | 'outputContract'>;
+  dispatch: Pick<LunaTeamsDispatch, 'inputRefs' | 'allowedSources' | 'knowledgeMode' | 'outputContract'> & {
+    resultPolicy?: TeamResultPolicy;
+  };
   run: TeamRunDTO;
   priorHandbacks?: unknown[];
+  executedToolRefs?: string[];
 }): ValidatedLunaTeamsResult {
   if (isEmptyWorkerHandback(params.payload)) {
     throw new Error('Worker did not return a Result envelope');
@@ -680,21 +803,66 @@ export function validateLunaTeamsResult(params: {
   ) {
     throw new Error('Worker Result JSON was cut off');
   }
-  assertContract(params.payload, effectiveOutputContract(params.dispatch.outputContract));
-  const record = params.payload as Record<string, unknown>;
+  const resultPolicy = params.dispatch.resultPolicy ?? 'lineage.v1';
+  const originalRecord = params.payload as Record<string, unknown>;
+  const collectRefs = (value: unknown, key: 'evidenceRefs' | 'artifactRefs', refs = new Set<string>()): Set<string> => {
+    if (Array.isArray(value)) {
+      for (const item of value) collectRefs(item, key, refs);
+    } else if (value && typeof value === 'object') {
+      for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+        if (entryKey === key && isStringArray(entryValue)) {
+          for (const ref of entryValue) refs.add(ref);
+        } else {
+          collectRefs(entryValue, key, refs);
+        }
+      }
+    }
+    return refs;
+  };
+  const normalizedPayload = resultPolicy === 'tool_evidence.v1'
+    ? {
+        ...originalRecord,
+        provenance: {
+          inputRefs: [],
+          recordRefs: [],
+          knowledgeRefs: [],
+          toolRefs: [...new Set(params.executedToolRefs ?? [])],
+          evidenceRefs: [...collectRefs(params.payload, 'evidenceRefs')],
+          artifactRefs: [...collectRefs(params.payload, 'artifactRefs')],
+        },
+      }
+    : params.payload;
+  assertContract(normalizedPayload, effectiveOutputContract(params.dispatch.outputContract));
+  const record = normalizedPayload as Record<string, unknown>;
   const provenanceRaw = record.provenance as Record<string, unknown>;
   if (
-    !isStringArray(provenanceRaw?.inputRefs) ||
-    !isStringArray(provenanceRaw?.recordRefs) ||
-    !isStringArray(provenanceRaw?.knowledgeRefs)
+    (resultPolicy === 'lineage.v1' && (
+      !isStringArray(provenanceRaw?.inputRefs) ||
+      !isStringArray(provenanceRaw?.recordRefs) ||
+      !isStringArray(provenanceRaw?.knowledgeRefs)
+    )) ||
+    (resultPolicy === 'tool_evidence.v1' && (
+      !isStringArray(provenanceRaw?.toolRefs) ||
+      !isStringArray(provenanceRaw?.evidenceRefs) ||
+      !isStringArray(provenanceRaw?.artifactRefs)
+    ))
   ) {
-    throw new Error('Result provenance arrays are required');
+    throw new Error(`Result provenance arrays are required for ${resultPolicy}`);
   }
   const provenance: LunaTeamsProvenance = {
-    inputRefs: [...new Set(provenanceRaw.inputRefs)],
-    recordRefs: [...new Set(provenanceRaw.recordRefs)],
-    knowledgeRefs: [...new Set(provenanceRaw.knowledgeRefs)],
+    inputRefs: [...new Set(isStringArray(provenanceRaw.inputRefs) ? provenanceRaw.inputRefs : [])],
+    recordRefs: [...new Set(isStringArray(provenanceRaw.recordRefs) ? provenanceRaw.recordRefs : [])],
+    knowledgeRefs: [...new Set(isStringArray(provenanceRaw.knowledgeRefs) ? provenanceRaw.knowledgeRefs : [])],
+    toolRefs: [...new Set(isStringArray(provenanceRaw.toolRefs) ? provenanceRaw.toolRefs : [])],
+    evidenceRefs: [...new Set(isStringArray(provenanceRaw.evidenceRefs) ? provenanceRaw.evidenceRefs : [])],
+    artifactRefs: [...new Set(isStringArray(provenanceRaw.artifactRefs) ? provenanceRaw.artifactRefs : [])],
   };
+  if (resultPolicy === 'tool_evidence.v1') {
+    if (provenance.evidenceRefs.length === 0 && provenance.artifactRefs.length === 0) {
+      throw new Error('Tool-sourced Result requires evidenceRefs or artifactRefs');
+    }
+    return { data: normalizedPayload, provenance };
+  }
   const allowedRefs = new Set(params.dispatch.inputRefs);
   const priorRefs = priorProvenanceRefs(params.priorHandbacks);
   const lineageOnly =
@@ -749,7 +917,7 @@ export function validateLunaTeamsResult(params: {
       }
     }
   }
-  return { data: params.payload, provenance };
+  return { data: normalizedPayload, provenance };
 }
 
 export function renderResultHandbacks(
@@ -761,6 +929,26 @@ export function renderResultHandbacks(
     ...handbacks.map(
       (item) => `[${item.agentName}] ${JSON.stringify(item.payload)}`,
     ),
+  ].join('\n');
+}
+
+/**
+ * Compact progressive-disclosure index for referenced Team context.
+ * Payloads remain in the Context Plane and are resolved only when a dispatch needs them.
+ */
+export function renderContextReferenceIndex(
+  handbacks: Array<{ agentName: string; contextRef?: string; summary: string; payload?: unknown }>,
+): string {
+  const referenced = handbacks.filter((item) => item.contextRef);
+  if (referenced.length === 0) return '';
+  return [
+    'Prior Team Results (compact index):',
+    '- Use context_get with one or more ctx:* refs only when the dispatch needs deeper fields.',
+    '- Use context_search only inside this Team/org scope; it cannot read another tenant.',
+    ...referenced.map((item) => {
+      const summary = item.summary.replace(/\s+/g, ' ').trim().slice(0, 320);
+      return `- ${item.agentName}: ${item.contextRef} — ${summary}`;
+    }),
   ].join('\n');
 }
 

@@ -60,6 +60,13 @@ describe('apiKeyScopes', () => {
       allowed: true,
       scopes: ['builder:read'],
     });
+    assert.deepEqual(
+      resolveApiKeyRouteAccess('POST', '/api/v1/nl-builder/sessions/sess_1/messages'),
+      {
+        allowed: true,
+        scopes: ['builder:write'],
+      },
+    );
     assert.deepEqual(resolveApiKeyRouteAccess('GET', '/api/v1/builder/canvases'), {
       allowed: true,
       scopes: ['builder:read'],

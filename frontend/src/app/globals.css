@@ -2,27 +2,27 @@
 
 /* Light theme (default class on html from next-themes, or no .dark) */
 :root {
-  --bg-base: #fafafa;
-  --bg-elevated: #ffffff;
-  --bg-overlay: #f4f4f5;
-  --bg-subtle: #f4f4f5;
-  --bg-hover: #e8e8ea;
-  --bg-active: #e0e0e4;
+  --bg-base: #e2f0cc;
+  --bg-elevated: #e2f0cc;
+  --bg-overlay: #edf5dd;
+  --bg-subtle: #edf5dd;
+  --bg-hover: #e2f0cc;
+  --bg-active: #d6e9b8;
 
   --border-subtle: rgba(0, 0, 0, 0.06);
   --border-default: rgba(0, 0, 0, 0.1);
   --border-strong: rgba(0, 0, 0, 0.18);
   --qlix-card-border: rgba(14, 13, 18, 0.36);
 
-  --text-primary: #09090b;
-  --text-secondary: #52525b;
-  --text-tertiary: #a1a1aa;
+  --text-primary: #011207;
+  --text-secondary: #31523b;
+  --text-tertiary: #6e856f;
   --text-inverted: #fafafa;
 
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-subtle: rgba(37, 99, 235, 0.1);
-  --accent-border: rgba(37, 99, 235, 0.35);
+  --accent: #8bc53d;
+  --accent-hover: #74ad2b;
+  --accent-subtle: rgba(139, 197, 61, 0.14);
+  --accent-border: rgba(139, 197, 61, 0.42);
 
   --success: #16a34a;
   --success-subtle: rgba(22, 163, 74, 0.12);
@@ -38,21 +38,21 @@
   --font-mono: "Berkeley Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 
   /* Marketing / split landing (workspace hero) */
-  --landing-page-bg: #fafafa;
-  --landing-hero-column-bg: #f4f4f5;
-  --landing-form-column-bg: #fafafa;
+  --landing-page-bg: #e2f0cc;
+  --landing-hero-column-bg: #d9eabd;
+  --landing-form-column-bg: #f7faef;
   --landing-border: #c4c4c8;
-  --landing-card: #ffffff;
+  --landing-card: #e2f0cc;
   --landing-card-muted: #f4f4f5;
-  --landing-text: #09090b;
-  --landing-text-muted: #71717a;
+  --landing-text: #011207;
+  --landing-text-muted: #31523b;
   --landing-text-soft: #a1a1aa;
   --landing-mono-fg: #3f3f46;
   --landing-progress-track: #e4e4e7;
   --landing-primary-soft: #adc6ff;
-  --landing-cta-bg: #2563eb;
-  --landing-cta-text: #ffffff;
-  --landing-cta-hover: #1d4ed8;
+  --landing-cta-bg: #012f13;
+  --landing-cta-text: #e2f0cc;
+  --landing-cta-hover: #011207;
   --landing-glow: rgba(59, 130, 246, 0.12);
   --landing-panel-grad-from: rgba(0, 0, 0, 0.03);
   --landing-hero-title: #09090b;
@@ -62,23 +62,23 @@
   --landing-icon-box: #f4f4f5;
 
   /* Frosted glass variables */
-  --glass-surface-bg: rgba(255, 255, 255, 0.62);
+  --glass-surface-bg: rgba(226, 240, 204, 0.72);
   --glass-surface-border: rgba(255, 255, 255, 0.78);
   --glass-surface-border-hover: rgba(255, 255, 255, 0.92);
   --glass-surface-bg-hover: rgba(255, 255, 255, 0.78);
   --glass-surface-shadow: 0 4px 28px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.88);
 
-  --glass-muted-bg: rgba(255, 255, 255, 0.4);
+  --glass-muted-bg: rgba(226, 240, 204, 0.52);
   --glass-muted-border: rgba(255, 255, 255, 0.62);
 
-  --glass-inset-bg: rgba(255, 255, 255, 0.48);
+  --glass-inset-bg: rgba(226, 240, 204, 0.58);
   --glass-row-hover: rgba(255, 255, 255, 0.35);
 
-  --glass-input-bg: rgba(255, 255, 255, 0.52);
+  --glass-input-bg: rgba(226, 240, 204, 0.62);
   --glass-input-border: rgba(255, 255, 255, 0.68);
 
-  --glass-sidebar-bg: rgba(255, 255, 255, 0.45);
-  --glass-topbar-bg: rgba(255, 255, 255, 0.58);
+  --glass-sidebar-bg: rgba(226, 240, 204, 0.52);
+  --glass-topbar-bg: rgba(226, 240, 204, 0.68);
 
   --glass-grain-tile: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch' seed='42'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.55'/%3E%3C/svg%3E");
   --glass-grain-opacity: 0.085;
@@ -87,7 +87,7 @@
 
 /* Dark theme */
 .dark {
-  --bg-base: #0a0a0b;
+  --bg-base: #e2f0cc;
   --bg-elevated: #111113;
   --bg-overlay: #18181b;
   --bg-subtle: #1c1c1f;
@@ -104,8 +104,8 @@
   --text-tertiary: #52525b;
   --text-inverted: #09090b;
 
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
+  --accent: #8BC53D;
+  --accent-hover: #8BC53D;
   --accent-subtle: rgba(59, 130, 246, 0.12);
   --accent-border: rgba(59, 130, 246, 0.3);
 
@@ -165,7 +165,7 @@
 
 /* Organization workspace */
 [data-org-console="true"] {
-  --bg-base: #0a0a0a;
+  --bg-base: #e2f0cc;
   --bg-elevated: #111111;
   --bg-overlay: #111111;
   --bg-subtle: #111111;
@@ -180,8 +180,8 @@
   --text-secondary: #a3a3a3;
   --text-tertiary: #737373;
 
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
+  --accent: #8BC53D;
+  --accent-hover: #8BC53D;
   --accent-subtle: rgba(59, 130, 246, 0.12);
   --accent-border: rgba(59, 130, 246, 0.3);
 
@@ -344,6 +344,7 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 400;
+  letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
@@ -380,6 +381,200 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .passport-card-in {
     animation: none;
+  }
+}
+
+/* ── Pixel Swiss console ────────────────────────────────────────────────────
+   Asymmetric International Style hierarchy translated into an 8px bitmap
+   language. No new colours: sage paper, apple signal, forest rules, ink type. */
+[data-pixel-swiss] {
+  --pixel-unit: 8px;
+  --pixel-rule: #012f13;
+  --pixel-paper: #e2f0cc;
+  --pixel-signal: #8bc53d;
+  position: relative;
+  isolation: isolate;
+  background-color: var(--pixel-paper);
+  background-image:
+    linear-gradient(90deg, transparent 0 74%, rgba(139, 197, 61, 0.11) 74% 75%, transparent 75%),
+    linear-gradient(0deg, transparent 0 89%, rgba(1, 47, 19, 0.08) 89% 90%, transparent 90%);
+  background-size: 100% 100%;
+}
+
+[data-pixel-swiss]::before,
+[data-pixel-swiss]::after {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  pointer-events: none;
+}
+
+[data-pixel-swiss]::before {
+  top: 12%;
+  right: 2.5%;
+  width: 56px;
+  height: 56px;
+  opacity: 0.52;
+  background:
+    linear-gradient(var(--pixel-signal), var(--pixel-signal)) 0 0 / 16px 16px no-repeat,
+    linear-gradient(var(--pixel-rule), var(--pixel-rule)) 24px 8px / 8px 8px no-repeat,
+    linear-gradient(var(--pixel-signal), var(--pixel-signal)) 40px 24px / 16px 8px no-repeat,
+    linear-gradient(var(--pixel-rule), var(--pixel-rule)) 8px 40px / 24px 8px no-repeat;
+}
+
+[data-pixel-swiss]::after {
+  right: 3%;
+  bottom: 4%;
+  width: 96px;
+  height: 24px;
+  opacity: 0.2;
+  background: repeating-linear-gradient(90deg, var(--pixel-rule) 0 8px, transparent 8px 16px);
+}
+
+[data-pixel-swiss] .pixel-swiss-header {
+  position: relative;
+  min-height: 112px;
+  padding: 16px 0 18px;
+  border-top: 4px solid var(--pixel-rule);
+  border-bottom: 1px solid var(--pixel-rule);
+}
+
+[data-pixel-swiss] .pixel-swiss-header::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  width: clamp(72px, 14vw, 180px);
+  height: 9px;
+  background: var(--pixel-signal);
+}
+
+.pixel-swiss-kicker {
+  display: flex;
+  width: min(100%, 38rem);
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--pixel-rule);
+}
+
+.pixel-swiss-blocks {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.pixel-swiss-blocks i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  background: var(--pixel-rule);
+}
+
+.pixel-swiss-blocks i:nth-child(2) {
+  width: 16px;
+  height: 16px;
+  background: var(--pixel-signal);
+}
+
+.pixel-swiss-blocks i:nth-child(3) {
+  height: 24px;
+}
+
+[data-pixel-swiss] .pixel-swiss-header h1 {
+  width: min(100%, 38rem);
+  transform-origin: left bottom;
+}
+
+[data-pixel-swiss] .pixel-swiss-header p {
+  max-width: 48ch;
+  margin-left: clamp(0px, 8vw, 96px);
+  font-size: clamp(11px, 1vw, 13px);
+  border-left: 8px solid var(--pixel-signal);
+  padding-left: 12px;
+}
+
+[data-pixel-swiss] .pixel-swiss-card {
+  position: relative;
+  border: 1px solid var(--pixel-rule) !important;
+  border-radius: 0 !important;
+  background-color: rgba(226, 240, 204, 0.82) !important;
+  box-shadow: 6px 6px 0 rgba(1, 47, 19, 0.14) !important;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%);
+}
+
+[data-pixel-swiss] .pixel-swiss-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--pixel-signal);
+  pointer-events: none;
+}
+
+[data-pixel-swiss] .pixel-swiss-row {
+  border-radius: 0 !important;
+  border-color: rgba(1, 47, 19, 0.42) !important;
+  background: transparent !important;
+}
+
+[data-pixel-swiss] .pixel-swiss-row:hover,
+[data-pixel-swiss] .pixel-swiss-row[data-selected="true"] {
+  box-shadow: inset 8px 0 0 var(--pixel-signal) !important;
+  transform: translateX(4px);
+}
+
+[data-pixel-swiss] .pixel-swiss-section-rule {
+  min-height: 32px;
+  margin-bottom: 12px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--pixel-rule);
+}
+
+[data-pixel-swiss] .pixel-swiss-section-rule h2 {
+  font-size: clamp(10px, 1.2vw, 14px);
+  letter-spacing: 0.16em;
+}
+
+[data-pixel-swiss] :where(button, a[class*="border"], input, textarea, select) {
+  border-radius: 0 !important;
+}
+
+[data-pixel-swiss] :where(button[class*="bg-black"], a[class*="bg-black"]) {
+  box-shadow: 4px 4px 0 var(--pixel-signal) !important;
+}
+
+[data-pixel-swiss] :where(button[class*="bg-black"], a[class*="bg-black"]):active {
+  box-shadow: 1px 1px 0 var(--pixel-signal) !important;
+  transform: translate(3px, 3px);
+}
+
+[data-pixel-swiss] :where(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (max-width: 767px) {
+  [data-pixel-swiss]::before,
+  [data-pixel-swiss]::after {
+    display: none;
+  }
+
+  [data-pixel-swiss] .pixel-swiss-header {
+    min-height: 92px;
+  }
+
+  [data-pixel-swiss] .pixel-swiss-header p {
+    margin-left: 0;
+  }
+
+  [data-pixel-swiss] .pixel-swiss-card {
+    box-shadow: 4px 4px 0 rgba(1, 47, 19, 0.12) !important;
   }
 }
 
@@ -551,6 +746,148 @@ body {
   background-color: var(--accent);
 }
 
+/* ── Qlix Swiss system ──────────────────────────────────────────────────────
+   A rational grid, flat colour fields, typographic hierarchy and visible rules.
+   These rules deliberately remove the previous ornamental glass language. */
+:root {
+  --swiss-unit: 8px;
+  --swiss-rule: rgba(1, 47, 19, 0.32);
+  --swiss-rule-strong: #012f13;
+  --swiss-page: #e2f0cc;
+  --swiss-surface: #e2f0cc;
+  --swiss-signal: #8bc53d;
+  --swiss-ink: #011207;
+}
+
+[data-sketch-console] {
+  background-color: var(--swiss-page);
+  background-image: none;
+  color: var(--swiss-ink);
+}
+
+[data-swiss-layout]:not([data-swiss-layout="dashboard"]) {
+  background-color: var(--swiss-page);
+  background-image:
+    linear-gradient(to right, rgba(1, 47, 19, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(1, 47, 19, 0.04) 1px, transparent 1px);
+  background-size: calc(var(--swiss-unit) * 8) calc(var(--swiss-unit) * 8);
+  color: var(--swiss-ink);
+}
+
+[data-swiss-layout="dashboard"] {
+  background-image: none !important;
+}
+
+[data-sketch-console] :is(h1, h2, h3),
+[data-swiss-layout] :is(h1, h2, h3) {
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+[data-sketch-console] h1 {
+  font-size: clamp(2rem, 4vw, 4.75rem);
+  line-height: 0.92;
+}
+
+[data-sketch-console] :where(.sketch-card, .qlix-glass-box, .qlix-glass-muted, .qlix-glass-inset, .qlix-glass-input),
+[data-swiss-layout] :where([class*="backdrop-blur"], [class*="shadow-"]) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+[data-sketch-console] :where(.sketch-card, .qlix-glass-box, .qlix-glass-muted),
+[data-swiss-layout] :where([class*="bg-[#E2F0CC]"]) {
+  background-color: var(--swiss-surface) !important;
+}
+
+/* Dashboard structure is drawn with rules, not filled cards. */
+[data-sketch-console] :where(.sketch-card, .qlix-glass-box, .qlix-glass-muted) {
+  background-color: transparent !important;
+}
+
+[data-sketch-console] :where(.sketch-card, .qlix-glass-box, .qlix-glass-muted, input, textarea, select),
+[data-swiss-layout] :where(section, form, input, textarea, select, [class*="rounded-"]:not(.rounded-full)) {
+  border-radius: 2px !important;
+}
+
+[data-sketch-console] :where(input, textarea, select),
+[data-swiss-layout] :where(input, textarea, select) {
+  border-color: var(--swiss-rule) !important;
+}
+
+[data-sketch-console] :where(input, textarea, select):focus,
+[data-swiss-layout] :where(input, textarea, select):focus {
+  border-color: var(--swiss-rule-strong) !important;
+  box-shadow: inset 4px 0 0 var(--swiss-signal) !important;
+}
+
+[data-sketch-console] .sketch-card {
+  border-color: var(--swiss-rule) !important;
+}
+
+/* Page content belongs directly to the canvas. The shell is layout-only, not
+   another card layered over the background. */
+[data-sketch-console] > div > div > div:first-child {
+  background: transparent;
+}
+
+[data-sketch-console] .sketch-card-hover:hover {
+  border-color: var(--swiss-rule-strong) !important;
+  box-shadow: inset 0 -4px 0 var(--swiss-signal) !important;
+  transform: none;
+}
+
+[data-swiss-layout="marketing"] header {
+  min-height: 4.5rem;
+  border-bottom: 1px solid var(--swiss-rule);
+}
+
+[data-swiss-layout="marketing"] h1 {
+  max-width: 10ch;
+  text-align: left !important;
+  font-size: clamp(3.25rem, 7vw, 7.25rem) !important;
+  font-weight: 600 !important;
+  line-height: 0.82 !important;
+  letter-spacing: -0.065em !important;
+}
+
+[data-swiss-layout="marketing"] header + div > div:first-child {
+  align-items: flex-start;
+  max-width: 76rem;
+  padding-inline: clamp(1rem, 7vw, 7rem);
+}
+
+[data-swiss-layout="marketing"] header + div > div:first-child > p {
+  max-width: 38rem;
+  text-align: left !important;
+}
+
+[data-swiss-layout="marketing"] [aria-label="Send"] {
+  background: var(--swiss-ink) !important;
+  color: white !important;
+}
+
+[data-swiss-layout="auth"] > div:first-child {
+  opacity: 0.16;
+}
+
+[data-swiss-layout="auth"] form,
+[data-swiss-layout="auth"] [class*="backdrop-blur"] {
+  border-color: var(--swiss-rule-strong) !important;
+}
+
+@media (max-width: 767px) {
+  [data-swiss-layout="marketing"] h1 {
+    font-size: clamp(2.75rem, 14vw, 4.5rem) !important;
+  }
+
+  [data-swiss-layout="marketing"] header + div > div:first-child {
+    padding-inline: 1rem;
+  }
+}
+
 /* Firefox (and any engine without ::-webkit-scrollbar): standard thin scrollbar. */
 @supports not selector(::-webkit-scrollbar) {
   .minimal-scrollbar {
@@ -563,16 +900,16 @@ body {
    over a soft paper backdrop. Structure comes from ink hairlines and frosted
    panels, never from hard wireframe boxes. Scoped to authenticated routes. */
 [data-sketch-console] {
-  --text-primary: #0e0d12;
-  --text-secondary: #0e0d12;
-  --text-tertiary: #0e0d12;
+  --text-primary: #011207;
+  --text-secondary: #31523b;
+  --text-tertiary: #6e856f;
 
   /* Minimal accent palette layered over the black & white UI.
      `--sketch-purple` is the brand accent (orange — name kept for compatibility)
      used for selected menu items, hovers and focus rings; green = positive status,
      red = negative status. */
-  --sketch-purple: #f97316;
-  --sketch-purple-soft: rgba(249, 115, 22, 0.09);
+  --sketch-purple: #8BC53D;
+  --sketch-purple-soft: rgba(139, 197, 61, 0.09);
   --sketch-green: #15803d;
   --sketch-green-soft: rgba(21, 128, 61, 0.1);
   --sketch-red: #dc2626;
@@ -580,14 +917,14 @@ body {
 
   /* Ink hairlines — structure without the wireframe look. Every hardcoded
      `border-black` in the console is remapped onto these (see overrides below). */
-  --ink-border: rgba(18, 16, 24, 0.13);
-  --ink-border-strong: rgba(18, 16, 24, 0.26);
+  --ink-border: rgba(1, 47, 19, 0.13);
+  --ink-border-strong: rgba(1, 47, 19, 0.26);
   /* Secondary/tertiary ink for supporting copy. Opt-in (the `text-black/NN`
      utilities are force-inked below), used where hierarchy needs a whisper. */
-  --ink-soft: rgba(14, 13, 18, 0.56);
-  --ink-faint: rgba(14, 13, 18, 0.38);
-  --sketch-card-border: rgba(14, 13, 18, 0.4);
-  --sketch-button-border: #0e0d12;
+  --ink-soft: rgba(1, 47, 19, 0.62);
+  --ink-faint: rgba(1, 47, 19, 0.4);
+  --sketch-card-border: rgba(1, 47, 19, 0.18);
+  --sketch-button-border: #012f13;
 
   /* Layered elevation for glass panels: contact line + ambient falloff + a
      top inner highlight that sells the frosted edge. */
@@ -604,20 +941,20 @@ body {
      retired; tones now differ only by a whisper so hierarchy survives without
      the UI reading as colored boxes. Rose keeps a faint red cast for
      destructive affordances. */
-  --sketch-tint: rgba(255, 255, 255, 0.58);
-  --sketch-tint-purple: rgba(255, 252, 249, 0.6);
-  --sketch-tint-blue: rgba(251, 252, 254, 0.6);
-  --sketch-tint-green: rgba(250, 253, 251, 0.6);
-  --sketch-tint-amber: rgba(254, 252, 248, 0.6);
+  --sketch-tint: rgba(226, 240, 204, 0.7);
+  --sketch-tint-purple: rgba(226, 240, 204, 0.72);
+  --sketch-tint-blue: rgba(226, 240, 204, 0.5);
+  --sketch-tint-green: rgba(139, 197, 61, 0.11);
+  --sketch-tint-amber: rgba(226, 240, 204, 0.48);
   --sketch-tint-rose: rgba(220, 38, 38, 0.06);
 
   --accent: var(--sketch-purple);
-  --accent-hover: #ea580c;
+  --accent-hover: #74AD2B;
   --accent-contrast: #ffffff;
   --accent-subtle: var(--sketch-purple-soft);
-  --accent-border: rgba(249, 115, 22, 0.35);
-  --bg-base: #ffffff;
-  --bg-elevated: #ffffff;
+  --accent-border: rgba(139, 197, 61, 0.35);
+  --bg-base: #f7faef;
+  --bg-elevated: #e2f0cc;
   --bg-hover: rgba(0, 0, 0, 0.04);
   --border-subtle: var(--ink-border);
   --border-default: var(--ink-border-strong);
@@ -634,33 +971,46 @@ body {
 
   /* Frosted-glass variables retuned for the light console so `qlix-glass-*`
      panels read as glass here instead of the dark-theme defaults. */
-  --glass-surface-bg: rgba(255, 255, 255, 0.55);
+  --glass-surface-bg: rgba(226, 240, 204, 0.66);
   --glass-surface-border: var(--sketch-card-border);
   --glass-surface-border-hover: rgba(14, 13, 18, 0.52);
-  --glass-surface-bg-hover: rgba(255, 255, 255, 0.72);
+  --glass-surface-bg-hover: rgba(226, 240, 204, 0.82);
   --glass-surface-shadow: var(--sketch-shadow);
-  --glass-muted-bg: rgba(255, 255, 255, 0.4);
+  --glass-muted-bg: rgba(226, 240, 204, 0.52);
   --glass-muted-border: rgba(18, 16, 24, 0.08);
-  --glass-inset-bg: rgba(255, 255, 255, 0.45);
-  --glass-row-hover: rgba(255, 255, 255, 0.6);
-  --glass-input-bg: rgba(255, 255, 255, 0.65);
+  --glass-inset-bg: rgba(226, 240, 204, 0.56);
+  --glass-row-hover: rgba(226, 240, 204, 0.72);
+  --glass-input-bg: rgba(226, 240, 204, 0.74);
   --glass-input-border: rgba(18, 16, 24, 0.12);
   --glass-sidebar-bg: rgba(255, 255, 255, 0.55);
   --glass-topbar-bg: rgba(255, 255, 255, 0.6);
   --glass-grain-opacity: 0.05;
   --glass-grain-blend: soft-light;
 
-  /* Layered paper backdrop: a faint accent bloom top-right, an ink shadow
-     bottom-left, and a barely-there dot grid that gives the frosted panels
-     real texture to blur. */
-  background-color: #f2f1ee;
-  background-image:
-    radial-gradient(1100px 520px at 92% -10%, rgba(249, 115, 22, 0.07), transparent 62%),
-    radial-gradient(900px 620px at -12% 112%, rgba(18, 16, 24, 0.05), transparent 58%),
-    radial-gradient(rgba(18, 16, 24, 0.05) 1px, transparent 1.4px),
-    linear-gradient(165deg, #faf9f7 0%, #f1f0ed 60%, #edecea 100%);
-  background-size: auto, auto, 26px 26px, auto;
-  background-attachment: fixed;
+  background-color: #e2f0cc;
+  background-image: none;
+}
+
+/* Dark navigation is the product's anchor; keep its content legible even where
+   legacy console utilities force ink colours on light surfaces. */
+[data-sketch-console] .qlix-app-sidebar,
+[data-sketch-console] .qlix-app-sidebar :where(.text-black, [class*="text-black/"]) {
+  color: #e2f0cc !important;
+}
+
+[data-sketch-console] .qlix-app-sidebar nav a:not([class*="text-\[color"]),
+[data-sketch-console] .qlix-app-sidebar nav button:not([class*="text-\[color"]) {
+  color: #ffffff !important;
+}
+
+[data-sketch-console] .qlix-app-sidebar nav a:hover,
+[data-sketch-console] .qlix-app-sidebar nav button:hover {
+  color: #e2f0cc !important;
+}
+
+/* Almond replaces pure-white product surfaces while preserving white text and icons. */
+[data-sketch-console] :where(.bg-white) {
+  background-color: #e2f0cc !important;
 }
 
 /* Restore the stronger hierarchy used by the original console design. */
@@ -849,7 +1199,7 @@ body {
 
 @keyframes connector-flash {
   from {
-    background: rgba(249, 115, 22, 0.12);
+    background: rgba(139, 197, 61, 0.12);
   }
   to {
     background: transparent;
@@ -946,7 +1296,7 @@ body {
 .connector-action--primary:hover {
   background: var(--sketch-purple);
   transform: translateY(-1px);
-  box-shadow: 0 12px 24px -14px rgba(249, 115, 22, 0.8);
+  box-shadow: 0 12px 24px -14px rgba(139, 197, 61, 0.8);
 }
 
 .connector-action--primary:active {
@@ -1035,7 +1385,7 @@ body {
   height: 2.5rem;
   border-radius: 0.5rem;
   border: 1px solid var(--ink-border);
-  background: linear-gradient(155deg, rgba(255, 255, 255, 0.95), rgba(249, 115, 22, 0.09));
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.95), rgba(139, 197, 61, 0.09));
   color: #0e0d12;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
@@ -1060,7 +1410,7 @@ body {
 }
 
 .connector-select:focus {
-  border-color: rgba(249, 115, 22, 0.55);
+  border-color: rgba(139, 197, 61, 0.55);
   box-shadow: 0 0 0 3px var(--sketch-purple-soft);
 }
 
@@ -1322,12 +1672,234 @@ body {
 }
 
 .connector-search:focus {
-  border-color: rgba(249, 115, 22, 0.5);
+  border-color: rgba(139, 197, 61, 0.5);
   box-shadow: 0 0 0 3px var(--sketch-purple-soft);
 }
 
 .connector-search::-webkit-search-cancel-button {
   appearance: none;
+}
+
+/* Compact board */
+.connector-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.75rem;
+  margin-bottom: 1.35rem;
+}
+
+.connector-tabs {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-border);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.connector-tab {
+  border-radius: 999px;
+  padding: 0.32rem 0.85rem;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.connector-tab--active {
+  background: #0e0d12;
+  color: #fff;
+}
+
+.connector-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+@media (min-width: 640px) {
+  .connector-board {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .connector-board {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .connector-board {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 7.35rem;
+  padding: 0.95rem 1rem 1.05rem;
+  text-align: left;
+  border-radius: 1rem;
+  border: 1px solid var(--ink-border);
+  background: rgba(255, 255, 255, 0.42);
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.24s var(--sketch-ease, ease);
+}
+
+.connector-card:hover {
+  border-color: var(--ink-border-strong);
+  background: rgba(255, 255, 255, 0.78);
+  transform: translateY(-1px);
+}
+
+.connector-card:focus-visible {
+  outline: none;
+  border-color: #0e0d12;
+}
+
+.connector-card--on {
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.connector-card--pending {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.connector-card--highlight {
+  box-shadow: inset 2px 0 0 var(--sketch-purple);
+}
+
+.connector-card--skeleton {
+  pointer-events: none;
+  min-height: 7.35rem;
+}
+
+.connector-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 0.7rem;
+}
+
+.connector-card-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: #0e0d12;
+}
+
+.connector-card-meta {
+  margin-top: 0.2rem;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.connector-upcoming {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+@media (min-width: 640px) {
+  .connector-upcoming {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .connector-upcoming {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+.connector-upcoming-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.75rem;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.connector-upcoming-tile:hover {
+  border-color: var(--ink-border);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.connector-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(226, 240, 204, 0.7);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.connector-sheet {
+  width: 100%;
+  max-width: 34rem;
+  max-height: min(640px, 86vh);
+  overflow: auto;
+  border-radius: 1.15rem;
+  border: 1px solid var(--sketch-card-border, var(--ink-border));
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--sketch-shadow-hover, 0 24px 60px -28px rgba(16, 14, 22, 0.45));
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.connector-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1.05rem 1.1rem 0.95rem;
+  border-bottom: 1px solid var(--ink-border);
+}
+
+.connector-sheet-body {
+  padding: 1rem 1.1rem 1.2rem;
+}
+
+.connector-sheet-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 999px;
+  color: var(--ink-faint);
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.connector-sheet-close:hover {
+  background: rgba(14, 13, 18, 0.06);
+  color: #0e0d12;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1340,7 +1912,8 @@ body {
   }
   .connector-action--primary:hover,
   .connector-channel-add:hover,
-  .connector-tile--ready:hover {
+  .connector-tile--ready:hover,
+  .connector-card:hover {
     transform: none;
   }
 }
@@ -1585,8 +2158,9 @@ body {
   animation-delay: calc(var(--qlix-stagger-i, 0) * 45ms);
 }
 
-/* Chat composer — soft focus ring on the input area */
+/* Shared chat composer: one clear outline, without the dashboard's green inset focus bar. */
 .chat-composer {
+  border: 1.5px solid rgba(1, 18, 7, 0.72) !important;
   transition:
     box-shadow 0.28s var(--sketch-ease, cubic-bezier(0.22, 1, 0.36, 1)),
     border-color 0.2s ease,
@@ -1594,10 +2168,24 @@ body {
 }
 
 .chat-composer:focus-within {
-  border-color: rgba(249, 115, 22, 0.35);
+  border-color: #011207 !important;
   box-shadow:
-    0 0 0 3px var(--sketch-purple-soft),
+    0 0 0 2px rgba(1, 18, 7, 0.14),
     var(--sketch-shadow-hover);
+}
+
+[data-sketch-console] [data-chat-input],
+[data-swiss-layout] [data-chat-input],
+[data-chat-input] {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+[data-sketch-console] [data-chat-input]:focus,
+[data-swiss-layout] [data-chat-input]:focus,
+[data-chat-input]:focus {
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 /* Nav / panel enter — quieter than scale-in */
@@ -1635,4 +2223,14 @@ body {
     transition: none;
     box-shadow: none;
   }
+}
+
+/* Keep the pixel-Swiss canvas authoritative over the legacy glass backdrop. */
+[data-sketch-console][data-pixel-swiss] {
+  background-color: #e2f0cc;
+  background-image:
+    linear-gradient(90deg, transparent 0 74%, rgba(139, 197, 61, 0.11) 74% 75%, transparent 75%),
+    linear-gradient(0deg, transparent 0 89%, rgba(1, 47, 19, 0.08) 89% 90%, transparent 90%);
+  background-size: 100% 100%;
+  background-attachment: fixed;
 }

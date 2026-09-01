@@ -19,7 +19,11 @@ async function runDocker(args: string[], opts?: { timeoutMs?: number }): Promise
     return String(stdout ?? '').trim();
   } catch (err: any) {
     const msg = typeof err?.message === 'string' ? err.message : 'docker command failed';
-    throw new DockerNotAvailableError(msg);
+    const notFound =
+      err?.code === 'ENOENT' ||
+      /docker not found|Cannot connect to the Docker daemon|Is the docker daemon running/i.test(msg);
+    if (notFound) throw new DockerNotAvailableError(msg);
+    throw new Error(msg);
   }
 }
 
@@ -89,8 +93,47 @@ export async function dockerRunDetached(params: {
   cpuLimit?: string;
   /** Caps forkbomb-style runaway process growth — Docker `--pids-limit`. */
   pidsLimit?: string;
+  /** Enforced numeric uid:gid for the untrusted runner process. */
+  user?: string;
+  /** Mount the container root filesystem read-only. */
+  readOnlyRoot?: boolean;
+  /** Drop every ambient Linux capability. */
+  dropAllCapabilities?: boolean;
+  /** Prevent setuid/file-capability privilege escalation. */
+  noNewPrivileges?: boolean;
+  /** Explicit ephemeral writable paths for runtime scratch data. */
+  tmpfs?: Array<{ containerPath: string; options: string }>;
 }): Promise<string> {
+  const args = buildDockerRunArgs(params);
+  return runDocker(args, { timeoutMs: 60_000 });
+}
+
+export function buildDockerRunArgs(params: {
+  name: string;
+  imageRef: string;
+  env?: Record<string, string>;
+  labels?: Record<string, string>;
+  network?: string;
+  mounts?: Array<{ hostPath: string; containerPath: string; readOnly?: boolean }>;
+  cmd?: string[];
+  memoryLimit?: string;
+  memoryReservation?: string;
+  cpuLimit?: string;
+  pidsLimit?: string;
+  user?: string;
+  readOnlyRoot?: boolean;
+  dropAllCapabilities?: boolean;
+  noNewPrivileges?: boolean;
+  tmpfs?: Array<{ containerPath: string; options: string }>;
+}): string[] {
   const args: string[] = ['run', '-d', '--restart', 'unless-stopped', '--name', params.name];
+  if (params.user?.trim()) args.push('--user', params.user.trim());
+  if (params.readOnlyRoot) args.push('--read-only');
+  if (params.dropAllCapabilities) args.push('--cap-drop', 'ALL');
+  if (params.noNewPrivileges) args.push('--security-opt', 'no-new-privileges:true');
+  for (const mount of params.tmpfs ?? []) {
+    args.push('--tmpfs', `${mount.containerPath}:${mount.options}`);
+  }
   if (params.memoryLimit?.trim()) {
     args.push('--memory', params.memoryLimit.trim());
   }
@@ -118,7 +161,7 @@ export async function dockerRunDetached(params: {
   }
   args.push(params.imageRef);
   if (params.cmd?.length) args.push(...params.cmd);
-  return runDocker(args, { timeoutMs: 60_000 });
+  return args;
 }
 
 export async function dockerLogs(params: { name: string; tail?: number }): Promise<string> {
@@ -170,4 +213,3 @@ export async function dockerRemoveImageIfExists(imageRef: string): Promise<void>
     // ignore
   }
 }
-

@@ -31,6 +31,7 @@ export type TeamRunEventType =
   | "artifact_produced"
   | "subtask_completed"
   | "run_completed"
+  | "run_canceled"
   | "run_failed"
   | "result_delivered"
   | "outbound_blocked"
@@ -160,6 +161,25 @@ export interface TeamRunCheckpoint {
   }>;
   waitReason?: string;
   awaitingTtlSelection?: boolean;
+  reviewConversation?: { processId: string };
+}
+
+export interface DefenseInterviewThread {
+  threadId: string;
+  status: string;
+  criterionId: string;
+  questionId: string;
+  questionText: string;
+  answerText: string | null;
+  kind: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface DefenseInterviewState {
+  processId: string | null;
+  active: boolean;
+  threads: DefenseInterviewThread[];
 }
 
 export interface TeamRunDTO {
@@ -424,6 +444,7 @@ export async function updateTeamConfig(
     autoSequence?: boolean;
     pipelineMode?: boolean;
     defaultModel?: string;
+    defaultReasoningEffort?: string;
     conversationWorkflowVersionId?: string | null;
   },
 ): Promise<TeamDTO> {
@@ -467,6 +488,33 @@ export async function getTeamRun(
   const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to load run");
   return res.json() as Promise<{ run: TeamRunDTO; events: TeamRunEventDTO[]; tasks: A2ATaskDTO[] }>;
+}
+
+export async function getTeamRunDefense(
+  teamId: string,
+  runId: string,
+): Promise<DefenseInterviewState> {
+  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/defense`, { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to load defense interview");
+  return res.json() as Promise<DefenseInterviewState>;
+}
+
+export async function answerTeamRunDefense(
+  teamId: string,
+  runId: string,
+  threadId: string,
+  text: string,
+): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/defense/${threadId}/answer`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    throw new Error(body?.error?.message ?? "Failed to send defense answer");
+  }
 }
 
 export interface TeamRunPendingJit {
@@ -648,14 +696,20 @@ export function streamTeamRun(
   runId: string,
   handlers: {
     onEvent: (event: TeamRunEventDTO) => void;
-    onComplete: (data: { status: string; result: unknown }) => void;
+    onComplete: (data: { status: TeamRunStatus; result: unknown }) => void;
     onPaused?: (data: { status: string; teamRunId?: string }) => void;
     onError?: (msg: string) => void;
+    onConnectionChange?: (state: "connecting" | "live" | "reconnecting" | "closed") => void;
   },
   afterSeq = -1,
 ): () => void {
   const url = `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/stream?afterSeq=${afterSeq}`;
+  handlers.onConnectionChange?.("connecting");
   const es = new EventSource(url, { withCredentials: true });
+
+  es.addEventListener("open", () => {
+    handlers.onConnectionChange?.("live");
+  });
 
   es.addEventListener("event", (e: MessageEvent) => {
     try {
@@ -667,10 +721,11 @@ export function streamTeamRun(
 
   es.addEventListener("complete", (e: MessageEvent) => {
     try {
-      handlers.onComplete(JSON.parse(e.data as string) as { status: string; result: unknown });
+      handlers.onComplete(JSON.parse(e.data as string) as { status: TeamRunStatus; result: unknown });
     } catch {
       // ignore
     }
+    handlers.onConnectionChange?.("closed");
     es.close();
   });
 
@@ -688,8 +743,12 @@ export function streamTeamRun(
   });
 
   es.addEventListener("error", () => {
+    handlers.onConnectionChange?.("reconnecting");
     handlers.onError?.("Stream connection lost");
   });
 
-  return () => es.close();
+  return () => {
+    handlers.onConnectionChange?.("closed");
+    es.close();
+  };
 }

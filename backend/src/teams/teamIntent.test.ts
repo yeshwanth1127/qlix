@@ -4,7 +4,9 @@ import {
   applyIntentChanges,
   createResolvedTeamIntent,
   effectiveRunGoal,
+  isContinueNextActionUserText,
   requirementsFromGoal,
+  resolveTeamFollowUpIntent,
 } from './teamIntent.js';
 import type { TeamRunDTO } from './teams.types.js';
 
@@ -39,4 +41,104 @@ test('effective run goal prefers the persisted canonical intent', () => {
     resolvedIntent,
   } as TeamRunDTO;
   assert.equal(effectiveRunGoal(run), resolvedIntent.effectiveGoal);
+});
+
+test('continue heuristic matches PDF / next-artifact follow-ups', () => {
+  assert.equal(isContinueNextActionUserText('create a PDF of that'), true);
+  assert.equal(isContinueNextActionUserText('Please make a pdf from the script'), true);
+  assert.equal(isContinueNextActionUserText('export this to excel'), true);
+  assert.equal(isContinueNextActionUserText('what did you decide about casting?'), false);
+});
+
+test('retry-only follow-up resolves to repeat without LLM', async () => {
+  const baseIntent = createResolvedTeamIntent({
+    userMessage: 'Write an opening scene',
+    effectiveGoal: 'Write an opening scene',
+    mode: 'new',
+  });
+  const resolved = await resolveTeamFollowUpIntent({
+    userMessage: 'try again',
+    baseRunId: 'run-1',
+    baseIntent,
+    inferenceModel: 'openrouter/openai/gpt-4o',
+  });
+  assert.equal(resolved.mode, 'repeat');
+  assert.equal(resolved.effectiveGoal, 'Write an opening scene');
+});
+
+test('PDF follow-up resolves to continue without LLM', async () => {
+  const baseIntent = createResolvedTeamIntent({
+    userMessage: 'Write an opening scene',
+    effectiveGoal: 'Write an opening scene',
+    mode: 'new',
+  });
+  const resolved = await resolveTeamFollowUpIntent({
+    userMessage: 'create a PDF of that',
+    baseRunId: 'run-1',
+    baseIntent,
+    inferenceModel: 'openrouter/openai/gpt-4o',
+  });
+  assert.equal(resolved.mode, 'continue');
+  assert.equal(resolved.effectiveGoal, 'create a PDF of that');
+});
+
+test('LLM failure defaults to continue instead of throwing', async () => {
+  const baseIntent = createResolvedTeamIntent({
+    userMessage: 'Write an opening scene',
+    effectiveGoal: 'Write an opening scene',
+    mode: 'new',
+  });
+  const resolved = await resolveTeamFollowUpIntent({
+    userMessage: 'tighten the dialogue and add stage directions',
+    baseRunId: 'run-1',
+    baseIntent,
+    inferenceModel: 'openrouter/openai/gpt-4o',
+    complete: async () => {
+      throw new Error('timeout');
+    },
+  });
+  assert.equal(resolved.mode, 'continue');
+  assert.equal(resolved.effectiveGoal, 'tighten the dialogue and add stage directions');
+});
+
+test('LLM classify uses the caller-supplied user model', async () => {
+  let seenModel: string | undefined;
+  let seenProvider: string | undefined;
+  const baseIntent = createResolvedTeamIntent({
+    userMessage: 'Write an opening scene',
+    effectiveGoal: 'Write an opening scene',
+    mode: 'new',
+  });
+  const resolved = await resolveTeamFollowUpIntent({
+    userMessage: 'add a second act with more conflict',
+    baseRunId: 'run-1',
+    baseIntent,
+    inferenceModel: 'openrouter/anthropic/claude-sonnet-4',
+    complete: async (req, opts) => {
+      seenModel = req.model;
+      seenProvider = opts.provider;
+      return {
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [
+          {
+            id: '1',
+            type: 'function' as const,
+            function: {
+              name: 'resolve_team_follow_up',
+              arguments: JSON.stringify({
+                mode: 'continue',
+                effectiveGoal: 'add a second act',
+                confidence: 0.9,
+                requirements: [{ text: 'add a second act' }],
+              }),
+            },
+          },
+        ],
+      };
+    },
+  });
+  assert.equal(seenModel, 'openrouter/anthropic/claude-sonnet-4');
+  assert.equal(seenProvider, 'openrouter');
+  assert.equal(resolved.mode, 'continue');
 });

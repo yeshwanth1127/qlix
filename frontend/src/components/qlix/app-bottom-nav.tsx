@@ -23,7 +23,7 @@ export function AppBottomNav({ currentPath, routePrefix, showUpgradeCta }: AppBo
   const [moreOpen, setMoreOpen] = useState(false);
 
   const items = useMemo(() => {
-    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false);
+    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false, session?.organization.enabledPluginIds ?? []);
     if (routePrefix !== "/organization") return all;
     if (session?.organization.workspaceKind !== "organization") return all;
     return all.filter((i) => {
@@ -44,7 +44,7 @@ export function AppBottomNav({ currentPath, routePrefix, showUpgradeCta }: AppBo
   const tabIdle = "text-black/50 hover:bg-black/[0.04] hover:text-black/75";
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-black/[0.08] bg-white/80 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_28px_-22px_rgba(16,14,22,0.3)] backdrop-blur-2xl md:hidden">
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-black/[0.08] bg-[#E2F0CC]/80 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_28px_-22px_rgba(16,14,22,0.3)] backdrop-blur-2xl md:hidden">
       <nav
         className="flex h-14 items-center gap-0.5 overflow-x-auto px-2.5"
         aria-label="Primary navigation"

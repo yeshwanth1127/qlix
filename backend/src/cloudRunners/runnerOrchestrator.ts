@@ -30,6 +30,11 @@ export interface RunRunnerContainerInput {
   memoryReservation?: string;
   cpuLimit?: string;
   pidsLimit?: string;
+  user?: string;
+  readOnlyRoot?: boolean;
+  dropAllCapabilities?: boolean;
+  noNewPrivileges?: boolean;
+  tmpfs?: Array<{ containerPath: string; options: string }>;
 }
 
 export interface RunnerOrchestrator {
@@ -76,6 +81,11 @@ export class DockerRunnerOrchestrator implements RunnerOrchestrator {
       memoryReservation: input.memoryReservation,
       cpuLimit: input.cpuLimit,
       pidsLimit: input.pidsLimit,
+      user: input.user,
+      readOnlyRoot: input.readOnlyRoot,
+      dropAllCapabilities: input.dropAllCapabilities,
+      noNewPrivileges: input.noNewPrivileges,
+      tmpfs: input.tmpfs,
     });
   }
 
@@ -103,4 +113,3 @@ export class DockerRunnerOrchestrator implements RunnerOrchestrator {
     await dockerRemoveImageIfExists(imageRef);
   }
 }
-

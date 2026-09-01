@@ -47,7 +47,7 @@ interface TraceEntry {
   readonly detail: string;
 }
 
-const bentoCard = "border border-black bg-white overflow-hidden flex flex-col";
+const bentoCard = "border border-black bg-[#E2F0CC] overflow-hidden flex flex-col";
 
 function BentoHeader({
   title,
@@ -262,7 +262,7 @@ export function AiBrainConsoleView() {
                     onClick={() => setBrainChatOpen(true)}
                     aria-label="Chat with exa"
                     aria-expanded={brainChatOpen}
-                    className="group relative size-[min(340px,72vw)] overflow-hidden rounded-full border border-black bg-white transition-transform duration-300 hover:scale-[1.02] active:scale-[0.99]"
+                    className="group relative size-[min(340px,72vw)] overflow-hidden rounded-full border border-black bg-[#E2F0CC] transition-transform duration-300 hover:scale-[1.02] active:scale-[0.99]"
                   >
                     <Orb
                       hue={0}

@@ -55,7 +55,7 @@ export function RequiredConnectorsPopup({
       }}
     >
       <div
-        className="relative w-full max-w-sm border-2 border-black bg-white shadow-[4px_4px_0_0_#000]"
+        className="relative w-full max-w-sm border-2 border-black bg-[#E2F0CC] shadow-[4px_4px_0_0_#000]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-black px-4 py-3">

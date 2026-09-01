@@ -22,9 +22,24 @@ export type JitApprovalCardStep = {
   jitWhatsappStatus?: "disconnected" | "not_linked";
   jitAttempt?: number;
   jitMaxAttempts?: number;
+  capabilityGrant?: boolean;
 };
 
 function titleForStep(step: JitApprovalCardStep): string {
+  if (step.capabilityGrant || step.jitScope === "agent.capability_grant") {
+    // Prefer server-provided Capability: label (reason-aware, e.g. Create PDF documents).
+    const fromDetail = step.detail
+      ?.split(" · ")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("Capability: "));
+    if (fromDetail) return fromDetail.slice("Capability: ".length);
+    if (step.jitScope && step.jitScope !== "agent.capability_grant") {
+      const named = jitScopeLabel(step.jitScope);
+      if (named && named !== step.jitScope) return named;
+    }
+    if (step.label && step.label !== "Add capability to continue?") return step.label;
+    return "Add this capability?";
+  }
   if (step.jitScope) {
     const named = jitScopeLabel(step.jitScope);
     if (named && named !== step.jitScope) return named;
@@ -80,14 +95,15 @@ export function JitApprovalCard({
   const session = isSessionChatJitScope(step.jitScope);
   const hint = whatsappHint(step);
   const canDecide = Boolean(step.jitRequestId);
+  const isCapability = Boolean(step.capabilityGrant || step.jitScope === "agent.capability_grant");
 
   return (
     <div
       role="status"
       aria-live="polite"
-      aria-label={`Approval needed: ${title}`}
+      aria-label={isCapability ? `Add capability: ${title}` : `Approval needed: ${title}`}
       className={cn(
-        "overflow-hidden rounded-[1.35rem] border border-black/12 bg-white/90 shadow-[0_10px_32px_-18px_rgba(17,12,34,0.22)] backdrop-blur-xl",
+        "overflow-hidden rounded-[1.35rem] border border-black/12 bg-[#E2F0CC]/90 shadow-[0_10px_32px_-18px_rgba(17,12,34,0.22)] backdrop-blur-xl",
         className,
       )}
     >
@@ -100,11 +116,16 @@ export function JitApprovalCard({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-black/40">
-            Approval
+            {isCapability ? "Capability" : "Approval"}
           </p>
           <p className="mt-1 text-[14px] font-semibold leading-snug tracking-tight text-black">
             {title}
           </p>
+          {isCapability ? (
+            <p className="mt-1 text-[12px] leading-relaxed text-black/50">
+              I&apos;m not allowed to do this yet. Add this capability so I can continue?
+            </p>
+          ) : null}
           {context ? (
             <p className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-black/50">{context}</p>
           ) : null}
@@ -123,7 +144,7 @@ export function JitApprovalCard({
       </div>
 
       <div className="flex items-center gap-2 border-t border-black/[0.06] px-3 py-2.5 sm:px-4">
-        {session ? (
+        {session && !isCapability ? (
           <p className="min-w-0 flex-1 truncate text-[11px] text-black/40">Lasts for this chat</p>
         ) : (
           <span className="min-w-0 flex-1" />
@@ -140,14 +161,14 @@ export function JitApprovalCard({
               onClick={() => onDecide(false)}
               className={cn(sketchButtonGhost, "h-8 px-3 normal-case tracking-normal")}
             >
-              Deny
+              {isCapability ? "No" : "Deny"}
             </button>
             <button
               type="button"
               onClick={() => onDecide(true)}
               className={cn(sketchButtonPrimary, "h-8 min-w-[5.75rem] px-3.5 normal-case tracking-normal")}
             >
-              Approve
+              {isCapability ? "Add & continue" : "Approve"}
             </button>
           </div>
         ) : (

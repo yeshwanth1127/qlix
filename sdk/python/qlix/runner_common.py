@@ -13,7 +13,11 @@ import time
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from .backend_inference_client import backend_proxy_chat_completion
+from .backend_inference_client import (
+    backend_proxy_chat_completion,
+    build_decision_brief_from_messages,
+    classify_inference_handoff,
+)
 from .hybrid_document_pipeline import wants_pdf_output
 from .cloud_browser_runtime import (
     browser_action_label,
@@ -28,8 +32,61 @@ from .cloud_browser_runtime import (
 from .cloud_whatsapp_runtime import WHATSAPP_CONTACT_SEND_TOOLS
 from .http_client import QlixHttpClient
 from .identity import AgentIdentity
+from .governed_execution import (
+    ExecutionTrace,
+    GovernedExecutionPipeline,
+    ResultValidation,
+)
+from .context_management import ContextArtifact, make_context_artifact
+from .cancellation import (
+    CancellationToken,
+    await_with_cancellation,
+    cancellation_scope,
+)
+from .contracts import (
+    RUNNER_REQUEST_CONTRACT_VERSION,
+    RUNNER_RESPONSE_CONTRACT_VERSION,
+    RunnerRequest,
+    unwrap_runner_request,
+    wrap_legacy_runner_request,
+    wrap_legacy_runner_response,
+)
 
 LogFn = Callable[..., None]
+
+
+def extract_polled_run(
+    polled: dict[str, Any], *, agent_id: str, runtime: str
+) -> dict[str, Any] | None:
+    """Read the versioned poll contract, falling back to the legacy ``run`` key.
+
+    This is deliberately strict for a supplied contract and permissive for old
+    servers, allowing independently deployed backend and runner versions.
+    """
+    wrapped = polled.get("runnerRequest")
+    if isinstance(wrapped, dict):
+        request = RunnerRequest.from_wire(wrapped)
+        if request.agent_id != agent_id or request.runtime != runtime:
+            raise ValueError("runner poll contract does not match this runner")
+        return unwrap_runner_request(request)
+    run = polled.get("run")
+    if not isinstance(run, dict):
+        return None
+    # Validate the legacy payload at the compatibility boundary too.  It keeps
+    # the old field shape, but prevents malformed runs entering execution.
+    return unwrap_runner_request(
+        wrap_legacy_runner_request(agent_id=agent_id, runtime=runtime, payload=run)
+    )
+
+
+def runner_completion_body(*, run_id: str, ok: bool, result: Any = None, error_message: str | None = None) -> dict[str, Any]:
+    """Send the versioned completion envelope; the backend accepts legacy too."""
+    legacy: dict[str, Any] = {"ok": ok}
+    if result is not None:
+        legacy["result"] = result
+    if error_message is not None:
+        legacy["errorMessage"] = error_message
+    return wrap_legacy_runner_response(run_id=run_id, payload=legacy).to_wire()
 
 # Tools safe to run concurrently when the model batches multiple calls.
 _READ_ONLY_TOOL_PREFIXES = (
@@ -58,7 +115,13 @@ _READ_ONLY_TOOL_PREFIXES = (
 
 def is_read_only_tool(name: str) -> bool:
     n = (name or "").strip()
-    if n in ("think", "find_tools", "done", "luna_local_pwd", "luna_local_cd", "luna_local_search_files"):
+    if n in (
+        "think", "find_tools", "done", "luna_local_pwd", "luna_local_cd", "luna_local_search_files",
+        "assessment_session_get", "assessment_framework_read", "assessment_evidence_search",
+        "assessment_evidence_read", "assessment_artifact_read", "assessment_snapshot_read",
+        "assessment_snapshot_compare", "assessment_reference_list", "assessment_reference_batch_read",
+        "context_get", "context_search", "assessment_context_get", "state_read",
+    ):
         return True
     return any(n.startswith(p) for p in _READ_ONLY_TOOL_PREFIXES)
 
@@ -171,6 +234,36 @@ def estimate_request_tokens(
     return chars // 4
 
 
+def replay_input_manifest(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Privacy-safe proof of what entered inference; never stores prompt contents."""
+    message_manifest: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        serialized = json.dumps(content, sort_keys=True, ensure_ascii=False)
+        message_manifest.append(
+            {
+                "role": str(message.get("role") or ""),
+                "chars": len(serialized),
+                "sha256": hashlib.sha256(serialized.encode()).hexdigest(),
+            }
+        )
+    tool_manifest: list[dict[str, str]] = []
+    for tool in tools:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        schema = json.dumps(fn.get("parameters") or {}, sort_keys=True, ensure_ascii=False)
+        tool_manifest.append(
+            {
+                "name": str(fn.get("name") or ""),
+                "schemaSha256": hashlib.sha256(schema.encode()).hexdigest(),
+            }
+        )
+    return {"messages": message_manifest, "tools": tool_manifest}
+
+
 async def _compliance_tool_hook(
     phase: str,
     *,
@@ -205,6 +298,118 @@ async def _compliance_tool_hook(
     except Exception:
         return None
     return None
+
+
+async def execute_runner_tool(
+    *,
+    http: QlixHttpClient,
+    agent_id: str,
+    run_id: str,
+    headers: dict[str, str],
+    seq: int,
+    name: str,
+    args: str,
+    tool_executors: dict[str, callable],
+    trace: ExecutionTrace | None = None,
+    cancellation_token: CancellationToken | None = None,
+    cancellation_check: Callable[[], Any] | None = None,
+) -> tuple[int, Any]:
+    """Execute any cloud/hybrid provider through the shared governance order."""
+    current_seq = seq
+    blocked_reason: str | None = None
+
+    def resolve() -> Any:
+        return tool_executors.get(name)
+
+    async def validate(_executor: Any) -> None:
+        nonlocal current_seq
+        try:
+            params = json.loads(args) if args.strip() else {}
+        except json.JSONDecodeError:
+            params = {}
+        if not isinstance(params, dict):
+            params = {}
+        started_data: dict[str, object] = {"message": "tool_started", "tool": name}
+        if is_browser_tool(name) or name.startswith("browser_"):
+            started_data["label"] = browser_action_label(name, params)
+            started_data["tool_args"] = sanitize_tool_args_for_ui(params)
+        if name == "gui_control" or name.startswith("luna_local_"):
+            started_data["package"] = "agents3"
+        current_seq = await emit_event(
+            http,
+            agent_id=agent_id,
+            run_id=run_id,
+            headers=headers,
+            seq=current_seq,
+            event_type="log",
+            data=started_data,
+        )
+
+    async def authorize(_executor: Any) -> None:
+        nonlocal blocked_reason
+        blocked_reason = await _compliance_tool_hook(
+            "before_tool_call",
+            http=http,
+            agent_id=agent_id,
+            run_id=run_id,
+            headers=headers,
+            tool=name,
+            args=args,
+        )
+
+    async def execute(executor: Any) -> Any:
+        if blocked_reason:
+            return f"[failed] compliance_blocked: {blocked_reason}"
+        if executor:
+            try:
+                if inspect.iscoroutinefunction(executor):
+                    return await executor(args)
+                return await asyncio.to_thread(executor, args)
+            except Exception as exc:  # noqa: BLE001 - preserve runner boundary
+                return f"[failed] {name} raised: {exc}"
+        return (
+            f"Tool '{name}' is not available for this task. "
+            f"Available: {', '.join(sorted(tool_executors.keys())[:20])}"
+        )
+
+    async def emit(_action: Any, result: Any, _exc: BaseException | None) -> None:
+        if blocked_reason:
+            return
+        await _compliance_tool_hook(
+            "after_tool_call",
+            http=http,
+            agent_id=agent_id,
+            run_id=run_id,
+            headers=headers,
+            tool=name,
+            args=args,
+            output=str(result),
+        )
+
+    pipeline = GovernedExecutionPipeline[Any]().run(
+        resolve=resolve,
+        validate=validate,
+        authorize=authorize,
+        pre_log=lambda *_args: None,
+        execute=execute,
+        validate_result=lambda value: ResultValidation(
+            success=not str(value).startswith("[failed]")
+        ),
+        complete_success=lambda *_args: None,
+        complete_failure=lambda *_args: None,
+        emit=emit,
+        trace=trace,
+    )
+    if cancellation_token is not None and cancellation_check is not None:
+        with cancellation_scope(cancellation_token):
+            result = await await_with_cancellation(
+                pipeline,
+                token=cancellation_token,
+                check=cancellation_check,
+            )
+    else:
+        result = await pipeline
+    return current_seq, result
 
 
 # Stages that must never dump into an interactive chat TTY (shared with >>> input).
@@ -320,23 +525,46 @@ async def emit_event(
     so telemetry never aborts an otherwise-successful local tool call.
     """
     from .exceptions import HttpError
+    from .contracts import TraceEnvelope, attach_trace
 
-    try:
-        await http.post_json(
-            f"/api/v1/agents/{agent_id}/runs/{run_id}/event",
-            {"seq": seq, "type": event_type, "data": data},
-            headers=headers,
-        )
-    except HttpError as exc:
-        if soft and getattr(exc, "status_code", None) in {0, 408, 425, 429, 500, 502, 503, 504}:
-            return seq
-        if soft:
-            return seq
-        raise
-    except Exception:
-        if soft:
-            return seq
-        raise
+    stamped = attach_trace(
+        data,
+        TraceEnvelope(
+            trace_id=run_id,
+            span_id=f"run:{run_id}:{seq}",
+            execution_id=run_id,
+            execution_kind="agent_run",
+            agent_id=agent_id,
+        ),
+    )
+
+    for attempt in range(5):
+        try:
+            await http.post_json(
+                f"/api/v1/agents/{agent_id}/runs/{run_id}/event",
+                {"seq": seq, "type": event_type, "data": stamped},
+                headers=headers,
+            )
+            break
+        except HttpError as exc:
+            status = getattr(exc, "status_code", None)
+            if status == 409:
+                if attempt < 4:
+                    await asyncio.sleep(0.01 * (attempt + 1))
+                    continue
+                # Event rows are observability, not the work itself. A rolling
+                # backend deployment must never turn a sequence collision into a
+                # failed tool or failed user run.
+                return seq + 1
+            if soft and status in {0, 408, 425, 429, 500, 502, 503, 504}:
+                return seq
+            if soft:
+                return seq
+            raise
+        except Exception:
+            if soft:
+                return seq
+            raise
     return seq + 1
 
 
@@ -439,6 +667,27 @@ def brain_event_payload(resp: dict[str, Any]) -> dict[str, object]:
         "contextSections": context_sections,
         "contextExcerpt": block[:8000] if block else "",
     }
+
+
+def brain_event_from_pack(pack: Any) -> dict[str, object] | None:
+    """Replay the Brain activity event from a Resolver-owned pack without a second query."""
+    if not isinstance(pack, dict):
+        return None
+    citations: list[Any] = []
+    block = ""
+    for item in pack.get("inline") or []:
+        if not isinstance(item, dict) or item.get("component") not in ("brain", "brain_summary"):
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            block = text
+        data = item.get("data")
+        if isinstance(data, dict) and isinstance(data.get("citations"), list):
+            citations = data["citations"]
+        break
+    payload = brain_event_payload({"citations": citations, "contextBlock": block})
+    payload["fromContextPack"] = True
+    return payload
 
 
 def extract_tool_sources(name: str, args: str, output: str) -> list[dict[str, str]]:
@@ -590,11 +839,66 @@ async def stream_assistant_deltas(
     return seq
 
 
+_PROVIDER_UNSET = object()
+
+
+async def emit_inference_result_events(
+    http: QlixHttpClient,
+    *,
+    agent_id: str,
+    run_id: str,
+    headers: dict[str, str],
+    seq: int,
+    model: str,
+    usage: dict[str, Any],
+    tool_calls: list[str],
+    content: str,
+    turns: int,
+    provider: Any = _PROVIDER_UNSET,
+) -> int:
+    """Emit the shared successful-inference transcript for cloud and hybrid."""
+    success_data: dict[str, object] = {
+        "message": "inference_success",
+        "model": model,
+        "usage": usage,
+        "tool_calls_executed": tool_calls,
+    }
+    if provider is not _PROVIDER_UNSET:
+        success_data["provider"] = provider
+    seq = await emit_event(
+        http,
+        agent_id=agent_id,
+        run_id=run_id,
+        headers=headers,
+        seq=seq,
+        event_type="log",
+        data=success_data,
+    )
+    seq = await stream_assistant_deltas(
+        http,
+        agent_id=agent_id,
+        run_id=run_id,
+        headers=headers,
+        seq=seq,
+        content=content,
+    )
+    return await emit_event(
+        http,
+        agent_id=agent_id,
+        run_id=run_id,
+        headers=headers,
+        seq=seq,
+        event_type="log",
+        data={"message": "run_result", "turns": turns, "tool_calls": tool_calls},
+    )
+
+
 # Granted-scope -> human capability phrase. Driven by scopes (not the tools loaded
 # this run) so the model always knows what it can do, even when keyword routing
 # didn't load those tools this turn.
 _SCOPE_CAPABILITY: list[tuple[str, str]] = [
     ("web.", "browse the web and read web pages"),
+    ("files.create", "create PDF and spreadsheet files in the sandbox"),
     ("email.", "read and send email"),
     ("brain.", "look up the organization's internal knowledge base"),
     ("system.file_", "read and write files on the user's computer"),
@@ -675,8 +979,12 @@ def describe_capabilities(granted_scopes: set[str]) -> str:
         phrases.append(
             "search and read public content on major platforms via structured APIs (no browser)"
         )
+    if "files.create" in granted_scopes:
+        phrases.append("create PDF and spreadsheet files in the sandbox and share download links")
     for prefix, phrase in _SCOPE_CAPABILITY:
         if prefix == "web.research":
+            continue
+        if prefix == "files.create":
             continue
         if prefix == "web.":
             if any(
@@ -698,6 +1006,12 @@ def describe_capabilities(granted_scopes: set[str]) -> str:
         "based on these capabilities and the tools available to you. Never claim you "
         "are unable to do something your tools enable (for example, do not say you "
         "cannot browse the internet when you have web access).\n"
+        "If the user asks for something outside your granted capabilities, call "
+        "request_capability with the needed scope ids and a short reason — do not "
+        "only say you cannot help or return a blocked JSON. The user will see an "
+        "Add / No card in chat; if they approve, the capability is added and you "
+        "continue this same run. For PDF/spreadsheet export on cloud request "
+        "files.create; on hybrid request system.file_write for local desktop files.\n"
         "Tool discipline:\n"
         "- Call a tool only when this user message needs a real action or fresh "
         "external data that your tools provide.\n"
@@ -805,7 +1119,9 @@ def compact_history(
     keep_arg_calls: int,
     clear_result_over: int,
     clear_args_over: int,
-) -> None:
+    max_retained_tool_chars: int | None = None,
+    artifact_sink: Callable[[ContextArtifact], Any] | None = None,
+) -> list[ContextArtifact]:
     """Shrink history that has outlived its usefulness, in place.
 
     Rewriting history invalidates the provider's prompt-prefix cache from the edit
@@ -825,19 +1141,56 @@ def compact_history(
     Messages are never removed and tool_call_id pairing is preserved, so the
     assistant.tool_calls <-> tool result linkage stays valid.
     """
+    artifacts: list[ContextArtifact] = []
+
+    def spill(content: str, source_kind: str) -> ContextArtifact:
+        artifact = make_context_artifact(content, source_kind=source_kind)
+        artifacts.append(artifact)
+        if artifact_sink is not None:
+            artifact_sink(artifact)
+        return artifact
+
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+
+    def clear_tool_result(index: int) -> int:
+        content = messages[index].get("content")
+        if not isinstance(content, str) or content.startswith("[cleared:"):
+            return 0
+        artifact = spill(content, "tool_result")
+        messages[index]["content"] = (
+            f"[cleared: {len(content)} chars moved to {artifact.reference_text()} "
+            "to save context]"
+        )
+        return len(content)
+
     if keep_tool_msgs >= 0:
-        tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-        for i in tool_idxs[:-keep_tool_msgs] if keep_tool_msgs else tool_idxs:
+        stale_idxs = tool_idxs[:-keep_tool_msgs] if keep_tool_msgs else tool_idxs
+        for i in stale_idxs:
             content = messages[i].get("content")
             if (
                 isinstance(content, str)
                 and len(content) > clear_result_over
                 and not content.startswith("[cleared:")
             ):
-                messages[i]["content"] = (
-                    f"[cleared: {len(content)} chars of earlier tool output removed "
-                    "to save context]"
-                )
+                clear_tool_result(i)
+
+        # Many medium-sized results can be more expensive than one oversized result.
+        # Enforce a cumulative ceiling across the stale window so eight 4k payloads do
+        # not evade an 8k per-message threshold and get re-sent on every later round.
+        if max_retained_tool_chars is not None and max_retained_tool_chars >= 0:
+            retained_chars = sum(
+                len(content)
+                for i in tool_idxs
+                if isinstance((content := messages[i].get("content")), str)
+                and not content.startswith("[cleared:")
+            )
+            protected = set(tool_idxs[-keep_tool_msgs:]) if keep_tool_msgs else set()
+            for i in tool_idxs:
+                if retained_chars <= max_retained_tool_chars:
+                    break
+                if i in protected:
+                    continue
+                retained_chars -= clear_tool_result(i)
 
     call_idxs = [
         i for i, m in enumerate(messages) if m.get("role") == "assistant" and m.get("tool_calls")
@@ -851,10 +1204,36 @@ def compact_history(
                 continue
             args = fn.get("arguments")
             if isinstance(args, str) and len(args) > clear_args_over:
+                artifact = spill(args, "tool_arguments")
                 # Must stay valid JSON: providers parse this field.
                 fn["arguments"] = json.dumps(
-                    {"_cleared": f"{len(args)} chars omitted; call already executed"}
+                    {
+                        "_cleared": f"{len(args)} chars omitted; call already executed",
+                        "_context_artifact": artifact.artifact_id,
+                        "_sha256": artifact.sha256[:16],
+                        "_references": list(artifact.references[:8]),
+                    }
                 )
+    return artifacts
+
+
+def context_compaction_event_data(
+    artifacts: list[ContextArtifact],
+) -> dict[str, object]:
+    """Safe runtime event: references compaction artifacts without copying content."""
+    return {
+        "message": "context_compacted",
+        "artifacts": [
+            {
+                "artifactId": artifact.artifact_id,
+                "sourceKind": artifact.source_kind,
+                "charCount": artifact.char_count,
+                "sha256": artifact.sha256,
+                "references": list(artifact.references[:8]),
+            }
+            for artifact in artifacts
+        ],
+    }
 
 
 def build_run_context_block(
@@ -907,8 +1286,29 @@ async def run_backend_proxy_inference(
     max_seconds: float | None = None,
     subagent_context: Any = None,
     reasoning_effort: str | None = None,
+    cancellation_token: CancellationToken | None = None,
+    context_components: dict[str, int] | None = None,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn inference with pre-bound tool executors."""
+    token = cancellation_token or CancellationToken()
+
+    async def _check_cancellation() -> None:
+        await assert_run_not_canceled(
+            http, agent_id=agent_id, run_id=run_id, headers=headers
+        )
+
+    # Browser drivers and nested children are run-owned resources. Their cleanup
+    # callbacks are idempotent, so a stop during any stage closes them immediately.
+    try:
+        from .luna.browser.factory import reset_browser_driver
+
+        token.register_cleanup(reset_browser_driver)
+    except Exception:
+        pass
+    if subagent_context is not None and hasattr(subagent_context, "cancel_local"):
+        subagent_context.cancellation_token = token
+        token.register_cleanup(lambda: subagent_context.cancel_local(token.reason))
+
     if is_acknowledgement_only(enriched_prompt):
         log("acknowledgement_short_circuit", agent_id=agent_id, run_id=run_id)
         return seq, "You're welcome!", 0, 0, [], {}, []
@@ -920,11 +1320,35 @@ async def run_backend_proxy_inference(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": enriched_prompt})
+    seq = await emit_event(
+        http,
+        agent_id=agent_id,
+        run_id=run_id,
+        headers=headers,
+        seq=seq,
+        event_type="replay_snapshot",
+        data={
+            "schemaVersion": 1,
+            "runId": run_id,
+            "model": model,
+            "manifest": replay_input_manifest(messages, tools),
+            "privacy": "content_hashes_only",
+            "excludes": ["provider_hidden_reasoning", "credentials"],
+        },
+        soft=True,
+    )
     resolved_max_rounds = (
         int(max_rounds)
         if max_rounds is not None
         else int(os.environ.get("QLIX_CLOUD_TOOL_MAX_ROUNDS", "15"))
     )
+    max_rounds_hook = tool_executors.get("_qlix_max_rounds")
+    if callable(max_rounds_hook):
+        try:
+            hook_value = max_rounds_hook()
+            resolved_max_rounds = min(resolved_max_rounds, max(1, int(hook_value)))
+        except (TypeError, ValueError):
+            pass
     resolved_max_seconds = (
         float(max_seconds)
         if max_seconds is not None
@@ -947,6 +1371,7 @@ async def run_backend_proxy_inference(
     # runtime state (e.g. the actual path a create-tool wrote) instead of
     # guessing the flow.
     executed_tools: list[dict[str, str]] = []
+    context_artifacts: list[ContextArtifact] = []
     # Times each exact (name, args) call has run. A round that only repeats calls
     # we've already executed this many times is a stuck no-op loop, not progress.
     executed_call_counts: dict[str, int] = {}
@@ -959,12 +1384,15 @@ async def run_backend_proxy_inference(
     # Context engineering: keep only the most recent N tool outputs verbatim in the
     # re-sent message list; older ones are replaced with a tiny placeholder to save
     # context/cost (the full outputs are still preserved in `executed_tools`).
-    keep_tool_msgs = int(os.environ.get("QLIX_PROXY_KEEP_TOOL_MSGS", "8"))
+    keep_tool_msgs = int(os.environ.get("QLIX_PROXY_KEEP_TOOL_MSGS", "2"))
     # Size thresholds for compaction. Set high on purpose — see the comment at the
     # clearing site: rewriting history costs a prefix-cache reset, so it must only pay
     # for itself on genuinely large payloads.
-    clear_result_over = int(os.environ.get("QLIX_PROXY_CLEAR_RESULT_OVER_CHARS", "8000"))
-    clear_args_over = int(os.environ.get("QLIX_PROXY_CLEAR_ARGS_OVER_CHARS", "4000"))
+    clear_result_over = int(os.environ.get("QLIX_PROXY_CLEAR_RESULT_OVER_CHARS", "2000"))
+    clear_args_over = int(os.environ.get("QLIX_PROXY_CLEAR_ARGS_OVER_CHARS", "2000"))
+    max_retained_tool_chars = int(
+        os.environ.get("QLIX_PROXY_MAX_RETAINED_TOOL_CHARS", "24000")
+    )
     # Keep this many most-recent tool-call messages with arguments intact; older ones
     # get oversized arguments stripped. 1 = the model still sees the call it is
     # currently interpreting the result of.
@@ -983,9 +1411,20 @@ async def run_backend_proxy_inference(
     empty_nudges = 0
     force_tool_next_round = False
     force_text_next_round = False
+    terminal_tool_hook = tool_executors.get("_qlix_required_terminal_tool")
+    required_terminal_tool = ""
+    if callable(terminal_tool_hook):
+        try:
+            required_terminal_tool = str(terminal_tool_hook() or "").strip()
+        except Exception:
+            required_terminal_tool = ""
     stuck_final_nudge = 0
-    # Set from round 1's response; sent back on every later round (see pinned_model).
+    # Phase pin for margin cascade (scout free → paid). Cleared on handoff/escalate.
     pinned_model: str | None = None
+    cascade_phase: str = "scout"
+    cascade_handoffs = 0
+    max_cascade_handoffs = int(os.environ.get("QLIX_CASCADE_MAX_HANDOFFS", "3"))
+    scout_failures = 0
     exit_reason = "complete"
     length_retries = 0
     max_length_retries = int(os.environ.get("QLIX_PROXY_MAX_LENGTH_RETRIES", "2"))
@@ -1004,44 +1443,213 @@ async def run_backend_proxy_inference(
             for msg in steer_msgs:
                 messages.append({"role": "user", "content": f"[User guidance]: {msg}"})
         except RunCanceledError:
+            token.cancel("Run stopped by user")
             log("run_canceled", agent_id=agent_id, run_id=run_id, round=round_idx + 1)
             raise
+
+        forced_terminal_round = bool(
+            required_terminal_tool
+            and round_idx == max_rounds - 1
+            and not any(
+                item.get("name") == required_terminal_tool
+                and not str(item.get("output") or "").startswith("[failed] ")
+                for item in executed_tools
+            )
+        )
+        if forced_terminal_round:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Finalization turn: call {required_terminal_tool} now and no other tool. "
+                        "Correct any validation error from the previous call. Every assessment "
+                        "finding must cite at least one real evidence id already returned above."
+                    ),
+                }
+            )
 
         round_tokens = estimate_request_tokens(messages, tools)
         if round_tokens > peak_request_tokens:
             peak_request_tokens = round_tokens
         estimated_input_tokens += round_tokens
-
-        proxy_result = await backend_proxy_chat_completion(
+        retained_tool_chars = sum(
+            len(content)
+            for message in messages
+            if message.get("role") == "tool"
+            and isinstance((content := message.get("content")), str)
+            and not content.startswith("[cleared:")
+        )
+        seq = await emit_event(
             http,
             agent_id=agent_id,
-            headers=headers,
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
             run_id=run_id,
-            tools=tools,
-            tool_choice=(
-                "required"
-                if force_tool_next_round
-                else "none"
-                if force_text_next_round
-                else "auto"
-            ),
-            tools_hash=tools_hash,
-            pinned_model=pinned_model,
-            reasoning_effort=reasoning_effort,
+            headers=headers,
+            seq=seq,
+            event_type="log",
+            data={
+                "message": "context_size_round",
+                "round": round_idx + 1,
+                "estimatedInputTokens": round_tokens,
+                "messageTokens": max(0, round_tokens - (tools_schema_bytes // 4)),
+                "toolsSchemaTokens": tools_schema_bytes // 4,
+                "retainedToolChars": retained_tool_chars,
+                "components": {
+                    **(context_components or {}),
+                    "tools": tools_schema_bytes // 4,
+                    "tool_results": max(0, retained_tool_chars // 4),
+                },
+            },
+            soft=True,
         )
+
+        synthesis_round = bool(force_text_next_round or forced_terminal_round)
+        if synthesis_round and cascade_phase == "scout":
+            # Escalate to paid for final synthesis; swap messages to Decision Brief.
+            cascade_phase = "paid"
+            pinned_model = None
+            brief = build_decision_brief_from_messages(messages)
+            messages = [
+                {"role": "system", "content": "You are completing a Qlix agent run from a checkpoint brief."},
+                {"role": "user", "content": brief},
+            ]
+            log(
+                "cascade_escalate",
+                agent_id=agent_id,
+                run_id=run_id,
+                reason="synthesis",
+                round=round_idx + 1,
+            )
+            seq = await emit_event(
+                http,
+                agent_id=agent_id,
+                run_id=run_id,
+                headers=headers,
+                seq=seq,
+                event_type="log",
+                data={
+                    "message": "cascade_escalate",
+                    "reason": "synthesis",
+                    "round": round_idx + 1,
+                    "briefChars": len(brief),
+                },
+                soft=True,
+            )
+
+        force_handoff = False
+        escalate_reason: str | None = None
+        proxy_result = None
+        for attempt in range(2):
+            try:
+                with cancellation_scope(token):
+                    proxy_result = await await_with_cancellation(
+                        backend_proxy_chat_completion(
+                            http,
+                            agent_id=agent_id,
+                            headers=headers,
+                            model=model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            run_id=run_id,
+                            tools=tools if cascade_phase == "scout" or attempt == 0 else tools,
+                            tool_choice=(
+                                {"type": "function", "function": {"name": required_terminal_tool}}
+                                if forced_terminal_round
+                                else "required"
+                                if force_tool_next_round
+                                else "none"
+                                if force_text_next_round
+                                else "auto"
+                            ),
+                            tools_hash=tools_hash,
+                            pinned_model=None if force_handoff else pinned_model,
+                            reasoning_effort=reasoning_effort,
+                            cascade_phase=cascade_phase,
+                            cascade_force_handoff=force_handoff,
+                            cascade_escalate_reason=escalate_reason,
+                            cascade_scout_failures=scout_failures,
+                            cascade_synthesis_round=synthesis_round,
+                        ),
+                        token=token,
+                        check=_check_cancellation,
+                    )
+                break
+            except Exception as infer_err:
+                should, mode, reason = classify_inference_handoff(infer_err)
+                if (
+                    not should
+                    or cascade_handoffs >= max_cascade_handoffs
+                    or attempt >= 1
+                    or time.time() > deadline
+                ):
+                    raise
+                cascade_handoffs += 1
+                scout_failures += 1
+                prev = pinned_model
+                pinned_model = None
+                force_handoff = True
+                if cascade_phase == "scout" and cascade_handoffs >= 2:
+                    cascade_phase = "paid"
+                    escalate_reason = "free_unhealthy"
+                else:
+                    escalate_reason = reason if reason != "forced" else "free_unhealthy"
+                if mode == "brief" or cascade_phase == "paid":
+                    brief = build_decision_brief_from_messages(messages)
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": "You are continuing a Qlix agent run from a checkpoint brief.",
+                        },
+                        {"role": "user", "content": brief},
+                    ]
+                log(
+                    "model_handoff",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    from_model=prev,
+                    reason=reason,
+                    mode=mode,
+                    phase=cascade_phase,
+                    handoff=cascade_handoffs,
+                )
+                seq = await emit_event(
+                    http,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    headers=headers,
+                    seq=seq,
+                    event_type="log",
+                    data={
+                        "message": "model_handoff",
+                        "from": prev,
+                        "reason": reason,
+                        "mode": mode,
+                        "phase": cascade_phase,
+                        "handoff": cascade_handoffs,
+                    },
+                    soft=True,
+                )
+                continue
+        if proxy_result is None:
+            raise RuntimeError("inference returned no result after handoff attempts")
+
         if force_tool_next_round:
             force_tool_next_round = False
         if force_text_next_round:
             force_text_next_round = False
-        # Lock the run to whatever concrete model round 1 resolved to, so later rounds
-        # keep the same provider (and therefore the same warm prompt-prefix cache).
-        if pinned_model is None and proxy_result.routed_model:
-            pinned_model = proxy_result.routed_model
-            log("model_pinned", agent_id=agent_id, run_id=run_id, model=pinned_model)
+        # Pin within cascade phase for prefix-cache warmth.
+        if proxy_result.routed_model:
+            if proxy_result.cascade_phase:
+                cascade_phase = proxy_result.cascade_phase
+            if pinned_model != proxy_result.routed_model:
+                pinned_model = proxy_result.routed_model
+                log(
+                    "model_pinned",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    model=pinned_model,
+                    phase=cascade_phase,
+                )
         accumulate_usage(usage_acc, proxy_result.usage)
 
         finish_reason = str(proxy_result.finish_reason or "").strip().lower()
@@ -1053,6 +1661,10 @@ async def run_backend_proxy_inference(
         ):
             length_retries += 1
             max_tokens = min(32768, int(max_tokens * 1.5) if max_tokens else 8192)
+            if length_retries >= max_length_retries and cascade_phase == "scout":
+                cascade_phase = "paid"
+                pinned_model = None
+                escalate_reason = "length_retry_exhausted"
             log(
                 "inference_truncated",
                 agent_id=agent_id,
@@ -1093,6 +1705,7 @@ async def run_backend_proxy_inference(
                 http, agent_id=agent_id, run_id=run_id, headers=headers
             )
         except RunCanceledError:
+            token.cancel("Run stopped by user")
             log("run_canceled", agent_id=agent_id, run_id=run_id, phase="post_inference")
             raise
 
@@ -1254,66 +1867,17 @@ async def run_backend_proxy_inference(
                 tid = str(tc_item.get("id", ""))
                 if not name or not tid:
                     return None
-                try:
-                    started_params = json.loads(args) if args.strip() else {}
-                except json.JSONDecodeError:
-                    started_params = {}
-                if not isinstance(started_params, dict):
-                    started_params = {}
-                started_data: dict[str, object] = {"message": "tool_started", "tool": name}
-                if is_browser_tool(name) or name.startswith("browser_"):
-                    started_data["label"] = browser_action_label(name, started_params)
-                    started_data["tool_args"] = sanitize_tool_args_for_ui(started_params)
-                if name == "gui_control" or name.startswith("luna_local_"):
-                    started_data["package"] = "agents3"
-                seq = await emit_event(
-                    http,
+                seq, tool_out = await execute_runner_tool(
+                    http=http,
                     agent_id=agent_id,
                     run_id=run_id,
                     headers=headers,
                     seq=seq,
-                    event_type="log",
-                    data=started_data,
-                )
-                blocked = await _compliance_tool_hook(
-                    "before_tool_call",
-                    http=http,
-                    agent_id=agent_id,
-                    run_id=run_id,
-                    headers=headers,
-                    tool=name,
+                    name=name,
                     args=args,
-                )
-                if blocked:
-                    return {
-                        "tid": tid,
-                        "name": name,
-                        "args": args,
-                        "output": f"[failed] compliance_blocked: {blocked}",
-                    }
-                executor = tool_executors.get(name)
-                if executor:
-                    try:
-                        if inspect.iscoroutinefunction(executor):
-                            tool_out = await executor(args)
-                        else:
-                            tool_out = await asyncio.to_thread(executor, args)
-                    except Exception as exc:  # noqa: BLE001 - defensive boundary
-                        tool_out = f"[failed] {name} raised: {exc}"
-                else:
-                    tool_out = (
-                        f"Tool '{name}' is not available for this task. "
-                        f"Available: {', '.join(sorted(tool_executors.keys())[:20])}"
-                    )
-                await _compliance_tool_hook(
-                    "after_tool_call",
-                    http=http,
-                    agent_id=agent_id,
-                    run_id=run_id,
-                    headers=headers,
-                    tool=name,
-                    args=args,
-                    output=str(tool_out),
+                    tool_executors=tool_executors,
+                    cancellation_token=token,
+                    cancellation_check=_check_cancellation,
                 )
                 return {"tid": tid, "name": name, "args": args, "output": tool_out}
 
@@ -1480,6 +2044,16 @@ async def run_backend_proxy_inference(
                             )
                     except (json.JSONDecodeError, IndexError):
                         pass
+
+            terminal_builder = tool_executors.get("_qlix_terminal_result_builder")
+            if callable(terminal_builder):
+                if inspect.iscoroutinefunction(terminal_builder):
+                    terminal_result = await terminal_builder(executed_tools)
+                else:
+                    terminal_result = await asyncio.to_thread(terminal_builder, executed_tools)
+                if isinstance(terminal_result, str) and terminal_result.strip():
+                    content_out = terminal_result.strip()
+                    break
             # After reading a source file for a PDF task, force the next model turn to
             # call a tool (usually luna_local_create_pdf) instead of returning empty text.
             if (
@@ -1500,13 +2074,26 @@ async def run_backend_proxy_inference(
                     }
                 )
 
-            compact_history(
+            compacted = compact_history(
                 messages,
                 keep_tool_msgs=keep_tool_msgs,
                 keep_arg_calls=keep_arg_calls,
                 clear_result_over=clear_result_over,
                 clear_args_over=clear_args_over,
+                max_retained_tool_chars=max_retained_tool_chars,
+                artifact_sink=context_artifacts.append,
             )
+            if compacted:
+                seq = await emit_event(
+                    http,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    headers=headers,
+                    seq=seq,
+                    event_type="log",
+                    data=context_compaction_event_data(compacted),
+                    soft=True,
+                )
             continue
 
         content_out = proxy_result.content or ""
@@ -1547,9 +2134,37 @@ async def run_backend_proxy_inference(
         # Exhausted max_rounds without a natural completion break.
         exit_reason = "round_budget"
         if not str(content_out or "").strip():
-            content_out = "Stopped: tool loop round budget exceeded."
+            if required_terminal_tool:
+                content_out = json.dumps(
+                    {
+                        "summary": (
+                            "Assessment could not be finalized: the required evidence-backed "
+                            f"{required_terminal_tool} call did not succeed within the run budget."
+                        ),
+                        "findings": [],
+                        "provenance": {
+                            "toolRefs": sorted({str(row.get("name")) for row in executed_tools if row.get("name")}),
+                            "evidenceRefs": [],
+                            "artifactRefs": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                content_out = "Stopped: tool loop round budget exceeded."
 
-    if exit_reason in ("time_budget", "round_budget") and subagent_context is not None:
+    disable_budget_subagent = False
+    disable_budget_hook = tool_executors.get("_qlix_disable_budget_subagent")
+    if callable(disable_budget_hook):
+        try:
+            disable_budget_subagent = bool(disable_budget_hook())
+        except Exception:
+            disable_budget_subagent = False
+    if (
+        exit_reason in ("time_budget", "round_budget")
+        and subagent_context is not None
+        and not disable_budget_subagent
+    ):
         seq = await emit_event(
             http,
             agent_id=agent_id,
@@ -1628,6 +2243,7 @@ async def run_backend_proxy_inference(
             "cachedPromptTokens": cached_prompt_tokens,
             "toolsSchemaTokens": tools_schema_bytes // 4,
             "rounds": inference_rounds,
+            "components": context_components or {},
         },
         soft=True,
     )

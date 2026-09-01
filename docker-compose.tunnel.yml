@@ -1,0 +1,49 @@
+# Local origin + data stores for Cloudflare Tunnel.
+# Public hostname: qlixdev.exora.solutions → http://localhost:8081
+#
+#   docker compose -f docker-compose.tunnel.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: qlix-postgres
+    environment:
+      POSTGRES_USER: qlix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: qlix
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # Bind mount to a real path on the Mac's filesystem, not a named Docker
+      # volume — named volumes live inside Docker Desktop's internal VM disk
+      # (Docker.raw), which was confirmed to not reliably survive host reboots.
+      # A bind mount's bytes are ordinary files under this repo, independent
+      # of the VM's own lifecycle.
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qlix -d qlix"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: qlix-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:alpine
+    container_name: qlix-tunnel-gateway
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./nginx/qlix-tunnel.conf:/etc/nginx/conf.d/default.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8081:80"
+    restart: unless-stopped

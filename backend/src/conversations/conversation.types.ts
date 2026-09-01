@@ -1,3 +1,5 @@
+import type { ConversationPrompt } from './conversationPrompt.js';
+
 export const CONVERSATION_THREAD_STATUSES = [
   'created',
   'active',
@@ -53,6 +55,7 @@ export type ConversationEffect =
       operationIndex: number;
       channel?: string;
       content: string;
+      prompt?: ConversationPrompt;
       metadata?: Record<string, unknown>;
     }
   | {

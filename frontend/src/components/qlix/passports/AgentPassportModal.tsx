@@ -89,7 +89,7 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex size-7 items-center justify-center rounded-full border border-[#221c33]/12 bg-white/60 text-[#221c33]/50 transition-colors hover:border-[#221c33]/30 hover:text-[#221c33]"
+              className="inline-flex size-7 items-center justify-center rounded-full border border-[#221c33]/12 bg-[#E2F0CC]/60 text-[#221c33]/50 transition-colors hover:border-[#221c33]/30 hover:text-[#221c33]"
               aria-label="Close passport"
             >
               <X className="size-[15px]" aria-hidden />
@@ -121,7 +121,7 @@ export function AgentPassportModal({ passport, routePrefix, onClose }: AgentPass
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium capitalize",
                     isActive
                       ? "border-[#15803d]/25 bg-[#15803d]/[0.07] text-[#15803d]"
-                      : "border-[#221c33]/15 bg-white/50 text-[#221c33]/60",
+                      : "border-[#221c33]/15 bg-[#E2F0CC]/50 text-[#221c33]/60",
                   )}
                 >
                   {isActive ? <span className="size-1.5 rounded-full bg-[#15803d]" aria-hidden /> : null}

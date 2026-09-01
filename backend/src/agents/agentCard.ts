@@ -29,6 +29,10 @@ const SCOPE_SKILL_MAP: Record<string, { name: string; description: string }> = {
     name: 'Web Research',
     description: 'Search and read platforms via structured APIs (no browser)',
   },
+  'files.create': {
+    name: 'File Creation',
+    description: 'Generate PDF and spreadsheet files in the sandbox (download link)',
+  },
   'web.click': { name: 'Web Interaction', description: 'Click buttons and interact with web UIs' },
   'web.transaction': { name: 'Web Transactions', description: 'Complete transactions on the web (JIT)' },
   'system.file_read': { name: 'File Reading', description: 'Read files from the local filesystem' },

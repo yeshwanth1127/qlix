@@ -4,6 +4,7 @@ import { CloudProvisionerService } from './cloudProvisioner.service.js';
 import { ensureSharedRunnerImage } from './runnerImage.js';
 import { DockerRunnerOrchestrator } from './runnerOrchestrator.js';
 import { ProvisioningQueue } from './provisioningQueue.js';
+import { resolveDockerBackendUrl } from '../agents/sdkAgentFile.js';
 
 function stuckAfterMs(): number {
   const raw = process.env.QLIX_PROVISION_STUCK_MS?.trim();
@@ -20,7 +21,7 @@ export async function startProvisioningWatchdog(
   const queue = ProvisioningQueue.getInstance();
   provisioner.registerQueueHandler();
 
-  const backendUrl = process.env.PUBLIC_API_URL?.trim()?.replace(/\/$/, '') || '';
+  const backendUrl = resolveDockerBackendUrl({ protocol: 'http', get: () => undefined });
   if (!backendUrl) {
     console.warn('[provisionWatchdog] PUBLIC_API_URL unset; skipping stuck-agent recovery');
     return;

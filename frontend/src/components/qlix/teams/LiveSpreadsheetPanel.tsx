@@ -109,7 +109,7 @@ export function LiveSpreadsheetPanel({
                 <tr>
                   <td
                     colSpan={displayColumns.length}
-                    className={cn("border border-black/10 bg-white px-3 py-8 text-center", INK_SOFT)}
+                    className={cn("border border-black/10 bg-[#E2F0CC] px-3 py-8 text-center", INK_SOFT)}
                   >
                     {isLive ? "Waiting for the first reply…" : "No rows yet"}
                   </td>
@@ -118,7 +118,7 @@ export function LiveSpreadsheetPanel({
                 sheet.rows.map((row, rowIndex) => (
                   <tr
                     key={`${rowIndex}-${String(row.contact_jid ?? rowIndex)}`}
-                    className={rowIndex % 2 === 0 ? "bg-white" : "bg-[#f3f3f3]"}
+                    className={rowIndex % 2 === 0 ? "bg-[#E2F0CC]" : "bg-[#f3f3f3]"}
                   >
                     {displayColumns.map((column) => (
                       <td

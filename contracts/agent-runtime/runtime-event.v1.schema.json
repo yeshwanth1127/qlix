@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/agent-runtime/runtime-event.v1.schema.json",
+  "title": "Qlix Runtime Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "eventId", "runId", "sequence", "occurredAt", "source", "type", "data"],
+  "properties": {
+    "contractVersion": { "const": "qlix.runtime-event.v1" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "source": { "enum": ["backend", "cloud_runner", "hybrid_runner", "local_runner", "team"] },
+    "type": { "type": "string", "minLength": 1 },
+    "data": {},
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parentRunId": { "type": "string", "minLength": 1 },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "teamRunId": { "type": "string", "minLength": 1 },
+        "subtaskId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -112,7 +112,7 @@ export function IndividualDashboard() {
             <thead>
               <tr className="qlix-glass-inset border-b border-[--border-subtle]">
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">
-                  Time (UTC)
+                  Time (IST)
                 </th>
                 <th className="px-4 py-2.5 text-[11px] font-medium uppercase tracking-widest text-[--text-tertiary]">
                   Agent
@@ -142,7 +142,7 @@ export function IndividualDashboard() {
                     }
                   >
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-[12px] text-[--text-secondary]">
-                      {row.timeUtc}
+                      {row.timeIst}
                     </td>
                     <td className="px-4 py-3 text-[13px] text-[--text-primary]">{row.agentName}</td>
                     <td className="px-4 py-3 text-[13px] text-[--text-secondary]">{row.description}</td>

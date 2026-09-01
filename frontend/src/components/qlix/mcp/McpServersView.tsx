@@ -69,7 +69,7 @@ function pretty(value: Record<string, unknown> | null): string | null {
   return value ? JSON.stringify(value, null, 2) : null;
 }
 
-export function McpServersView() {
+export function McpServersView({ embedded = false }: { readonly embedded?: boolean }) {
   const [servers, setServers] = useState<McpServerDTO[]>([]);
   const [agentsByServer, setAgentsByServer] = useState<Record<string, McpServerAgentDTO[]>>({});
   const [loading, setLoading] = useState(true);
@@ -183,11 +183,10 @@ export function McpServersView() {
   }
 
   return (
-    <section className="mt-12 w-full max-w-none">
-      <SectionHeading
-        title="MCP servers"
-        hint="Extra tool sets your agents can use."
-        right={
+    <section className={embedded ? "w-full max-w-none" : "mt-12 w-full max-w-none"}>
+      {embedded ? (
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="connector-meta">Extra tool sets your agents can use.</p>
           <button
             type="button"
             onClick={() => setShowForm((v) => !v)}
@@ -195,8 +194,22 @@ export function McpServersView() {
           >
             {showForm ? "Cancel" : "Add server"}
           </button>
-        }
-      />
+        </div>
+      ) : (
+        <SectionHeading
+          title="MCP servers"
+          hint="Extra tool sets your agents can use."
+          right={
+            <button
+              type="button"
+              onClick={() => setShowForm((v) => !v)}
+              className="connector-action connector-action--quiet"
+            >
+              {showForm ? "Cancel" : "Add server"}
+            </button>
+          }
+        />
+      )}
 
       {error ? (
         <ConnectorAlert variant="error" className="mb-3">

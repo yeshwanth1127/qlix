@@ -6,7 +6,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils/cn";
 import { ThemeToggle } from "./theme-toggle";
 import { ReflectiveCard } from "./ReflectiveCard";
-import BlurText from "./BlurText";
+import { QlixWordmark } from "./landing/QlixWordmark";
 
 const ColorBends = dynamic(() => import("./ColorBends"), { ssr: false });
 
@@ -26,13 +26,11 @@ export function WorkspaceLandingPage() {
           introDone ? "pointer-events-none opacity-0" : "opacity-100"
         )}
       >
-        <BlurText
-          text="Qlix"
-          delay={200}
-          animateBy="words"
-          direction="top"
+        <QlixWordmark
+          surface="dark"
+          animate
           onAnimationComplete={() => setIntroDone(true)}
-          className="text-[96px] font-medium tracking-tighter text-white [font-family:var(--font-landing-logo)] justify-center"
+          className="text-[96px]"
         />
       </div>
 
@@ -66,9 +64,7 @@ export function WorkspaceLandingPage() {
             stay interactive; re-enabled on the controls below. */}
         <div className="pointer-events-none relative z-10 flex h-full w-full flex-col">
           <header className="flex h-14 items-center justify-between px-6 sm:px-10">
-            <span className="text-[20px] font-medium tracking-tighter text-white [font-family:var(--font-landing-logo)]">
-              Qlix
-            </span>
+            <QlixWordmark surface="dark" className="text-[24px]" />
             <div className="pointer-events-auto">
               <ThemeToggle />
             </div>
@@ -95,7 +91,7 @@ export function WorkspaceLandingPage() {
                   </Link>
                   <Link
                     href="/sign-in?mode=sign-up"
-                    className="flex h-12 w-full items-center justify-center rounded-lg border border-white/15 bg-white/5 text-[15px] font-semibold text-white transition-colors hover:bg-white/10 active:scale-[0.98]"
+                    className="flex h-12 w-full items-center justify-center rounded-lg border border-white/15 bg-[#E2F0CC]/5 text-[15px] font-semibold text-white transition-colors hover:bg-[#E2F0CC]/10 active:scale-[0.98]"
                   >
                     Sign up
                   </Link>

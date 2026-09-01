@@ -11,14 +11,30 @@ from typing import Any, Literal
 from .agents3_runtime import is_read_only_file_intent
 from .identity import AgentIdentity
 
-ToolGroup = Literal["research", "web", "files", "code", "gui", "comms", "knowledge", "always"]
+ToolGroup = Literal[
+    "research", "documents", "web", "files", "code", "gui", "comms", "knowledge", "assessment", "always"
+]
 
 GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
     "research": ("web.research",),
+    "documents": ("files.create",),
     "web": ("web.read", "web.click", "web.transaction"),
     "files": ("system.file_read", "system.file_write"),
     "code": ("system.file_read",),
     "gui": ("system.gui_control",),
+    "assessment": (
+        "assessment.session.get",
+        "assessment.evidence.search",
+        "assessment.evidence.read",
+        "assessment.artifact.read",
+        "assessment.snapshot.read",
+        "assessment.snapshot.compare",
+        "assessment.framework.read",
+        "assessment.record",
+        "assessment.review.ask",
+        "assessment.review.request_demonstration",
+        "assessment.report.create",
+    ),
     "comms": (
         "email.read",
         "email.send",
@@ -54,10 +70,12 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
 
 GROUP_RUNTIMES: dict[ToolGroup, frozenset[str]] = {
     "research": frozenset({"cloud", "hybrid"}),
+    "documents": frozenset({"cloud", "hybrid"}),
     "web": frozenset({"cloud"}),
     "files": frozenset({"hybrid"}),
     "code": frozenset({"hybrid"}),
     "gui": frozenset({"hybrid"}),
+    "assessment": frozenset({"cloud", "hybrid"}),
     "comms": frozenset({"cloud", "hybrid"}),
     "knowledge": frozenset({"cloud", "hybrid"}),
     "always": frozenset({"cloud", "hybrid"}),
@@ -85,22 +103,26 @@ WEB_INTERACTION_KEYWORDS: frozenset[str] = frozenset(
 # the capability instead so the steer is actually actionable.
 _GROUP_LABELS: dict[ToolGroup, str] = {
     "research": "web research tools",
+    "documents": "PDF and spreadsheet creation tools",
     "web": "browser tools",
     "files": "local file tools",
     "code": "shell and code tools",
     "gui": "desktop control tools",
     "comms": "messaging and CRM tools",
     "knowledge": "the company knowledge base",
+    "assessment": "evidence-based assessment tools",
 }
 
 _GROUP_ORDER: tuple[ToolGroup, ...] = (
     "research",
+    "documents",
     "web",
     "files",
     "code",
     "gui",
     "comms",
     "knowledge",
+    "assessment",
     "always",
 )
 
@@ -148,10 +170,20 @@ KEYWORD_MAP: dict[ToolGroup, frozenset[str]] = {
             "linkedin",
             "v2ex",
             "rss",
+        }
+    ),
+    "documents": frozenset(
+        {
+            "pdf",
             "excel",
             "xlsx",
             "spreadsheet",
             "workbook",
+            "create a pdf",
+            "make a pdf",
+            "export pdf",
+            "create spreadsheet",
+            "make a spreadsheet",
         }
     ),
     "web": frozenset(
@@ -696,6 +728,8 @@ def classify_groups(
                 selected.add("web")
             if not selected and "web.research" in filt:
                 selected.add("research")
+            if not selected and "files.create" in filt:
+                selected.add("documents")
             selected.add("always")
             return tuple(g for g in _GROUP_ORDER if g in selected)
 
@@ -763,6 +797,8 @@ class ToolRouter:
         #: Set by build_tool_definitions when the budget dropped anything, so the
         #: runner can emit it as telemetry. None when nothing was removed.
         self.last_budget_report: dict[str, Any] | None = None
+        self.last_has_context_refs = False
+        self.last_enable_context_search = False
 
     def plan_run(
         self,
@@ -842,7 +878,11 @@ class ToolRouter:
         *,
         tool_profile: str = "full",
         askable_agents: list[dict[str, Any]] | None = None,
+        has_context_refs: bool = False,
+        enable_context_search: bool = False,
     ) -> list[dict[str, Any]]:
+        self.last_has_context_refs = has_context_refs
+        self.last_enable_context_search = enable_context_search
         from .cloud_browser_runtime import openai_browser_tool_definitions
         from .cloud_document_runtime import openai_document_tool_definitions
         from .cloud_email_runtime import openai_email_tool_definitions
@@ -856,6 +896,7 @@ class ToolRouter:
             openai_always_tool_definitions,
             openai_knowledge_tool_definitions,
         )
+        from .team_context_runtime import openai_team_context_tool_definitions
 
         tools: list[dict[str, Any]] = []
         sf = plan.skill_filter if plan.skill_filter else None
@@ -864,6 +905,7 @@ class ToolRouter:
 
         if "research" in groups:
             tools.extend(openai_research_tool_definitions(self.identity, sf))
+        if "documents" in groups:
             tools.extend(openai_document_tool_definitions(self.identity, sf))
         if "web" in groups:
             tools.extend(openai_browser_tool_definitions(self.identity, sf))
@@ -896,8 +938,17 @@ class ToolRouter:
             from .cloud_brain_file_runtime import openai_brain_file_tool_definitions
 
             tools.extend(openai_brain_file_tool_definitions(self.identity, sf))
+        if "assessment" in groups:
+            from .assessment_runtime import openai_assessment_tool_definitions
+
+            tools.extend(openai_assessment_tool_definitions(self.identity, sf))
         if "always" in groups:
             tools.extend(openai_always_tool_definitions(askable_agents))
+        tools.extend(openai_team_context_tool_definitions(
+            sf,
+            enable=has_context_refs,
+            enable_search=enable_context_search,
+        ))
 
         if mcp_servers:
             from .cloud_mcp_runtime import openai_mcp_tool_definitions
@@ -910,6 +961,11 @@ class ToolRouter:
                     runner_runtime=self.runner_runtime,
                 )
             )
+
+        # The catalog is now the live, stable source for managed tool metadata.
+        # It intentionally leaves dynamic MCP/product extensions intact.
+        from .capability_catalog import canonicalize_tool_definitions
+        tools = canonicalize_tool_definitions(tools)
 
         # Applied last, to the assembled list, so one policy covers every group —
         # built-in, connector and MCP alike. Inputs are agent-level only, so the
@@ -942,6 +998,11 @@ class ToolRouter:
         agents3_context: Any = None,
         mcp_servers: Any = None,
         subagent_context: Any = None,
+        live_tools: list[dict[str, Any]] | None = None,
+        team_id: str | None = None,
+        live_executors: dict[str, callable] | None = None,
+        has_context_refs: bool = False,
+        enable_context_search: bool = False,
     ) -> dict[str, callable]:
         import json
 
@@ -960,7 +1021,17 @@ class ToolRouter:
         from .agents3_runtime import build_agents3_executors
         from .luna.core.registry import ToolRegistry
 
-        executor_map: dict[str, callable] = {}
+        executor_map: dict[str, callable] = live_executors if live_executors is not None else {}
+        # When refreshing into an existing live map, clear managed keys first so stale
+        # tools from prior scopes do not linger. Preserve _qlix_* hooks.
+        if live_executors is not None:
+            preserved_hooks = {
+                k: v
+                for k, v in list(executor_map.items())
+                if isinstance(k, str) and k.startswith("_qlix_")
+            }
+            executor_map.clear()
+            executor_map.update(preserved_hooks)
         sf = plan.skill_filter
         # Must mirror build_tool_definitions exactly, or a tool appears in the
         # schema with no executor behind it.
@@ -974,6 +1045,7 @@ class ToolRouter:
                     qlix_sdk=qlix_sdk,
                 )
             )
+        if "documents" in groups:
             executor_map.update(
                 build_document_tool_executors(
                     identity=self.identity,
@@ -1158,6 +1230,35 @@ class ToolRouter:
             )
             executor_map.update(whatsapp_executors)
 
+        if "assessment" in groups and agent_id and run_id and backend_url and runner_token:
+            from .assessment_runtime import build_assessment_tool_executors
+
+            executor_map.update(
+                build_assessment_tool_executors(
+                    identity=self.identity,
+                    skill_filter=sf,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                )
+            )
+
+        if agent_id and run_id and backend_url and runner_token:
+            from .team_context_runtime import build_team_context_tool_executors
+
+            executor_map.update(
+                build_team_context_tool_executors(
+                    skill_filter=sf,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                    enable=has_context_refs,
+                    enable_search=enable_context_search,
+                )
+            )
+
         if "knowledge" in groups:
             def _brain_stub(_args: str) -> str:
                 return "Company brain context is prepended to the user message for this run."
@@ -1259,11 +1360,179 @@ class ToolRouter:
                 except Exception as exc:
                     return f"[failed] delegate_task: {exc}"
 
+            async def _request_capability(
+                args_json: str,
+                *,
+                _agent_id=agent_id,
+                _run_id=run_id,
+                _backend=backend_url,
+                _token=runner_token,
+                _team_id=team_id,
+                _live_tools=live_tools,
+                _plan=plan,
+                _router=self,
+                _mcp=mcp_servers,
+                _sdk=qlix_sdk,
+                _sub=subagent_context,
+                _emap=executor_map,
+            ) -> str:
+                params = json.loads(args_json) if args_json.strip() else {}
+                scopes_raw = params.get("scopes") or []
+                if isinstance(scopes_raw, str):
+                    scopes_list = [scopes_raw]
+                elif isinstance(scopes_raw, list):
+                    scopes_list = [str(s).strip() for s in scopes_raw if str(s).strip()]
+                else:
+                    scopes_list = []
+                reason = str(params.get("reason") or "").strip() or (
+                    "Needed for the current user request"
+                )
+                if not scopes_list:
+                    return "[failed] scopes is required (e.g. [\"email.send\"])"
+                if not (_agent_id and _backend and _token):
+                    return "[failed] request_capability unavailable in this runner context"
+
+                from .capability_grant import request_capability_and_wait
+
+                result = await request_capability_and_wait(
+                    agent_id=_agent_id,
+                    runner_token=_token,
+                    backend_url=_backend,
+                    scopes=scopes_list,
+                    reason=reason,
+                    run_id=_run_id or None,
+                    team_id=_team_id,
+                )
+                status = str(result.get("status") or "")
+                if status != "approved":
+                    err = str(result.get("error") or "").strip()
+                    if status == "denied":
+                        return (
+                            "[failed] User declined to add the requested capability"
+                            + (f": {err}" if err else "")
+                            + ". Do not claim you can do it; offer another approach."
+                        )
+                    if status == "expired":
+                        return (
+                            "[failed] Capability request expired before the user answered"
+                            + (f": {err}" if err else "")
+                            + ". Ask them again only if they still want this."
+                        )
+                    return f"[failed] Capability grant failed ({status}): {err or 'unknown'}"
+
+                granted = result.get("grantedScopes") or scopes_list
+                if not isinstance(granted, list):
+                    granted = scopes_list
+
+                # Hot-reload tools for the rest of this run.
+                try:
+                    from dataclasses import replace as dc_replace
+
+                    perm = result.get("permissionScopes")
+                    jit = result.get("jitScopes")
+                    always = result.get("alwaysScopes")
+                    if isinstance(perm, list) and perm:
+                        _router.identity = dc_replace(
+                            _router.identity,
+                            permission_scopes=tuple(str(s) for s in perm if str(s).strip()),
+                            jit_scopes=tuple(
+                                str(s) for s in (jit if isinstance(jit, list) else []) if str(s).strip()
+                            )
+                            or _router.identity.jit_scopes,
+                            always_scopes=tuple(
+                                str(s)
+                                for s in (always if isinstance(always, list) else [])
+                                if str(s).strip()
+                            )
+                            or _router.identity.always_scopes,
+                        )
+                    else:
+                        _router.identity = dc_replace(
+                            _router.identity,
+                            permission_scopes=tuple(
+                                dict.fromkeys(
+                                    [
+                                        *(_router.identity.permission_scopes or ()),
+                                        *(str(s) for s in granted if str(s).strip()),
+                                    ]
+                                )
+                            ),
+                        )
+
+                    refresh_plan = _plan
+                    if _plan.skill_filter:
+                        expanded = list(
+                            dict.fromkeys([*_plan.skill_filter, *(str(s) for s in granted)])
+                        )
+                        refresh_plan = dc_replace(
+                            _plan,
+                            skill_filter=expanded,
+                            groups=classify_groups(
+                                "",
+                                _router.identity,
+                                runner_runtime=_router.runner_runtime,
+                                skill_filter=expanded,
+                            ),
+                            scope_groups=scope_groups(
+                                _router.identity,
+                                runner_runtime=_router.runner_runtime,
+                                skill_filter=expanded,
+                            ),
+                        )
+                    else:
+                        refresh_plan = dc_replace(
+                            _plan,
+                            scope_groups=scope_groups(
+                                _router.identity,
+                                runner_runtime=_router.runner_runtime,
+                                skill_filter=None,
+                            ),
+                        )
+
+                    new_tools = _router.build_tool_definitions(
+                        refresh_plan,
+                        _mcp,
+                        askable_agents=None,
+                        has_context_refs=_router.last_has_context_refs,
+                        enable_context_search=_router.last_enable_context_search,
+                    )
+                    # Rebuild into the live executor map so later grants keep mutating it.
+                    _router.build_executor_map(
+                        refresh_plan,
+                        agent_id=_agent_id,
+                        run_id=_run_id,
+                        backend_url=_backend,
+                        runner_token=_token,
+                        qlix_sdk=_sdk,
+                        mcp_servers=_mcp,
+                        subagent_context=_sub,
+                        live_tools=_live_tools,
+                        team_id=_team_id,
+                        live_executors=_emap,
+                        has_context_refs=_router.last_has_context_refs,
+                        enable_context_search=_router.last_enable_context_search,
+                    )
+                    if _live_tools is not None:
+                        _live_tools.clear()
+                        _live_tools.extend(new_tools)
+                except Exception as exc:  # noqa: BLE001
+                    return (
+                        f"Capability added ({', '.join(map(str, granted))}), but tool refresh "
+                        f"failed ({exc}). Continue — tools will be available on the next message."
+                    )
+
+                return (
+                    "User approved adding capability: "
+                    + ", ".join(map(str, granted))
+                    + ". The new tools are available now — continue the original task."
+                )
+
             executor_map.setdefault("think", _think)
             executor_map.setdefault("done", _done)
             executor_map.setdefault("find_tools", _find_tools)
             executor_map.setdefault("call_tool", _call_tool)
             executor_map.setdefault("delegate_task", _delegate_task)
+            executor_map.setdefault("request_capability", _request_capability)
 
             if subagent_context is not None:
                 from .subagents import build_subagent_executors

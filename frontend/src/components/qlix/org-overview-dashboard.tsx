@@ -227,7 +227,7 @@ function OrgAuditTable({ rows }: { readonly rows: DashboardHomeResponse["auditEv
             auditRowTone(row.result),
           )}
         >
-          <span className="font-mono text-[11px] text-black/45">{row.timeUtc}</span>
+          <span className="font-mono text-[11px] text-black/45">{row.timeIst}</span>
           <span className="truncate">
             {row.agentName} — {row.description}
           </span>

@@ -12,11 +12,38 @@ import {
   TeamOutboundProvenanceError,
 } from '../teams/teamOutboundGuard.js';
 import { loadPublishedWorkflow } from '../conversations/conversationWorkflow.service.js';
+import {
+  promptFromNode,
+  type ConversationPrompt,
+} from '../conversations/conversationPrompt.js';
 
-async function managedWorkflowEntryMessage(
+export function applyConversationPromptToOutbound(
+  outbound: Omit<PendingWaitOutbound, 'id' | 'queuedAt'> & { id?: string },
+  prompt: ConversationPrompt,
+): Omit<PendingWaitOutbound, 'id' | 'queuedAt'> & { id?: string } {
+  if (prompt.kind === 'choice') {
+    return {
+      ...outbound,
+      kind: 'poll',
+      message: prompt.content,
+      pollName: prompt.content,
+      pollValues: prompt.options,
+      pollSelectableCount: prompt.maxSelections ?? 1,
+      replyInstructions: null,
+    };
+  }
+  return {
+    ...outbound,
+    kind: 'text',
+    message: prompt.content,
+    replyInstructions: null,
+  };
+}
+
+async function managedWorkflowEntryPrompt(
   repo: TeamsRepository,
   teamId: string,
-): Promise<string | null> {
+): Promise<ConversationPrompt | null> {
   const team = await repo.findById(teamId);
   const config = team?.config as { conversationWorkflowVersionId?: string } | undefined;
   if (!team || !config?.conversationWorkflowVersionId) return null;
@@ -26,9 +53,8 @@ async function managedWorkflowEntryMessage(
       orgId: team.orgId,
     });
     const entry = workflow.nodes.find((node) => node.id === workflow.entryNodeId);
-    return entry && (entry.type === 'ask' || entry.type === 'collect')
-      ? entry.content
-      : null;
+    if (!entry || (entry.type !== 'ask' && entry.type !== 'collect')) return null;
+    return promptFromNode(entry);
   } catch (error) {
     console.warn(
       '[pending-wait] managed workflow entry unavailable:',
@@ -306,26 +332,24 @@ export async function persistPendingWaitOutbound(input: {
     }
     throw error;
   }
-  const managedEntryMessage =
-    (input.outbound.kind ?? 'text') === 'text'
-      ? await managedWorkflowEntryMessage(repo, run.teamId)
+  const managedEntryPrompt =
+    (input.outbound.kind ?? 'text') === 'text' || (input.outbound.kind ?? 'text') === 'poll'
+      ? await managedWorkflowEntryPrompt(repo, run.teamId)
       : null;
-  if (managedEntryMessage) {
+  if (managedEntryPrompt) {
     const recipientKey = normalizeContactJid(
       input.outbound.jid || input.outbound.recipient,
     );
     const alreadyQueued = existing?.pendingWaitOutbounds?.find(
-      (row) =>
-        (row.kind ?? 'text') === 'text' &&
-        normalizeContactJid(row.jid || row.recipient) === recipientKey,
+      (row) => normalizeContactJid(row.jid || row.recipient) === recipientKey,
     );
     if (alreadyQueued) return alreadyQueued;
   }
+  const rewritten = managedEntryPrompt
+    ? applyConversationPromptToOutbound(input.outbound, managedEntryPrompt)
+    : input.outbound;
   const authoritativeOutbound = {
-    ...input.outbound,
-    ...(managedEntryMessage
-      ? { message: managedEntryMessage, replyInstructions: null }
-      : {}),
+    ...rewritten,
     // Preserve the source-of-truth name. WhatsApp may return a device-local
     // nickname for the same valid phone number.
     name: authoritativeContact.name ?? input.outbound.name,

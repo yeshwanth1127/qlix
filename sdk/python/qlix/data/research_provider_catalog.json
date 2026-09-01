@@ -1,0 +1,205 @@
+{
+  "formatVersion": 1,
+  "semantics": "Existing Qlix provider routes. Priority is deterministic within each public surface; browser providers are escalation-only.",
+  "providers": [
+    {
+      "id": "tavily",
+      "operations": ["search"],
+      "publicTools": ["web_search"],
+      "runtimes": ["local"],
+      "priority": 10,
+      "requirements": { "env": ["TAVILY_API_KEY"], "python": ["tavily"] },
+      "timeoutSeconds": 30,
+      "cancellation": "request_timeout",
+      "errorBehavior": "fall_through"
+    },
+    {
+      "id": "duckduckgo",
+      "operations": ["search"],
+      "publicTools": ["web_search"],
+      "runtimes": ["local"],
+      "priority": 20,
+      "requirements": { "python": ["ddgs"] },
+      "timeoutSeconds": 30,
+      "cancellation": "library_managed",
+      "errorBehavior": "terminal_after_fallback"
+    },
+    {
+      "id": "direct_http",
+      "operations": ["read"],
+      "publicTools": ["web_search", "http_request"],
+      "runtimes": ["local"],
+      "priority": 10,
+      "requirements": { "python": ["httpx"] },
+      "timeoutSeconds": 30,
+      "cancellation": "request_timeout",
+      "errorBehavior": "terminal",
+      "security": ["ssrf_check", "redirect_check_required"]
+    },
+    {
+      "id": "exa_agent_reach",
+      "operations": ["search"],
+      "publicTools": ["research_web_search"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["mcporter"], "bootstrapBinary": ["agent-reach"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "blocked"
+    },
+    {
+      "id": "jina_reader",
+      "operations": ["read"],
+      "publicTools": ["research_read_url", "research_video"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 50,
+      "requirements": { "binary": ["curl"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "blocked",
+      "security": ["public_jina_proxy"]
+    },
+    {
+      "id": "twitter_cli",
+      "operations": ["platform_search", "read"],
+      "platforms": ["twitter"],
+      "publicTools": ["research_social_search", "research_read_url"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["twitter"], "credentials": ["twitter_session"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "browser_escalation"
+    },
+    {
+      "id": "reddit_cli",
+      "operations": ["platform_search"],
+      "platforms": ["reddit"],
+      "publicTools": ["research_social_search"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binaryAny": ["opencli", "rdt"], "credentials": ["reddit_session"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "browser_escalation"
+    },
+    {
+      "id": "xiaohongshu_cli",
+      "operations": ["platform_search"],
+      "platforms": ["xiaohongshu"],
+      "publicTools": ["research_social_search"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["opencli"], "credentials": ["xiaohongshu_session"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "browser_escalation"
+    },
+    {
+      "id": "youtube_ytdlp",
+      "operations": ["platform_research", "read"],
+      "platforms": ["youtube"],
+      "publicTools": ["research_video", "research_read_url"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["yt-dlp"], "credentialsOptional": ["youtube_cookies"] },
+      "timeoutSeconds": 120,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "jina_then_exa"
+    },
+    {
+      "id": "bilibili_cli",
+      "operations": ["platform_research", "read"],
+      "platforms": ["bilibili"],
+      "publicTools": ["research_video", "research_read_url"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["bili"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "blocked"
+    },
+    {
+      "id": "github_cli",
+      "operations": ["platform_research", "read"],
+      "platforms": ["github"],
+      "publicTools": ["research_github", "research_read_url"],
+      "runtimes": ["cloud", "hybrid"],
+      "priority": 10,
+      "requirements": { "binary": ["gh"] },
+      "timeoutSeconds": 90,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "blocked"
+    },
+    {
+      "id": "luna_browser",
+      "operations": ["browser"],
+      "publicTools": ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_extract", "browser_axtree"],
+      "runtimes": ["local"],
+      "priority": 100,
+      "requirements": { "python": ["playwright"] },
+      "timeoutSeconds": 120,
+      "cancellation": "browser_session_close",
+      "errorBehavior": "terminal",
+      "escalationOnly": true,
+      "security": ["ssrf_check", "capability_policy"]
+    },
+    {
+      "id": "generic_remote_cdp",
+      "operations": ["browser"],
+      "publicTools": ["browser", "browser_ab_*"],
+      "runtimes": ["cloud"],
+      "priority": 90,
+      "requirements": { "env": ["QLIX_BROWSER_CDP_URL"] },
+      "timeoutSeconds": 120,
+      "cancellation": "browser_session_close",
+      "errorBehavior": "local_browser_fallback",
+      "escalationOnly": true,
+      "security": ["ssrf_check", "scopes", "jit", "signed_action"]
+    },
+    {
+      "id": "browserbase",
+      "operations": ["browser"],
+      "publicTools": ["browser", "browser_ab_*"],
+      "runtimes": ["cloud"],
+      "priority": 95,
+      "requirements": { "env": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"] },
+      "timeoutSeconds": 120,
+      "cancellation": "browser_session_close",
+      "errorBehavior": "local_browser_fallback",
+      "escalationOnly": true,
+      "security": ["ssrf_check", "scopes", "jit", "signed_action"]
+    },
+    {
+      "id": "agent_browser",
+      "operations": ["browser"],
+      "publicTools": ["browser", "browser_ab_*"],
+      "runtimes": ["cloud"],
+      "priority": 100,
+      "requirements": { "binary": ["agent-browser"] },
+      "timeoutSeconds": 120,
+      "cancellation": "subprocess_timeout",
+      "errorBehavior": "cloudflare_browser_failover",
+      "escalationOnly": true,
+      "security": ["ssrf_check", "scopes", "jit", "signed_action"]
+    },
+    {
+      "id": "cloudflare_browser_run",
+      "operations": ["browser"],
+      "publicTools": ["browser", "browser_ab_*"],
+      "runtimes": ["cloud"],
+      "priority": 110,
+      "requirements": {
+        "envAnyGroups": [
+          ["CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID"],
+          ["CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"]
+        ]
+      },
+      "timeoutSeconds": 120,
+      "cancellation": "browser_session_close",
+      "errorBehavior": "terminal",
+      "escalationOnly": true,
+      "security": ["ssrf_check", "scopes", "jit", "signed_action"]
+    }
+  ]
+}

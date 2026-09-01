@@ -29,7 +29,7 @@ export function DocsShell({
   const pathname = usePathname();
 
   return (
-    <div className="relative min-h-dvh bg-[#f2efe8] text-[#1c1830]">
+    <div className="relative min-h-dvh bg-[#E2F0CC] text-[#012F13]">
       <div
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(28,24,48,0.06),_transparent_55%)]"
         aria-hidden
@@ -48,8 +48,8 @@ export function DocsShell({
                     href={item.href}
                     className={
                       active
-                        ? "rounded-lg bg-[#1c1830]/[0.06] px-2.5 py-1.5 text-[13px] font-medium text-[#1c1830]"
-                        : "rounded-lg px-2.5 py-1.5 text-[13px] text-black/55 transition-colors hover:bg-black/[0.04] hover:text-[#1c1830]"
+                        ? "rounded-lg bg-[#012F13]/[0.06] px-2.5 py-1.5 text-[13px] font-medium text-[#012F13]"
+                        : "rounded-lg px-2.5 py-1.5 text-[13px] text-black/55 transition-colors hover:bg-black/[0.04] hover:text-[#012F13]"
                     }
                   >
                     {item.label}
@@ -59,7 +59,7 @@ export function DocsShell({
             </nav>
           </aside>
           <main className="min-w-0 flex-1 pb-10">
-            <h1 className="text-3xl font-semibold tracking-tight text-[#1c1830] sm:text-4xl">{title}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-[#012F13] sm:text-4xl">{title}</h1>
             <div className="mt-8">{children}</div>
           </main>
         </div>

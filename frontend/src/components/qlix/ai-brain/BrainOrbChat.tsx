@@ -107,7 +107,7 @@ function ProposalCard({
       ) : null}
       <ul className="space-y-1.5">
         {proposal.agents.map((agent) => (
-          <li key={`${agent.name}-${agent.runtime}`} className="border border-black/10 bg-white px-2 py-1.5">
+          <li key={`${agent.name}-${agent.runtime}`} className="border border-black/10 bg-[#E2F0CC] px-2 py-1.5">
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-[11.5px] font-medium text-black">{agent.name}</span>
               <span className="font-mono text-[9px] text-black/40">{agent.runtime}</span>
@@ -201,7 +201,7 @@ function SourcesPopover({ citations }: { readonly citations: readonly AiBrainQue
             exit={{ opacity: 0, y: 4, scale: 0.98 }}
             transition={{ duration: 0.12, ease: "easeOut" }}
             role="tooltip"
-            className="absolute bottom-full left-0 z-30 mb-2 w-[min(20rem,72vw)] rounded-lg border border-black bg-white p-2.5 shadow-[4px_4px_0_rgba(0,0,0,0.12)]"
+            className="absolute bottom-full left-0 z-30 mb-2 w-[min(20rem,72vw)] rounded-lg border border-black bg-[#E2F0CC] p-2.5 shadow-[4px_4px_0_rgba(0,0,0,0.12)]"
           >
             <p className="mb-2 font-serif text-[9px] uppercase tracking-[0.14em] text-black/40">
               Sources for this response
@@ -422,7 +422,7 @@ export function BrainOrbChat({
             role="dialog"
             aria-label="Chat with exa"
             className={cn(
-              "relative flex flex-col overflow-hidden border border-black bg-white shadow-[6px_6px_0_rgba(0,0,0,0.12)]",
+              "relative flex flex-col overflow-hidden border border-black bg-[#E2F0CC] shadow-[6px_6px_0_rgba(0,0,0,0.12)]",
               embedded
                 ? "h-[min(520px,68dvh)] w-full max-w-2xl"
                 : "h-[min(480px,calc(100dvh-5.5rem))] max-h-[min(480px,calc(100dvh-5.5rem))] w-[min(420px,calc(100vw-3rem))]",
@@ -458,7 +458,7 @@ export function BrainOrbChat({
                   animate={{ x: 0 }}
                   exit={{ x: "-100%" }}
                   transition={{ duration: 0.18, ease: "easeOut" }}
-                  className="absolute inset-y-0 left-0 z-40 flex w-[min(17rem,82%)] flex-col border-r border-black bg-white shadow-[5px_0_0_rgba(0,0,0,0.08)]"
+                  className="absolute inset-y-0 left-0 z-40 flex w-[min(17rem,82%)] flex-col border-r border-black bg-[#E2F0CC] shadow-[5px_0_0_rgba(0,0,0,0.08)]"
                   aria-label="Recent chats"
                 >
                   <div className="flex items-center justify-between border-b border-black px-3 py-3">
@@ -505,8 +505,8 @@ export function BrainOrbChat({
                       turn.role === "user"
                         ? "border-black bg-black text-white"
                         : turn.error
-                          ? "border-black/20 bg-white text-black/60"
-                          : "border-black bg-white text-black",
+                          ? "border-black/20 bg-[#E2F0CC] text-black/60"
+                          : "border-black bg-[#E2F0CC] text-black",
                     )}
                   >
                     <p className="whitespace-pre-wrap">{turn.content}</p>
@@ -536,8 +536,9 @@ export function BrainOrbChat({
             </div>
 
             <div className="flex w-full shrink-0 flex-col gap-2 border-t border-black p-3">
-              <div className="flex w-full min-w-0 items-stretch gap-2">
+              <div className="chat-composer flex w-full min-w-0 items-stretch gap-2 p-2">
                 <textarea
+                  data-chat-input
                   ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -549,7 +550,7 @@ export function BrainOrbChat({
                   }}
                   placeholder="Ask exa — knowledge, agents, assistants…"
                   rows={2}
-                  className="box-border min-h-12 min-w-0 flex-1 resize-none overflow-y-auto border border-black bg-white px-3 py-2 text-[13px] leading-5 text-black outline-none placeholder:text-black/40 focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
+                  className="box-border min-h-12 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-2 py-2 text-[13px] leading-5 text-black outline-none placeholder:text-black/40"
                 />
                 <button
                   type="button"
@@ -576,7 +577,7 @@ export function BrainOrbChat({
           onClick={() => setOpen((v) => !v)}
           aria-label={open ? "Close exa chat" : "Chat with exa"}
           aria-expanded={open}
-          className="group relative size-16 overflow-hidden rounded-full border border-black bg-white shadow-[3px_3px_0_rgba(0,0,0,0.12)] transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
+          className="group relative size-16 overflow-hidden rounded-full border border-black bg-[#E2F0CC] shadow-[3px_3px_0_rgba(0,0,0,0.12)] transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
         >
           <Orb hue={0} hoverIntensity={0.5} rotateOnHover forceHoverState={open} backgroundColor="#ffffff" />
           <span className="pointer-events-none absolute inset-x-0 bottom-1 text-center font-serif text-[8px] uppercase tracking-widest text-black/0 transition-colors group-hover:text-black/50">

@@ -90,11 +90,19 @@ class SubAgentRunContext:
     #: so there is no in-process task here — they are collected by polling the backend instead.
     remote: set[str] = field(default_factory=set)
     _semaphore: asyncio.Semaphore | None = None
+    cancellation_token: Any = None
 
     def semaphore(self, max_parallel: int) -> asyncio.Semaphore:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(max(1, max_parallel))
         return self._semaphore
+
+    def cancel_local(self, reason: str = "Parent run canceled") -> None:
+        """Immediately stop every in-process child owned by this parent run."""
+        for invocation in self.live.values():
+            if not invocation.task.done():
+                invocation.status = "canceled"
+                invocation.task.cancel(reason)
 
 
 def openai_subagent_tool_definitions(
@@ -327,6 +335,7 @@ async def _run_one_nested(
                 live_view_enabled=False,
                 max_rounds=subagent_child_max_rounds(),
                 max_seconds=subagent_child_max_seconds(),
+                cancellation_token=ctx.cancellation_token,
             )
             payload = {
                 "id": invocation_id,
@@ -349,6 +358,29 @@ async def _run_one_nested(
             except Exception:
                 pass
             return payload
+        except asyncio.CancelledError as exc:
+            payload = {
+                "id": invocation_id,
+                "status": "canceled",
+                "content": "",
+                "error": str(exc)[:2000] or "Parent run canceled",
+                "name": name,
+            }
+            try:
+                await asyncio.shield(
+                    _patch_invocation(
+                        ctx.http,
+                        agent_id=ctx.agent_id,
+                        invocation_id=invocation_id,
+                        headers=ctx.headers,
+                        status="canceled",
+                        result=payload,
+                        error_message=payload["error"],
+                    )
+                )
+            except Exception:
+                pass
+            raise
         except Exception as exc:  # noqa: BLE001
             payload = {
                 "id": invocation_id,
@@ -457,6 +489,14 @@ def build_subagent_executors(ctx: SubAgentRunContext) -> dict[str, Any]:
                 try:
                     live.result = t.result()
                     live.status = str((live.result or {}).get("status") or "completed")
+                except asyncio.CancelledError as exc:
+                    live.result = {
+                        "id": _id,
+                        "status": "canceled",
+                        "error": str(exc)[:2000] or "Parent run canceled",
+                        "content": "",
+                    }
+                    live.status = "canceled"
                 except Exception as exc:  # noqa: BLE001
                     live.result = {
                         "id": _id,
@@ -584,10 +624,22 @@ async def _await_ids(ctx: SubAgentRunContext, ids: list[str], *, timeout_s: floa
                 results.append({"id": inv_id, "status": "failed", "error": str(exc), "content": ""})
         for t in not_done:
             inv_id = id_for_task.get(t, "")
+            t.cancel(f"Sub-agent timed out after {timeout_s}s")
+            try:
+                await _patch_invocation(
+                    ctx.http,
+                    agent_id=ctx.agent_id,
+                    invocation_id=inv_id,
+                    headers=ctx.headers,
+                    status="canceled",
+                    error_message=f"timed out after {timeout_s}s",
+                )
+            except Exception:
+                pass
             results.append(
                 {
                     "id": inv_id,
-                    "status": "running",
+                    "status": "canceled",
                     "content": "",
                     "error": f"timed out after {timeout_s}s",
                 }
@@ -710,6 +762,7 @@ async def continue_via_subagent_on_budget(
         qlix_sdk=ctx.qlix_sdk,
         depth=ctx.depth + 1,
         agent_description=ctx.agent_description,
+        cancellation_token=ctx.cancellation_token,
     )
     try:
         result = await _run_one_nested(

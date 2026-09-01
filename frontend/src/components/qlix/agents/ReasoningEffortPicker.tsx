@@ -35,7 +35,7 @@ export function ReasoningEffortPicker({
           "bg-transparent text-black outline-none disabled:opacity-50",
           compact
             ? "max-w-[9.5rem] truncate text-[11px]"
-            : cn("rounded-xl border bg-white/70 px-2.5 py-1.5 text-[12.5px]", HAIRLINE),
+            : cn("rounded-xl border bg-[#E2F0CC]/70 px-2.5 py-1.5 text-[12.5px]", HAIRLINE),
         )}
       >
         {REASONING_EFFORT_OPTIONS.map((option) => (

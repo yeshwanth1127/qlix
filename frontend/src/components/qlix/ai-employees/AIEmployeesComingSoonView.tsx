@@ -41,7 +41,7 @@ export function AIEmployeesComingSoonView() {
         />
 
         <div className="mx-auto flex max-w-2xl flex-col items-center text-center">
-          <div className="relative mb-7 flex size-24 items-center justify-center rounded-full border border-black/10 bg-white/75 shadow-[var(--sketch-shadow)] backdrop-blur-xl">
+          <div className="relative mb-7 flex size-24 items-center justify-center rounded-full border border-black/10 bg-[#E2F0CC]/75 shadow-[var(--sketch-shadow)] backdrop-blur-xl">
             <div className="absolute inset-2 rounded-full border border-dashed border-[color:var(--sketch-purple)]/35" />
             <Bot className="size-9 text-black" strokeWidth={1.25} aria-hidden="true" />
             <Sparkles
@@ -81,9 +81,9 @@ export function AIEmployeesComingSoonView() {
           {capabilities.map(({ icon: Icon, title, description }) => (
             <div
               key={title}
-              className="rounded-2xl border border-black/10 bg-white/55 p-5 shadow-[var(--sketch-shadow)] backdrop-blur-xl"
+              className="rounded-2xl border border-black/10 bg-[#E2F0CC]/55 p-5 shadow-[var(--sketch-shadow)] backdrop-blur-xl"
             >
-              <div className="mb-4 flex size-9 items-center justify-center rounded-xl border border-black/10 bg-white/80">
+              <div className="mb-4 flex size-9 items-center justify-center rounded-xl border border-black/10 bg-[#E2F0CC]/80">
                 <Icon className="size-4.5 text-black" strokeWidth={1.4} aria-hidden="true" />
               </div>
               <h2 className="text-[13px] font-bold text-black">{title}</h2>

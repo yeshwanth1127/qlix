@@ -83,14 +83,13 @@
   stroke-dasharray: 4 3;
 }
 
-/* Controls: square glass buttons instead of the stock white pill stack. */
+/* Controls: quiet rule-separated buttons with no floating surface. */
 .qlix-builder .react-flow__controls {
   box-shadow: none;
   border: 1px solid var(--ink-border);
-  border-radius: 12px;
+  border-radius: 2px;
   overflow: hidden;
-  background: rgb(255 255 255 / 0.7);
-  backdrop-filter: blur(8px);
+  background: transparent;
 }
 
 .qlix-builder .react-flow__controls-button {

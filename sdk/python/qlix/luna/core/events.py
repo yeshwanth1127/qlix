@@ -55,6 +55,7 @@ class EventType(str, Enum):
     SKILL_EXECUTE_END = "skill_execute_end"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    CONTEXT_COMPACTED = "context_compacted"
     # Phase 16 — A2A Protocol
     A2A_TASK_RECEIVED = "a2a_task_received"
     A2A_TASK_COMPLETED = "a2a_task_completed"

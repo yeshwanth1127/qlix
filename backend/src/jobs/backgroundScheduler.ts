@@ -8,7 +8,8 @@ import { tickEmployeeSchedules } from '../employees/employeeSchedule.service.js'
 import { scheduleService } from '../schedules/schedule.service.js';
 import { WaitTriggerService } from '../teams/waitTrigger.service.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
-import { fireDueConversationTimers } from '../conversations/conversationWorkers.service.js';
+import { dispatchConversationOutboxOnce, fireDueConversationTimers } from '../conversations/conversationWorkers.service.js';
+import { conversationPluginRegistry } from '../conversations/registry.js';
 
 /**
  * In-process interval scheduler for jobs that previously had to be triggered by hand
@@ -136,6 +137,18 @@ export function startBackgroundScheduler(): void {
       if (n > 0) console.log(`[scheduler] conversation timers fired=${n}`);
     } catch (err) {
       console.error('[scheduler] conversation timers failed', err);
+    }
+  }, 5_000, 5_000);
+  every(async () => {
+    try {
+      const { completed, retried, dead } = await dispatchConversationOutboxOnce(
+        conversationPluginRegistry.handlers(),
+      );
+      if (completed > 0 || retried > 0 || dead > 0) {
+        console.log(`[scheduler] conversation outbox completed=${completed} retried=${retried} dead=${dead}`);
+      }
+    } catch (err) {
+      console.error('[scheduler] conversation outbox dispatch failed', err);
     }
   }, 5_000, 5_000);
   every(async () => {

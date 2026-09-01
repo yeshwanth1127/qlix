@@ -9,6 +9,7 @@ import type {
   AuditResultUi,
   AuditRiskLevel,
 } from "@/lib/dashboard-api";
+import { formatDateTimeInDisplayTz } from "@/lib/display-datetime";
 import { cn } from "@/lib/utils/cn";
 import {
   SketchBox,
@@ -27,18 +28,7 @@ type ResultFilter = "all" | AuditResultUi;
 type ActionFilter = "all" | AuditActionType;
 
 function formatSystemTime(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  if (Number.isNaN(date.getTime())) return "—";
-
-  return date.toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    timeZoneName: "short",
-  });
+  return formatDateTimeInDisplayTz(timestampMs);
 }
 
 function eventMatches(
@@ -343,7 +333,7 @@ export function AuditLogView() {
                       <table className="w-full border-collapse text-left">
                         <thead>
                           <tr className="border-b border-black/10">
-                            <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>System time</th>
+                            <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Time (IST)</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Action</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Details</th>
                             <th className={cn("px-4 py-2.5 text-left", sketchLabel)}>Risk</th>
@@ -355,7 +345,7 @@ export function AuditLogView() {
                             <tr
                               key={event.id}
                               className={cn(
-                                "border-b border-black/8 transition-colors duration-200 last:border-0 hover:bg-white/70",
+                                "border-b border-black/8 transition-colors duration-200 last:border-0 hover:bg-[#E2F0CC]/70",
                                 auditRowTone(event),
                               )}
                             >

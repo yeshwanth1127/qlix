@@ -8,6 +8,7 @@ import {
 } from '../connectors/googleServices.js';
 import { getMcpScopeDefsForOrg } from '../mcp/mcpScopeCatalog.js';
 import { getPeerAgentScopeDefsForOrg } from './peerAgentScopes.js';
+import { getEnabledPluginIds } from '../plugins/plugins.service.js';
 import type { AgentRuntime, BuiltinPermissionScope, PermissionScope } from './agents.types.js';
 
 /**
@@ -32,6 +33,10 @@ export interface ScopeDef {
   requiresConnectorFamily?: 'crm' | 'email' | 'drive';
   /** Runtimes whose SDK runner has the backing tool. Informational for now. */
   runtimes: AgentRuntime[];
+  /** Plugin (pluginCatalog.ts) that must be enabled for this org before the scope is offerable.
+   * Absent = ungated by plugin state (most scopes). Explicit disable also hides these scopes
+   * from runner poll without deleting grants, so re-enabling restores the exact prior setup. */
+  pluginId?: string;
 }
 
 /** A catalog entry annotated with per-org availability state. */
@@ -61,6 +66,14 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     label: 'Web research (platform APIs)',
     description:
       'Search and read Twitter, Reddit, GitHub, YouTube, Bilibili, and the open web via structured APIs — no browser automation',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+  },
+  {
+    id: 'files.create',
+    label: 'Create files (PDF, spreadsheet)',
+    description:
+      'Generate PDF reports and Excel spreadsheets in the runner sandbox and return a download link (cloud create_report_pdf / create_xlsx). Separate from web research and from local filesystem write.',
     forceJit: false,
     runtimes: ['cloud', 'hybrid'],
   },
@@ -299,6 +312,9 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     forceJit: false,
     requiresConnector: 'whatsapp_baileys',
     runtimes: ['cloud', 'hybrid'],
+    // This is specifically the outreach-campaign capability (send, then wait/listen for
+    // replies). whatsapp.send/read/contact_send are ordinary scopes and stay ungated.
+    pluginId: 'whatsapp_outreach',
   },
   {
     id: 'social.read',
@@ -373,7 +389,111 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     requiresConnector: 'notion',
     runtimes: ['cloud', 'hybrid'],
   },
+  {
+    id: 'assessment.session.get',
+    label: 'Read assessment session',
+    description: 'Read a Work Session\'s status, recipe, and metadata for evidence-based assessment',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.evidence.search',
+    label: 'Search assessment evidence',
+    description: 'Search the evidence timeline collected for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.evidence.read',
+    label: 'Read assessment evidence',
+    description: 'Read one evidence record collected for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.artifact.read',
+    label: 'Read assessment artifact',
+    description: 'Read a submitted project artifact (file content, test/build output) for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.snapshot.read',
+    label: 'Read project snapshot',
+    description: 'Read a point-in-time project snapshot (file tree, hashes) for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.snapshot.compare',
+    label: 'Compare project snapshots',
+    description: 'Diff two project snapshots for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.framework.read',
+    label: 'Read evaluation framework',
+    description: 'Read the customer-defined checklist/rubric for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.record',
+    label: 'Record assessment finding',
+    description: 'Record one criterion finding (verdict, confidence, evidence refs, rationale) for a Work Session',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.review.ask',
+    label: 'Ask a defense-interview question',
+    description: 'Ask the assessment subject a question grounded in their own evidence; does not itself pause anything',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.review.request_demonstration',
+    label: 'Request a live demonstration',
+    description: 'Ask the assessment subject to make a small live change and demonstrate understanding (requires approval)',
+    forceJit: true,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
+  {
+    id: 'assessment.report.create',
+    label: 'Create assessment report',
+    description: 'Create the final evidence-backed readiness report for a Work Session, gated behind human-reviewer confirmation',
+    forceJit: true,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'assessment',
+  },
 ];
+
+const PLUGIN_BY_SCOPE = new Map(
+  SCOPE_CATALOG.filter((scope) => scope.pluginId).map((scope) => [scope.id, scope.pluginId!]),
+);
+
+export function filterScopesByDisabledPlugins<T extends string>(
+  scopes: readonly T[],
+  disabledPluginIds: Iterable<string>,
+): T[] {
+  const disabled = new Set(disabledPluginIds);
+  if (disabled.size === 0) return [...scopes];
+  return scopes.filter((scope) => {
+    const owner = PLUGIN_BY_SCOPE.get(scope as PermissionScope);
+    return !owner || !disabled.has(owner);
+  });
+}
 
 export const SCOPE_CATALOG_BY_ID: Record<BuiltinPermissionScope, ScopeDef> = Object.fromEntries(
   SCOPE_CATALOG.map((s) => [s.id, s]),
@@ -424,8 +544,10 @@ export async function getEffectiveScopes(orgId: string | null): Promise<Annotate
   const connected = new Set<ConnectorProvider>();
   let googleOAuthScopes: string[] = [];
   let disabled = new Set<string>();
+  let enabledPlugins = new Set<string>();
 
   if (orgId) {
+    enabledPlugins = new Set(await getEnabledPluginIds(orgId));
     const accounts = await connectorsRepo.listForOrg(orgId);
     for (const a of accounts) {
       if (a.status === 'connected') connected.add(a.provider);
@@ -464,7 +586,8 @@ export async function getEffectiveScopes(orgId: string | null): Promise<Annotate
     if (googleService && !s.requiresConnectorFamily) {
       isConnected = googleServiceConnected(googleService, googleOAuthScopes);
     }
-    return { ...s, enabled, connected: isConnected, available: enabled && isConnected };
+    const pluginOk = !s.pluginId || enabledPlugins.has(s.pluginId);
+    return { ...s, enabled, connected: isConnected, available: enabled && isConnected && pluginOk };
   });
 }
 

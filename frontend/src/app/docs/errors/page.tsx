@@ -14,13 +14,13 @@ export default function DocsErrorsPage() {
     <DocsShell title="Errors & limits">
       <div className="flex flex-col gap-12">
         <section>
-          <h2 className="text-[17px] font-semibold tracking-tight text-[#1c1830]">Errors</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-[#012F13]">Errors</h2>
           <div className="mt-4">
             <GuideSectionContent section="errors" apiBase={apiBase} variant="docs" />
           </div>
         </section>
         <section>
-          <h2 className="text-[17px] font-semibold tracking-tight text-[#1c1830]">Limits & RBAC</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-[#012F13]">Limits & RBAC</h2>
           <div className="mt-4">
             <GuideSectionContent section="limits" apiBase={apiBase} variant="docs" />
           </div>

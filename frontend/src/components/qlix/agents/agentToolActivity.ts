@@ -27,6 +27,8 @@ export type ActivityStep = {
   jitWhatsappStatus?: "disconnected" | "not_linked";
   jitAttempt?: number;
   jitMaxAttempts?: number;
+  /** Mid-run request to add a missing capability (vs one-shot action approval). */
+  capabilityGrant?: boolean;
 };
 
 /** Normalize the `sources` payload on a tool_finished event into safe link rows. */
@@ -759,7 +761,9 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
       const detail = [turns, tools].filter(Boolean).join(" · ");
       return { id, label: "Run completed", detail: detail || undefined, tone: "success", kind: "other" };
     }
-    case "jit_approval_pending": {
+    case "jit_approval_pending":
+    case "capability_grant_pending": {
+      const isCapability = msg === "capability_grant_pending" || d.kind === "capability_grant";
       const scopeLabel = String(d.scopeLabel ?? d.scope ?? "action");
       const channel = String(d.channel ?? "");
       const context = String(d.context ?? "").trim();
@@ -779,17 +783,23 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         String(d.scope ?? "") === "slack.send" ||
         String(d.scope ?? "") === "notion.write" ||
         String(d.scope ?? "") === "whatsapp.contact_send";
-      const detailParts = [
-        channel === "whatsapp"
-          ? "Reply on WhatsApp to approve or deny"
-          : "Waiting for your approval in Qlix",
-        scopeLabel ? `Scope: ${scopeLabel}` : "",
-        sessionScoped ? "Approving covers this whole conversation" : "",
-        context,
-      ].filter(Boolean);
+      const detailParts = isCapability
+        ? [
+            "I'm not allowed to do this yet — add the capability?",
+            scopeLabel ? `Capability: ${scopeLabel}` : "",
+            context,
+          ].filter(Boolean)
+        : [
+            channel === "whatsapp"
+              ? "Reply on WhatsApp to approve or deny"
+              : "Waiting for your approval in Qlix",
+            scopeLabel ? `Scope: ${scopeLabel}` : "",
+            sessionScoped ? "Approving covers this whole conversation" : "",
+            context,
+          ].filter(Boolean);
       return {
         id,
-        label: "Waiting for your approval",
+        label: isCapability ? "Add capability to continue?" : "Waiting for your approval",
         detail: detailParts.join(" · "),
         tone: "warn",
         kind: "jit_pending",
@@ -802,39 +812,54 @@ function buildActivityStep(seq: number, raw: unknown): ActivityStep | null {
         jitWhatsappStatus: whatsappStatus,
         jitAttempt: typeof d.jitAttempt === "number" ? d.jitAttempt : undefined,
         jitMaxAttempts: typeof d.jitMaxAttempts === "number" ? d.jitMaxAttempts : undefined,
+        capabilityGrant: isCapability,
       };
     }
-    case "jit_approval_granted": {
+    case "jit_approval_granted":
+    case "capability_grant_granted": {
+      const isCapability = msg === "capability_grant_granted" || d.kind === "capability_grant";
       const scopeLabel = String(d.scopeLabel ?? d.scope ?? "");
       const auto = d.auto === true;
       const conversationGrant = String(d.reason ?? "") === "conversation";
-      const label = !auto
-        ? "You approved the action"
-        : conversationGrant
-          ? "Approved for this conversation"
-          : "Pre-approved for this run";
+      const label = isCapability
+        ? auto
+          ? "Capability already available"
+          : "Capability added — continuing"
+        : !auto
+          ? "You approved the action"
+          : conversationGrant
+            ? "Approved for this conversation"
+            : "Pre-approved for this run";
       return {
         id,
         label,
-        detail: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
+        detail: scopeLabel ? (isCapability ? `Added: ${scopeLabel}` : `Scope: ${scopeLabel}`) : undefined,
         tone: "success",
         kind: "jit_resolved",
         category: "approval",
       };
     }
     case "jit_approval_denied":
+    case "capability_grant_denied":
       return {
         id,
-        label: "You denied the action",
+        label:
+          msg === "capability_grant_denied" || d.kind === "capability_grant"
+            ? "You declined adding the capability"
+            : "You denied the action",
         detail: String(d.scopeLabel ?? d.scope ?? ""),
         tone: "warn",
         kind: "jit_resolved",
         category: "approval",
       };
     case "jit_approval_expired":
+    case "capability_grant_expired":
       return {
         id,
-        label: "Approval request expired",
+        label:
+          msg === "capability_grant_expired" || d.kind === "capability_grant"
+            ? "Capability request expired"
+            : "Approval request expired",
         detail: String(d.scopeLabel ?? d.scope ?? ""),
         tone: "warn",
         kind: "jit_resolved",

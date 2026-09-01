@@ -32,7 +32,7 @@ export function MobileDrawer({
 }: MobileDrawerProps) {
   const { session } = useSession();
   const items = useMemo(() => {
-    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false);
+    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false, session?.organization.enabledPluginIds ?? []);
     if (routePrefix !== "/organization") return all;
     if (session?.organization.workspaceKind !== "organization") return all;
     return all.filter((i) => {

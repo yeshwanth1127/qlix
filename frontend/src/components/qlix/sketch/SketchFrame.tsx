@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
-import { sketchFrame } from "./tokens";
 
 interface SketchFrameProps {
   readonly children: ReactNode;
@@ -11,11 +10,10 @@ export function SketchFrame({ children, fullHeight = false }: SketchFrameProps) 
   return (
     <div
       className={cn(
-        sketchFrame,
-        "sketch-card sketch-rise flex flex-1 flex-col overflow-hidden",
+        "flex flex-1 flex-col overflow-hidden bg-transparent",
         fullHeight
           ? "min-h-0"
-          : "min-h-[calc(100dvh-5rem-3.5rem)] md:min-h-[calc(100dvh-5rem)]",
+          : "min-h-[calc(100dvh-3rem)]",
       )}
     >
       <div

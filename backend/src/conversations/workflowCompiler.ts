@@ -1,4 +1,5 @@
 import type { CompiledConversationWorkflow, ConversationWorkflow, WorkflowNode } from './workflow.types.js';
+import { validateConversationPrompt } from './conversationPrompt.js';
 
 const TERMINAL_TYPES = new Set<WorkflowNode['type']>(['complete', 'fail', 'handoff']);
 
@@ -54,6 +55,9 @@ export function compileConversationWorkflow(workflow: ConversationWorkflow): Com
       } catch {
         throw new Error(`Workflow collect node ${node.id} has an invalid validation pattern`);
       }
+    }
+    if (node.type === 'send' || node.type === 'ask' || node.type === 'collect') {
+      if (node.prompt) validateConversationPrompt(node.prompt, node.id);
     }
   }
 

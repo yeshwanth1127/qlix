@@ -78,7 +78,7 @@ function Inspector({
   return (
     <aside
       className={cn(
-        "flex w-60 shrink-0 flex-col overflow-hidden border-l bg-white/45 backdrop-blur-sm",
+        "flex w-60 shrink-0 flex-col overflow-hidden border-l bg-transparent",
         HAIRLINE,
       )}
     >
@@ -492,7 +492,7 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
 
       <div
         className={cn(
-          "flex min-h-0 flex-1 overflow-hidden rounded-2xl border bg-white/30 backdrop-blur-sm",
+          "flex min-h-0 flex-1 overflow-hidden border-y bg-transparent",
           HAIRLINE,
         )}
       >
@@ -545,7 +545,7 @@ function VisualBuilderWorkspace({ routePrefix, canvasId }: VisualBuilderViewProp
             role="dialog"
             aria-label="Apply canvas changes"
             className={cn(
-              "w-full max-w-sm rounded-2xl border bg-white/95 p-4 shadow-[0_20px_50px_-20px_rgba(16,14,22,0.55)] backdrop-blur-md",
+              "w-full max-w-sm rounded-2xl border bg-[#E2F0CC]/95 p-4 shadow-[0_20px_50px_-20px_rgba(16,14,22,0.55)] backdrop-blur-md",
               HAIRLINE,
             )}
           >

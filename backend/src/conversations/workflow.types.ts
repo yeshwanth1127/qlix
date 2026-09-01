@@ -1,12 +1,15 @@
+import type { ConversationPrompt } from './conversationPrompt.js';
+
 export type TemplateValue = string | number | boolean | null | Record<string, unknown> | unknown[];
 
 export type WorkflowNode =
-  | { id: string; type: 'send'; content: string; channel?: string; next: string }
-  | { id: string; type: 'ask'; content: string; variable: string; next: string }
+  | { id: string; type: 'send'; content: string; channel?: string; prompt?: ConversationPrompt; next: string }
+  | { id: string; type: 'ask'; content: string; prompt?: ConversationPrompt; variable: string; next: string }
   | {
       id: string;
       type: 'collect';
       content: string;
+      prompt?: ConversationPrompt;
       variable: string;
       next: string;
       validation?: { pattern?: string; allowed?: string[]; required?: boolean; retryPrompt?: string };

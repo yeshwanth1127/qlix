@@ -14,6 +14,20 @@ export type ConversationOutboxJob = {
 
 export type ConversationEffectHandler = (job: ConversationOutboxJob) => Promise<unknown>;
 
+async function resumeAssessmentTeamRunIfReady(threadId: string, status: string): Promise<void> {
+  if (status !== 'completed') return;
+  const thread = await prisma.conversationThread.findUnique({ where: { id: threadId }, select: { processId: true } });
+  if (!thread?.processId) return;
+  const process = await prisma.conversationProcess.findUnique({ where: { id: thread.processId }, select: { externalRefType: true, externalRefId: true, metadata: true, counters: true } });
+  const metadata = (process?.metadata ?? {}) as Record<string, unknown>;
+  const counters = (process?.counters ?? {}) as Record<string, unknown>;
+  if (process?.externalRefType !== 'team_run' || metadata.adapter !== 'assessment_review_v1' || Number(counters.active ?? 0) > 0 || !process.externalRefId) return;
+  const run = await prisma.teamRun.findUnique({ where: { id: process.externalRefId }, select: { status: true } });
+  if (run?.status !== 'paused') return;
+  const { resumeTeamRun } = await import('../teams/teamsRunLauncher.js');
+  await resumeTeamRun(process.externalRefId);
+}
+
 /** Claim with SKIP LOCKED so multiple workers can safely drain the same queue. */
 export async function claimConversationOutbox(limit = 25): Promise<ConversationOutboxJob[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 100));
@@ -71,13 +85,14 @@ export async function dispatchConversationOutboxOnce(
         data: { status: 'completed', completedAt: new Date(), lockedAt: null, lastError: null },
       });
       if (job.kind === 'action' || job.kind === 'subflow') {
-        await signalConversation({
+        const transitioned = await signalConversation({
           threadId: job.threadId,
           signal: job.kind === 'subflow'
             ? { type: 'subflow_result', ok: true, result }
             : { type: 'action_result', actionId: job.id, ok: true, result },
           idempotencyKey: `${job.idempotencyKey}:result`,
         });
+        await resumeAssessmentTeamRunIfReady(job.threadId, transitioned.status);
       }
       completed += 1;
     } catch (error) {
@@ -149,4 +164,3 @@ export async function fireDueConversationTimers(limit = 100): Promise<number> {
   }
   return fired;
 }
-

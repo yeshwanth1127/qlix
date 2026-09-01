@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/telemetry/trace-envelope.v1.schema.json",
+  "title": "Qlix Trace Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "traceId", "spanId", "executionId", "executionKind"],
+  "properties": {
+    "contractVersion": { "const": "qlix.trace-envelope.v1" },
+    "traceId": { "type": "string", "minLength": 1 },
+    "spanId": { "type": "string", "minLength": 1 },
+    "parentSpanId": { "type": "string", "minLength": 1 },
+    "executionId": { "type": "string", "minLength": 1 },
+    "executionKind": {
+      "enum": ["agent_run", "team_run", "subagent", "gateway", "brain", "conversation"]
+    },
+    "orgId": { "type": "string", "minLength": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "roundId": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "toolCallId": { "type": "string", "minLength": 1 },
+    "nodeId": { "type": "string", "minLength": 1 }
+  }
+}

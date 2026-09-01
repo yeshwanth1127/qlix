@@ -6,6 +6,7 @@ import type {
   TeamRunArtifact,
   TeamRunCheckpoint,
   TeamRunDTO,
+  TeamResultPolicy,
 } from './teams.types.js';
 import { TeamsRepository } from './teams.repository.js';
 import { TeamAgentRunBridge } from './teamAgentRunBridge.js';
@@ -46,13 +47,26 @@ import {
   DEFAULT_RESULT_CONTRACT,
   planLunaTeamsDispatches,
   renderLunaTeamsFinal,
+  renderContextReferenceIndex,
   renderResultHandbacks,
   resolveDispatchAllowedScopes,
+  resultRepairPrompt,
   skillsForLunaTeamsDispatch,
   TEAM_DISPATCH_ONLY_SKILL,
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
 import { effectiveRunGoal } from './teamIntent.js';
+import { isUnusableTeamSynthesis, lastResultFromEnvelope } from './teamRunFollowUp.js';
+import {
+  findReviewProcessForTeamRun,
+  loadCompletedReviewExchanges,
+  reviewProcessHasOpenThreads,
+} from '../assessment/interactiveReview.service.js';
+import { verifyAssessmentResultProvenance } from '../assessment/assessmentProvenance.js';
+import { createContextObject } from '../context/contextPlane.service.js';
+import { ensureRunState, patchRunStateWithRetry } from '../context/runState.service.js';
+import { emptyExecutionUsage, evaluateBudgetShadow, mapConcurrentOrdered } from '../execution/parallelScheduler.js';
+import { prisma } from '../lib/prisma.js';
 
 function runObjective(run: TeamRunDTO): string {
   return effectiveRunGoal(run);
@@ -107,6 +121,7 @@ export interface SubtaskPlan {
    */
   stageOrder: number;
   contractId?: string;
+  resultPolicy?: TeamResultPolicy;
   inputRefs: string[];
   allowedSources: Array<'authoritative_input' | 'reference_asset'>;
   knowledgeMode: 'none' | 'reference_only' | 'required';
@@ -120,6 +135,7 @@ interface WorkerResult {
   summary: string;
   findings: string;
   payload?: unknown;
+  contextRef?: string;
   mailboxMessageId?: string;
   artifacts: TeamRunArtifact[];
   status: 'completed' | 'failed';
@@ -166,6 +182,18 @@ export class TeamOrchestrator {
 
     try {
       await this.repo.updateRunStatus(run.id, 'running', { startedAt: new Date() });
+      await ensureRunState({
+        orgId: run.orgId,
+        executionId: run.id,
+        executionKind: 'team_run',
+        namespaces: {
+          intent: { goal: runObjective(run), version: run.resolvedIntent?.version ?? 1 },
+          progress: { completed: [] },
+          outputs: {},
+        },
+      }).catch((err) => {
+        console.warn('[TeamOrchestrator] failed to initialize run state:', err);
+      });
       await this.emitEvent(run, team, null, 'run_started', {
         runId: run.id,
         goal: run.goal,
@@ -201,6 +229,7 @@ export class TeamOrchestrator {
         allowedScopes: dispatch.allowedScopes,
         stageOrder: dispatch.stageOrder,
         ...(dispatch.contractId ? { contractId: dispatch.contractId } : {}),
+        resultPolicy: dispatch.resultPolicy,
         inputRefs: dispatch.inputRefs,
         allowedSources: dispatch.allowedSources,
         knowledgeMode: dispatch.knowledgeMode,
@@ -326,6 +355,13 @@ export class TeamOrchestrator {
     }
     if (run.status !== 'paused') {
       throw new Error(`Team run ${run.id} is not paused`);
+    }
+
+    // Assessment review pauses never touch WaitTrigger/WhatsApp state — a fully
+    // separate resume path so the existing WhatsApp logic below is untouched.
+    if (checkpoint.reviewConversation) {
+      await this.resumeFromReviewConversation(run, team, checkpoint, emit);
+      return;
     }
 
     const config = team.config as TeamConfig;
@@ -642,7 +678,15 @@ export class TeamOrchestrator {
       ((freshRun?.checkpointJson ?? run.checkpointJson) as TeamRunCheckpoint | null) ?? null;
     const { distinctPendingContactCount, fillMissingOutreachPack } = await import('../wait/pendingWaitOutbound.js');
     const rawPending = priorCheckpoint?.pendingWaitOutbounds ?? [];
-    if (waits.length === 0 && rawPending.length === 0) return false;
+    if (waits.length === 0 && rawPending.length === 0) {
+      // No WhatsApp wait pending — separately check for an open assessment
+      // review conversation (see interactiveReview.service.ts). Fully
+      // orthogonal to everything above: different table, different checkpoint
+      // field, own pause/resume path.
+      const reviewProcess = await findReviewProcessForTeamRun(team.orgId, run.id);
+      if (!reviewProcess || !(await reviewProcessHasOpenThreads(reviewProcess.id))) return false;
+      return this.pauseForReviewConversation(run, team, plan, results, nextStageIndex, reviewProcess.id, emit);
+    }
     const pendingOutbounds = await fillMissingOutreachPack({
       teamRunId: run.id,
       orgId: team.orgId,
@@ -731,6 +775,132 @@ export class TeamOrchestrator {
     }, emit);
     emit('paused', { status: 'paused', teamRunId: run.id, reason: checkpoint.waitReason });
     return true;
+  }
+
+  /** Pause counterpart to resumeFromReviewConversation — arms nothing itself
+   * (askReviewQuestion already started the thread); just records the checkpoint
+   * so resume knows where to pick up. */
+  private async pauseForReviewConversation(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    plan: SubtaskPlan[],
+    results: WorkerResult[],
+    nextStageIndex: number,
+    processId: string,
+    emit: RunEventEmitter,
+  ): Promise<boolean> {
+    const checkpoint: TeamRunCheckpoint = {
+      plan,
+      completedResults: results,
+      nextStageIndex,
+      waitTriggerIds: [],
+      waitReason: 'Waiting for the student to answer the defense interview question(s).',
+      inferenceModel: (team.config as TeamConfig).defaultModel?.trim() || null,
+      reviewConversation: { processId },
+    };
+    await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: checkpoint });
+    await this.emitEvent(run, team, team.supervisorAgentId, 'wait_armed', {
+      triggerKind: 'assessment_review',
+      reason: checkpoint.waitReason,
+      nextStage: nextStageIndex + 1,
+    }, emit);
+    emit('paused', { status: 'paused', teamRunId: run.id, reason: checkpoint.waitReason });
+    // Usually the conversation worker completes later and resumes the run. This
+    // closes the small race where a very fast answer/action finished between the
+    // open-thread check and persisting this checkpoint.
+    if (!(await reviewProcessHasOpenThreads(processId))) {
+      await this.resumeFromReviewConversation(
+        { ...run, status: 'paused', checkpointJson: checkpoint },
+        team,
+        checkpoint,
+        emit,
+      );
+    }
+    return true;
+  }
+
+  /** Resume counterpart to pauseForReviewConversation. Deliberately duplicates
+   * the (small) shared stage-continuation loop from resume() rather than
+   * branching inside it, so the existing WhatsApp resume path is never touched. */
+  private async resumeFromReviewConversation(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    checkpoint: TeamRunCheckpoint,
+    emit: RunEventEmitter,
+  ): Promise<void> {
+    const config = team.config as TeamConfig;
+    const supervisorId = team.supervisorAgentId!;
+    const timeoutMs = config.subtaskTimeoutMs ?? 120_000;
+    const maxAttempts = config.retryPolicy === 'twice' ? 3 : config.retryPolicy === 'once' ? 2 : 1;
+    const plan = checkpoint.plan as SubtaskPlan[];
+    const results = checkpoint.completedResults as WorkerResult[];
+    const processId = checkpoint.reviewConversation!.processId;
+
+    try {
+      if (await reviewProcessHasOpenThreads(processId)) {
+        throw new Error('Review conversation was resumed before every question was answered');
+      }
+      const exchanges = await loadCompletedReviewExchanges(processId);
+      results.push({
+        subtaskId: 'assessment_review_conversation',
+        agentId: '',
+        agentName: 'Defense interview',
+        summary: `${exchanges.length} defense-interview question${exchanges.length === 1 ? '' : 's'} answered.`,
+        findings: exchanges
+          .map((exchange) => `Q: ${exchange.questionText}\nA: ${exchange.answerText}`)
+          .join('\n\n'),
+        payload: { kind: 'review_conversation_result', exchanges },
+        artifacts: [],
+        status: 'completed',
+      });
+
+      await this.repo.updateRunStatus(run.id, 'running', { checkpointJson: null });
+      await this.emitEvent(run, team, supervisorId, 'wait_fulfilled', {
+        triggerKind: 'assessment_review',
+        exchangeCount: exchanges.length,
+      }, emit);
+
+      const stageGroups = groupSubtasksByStage(plan);
+      for (let groupIndex = checkpoint.nextStageIndex; groupIndex < stageGroups.length; groupIndex++) {
+        const current = await this.repo.findRun(run.id);
+        if (current?.status === 'canceled') {
+          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+          return;
+        }
+        const group = stageGroups[groupIndex]!;
+        const groupResults = await this.executeStage(
+          run, team, group, emit, timeoutMs, maxAttempts, [...results],
+          config.maxParallelWorkers, groupIndex + 1, stageGroups.length,
+        );
+        results.push(...groupResults);
+
+        if ((await this.repo.findRun(run.id))?.status === 'canceled') {
+          emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+          return;
+        }
+        const failed = groupResults.find((result) => result.status === 'failed');
+        if (failed) {
+          await this.abortPipelineRun(run, team, supervisorId, failed, emit);
+          return;
+        }
+        if (groupIndex < stageGroups.length - 1) {
+          const paused = await this.pauseForOpenWaits(run, team, plan, results, groupIndex + 1, emit);
+          if (paused) return;
+        }
+      }
+      await this.finalizeSuccessfulRun(run, team, supervisorId, results, emit, timeoutMs, maxAttempts);
+    } catch (err) {
+      const current = await this.repo.findRun(run.id);
+      if (current?.status === 'canceled') {
+        emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[TeamOrchestrator] review resume ${run.id} failed:`, message);
+      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
+      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
+      emit('error', { message });
+    }
   }
 
   private async finalizeSuccessfulRun(
@@ -833,6 +1003,9 @@ export class TeamOrchestrator {
           skills: [],
           inferenceModel: teamRunInferenceModel(team, attempt, lastError),
           reasoningEffort: teamRunReasoningEffort(team),
+          attempt,
+          stageOrder: 0,
+          nodeId: 'supervisor',
         });
 
         const outcome = await this.bridge.waitAndBridgeEvents({
@@ -979,19 +1152,9 @@ export class TeamOrchestrator {
       message: `Stage ${stageNumber} of ${stageCount} — ${group.map((s) => s.agentName).join(', ')} working in parallel…`,
     }, emit);
 
-    const results: WorkerResult[] = new Array(group.length);
-    let cursor = 0;
-    const lanes = Array.from({ length: Math.min(limit, group.length) }, async () => {
-      for (;;) {
-        const index = cursor++;
-        if (index >= group.length) return;
-        results[index] = await this.executeWorkerTask(
-          run, team, group[index]!, emit, timeoutMs, maxAttempts, priorResults,
-        );
-      }
-    });
-    await Promise.all(lanes);
-    return results;
+    return mapConcurrentOrdered(group, limit, (subtask) => this.executeWorkerTask(
+      run, team, subtask, emit, timeoutMs, maxAttempts, priorResults,
+    ));
   }
 
   private async supervisorDecompose(
@@ -1151,17 +1314,37 @@ User goal: ${runObjective(run)}`;
     );
 
     const completedPrior = priorResults.filter((r) => r.status === 'completed');
-    const priorContext = renderResultHandbacks(
-      completedPrior.map((result) => ({
-        agentName: result.agentName,
-        payload: result.payload ?? { summary: result.summary, findings: result.findings },
-      })),
-    );
+    const priorHandbacks = completedPrior.map((result) => ({
+      agentName: result.agentName,
+      payload: result.payload ?? { summary: result.summary, findings: result.findings },
+      summary: result.summary,
+      contextRef: result.contextRef,
+    }));
+    // Continuation runs have no in-run worker handbacks yet — still pass the
+    // previous team-run Result so "make a PDF of that" has source content.
+    const envelopeResult = lastResultFromEnvelope(run.goal);
+    if (
+      priorHandbacks.length === 0 &&
+      envelopeResult &&
+      !isUnusableTeamSynthesis(envelopeResult)
+    ) {
+      priorHandbacks.push({
+        agentName: 'Prior run',
+        payload: envelopeResult,
+        summary: 'Usable Result recovered from the prior Team run.',
+        contextRef: undefined,
+      });
+    }
+    const contextPolicy = (team.config as TeamConfig).contextPolicy;
+    const priorContext = contextPolicy?.mode === 'referenced'
+      ? renderContextReferenceIndex(priorHandbacks)
+      : renderResultHandbacks(priorHandbacks);
 
     const inputRefs = subtask.inputRefs ?? [];
     const allowedSources = subtask.allowedSources ?? ['authoritative_input'];
     const knowledgeMode = subtask.knowledgeMode ?? 'none';
     const outputContract = subtask.outputContract ?? DEFAULT_RESULT_CONTRACT;
+    const resultPolicy = subtask.resultPolicy ?? (team.config as TeamConfig).resultPolicy ?? 'lineage.v1';
     const inputByRef = new Map(run.inputs.map((input) => [input.ref, input]));
     const selectedInputs = inputRefs.map((ref) => {
       const input = inputByRef.get(ref);
@@ -1243,7 +1426,7 @@ User goal: ${runObjective(run)}`;
     );
     const replyWaitGuidance =
       conversationWorkflowEnabled && workerSkills.includes('whatsapp.contact_send')
-        ? '- This Team uses a managed per-contact conversation workflow. Send exactly one initial message per validated lead asking the first question only.\n' +
+        ? '- This Team uses a managed per-contact conversation workflow. Send exactly one initial prompt per validated lead (text or native poll if the entry question is multiple-choice). Qlix rewrites the queued row to the published workflow entry.\n' +
           '- Do NOT send later branch messages, collect later answers, set auto-reply instructions, or delegate follow-up work. The conversation middleware owns every reply and next step.\n' +
           '- Message only contacts present in the authoritative Luna-Teams Result handback, using the full phone number including country code.\n'
         : workerSkills.includes('whatsapp.contact_send') &&
@@ -1269,17 +1452,36 @@ User goal: ${runObjective(run)}`;
         : '';
 
     const extractedReady = selectedInputs.some((input) => Boolean(input.extractedText?.trim()));
-    const extractedGuidance = extractedReady
-      ? '- Exact extracted content is already below. Do NOT call find_tools, call_tool, or any other tool to re-read the file. Filter from that text and return the JSON Result immediately.\n'
-      : selectedInputs.length === 0
-        ? '- This dispatch has no attached source file. Copy provenance.inputRefs and recordRefs from the prior Result handback. Do not invent a new source file.\n'
-        : '';
+    const hasPriorHandbacks = priorHandbacks.length > 0;
+    const extractedGuidance = resultPolicy === 'tool_evidence.v1'
+      ? '- This dispatch is tool-sourced. Cite only real evidence ids returned by assessment tools; do not invent spreadsheet inputs or row references.\n'
+      : extractedReady
+        ? '- Exact extracted content is already below. Do NOT call find_tools, call_tool, or any other tool to re-read the file. Filter from that text and return the JSON Result immediately.\n'
+        : selectedInputs.length === 0 && hasPriorHandbacks
+          ? '- This dispatch has no attached source file. Copy provenance.inputRefs and recordRefs from the prior Result handback. Do not invent a new source file.\n'
+          : selectedInputs.length === 0
+            ? '- This dispatch has no attached source file or prior Result handback. Return empty provenance.inputRefs and provenance.recordRefs arrays. Do not invent source or row references.\n'
+          : '';
+    const provenanceExample = resultPolicy === 'tool_evidence.v1'
+      ? `"provenance": {
+    "toolRefs": ["assessment_evidence_search"],
+    "evidenceRefs": ["<real evidence id returned by a tool>"],
+    "artifactRefs": ["<artifact_upload evidence id when used>"]
+  }`
+      : `"provenance": {
+    "inputRefs": ${selectedInputs.length > 0 ? '["<exact input ref from the dispatch>"]' : hasPriorHandbacks ? '["<exact input ref copied from the prior Result>"]' : '[]'},
+    "recordRefs": ${selectedInputs.length > 0 ? '["<exact input ref>:row:<1-based row>"]' : hasPriorHandbacks ? '["<exact row refs copied from the prior Result>"]' : '[]'},
+    "knowledgeRefs": []
+  }`;
     const workerPrompt = `You are completing one Luna-Teams dispatch. Stay inside this task.
 
 Rules:
 - Do only what this dispatch asks. Do NOT invent side work (CRM writes, outreach, research, scheduling, etc.) unless the dispatch explicitly requires it.
 - Prefer tools that are necessary for this stage. Having a tool available is not permission to use it.
-${toolsEnabled ? '' : '- No connector tools are enabled for this dispatch. Do not call find_tools, call_tool, or any permission/scope name. Return the JSON Result from the dispatch text only.\n'}
+${toolsEnabled ? '' : '- No connector tools are enabled for this dispatch yet. Do not call find_tools or call_tool until a capability is granted.\n'}
+- If this dispatch needs a capability this agent does not have (PDF, spreadsheet, email, WhatsApp, web, files, etc.), you MUST call request_capability with the scope ids and a short reason that names the user ask (e.g. "create a PDF of the script"), then wait. Do NOT return a blocked JSON, "missing tool", or "delegated scopes: none" instead of asking.
+- PDF / document / spreadsheet export on cloud: request scopes ["files.create"] (create_report_pdf / create_xlsx in the sandbox). Do NOT request web.research for PDF/Excel alone. Do NOT request system.file_write for PDFs on cloud — that is local/hybrid only.
+- PDF on hybrid/local desktop: system.file_write (luna_local_create_pdf). Email: email.send. WhatsApp: whatsapp.contact_send.
 - Treat Luna-Teams Result handbacks as authoritative. Do not re-read or broaden their source data unless this dispatch explicitly asks you to.
 - Put all handoff data in the returned JSON. Do not write it externally unless this dispatch explicitly requires it.
 - Operational values must come from authoritative_input or validated Result handbacks. reference_asset and Brain are context only.
@@ -1290,27 +1492,32 @@ ${extractedGuidance}- Keep the Result JSON compact (summary <= 2 sentences). Do 
   "summary": "<concise 2-3 sentence summary>",
   "findings": <structured JSON or detailed text needed by the next specialist>,
   "artifacts": [],
-  "provenance": {
-    "inputRefs": ["team-input:..."],
-    "recordRefs": ["<input ref>:row:<1-based row>"],
-    "knowledgeRefs": []
-  }
+  ${provenanceExample}
 }
 ${browserGuidance}${inputContext ? `\n${inputContext}\n` : ''}${priorContext ? `\n${priorContext}\n` : ''}
 ${filterGuidance}${replyWaitGuidance}
 Dispatch: ${subtask.goal}`;
 
     let lastError: Error | null = null;
+    let firstValidationError: Error | null = null;
+    let bestCandidateRaw: string | null = null;
+    const successfulToolRefs = new Set<string>();
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestedModel = (team.config as TeamConfig).defaultModel ?? null;
         const inferenceModel = teamRunInferenceModel(team, attempt, lastError);
-        const attemptPrompt =
-          attempt === 1
+        const repairOnly = attempt > 1 && bestCandidateRaw !== null && lastError !== null;
+        const attemptPrompt = repairOnly
+          ? resultRepairPrompt({
+              validationError: lastError!.message,
+              previousCandidate: bestCandidateRaw!,
+              originalPrompt: workerPrompt,
+            })
+          : attempt === 1
             ? workerPrompt
             : lastError && isTruncationLikeFailure(lastError.message) && toolsEnabled
               ? `Previous attempt was cut off while thinking. Call the required tools, then return the compact JSON Result.\n\n${workerPrompt}`
-              : `Previous attempt returned no Result. Do not call find_tools, call_tool, or any other tool. Return only the JSON Result object.\n\n${workerPrompt}`;
+              : `Previous attempt returned no Result. If you still need a missing capability, call request_capability and wait. Otherwise return only the JSON Result object.\n\n${workerPrompt}`;
         if (attempt > 1 && inferenceModel && inferenceModel !== requestedModel) {
           await this.emitEvent(
             run,
@@ -1330,12 +1537,15 @@ Dispatch: ${subtask.goal}`;
           userId: run.startedByUserId,
           role: 'worker',
           prompt: attemptPrompt,
-          skills: workerSkills,
+          skills: repairOnly ? [TEAM_DISPATCH_ONLY_SKILL] : workerSkills,
           a2aTaskId: a2aTask.id,
           dispatchId: subtask.subtaskId,
           useBrain,
           inferenceModel,
           reasoningEffort: teamRunReasoningEffort(team),
+          attempt,
+          stageOrder: subtask.stageOrder,
+          nodeId: subtask.subtaskId,
         });
 
         const outcome = await this.bridge.waitAndBridgeEvents({
@@ -1354,12 +1564,14 @@ Dispatch: ${subtask.goal}`;
           }
           throw new Error(outcome.errorMessage ?? `Worker run ${outcome.status}`);
         }
+        for (const toolRef of outcome.executedToolRefs) successfulToolRefs.add(toolRef);
 
         const raw = TeamAgentRunBridge.extractResultText(outcome.result);
         const handback = parseLunaTeamsHandback(raw);
         if (handback.truncated) {
           throw new Error('Worker Result JSON was cut off');
         }
+        if (!/^Stopped:/i.test(raw.trim())) bestCandidateRaw = raw;
         const handbackRecord =
           handback.payload && typeof handback.payload === 'object' && !Array.isArray(handback.payload)
             ? handback.payload as Record<string, unknown>
@@ -1373,10 +1585,53 @@ Dispatch: ${subtask.goal}`;
             allowedSources,
             knowledgeMode,
             outputContract,
+            resultPolicy,
           },
           run,
           priorHandbacks: completedPrior.map((result) => result.payload),
+          executedToolRefs: [...successfulToolRefs],
         });
+        if (resultPolicy === 'tool_evidence.v1') {
+          await verifyAssessmentResultProvenance({
+            orgId: run.orgId,
+            runGoal: runObjective(run),
+            provenance: validatedResult.provenance,
+          });
+        }
+        const referencedContext = contextPolicy?.mode === 'referenced'
+          ? await createContextObject({
+              orgId: run.orgId,
+              kind: 'team_result',
+              sourceType: 'team_dispatch',
+              sourceId: mailbox.id,
+              content: validatedResult,
+              summary: {
+                agentName: subtask.agentName,
+                role: subtask.role,
+                summary,
+                provenance: validatedResult.provenance,
+              },
+              metadata: {
+                teamId: team.id,
+                teamRunId: run.id,
+                dispatchId: subtask.subtaskId,
+                mailboxMessageId: mailbox.id,
+              },
+              allowedAgentIds: [
+                ...(team.members ?? []).map((member) => member.agentId),
+                ...(team.supervisorAgentId ? [team.supervisorAgentId] : []),
+              ],
+              readScopes: [TEAM_DISPATCH_ONLY_SKILL],
+            })
+          : null;
+        if (referencedContext) {
+          await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
+            message: `${subtask.agentName} stored a reusable context handback`,
+            contextRef: referencedContext.ref,
+            contextChars: referencedContext.contentChars,
+            reused: referencedContext.reused,
+          }, emit);
+        }
         if (validatedResult.provenance.recordRefs.length > 0) {
           await this.emitEvent(run, team, subtask.agentId, 'task_status_update', {
             message:
@@ -1420,6 +1675,9 @@ Dispatch: ${subtask.goal}`;
         }, emit);
 
         await this.emitEvent(run, team, subtask.agentId, 'artifact_produced', { artifact }, emit);
+        await this.recordWorkerStateAndBudget({
+          run, team, subtask, agentRunId, contextRef: referencedContext?.ref, summary, emit,
+        });
 
         return {
           subtaskId: subtask.subtaskId,
@@ -1428,12 +1686,16 @@ Dispatch: ${subtask.goal}`;
           summary,
           findings,
           payload: validatedResult,
+          contextRef: referencedContext?.ref,
           mailboxMessageId: mailbox.id,
           artifacts: [artifact],
           status: 'completed',
         };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        if (bestCandidateRaw !== null && firstValidationError === null) {
+          firstValidationError = lastError;
+        }
         const current = await this.repo.findRun(run.id);
         if (current?.status === 'canceled' || (err as { code?: string }).code === 'team_run_canceled') {
           break;
@@ -1444,7 +1706,11 @@ Dispatch: ${subtask.goal}`;
             team,
             subtask.agentId,
             'task_status_update',
-            { message: `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1})…` },
+            {
+              message: bestCandidateRaw
+                ? `Repairing ${subtask.agentName}'s Result envelope (${attempt}/${maxAttempts - 1}) — ${lastError.message}`
+                : `Retrying ${subtask.agentName} (${attempt}/${maxAttempts - 1}) — ${lastError.message}`,
+            },
             emit,
           );
         }
@@ -1470,7 +1736,7 @@ Dispatch: ${subtask.goal}`;
       };
     }
 
-    const message = lastError?.message ?? 'Worker subtask failed';
+    const message = firstValidationError?.message ?? lastError?.message ?? 'Worker subtask failed';
     await this.repo.completeMailboxDispatch(mailbox.id, {
       status: 'failed',
       payload: { error: message },
@@ -1536,6 +1802,65 @@ Provide the final synthesized result as plain text.${whatsappHint}`;
     } catch {
       return completedResults.map((r) => r.summary).join('\n\n');
     }
+  }
+
+  private async recordWorkerStateAndBudget(params: {
+    run: TeamRunDTO;
+    team: TeamDTO;
+    subtask: SubtaskPlan;
+    agentRunId: string;
+    contextRef?: string;
+    summary: string;
+    emit: RunEventEmitter;
+  }): Promise<void> {
+    const { run, team, subtask, agentRunId, contextRef, summary, emit } = params;
+    await patchRunStateWithRetry({
+      orgId: run.orgId,
+      executionId: run.id,
+      executionKind: 'team_run',
+      idempotencyKey: `worker:${subtask.subtaskId}:${agentRunId}`,
+      operations: [
+        { op: 'merge', path: 'progress', value: { lastCompleted: subtask.subtaskId } },
+        ...(contextRef
+          ? [{ op: 'set' as const, path: `outputs.${subtask.subtaskId.replace(/[^A-Za-z0-9_]/g, '_')}`, value: { contextRef, summary } }]
+          : []),
+      ],
+    }).catch((err) => {
+      console.warn('[TeamOrchestrator] failed to patch run state:', err);
+    });
+
+    const budget = (team.config as TeamConfig).executionBudget;
+    if (!budget) return;
+    const events = await prisma.agentRunEvent.findMany({
+      where: { runId: agentRunId, type: 'log' },
+      select: { data: true },
+    });
+    const usage = emptyExecutionUsage();
+    for (const event of events) {
+      if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) continue;
+      const data = event.data as Record<string, unknown>;
+      if (data.message === 'context_size') {
+        usage.promptTokens = Number(data.reportedPromptTokens) || usage.promptTokens;
+        usage.contextTokens = Number(data.peakRequestTokens) || usage.contextTokens;
+        usage.inferenceRounds = Number(data.rounds) || usage.inferenceRounds;
+        usage.toolCalls = Number(data.toolsExecuted) || usage.toolCalls;
+      }
+      if (data.message === 'inference_success') {
+        const recorded = data.usage;
+        if (recorded && typeof recorded === 'object' && !Array.isArray(recorded)) {
+          const record = recorded as Record<string, unknown>;
+          usage.promptTokens = Number(record.prompt_tokens) || usage.promptTokens;
+          usage.completionTokens = Number(record.completion_tokens) || usage.completionTokens;
+        }
+      }
+    }
+    await this.emitEvent(run, team, subtask.agentId, 'budget_shadow', {
+      ...evaluateBudgetShadow(usage, budget),
+      usage,
+      budget,
+      agentRunId,
+      dispatchId: subtask.subtaskId,
+    }, emit);
   }
 
   private async emitEvent(

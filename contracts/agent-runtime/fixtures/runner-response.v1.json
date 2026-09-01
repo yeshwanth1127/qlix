@@ -1,0 +1,9 @@
+{
+  "contractVersion": "qlix.runner-response.v1",
+  "runId": "run_example_1",
+  "ok": true,
+  "result": {
+    "summary": "Completed",
+    "artifactRefs": ["artifact_example_1"]
+  }
+}

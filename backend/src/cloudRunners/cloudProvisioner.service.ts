@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -8,7 +8,6 @@ const execFileAsync = promisify(execFile);
 import type { AgentDTO } from '../agents/agents.types.js';
 import { buildSdkAgentJson, resolveDockerBackendUrl } from '../agents/sdkAgentFile.js';
 import { AgentsRepository } from '../agents/agents.repository.js';
-import { resolvePlatformResearchProvisioning } from './platformResearchSecrets.js';
 import { decryptForAgentSecrets, encryptForAgentSecrets } from './agentSecrets.js';
 import { prisma } from '../lib/prisma.js';
 import { DockerNotAvailableError } from './dockerClient.js';
@@ -40,24 +39,6 @@ export class CloudProvisionFailedError extends Error {
 function safeProvisioningErrorMessage(input: unknown): string {
   const raw = String((input as any)?.message ?? input ?? 'Cloud runner provisioning failed');
   return raw.length > 2000 ? `${raw.slice(0, 2000)}…(truncated)` : raw;
-}
-
-/** Forward Cloudflare Browser Run creds into runners for browser failover (not primary). */
-function cloudflareBrowserEnvFromHost(): Record<string, string> {
-  const env: Record<string, string> = {};
-  const keys = [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'CLOUDFLARE_API_TOKEN',
-    'CF_ACCOUNT_ID',
-    'CF_API_TOKEN',
-    'QLIX_BROWSER_CF_FAILOVER',
-    'QLIX_BROWSER_CF_KEEP_ALIVE_MS',
-  ] as const;
-  for (const key of keys) {
-    const value = process.env[key]?.trim();
-    if (value) env[key] = value;
-  }
-  return env;
 }
 
 /** Fail provisioning if the runner image is missing core research CLIs (Exa/mcporter). */
@@ -228,12 +209,11 @@ export class CloudProvisionerService {
   }): Promise<string> {
     const runnerStateRoot = this.runnerStateRoot();
     const dir = path.join(runnerStateRoot, params.agent.id);
-    // 0o700 dir / 0o600 file: agent.json carries the agent signing private key, so it must not be
-    // world- or group-readable on a shared host (defeats the at-rest encryption used in the DB).
+    // Agent identity is delivered ephemerally through the container environment. Do not persist
+    // another plaintext private-key copy in the runner state directory.
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const identityPath = path.join(dir, 'agent.json');
-    await writeFile(identityPath, JSON.stringify(params.identityJson, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-    await chmod(identityPath, 0o600); // enforce even if the file pre-existed with looser perms
+    await rm(identityPath, { force: true });
     await syncAgentRunnerStateToDockerHost(params.agent.id, runnerStateRoot);
 
     let teamContext = params.teamContext ?? null;
@@ -259,13 +239,9 @@ export class CloudProvisionerService {
       await this.orchestrator.ensureNetwork(network);
     }
 
-    const { mounts: researchMounts, env: researchEnv } =
-      await resolvePlatformResearchProvisioning();
     const mounts = [
-      { hostPath: identityPath, containerPath: '/run/agent.json', readOnly: true },
       { hostPath: params.adkManifestPath, containerPath: '/run/adk/manifest.json', readOnly: true },
       { hostPath: params.adkModulePath, containerPath: '/run/adk/adk_agent.py', readOnly: true },
-      ...researchMounts,
     ];
 
     const resourceLimits = resolveRunnerResourceLimits();
@@ -278,16 +254,26 @@ export class CloudProvisionerService {
       memoryReservation: resourceLimits.memoryReservation,
       cpuLimit: resourceLimits.cpuLimit,
       pidsLimit: resourceLimits.pidsLimit,
+      user: '10001:10001',
+      readOnlyRoot: true,
+      dropAllCapabilities: true,
+      noNewPrivileges: true,
+      tmpfs: [
+        { containerPath: '/tmp', options: 'rw,nosuid,nodev,noexec,size=512m,mode=1777' },
+        { containerPath: '/home/qlix', options: 'rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700' },
+      ],
       env: {
-        QLIX_AGENT_FILE: '/run/agent.json',
+        QLIX_AGENT_JSON_B64: Buffer.from(JSON.stringify(params.identityJson), 'utf8').toString('base64'),
         QLIX_BACKEND_URL: params.backendUrl,
         QLIX_CLOUD_PING_INTERVAL_MS: process.env.QLIX_CLOUD_PING_INTERVAL_MS?.trim() || '5000',
         QLIX_RUNNER_TOKEN: params.runnerToken,
         QLIX_ADK_MANIFEST: '/run/adk/manifest.json',
         QLIX_ADK_MODULE: '/run/adk/adk_agent.py',
         QLIX_ADK_CLASS: params.adkClassName,
-        ...researchEnv,
-        ...cloudflareBrowserEnvFromHost(),
+        HOME: '/home/qlix',
+        XDG_CACHE_HOME: '/home/qlix/.cache',
+        XDG_CONFIG_HOME: '/home/qlix/.config',
+        QLIX_BROWSER_CF_FAILOVER: '0',
       },
       mounts,
       cmd: ['python', '-m', 'qlix.cloud_runner'],
@@ -405,7 +391,7 @@ export class CloudProvisionerService {
       throw new CloudProvisionFailedError('Missing cloudPrivateKeyEnc for this agent (recreate agent)');
     }
 
-    const backendUrl = params.backendUrl.replace(/\/$/, '');
+    const backendUrl = resolveDockerBackendUrl({ protocol: 'http', get: () => undefined });
     const privateKey = decryptForAgentSecrets(row.cloudPrivateKeyEnc);
     const runnerTokenEnc = await prisma.agent
       .findUnique({ where: { id: row.id }, select: { cloudRunnerTokenEnc: true } })
@@ -540,7 +526,7 @@ export class CloudProvisionerService {
       throw new CloudProvisionFailedError('Agent not found or not cloud runtime');
     }
 
-    const backendUrl = params.backendUrl.replace(/\/$/, '');
+    const backendUrl = resolveDockerBackendUrl({ protocol: 'http', get: () => undefined });
     const privateKey = decryptForAgentSecrets(row.cloudPrivateKeyEnc);
     const runnerTokenEnc = await prisma.agent
       .findUnique({ where: { id: row.id }, select: { cloudRunnerTokenEnc: true } })

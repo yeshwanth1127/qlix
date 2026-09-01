@@ -133,6 +133,37 @@ export class NLParseError extends Error {
   }
 }
 
+/**
+ * Parse planning tool arguments while tolerating formats some compatible
+ * providers occasionally return (Markdown fences or a JSON-encoded string).
+ */
+export function parsePlanningToolArguments(raw: string): unknown {
+  const trimmed = raw.trim();
+  const candidates = [trimmed];
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+
+  const objectStart = trimmed.indexOf('{');
+  const objectEnd = trimmed.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(trimmed.slice(objectStart, objectEnd + 1));
+  }
+
+  for (const candidate of new Set(candidates)) {
+    if (!candidate) continue;
+    try {
+      let parsed: unknown = JSON.parse(candidate);
+      // A few OpenAI-compatible providers double-encode tool arguments.
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      return parsed;
+    } catch {
+      // Try the next safe representation before asking the model to repair it.
+    }
+  }
+
+  throw new NLParseError('Tool call arguments were not valid JSON');
+}
+
 export async function parseAgentCreationPrompt(
   userPrompt: string,
   orgId: string | null,
@@ -170,19 +201,52 @@ export async function parseAgentCreationPrompt(
     planAllowedTiers,
   };
 
-  const result = await chatCompletion(request, options);
+  let result = await chatCompletion(request, options);
+  let toolCall = result.toolCalls?.[0];
+  let args: unknown;
 
-  if (!result.toolCalls?.length) {
-    throw new NLParseError('Model did not call a planning tool');
+  if (toolCall) {
+    try {
+      args = parsePlanningToolArguments(toolCall.function.arguments);
+    } catch {
+      // A single bounded repair attempt handles transient malformed tool output.
+    }
   }
 
-  const toolCall = result.toolCalls[0];
-
-  let args: unknown;
-  try {
-    args = JSON.parse(toolCall.function.arguments);
-  } catch {
-    throw new NLParseError('Tool call arguments were not valid JSON');
+  if (!toolCall || args === undefined) {
+    // Retry with the known builder model as well as stricter instructions. A
+    // user-selected model that lacks reliable native tool calling should not
+    // make the whole builder unusable.
+    const repairModel = DEFAULT_BUILDER_MODEL;
+    result = await chatCompletion(
+      {
+        ...request,
+        model: repairModel,
+        max_tokens: 4096,
+        messages: [
+          ...request.messages,
+          {
+            role: 'system' as const,
+            content:
+              'Your previous response did not contain a planning tool call with valid JSON arguments. ' +
+              'Call exactly one of plan_single_agent or plan_team now. The tool arguments must be one ' +
+              'complete JSON object. Do not return the arguments as plain text, Markdown, or a code fence.',
+          },
+        ],
+      },
+      { ...options, provider: providerForModel(repairModel) },
+    );
+    toolCall = result.toolCalls?.[0];
+    if (!toolCall) {
+      throw new NLParseError('Model did not call a planning tool after one repair attempt');
+    }
+    try {
+      args = parsePlanningToolArguments(toolCall.function.arguments);
+    } catch {
+      throw new NLParseError(
+        'The builder model returned invalid planning data twice. Please retry or choose another model.',
+      );
+    }
   }
 
   if (typeof args !== 'object' || args === null) {

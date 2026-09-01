@@ -3,16 +3,29 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RunnerOrchestrator } from './runnerOrchestrator.js';
 
-export const RUNNER_DOCKERFILE_REV = 'shared-base-3';
+export const RUNNER_DOCKERFILE_REV = 'shared-base-4';
 
 const RUNNER_FINGERPRINT_REL_PATHS = [
   'sdk/python/qlix/cloud_runner.py',
   'sdk/python/qlix/runner_common.py',
+  'sdk/python/qlix/assessment_runtime.py',
+  'sdk/python/qlix/contracts.py',
+  'sdk/python/qlix/capability_catalog.py',
+  'sdk/python/qlix/data/capability_catalog.json',
+  'sdk/python/qlix/research_providers.py',
+  'sdk/python/qlix/data/research_provider_catalog.json',
+  'sdk/python/qlix/sdk.py',
+  'sdk/python/qlix/identity.py',
+  'sdk/python/qlix/luna/plugins.py',
   'sdk/python/qlix/subagents.py',
   'sdk/python/qlix/tool_router.py',
+  'sdk/python/qlix/capability_grant.py',
+  'sdk/python/qlix/local_tool_definitions.py',
   'sdk/python/qlix/backend_inference_client.py',
   'sdk/python/qlix/http_client.py',
   'sdk/python/qlix/cloud_browser_runtime.py',
+  'sdk/python/qlix/browser_pool.py',
+  'sdk/python/qlix/browser_failover.py',
   'sdk/python/qlix/cloud_email_runtime.py',
   'sdk/python/qlix/cloud_google_workspace_runtime.py',
   'sdk/python/qlix/cloud_crm_runtime.py',

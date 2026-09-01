@@ -133,6 +133,59 @@ class TeamMember:
 
 
 @dataclass(frozen=True)
+class ContextRef:
+    """Opaque, versioned reference to a Context Plane object."""
+
+    ref: str
+    kind: str
+    version: int = 1
+    summary: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContextRequest:
+    """Progressive-disclosure request compiled into a Context Pack."""
+
+    sources: tuple[str, ...]
+    max_inline_tokens: int = 2500
+    max_references: int = 20
+    detail: str = "progressive"
+
+
+@dataclass(frozen=True)
+class ContextPack:
+    """Resolver output: compact inline components plus ctx:* references."""
+
+    pack_id: str
+    snapshot_version: int = 1
+    inline: tuple[Mapping[str, Any], ...] = ()
+    references: tuple[ContextRef, ...] = ()
+    omitted: tuple[Mapping[str, Any], ...] = ()
+    estimated_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class ContextSelector:
+    """Progressive-disclosure request for selected fields under a size budget."""
+
+    refs: tuple[str, ...]
+    select: tuple[str, ...] = ()
+    max_chars: int = 16_000
+
+
+@dataclass(frozen=True)
+class ExecutionBudget:
+    """Provider-neutral hierarchical budget inherited by dispatch attempts."""
+
+    max_prompt_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    max_inference_rounds: int | None = None
+    max_tool_calls: int | None = None
+    max_context_tokens: int | None = None
+    max_latency_ms: int | None = None
+
+
+@dataclass(frozen=True)
 class DispatchContract:
     """Optional validation contract applied by the team bus after completion."""
 
@@ -151,6 +204,8 @@ class DispatchRequest:
     knowledge_mode: KnowledgeMode = KnowledgeMode.NONE
     output_contract: JsonSchema = field(default_factory=dict)
     requirement_ids: tuple[str, ...] = ()
+    context_refs: tuple[str, ...] = ()
+    budget: ExecutionBudget | None = None
 
 
 @dataclass(frozen=True)
@@ -176,12 +231,16 @@ class ResultProvenance:
     input_refs: tuple[str, ...] = ()
     record_refs: tuple[str, ...] = ()
     knowledge_refs: tuple[str, ...] = ()
+    tool_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    artifact_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class ResultEnvelope:
     data: Any
     provenance: ResultProvenance
+    context_refs: tuple[str, ...] = ()
 
 
 def commander_tool_definitions(roster: Sequence[TeamMember]) -> list[dict[str, Any]]:
@@ -227,6 +286,23 @@ def commander_tool_definitions(roster: Sequence[TeamMember]) -> list[dict[str, A
                             "enum": [mode.value for mode in KnowledgeMode],
                         },
                         "output_contract": {"type": "object"},
+                        "context_refs": {
+                            "type": "array",
+                            "items": {"type": "string", "pattern": "^ctx:"},
+                            "description": "Prior Result references needed by this dispatch.",
+                        },
+                        "budget": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "max_prompt_tokens": {"type": "integer", "minimum": 1},
+                                "max_completion_tokens": {"type": "integer", "minimum": 1},
+                                "max_inference_rounds": {"type": "integer", "minimum": 1},
+                                "max_tool_calls": {"type": "integer", "minimum": 0},
+                                "max_context_tokens": {"type": "integer", "minimum": 1},
+                                "max_latency_ms": {"type": "integer", "minimum": 1},
+                            },
+                        },
                     },
                     "required": ["to", "task"],
                 },

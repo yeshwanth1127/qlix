@@ -50,6 +50,51 @@ describe('conversation runtime', () => {
     assert.equal(retried.effects[0]?.operationIndex, 2);
   });
 
+  it('emits a choice prompt on collect and reuses it on invalid inbound', () => {
+    const workflow = compileConversationWorkflow({
+      key: 'choice_collect',
+      version: 1,
+      entryNodeId: 'interest',
+      nodes: [
+        {
+          id: 'interest',
+          type: 'collect',
+          content: 'Are you interested?',
+          prompt: {
+            kind: 'choice',
+            content: 'Are you interested?',
+            options: ['Yes', 'No'],
+            maxSelections: 1,
+          },
+          variable: 'interest',
+          validation: { allowed: ['Yes', 'No'], retryPrompt: 'Please choose Yes or No.' },
+          next: 'done',
+        },
+        { id: 'done', type: 'complete', result: { interest: '{{interest}}' } },
+      ],
+    });
+    const started = transitionConversation(createInitialConversationState(workflow), workflow, { type: 'start' });
+    const send = started.effects[0];
+    assert.equal(send?.type, 'send');
+    if (send?.type !== 'send') throw new Error('expected send');
+    assert.equal(send.prompt?.kind, 'choice');
+    if (send.prompt?.kind !== 'choice') throw new Error('expected choice');
+    assert.deepEqual(send.prompt.options, ['Yes', 'No']);
+
+    const retried = transitionConversation(started.state, workflow, { type: 'inbound', text: 'maybe' });
+    const retry = retried.effects[0];
+    assert.equal(retry?.type, 'send');
+    if (retry?.type !== 'send') throw new Error('expected retry send');
+    assert.equal(retry.content, 'Please choose Yes or No.');
+    assert.equal(retry.prompt?.kind, 'choice');
+    if (retry.prompt?.kind !== 'choice') throw new Error('expected choice retry');
+    assert.deepEqual(retry.prompt.options, ['Yes', 'No']);
+
+    const answered = transitionConversation(retried.state, workflow, { type: 'inbound', text: 'Yes' });
+    assert.equal(answered.state.status, 'completed');
+    assert.deepEqual(answered.result, { interest: 'Yes' });
+  });
+
   it('takes the negative branch without asking positive-path questions', () => {
     const workflow = compileConversationWorkflow(outreach);
     const started = transitionConversation(createInitialConversationState(workflow), workflow, { type: 'start' });
@@ -125,6 +170,25 @@ describe('conversation workflow compiler', () => {
         { id: 'orphan', type: 'complete' },
       ],
     }), /Unreachable/);
+  });
+
+  it('rejects a choice prompt with fewer than two options', () => {
+    assert.throws(() => compileConversationWorkflow({
+      key: 'bad-choice',
+      version: 1,
+      entryNodeId: 'ask',
+      nodes: [
+        {
+          id: 'ask',
+          type: 'collect',
+          content: 'Pick one',
+          prompt: { kind: 'choice', content: 'Pick one', options: ['Only'] },
+          variable: 'pick',
+          next: 'done',
+        },
+        { id: 'done', type: 'complete' },
+      ],
+    }), /at least 2 options/);
   });
 });
 

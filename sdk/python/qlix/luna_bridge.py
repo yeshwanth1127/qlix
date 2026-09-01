@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Coroutine, TypeVar
 from qlix.luna.core.types import ToolCall, ToolResult
 from qlix.luna.tools._stubs import BaseTool, ToolExecutor
 
-from .exceptions import HttpError, PermissionDeniedError, QlixError, ScopeError
+from .exceptions import ScopeError
+from .governed_execution import ResultValidation
 from .sdk import QlixSDK
 
 if TYPE_CHECKING:
@@ -166,66 +167,29 @@ class QlixToolExecutor(ToolExecutor):
         payload: dict[str, Any],
         risk_level: str,
     ) -> ToolResult:
-        jit_token: str | None = None
-        if self._qlix.identity.is_jit(action_type):
-            approval = await self._qlix.jit.request_and_wait(
-                action_type=action_type,
-                payload=payload,
-            )
-            jit_token = approval.jit_token
-
-        try:
-            action_id = await self._qlix.start_action(
-                action_type=action_type,
-                payload=payload,
-                risk_level=risk_level,
-                jit_token=jit_token,
-            )
-        except PermissionDeniedError:
-            raise
-        except (HttpError, QlixError):
-            # Backend refused this action — the tool MUST NOT run.
-            raise
-
         run_super = super().execute  # bind once, run in a worker thread.
-        try:
-            result: ToolResult = await asyncio.to_thread(run_super, tool_call)
-        except BaseException as exc:
-            # Tool raised — record the failure tail then re-raise.
-            try:
-                await self._qlix.complete_action_failure(
-                    action_id=action_id,
-                    action_type=action_type,
-                    exc=exc,
-                )
-            except Exception:  # noqa: BLE001 — never mask the original
-                pass
-            raise
 
-        if not isinstance(result, ToolResult):
-            # Defensive: some custom tools might return raw values.
-            result = ToolResult(
-                tool_name=action_type,
-                content=str(result),
-                success=True,
+        async def execute_tool() -> ToolResult:
+            result = await asyncio.to_thread(run_super, tool_call)
+            if not isinstance(result, ToolResult):
+                return ToolResult(tool_name=action_type, content=str(result), success=True)
+            return result
+
+        def validate_result(result: ToolResult) -> ResultValidation:
+            return ResultValidation(
+                success=bool(result.success),
+                error_message=result.content if not result.success else None,
+                error_code="ToolReportedFailure" if not result.success else None,
+                completion_result=_result_to_payload(result),
             )
 
-        if result.success:
-            await self._qlix.complete_action_success(
-                action_id=action_id,
-                action_type=action_type,
-                result=_result_to_payload(result),
-            )
-        else:
-            await self._qlix.complete_action_failure(
-                action_id=action_id,
-                action_type=action_type,
-                error_message=result.content,
-                error_code="ToolReportedFailure",
-                result=_result_to_payload(result),
-            )
-
-        return result
+        return await self._qlix.run(
+            action_type=action_type,
+            payload=payload,
+            execute_fn=execute_tool,
+            risk_level=risk_level,
+            result_validator=validate_result,
+        )
 
 
 __all__ = ["QlixToolExecutor", "wrap_tool_executor_with_qlix"]

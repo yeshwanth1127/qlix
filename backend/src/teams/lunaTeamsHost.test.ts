@@ -4,11 +4,15 @@ import {
   bindIntentRequirements,
   parseLunaTeamsHandback,
   DEFAULT_RESULT_CONTRACT,
+  TOOL_EVIDENCE_RESULT_CONTRACT,
   effectiveOutputContract,
   renderLunaTeamsFinal,
+  renderContextReferenceIndex,
   renderResultHandbacks,
   resolveDispatchKnowledgeMode,
   resolveDispatchAllowedScopes,
+  resolveDispatchResultPolicy,
+  resultRepairPrompt,
   skillsForLunaTeamsDispatch,
   TEAM_DISPATCH_ONLY_SKILL,
   validateLunaTeamsResult,
@@ -26,12 +30,59 @@ test('parses structured worker handbacks without changing the worker runtime', (
   });
 });
 
+test('parses string-encoded and double-encoded Result envelopes from runners', () => {
+  const payload = {
+    summary: 'Drafted scene',
+    findings: { title: 'The Quiet Floor' },
+    artifacts: [],
+    provenance: { inputRefs: [], recordRefs: [], knowledgeRefs: [] },
+  };
+  for (const encoded of [JSON.stringify(payload), JSON.stringify(JSON.stringify(payload))]) {
+    const result = parseLunaTeamsHandback(encoded);
+    assert.equal(result.summary, 'Drafted scene');
+    assert.deepEqual(result.payload, payload);
+  }
+});
+
+test('accepts a creative first-stage Result with empty lineage', () => {
+  const payload = {
+    summary: 'Drafted scene',
+    findings: { title: 'The Quiet Floor' },
+    artifacts: [],
+    provenance: { inputRefs: [], recordRefs: [], knowledgeRefs: [] },
+  };
+  const result = validateLunaTeamsResult({
+    run: { inputs: [] } as TeamRunDTO,
+    dispatch: {
+      inputRefs: [],
+      allowedSources: ['authoritative_input'],
+      knowledgeMode: 'none',
+      outputContract: DEFAULT_RESULT_CONTRACT,
+    },
+    payload,
+  });
+  assert.deepEqual(result.provenance.inputRefs, []);
+  assert.deepEqual(result.provenance.recordRefs, []);
+});
+
 test('renders only Result payloads as downstream context', () => {
   const context = renderResultHandbacks([
     { agentName: 'Filter', payload: { records: [{ id: 1 }] } },
   ]);
   assert.match(context, /authoritative/);
   assert.match(context, /"id":1/);
+});
+
+test('referenced Team context sends an index instead of copying Result payloads', () => {
+  const context = renderContextReferenceIndex([{
+    agentName: 'Researcher',
+    contextRef: 'ctx:cm123:v1:aaaaaaaaaaaa',
+    summary: 'Found the required records',
+    payload: { veryLargePrivatePayload: 'must-not-be-inlined' },
+  }]);
+  assert.match(context, /ctx:cm123:v1:aaaaaaaaaaaa/);
+  assert.match(context, /Found the required records/);
+  assert.doesNotMatch(context, /veryLargePrivatePayload/);
 });
 
 test('final response is deterministic and does not launch a recap agent', () => {
@@ -105,6 +156,59 @@ test('incident regression accepts only spreadsheet records with row provenance',
   assert.equal(result.provenance.recordRefs[0], 'team-input:sheet:row:2');
 });
 
+test('tool-sourced Results use backend-owned tools and recover nested evidence refs', () => {
+  const result = validateLunaTeamsResult({
+    run: { ...incidentRun, inputs: [] },
+    dispatch: {
+      inputRefs: [],
+      allowedSources: ['authoritative_input'],
+      knowledgeMode: 'none',
+      outputContract: TOOL_EVIDENCE_RESULT_CONTRACT,
+      resultPolicy: 'tool_evidence.v1',
+    },
+    executedToolRefs: ['assessment_evidence_search'],
+    payload: {
+      summary: 'Assessment finding',
+      findings: [{ criterion: 'planning', evidenceRefs: ['evidence-1'] }],
+      provenance: {
+        inputRefs: ['team-input:invented'],
+        recordRefs: ['team-input:invented:row:1'],
+        knowledgeRefs: [],
+        toolRefs: ['assessment_artifact_read'],
+      },
+    },
+  });
+  assert.deepEqual(result.provenance.toolRefs, ['assessment_evidence_search']);
+  assert.deepEqual(result.provenance.evidenceRefs, ['evidence-1']);
+  assert.deepEqual(result.provenance.inputRefs, []);
+});
+
+test('assessment dispatches automatically use tool evidence instead of a stale Team default', () => {
+  assert.equal(resolveDispatchResultPolicy({
+    configured: 'lineage.v1',
+    role: 'Full Stack Process Examiner',
+    task: 'Assess Work Session sessionId=abc against the framework criteria.',
+    allowedScopes: ['assessment.evidence.read'],
+  }), 'tool_evidence.v1');
+  assert.equal(resolveDispatchResultPolicy({
+    configured: 'lineage.v1',
+    role: 'Lead filter',
+    task: 'Filter the attached spreadsheet.',
+    allowedScopes: [],
+  }), 'lineage.v1');
+});
+
+test('Result repair retries preserve the good candidate and prohibit more tool calls', () => {
+  const prompt = resultRepairPrompt({
+    validationError: 'Result cites a source file but this dispatch has no attached input',
+    previousCandidate: '{"summary":"valid assessment"}',
+    originalPrompt: 'Return assessment JSON.',
+  });
+  assert.match(prompt, /exactly this reason: Result cites a source file/);
+  assert.match(prompt, /valid assessment/);
+  assert.match(prompt, /Do not call tools/);
+});
+
 test('empty worker output is a missing Result, not a provenance incident', () => {
   const parsed = parseLunaTeamsHandback('No response generated.');
   assert.throws(
@@ -140,6 +244,48 @@ test('filter dispatches do not receive CRM or research skills', () => {
     knowledgeMode: 'none',
   });
   assert.deepEqual(skills, [TEAM_DISPATCH_ONLY_SKILL]);
+});
+
+test('pdf export dispatches receive files.create when delegated', () => {
+  const allowed = resolveDispatchAllowedScopes({
+    role: 'story',
+    task: 'Create a PDF of the screenplay scene The Threshold',
+    delegatedScopes: ['brain.query', 'files.create', 'system.file_write'],
+    knowledgeMode: 'none',
+  });
+  assert.deepEqual(allowed, ['files.create', 'system.file_write']);
+  assert.deepEqual(
+    skillsForLunaTeamsDispatch({
+      allowedScopes: allowed,
+      task: 'Create a PDF of the screenplay scene',
+      delegatedScopes: ['files.create'],
+    }),
+    ['files.create', 'system.file_write'],
+  );
+});
+
+test('examiner dispatches receive their delegated assessment tools', () => {
+  const allowed = resolveDispatchAllowedScopes({
+    role: 'process_integrity',
+    task: 'Examine Work Session sessionId=abc and cite evidence for every criterion.',
+    delegatedScopes: [
+      'assessment.session.get',
+      'assessment.evidence.search',
+      'assessment.evidence.read',
+      'assessment.snapshot.read',
+      'assessment.record',
+      'crm.write',
+    ],
+    knowledgeMode: 'none',
+  });
+  assert.deepEqual(allowed, [
+    'assessment.session.get',
+    'assessment.evidence.search',
+    'assessment.evidence.read',
+    'assessment.snapshot.read',
+    'assessment.record',
+  ]);
+  assert.ok(!allowed.includes('crm.write'));
 });
 
 test('commander allowedScopes cannot exceed the task heuristic', () => {
@@ -347,6 +493,52 @@ test('invented source refs fail clearly when the dispatch has no file', () => {
 test('empty commander outputContract still uses the default Result schema', () => {
   assert.equal(effectiveOutputContract({}).type, 'object');
   assert.deepEqual(effectiveOutputContract(undefined).required, DEFAULT_RESULT_CONTRACT.required);
+});
+
+test('tool-sourced assessment Results use evidence provenance without row lineage', () => {
+  const result = validateLunaTeamsResult({
+    run: { ...incidentRun, inputs: [] },
+    dispatch: {
+      inputRefs: [],
+      allowedSources: ['authoritative_input'],
+      knowledgeMode: 'none',
+      outputContract: TOOL_EVIDENCE_RESULT_CONTRACT,
+      resultPolicy: 'tool_evidence.v1',
+    },
+    payload: {
+      summary: 'Assessment finding recorded',
+      findings: [{ criterionId: 'tests', verdict: 'met', evidence_refs: ['evidence-1'] }],
+      provenance: {
+        toolRefs: ['assessment_evidence_search', 'assessment_evidence_read'],
+        evidenceRefs: ['evidence-1'],
+        artifactRefs: [],
+      },
+    },
+    executedToolRefs: ['assessment_evidence_search', 'assessment_evidence_read'],
+  });
+  assert.deepEqual(result.provenance.evidenceRefs, ['evidence-1']);
+  assert.deepEqual(result.provenance.recordRefs, []);
+});
+
+test('tool-sourced assessment Results cannot pass without evidence or artifacts', () => {
+  assert.throws(
+    () => validateLunaTeamsResult({
+      run: { ...incidentRun, inputs: [] },
+      dispatch: {
+        inputRefs: [],
+        allowedSources: ['authoritative_input'],
+        knowledgeMode: 'none',
+        outputContract: TOOL_EVIDENCE_RESULT_CONTRACT,
+        resultPolicy: 'tool_evidence.v1',
+      },
+      payload: {
+        summary: 'Unsupported assessment',
+        findings: [],
+        provenance: { toolRefs: [], evidenceRefs: [], artifactRefs: [] },
+      },
+    }),
+    /requires evidenceRefs or artifactRefs/,
+  );
 });
 
 test('accepts a local sheet number when the worker adds a country code', () => {

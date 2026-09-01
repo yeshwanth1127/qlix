@@ -230,7 +230,7 @@ export function KnowledgeLibraryView() {
               </SketchRow>
 
               {openId === d.id ? (
-                <div className="border-x border-b border-black bg-white p-4 md:p-5">
+                <div className="border-x border-b border-black bg-[#E2F0CC] p-4 md:p-5">
                   {detailLoading ? (
                     <div className="flex items-center justify-center gap-2 py-10">
                       <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -250,13 +250,13 @@ export function KnowledgeLibraryView() {
                           <input
                             value={draftTitle}
                             onChange={(event) => setDraftTitle(event.target.value)}
-                            className="w-full border border-black bg-white px-3 py-2 text-[13px] text-black outline-none focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
+                            className="w-full border border-black bg-[#E2F0CC] px-3 py-2 text-[13px] text-black outline-none focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
                             aria-label="Document title"
                           />
                           <textarea
                             value={draftBody}
                             onChange={(event) => setDraftBody(event.target.value)}
-                            className="min-h-[320px] w-full resize-y border border-black bg-white px-3 py-3 font-mono text-[12px] leading-relaxed text-black outline-none focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
+                            className="min-h-[320px] w-full resize-y border border-black bg-[#E2F0CC] px-3 py-3 font-mono text-[12px] leading-relaxed text-black outline-none focus:shadow-[0_0_0_3px_var(--sketch-purple-soft)]"
                             aria-label="Document contents"
                           />
                           <div className="flex flex-wrap justify-end gap-2">
@@ -283,7 +283,7 @@ export function KnowledgeLibraryView() {
                           </div>
                         </>
                       ) : (
-                        <div className="max-h-[480px] overflow-y-auto border border-black bg-white px-3 py-3 font-mono text-[12px] leading-relaxed text-black">
+                        <div className="max-h-[480px] overflow-y-auto border border-black bg-[#E2F0CC] px-3 py-3 font-mono text-[12px] leading-relaxed text-black">
                           <p className="whitespace-pre-wrap">{detail.bodyText}</p>
                         </div>
                       )}

@@ -1,5 +1,6 @@
 import type { PermissionScope } from '../agents/agents.types.js';
 import {
+  appendAgentRunLogEvent,
   cancelAgentRun,
   createTeamDispatchConversation,
   enqueueAgentRun,
@@ -7,6 +8,7 @@ import {
   waitForAgentRunCompletion,
   type AgentRunTerminalStatus,
 } from '../agentChat/agentRunService.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 import type { TeamAgentRole, TeamDTO, TeamRunDTO } from './teams.types.js';
 import { TEAM_DISPATCH_ONLY_SKILL } from './lunaTeamsHost.js';
 import { TeamsRepository } from './teams.repository.js';
@@ -25,11 +27,25 @@ export interface TeamRunEnqueueParams {
   useBrain?: boolean;
   inferenceModel?: string | null;
   reasoningEffort?: string | null;
+  attempt?: number;
+  stageOrder?: number;
+  nodeId?: string;
 }
 
 export interface TeamRunEnqueueResult {
   runId: string;
   conversationId: string;
+}
+
+/** Return the authoritative tool name only for a successfully completed runner event. */
+export function completedToolRef(event: { type: string; data: unknown }): string | null {
+  const data = event.data as Record<string, unknown> | null;
+  return event.type === 'log' &&
+    data?.message === 'tool_finished' &&
+    data.ok === true &&
+    typeof data.tool === 'string'
+    ? data.tool
+    : null;
 }
 
 export function buildTeamPromptEnvelope(params: {
@@ -93,6 +109,35 @@ export class TeamAgentRunBridge {
       await this.teamsRepo.updateA2ATask(params.a2aTaskId, { agentRunId: runId });
     }
 
+    await appendAgentRunLogEvent(
+      runId,
+      attachTrace(
+        {
+          message: 'team_dispatch',
+          teamRunId: params.teamRun.id,
+          teamId: params.team.id,
+          teamRole: params.role,
+          dispatchId: params.dispatchId ?? params.a2aTaskId ?? null,
+          attempt: params.attempt ?? 1,
+          stageOrder: params.stageOrder ?? null,
+          nodeId: params.nodeId ?? params.dispatchId ?? params.a2aTaskId ?? params.role,
+        },
+        createTraceEnvelope({
+          traceId: params.teamRun.id,
+          spanId: `run:${runId}:dispatch`,
+          parentSpanId: params.teamRun.id,
+          executionId: runId,
+          executionKind: 'agent_run',
+          orgId: params.team.orgId,
+          agentId: params.agentId,
+          attempt: params.attempt ?? 1,
+          ...(params.nodeId || params.dispatchId
+            ? { nodeId: params.nodeId ?? params.dispatchId }
+            : {}),
+        }),
+      ) as Record<string, unknown>,
+    );
+
     return { runId, conversationId };
   }
 
@@ -103,8 +148,14 @@ export class TeamAgentRunBridge {
     agentId: string;
     timeoutMs: number;
     emit: RunEventEmitter;
-  }): Promise<{ status: AgentRunTerminalStatus; result: unknown; errorMessage: string | null }> {
+  }): Promise<{
+    status: AgentRunTerminalStatus;
+    result: unknown;
+    errorMessage: string | null;
+    executedToolRefs: string[];
+  }> {
     let lastSeq = -1;
+    const executedToolRefs = new Set<string>();
     const cancelIfTeamStopped = async () => {
       const current = await this.teamsRepo.findRun(params.teamRun.id);
       if (current?.status === 'canceled' || current?.status === 'failed') {
@@ -116,6 +167,8 @@ export class TeamAgentRunBridge {
       const events = await listAgentRunEventsSince(params.agentRunId, lastSeq);
       for (const ev of events) {
         lastSeq = ev.seq;
+        const toolRef = completedToolRef(ev);
+        if (toolRef) executedToolRefs.add(toolRef);
         await this.mapAgentEventToTeam(params, ev);
       }
     };
@@ -132,8 +185,9 @@ export class TeamAgentRunBridge {
       }
     }, 400);
 
+    let terminal: Awaited<ReturnType<typeof waitForAgentRunCompletion>>;
     try {
-      return await waitForAgentRunCompletion(params.agentRunId, params.timeoutMs);
+      terminal = await waitForAgentRunCompletion(params.agentRunId, params.timeoutMs);
     } finally {
       clearInterval(bridgeInterval);
       try {
@@ -142,6 +196,7 @@ export class TeamAgentRunBridge {
         console.error('[TeamAgentRunBridge] final event bridge error', err);
       }
     }
+    return { ...terminal, executedToolRefs: [...executedToolRefs] };
   }
 
   private async mapAgentEventToTeam(
@@ -158,7 +213,7 @@ export class TeamAgentRunBridge {
       const logMessage = typeof data?.message === 'string' ? data.message : null;
 
       // JIT approvals — same log messages as agent chat; surface in the team run timeline.
-      if (logMessage === 'jit_approval_pending') {
+      if (logMessage === 'jit_approval_pending' || logMessage === 'capability_grant_pending') {
         const clean = { ...(data ?? {}), message: logMessage };
         await this.teamsRepo.appendEvent(
           params.teamRun.id,
@@ -173,12 +228,15 @@ export class TeamAgentRunBridge {
       if (
         logMessage === 'jit_approval_granted' ||
         logMessage === 'jit_approval_denied' ||
-        logMessage === 'jit_approval_expired'
+        logMessage === 'jit_approval_expired' ||
+        logMessage === 'capability_grant_granted' ||
+        logMessage === 'capability_grant_denied' ||
+        logMessage === 'capability_grant_expired'
       ) {
         const decision =
-          logMessage === 'jit_approval_granted'
+          logMessage === 'jit_approval_granted' || logMessage === 'capability_grant_granted'
             ? 'approved'
-            : logMessage === 'jit_approval_denied'
+            : logMessage === 'jit_approval_denied' || logMessage === 'capability_grant_denied'
               ? 'denied'
               : 'expired';
         const clean = { ...(data ?? {}), message: logMessage, decision };
@@ -252,10 +310,14 @@ export class TeamAgentRunBridge {
     if (typeof result === 'string') return result;
     if (typeof result === 'object') {
       const r = result as Record<string, unknown>;
+      // A normalized team Result is already a structured object. Preserve the
+      // entire envelope; returning only summary/findings would discard the
+      // provenance and artifacts required by downstream validation.
+      if ('summary' in r || 'findings' in r || 'provenance' in r || 'artifacts' in r) {
+        return JSON.stringify(result);
+      }
       if (typeof r.text === 'string') return r.text;
       if (typeof r.content === 'string') return r.content;
-      if (typeof r.summary === 'string') return r.summary;
-      if (typeof r.findings === 'string') return r.findings;
     }
     return JSON.stringify(result);
   }

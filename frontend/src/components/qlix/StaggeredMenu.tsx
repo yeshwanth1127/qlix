@@ -13,9 +13,11 @@ import { gsap } from "gsap";
 import "./StaggeredMenu.css";
 
 export interface StaggeredMenuItem {
-  href: string;
+  href?: string;
   label: string;
   ariaLabel?: string;
+  active?: boolean;
+  onSelect?: () => void;
 }
 
 export interface StaggeredMenuHandle {
@@ -39,6 +41,10 @@ interface StaggeredMenuProps {
   changeMenuColorOnOpen?: boolean;
   onMenuOpen?: () => void;
   onMenuClose?: () => void;
+  iconOnly?: boolean;
+  logo?: React.ReactNode;
+  headerActions?: React.ReactNode;
+  alwaysOpen?: boolean;
 }
 
 export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>(
@@ -57,11 +63,15 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
       changeMenuColorOnOpen = true,
       onMenuOpen,
       onMenuClose,
+      iconOnly = false,
+      logo,
+      headerActions,
+      alwaysOpen = false,
     },
     ref,
   ) => {
-    const [open, setOpen] = useState(false);
-    const openRef = useRef(false);
+    const [open, setOpen] = useState(alwaysOpen);
+    const openRef = useRef(alwaysOpen);
 
     const panelRef = useRef<HTMLElement>(null);
     const preLayersRef = useRef<HTMLDivElement>(null);
@@ -96,25 +106,26 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
         preLayerElsRef.current = preLayers;
 
         const offscreen = position === "left" ? -100 : 100;
-        gsap.set([panel, ...preLayers], { xPercent: offscreen, opacity: 1 });
+        gsap.set(panel, { xPercent: alwaysOpen ? 0 : offscreen, opacity: 1 });
+        gsap.set(preLayers, { xPercent: offscreen, opacity: alwaysOpen ? 0 : 1 });
         if (preContainer) gsap.set(preContainer, { xPercent: 0, opacity: 1 });
 
         const plusH = plusHRef.current;
         const plusV = plusVRef.current;
         const icon = iconRef.current;
         const textInner = textInnerRef.current;
-        if (plusH && plusV && icon && textInner) {
+        if (plusH && plusV && icon) {
           gsap.set(plusH, { transformOrigin: "50% 50%", rotate: 0 });
           gsap.set(plusV, { transformOrigin: "50% 50%", rotate: 90 });
           gsap.set(icon, { rotate: 0, transformOrigin: "50% 50%" });
-          gsap.set(textInner, { yPercent: 0 });
         }
+        if (textInner) gsap.set(textInner, { yPercent: 0 });
         if (toggleBtnRef.current) {
           gsap.set(toggleBtnRef.current, { color: menuButtonColor });
         }
       });
       return () => ctx.revert();
-    }, [menuButtonColor, position]);
+    }, [alwaysOpen, menuButtonColor, position]);
 
     const buildOpenTimeline = useCallback(() => {
       const panel = panelRef.current;
@@ -330,7 +341,7 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
 
     return (
       <div
-        className={[className, "staggered-menu-wrapper sm-fixed-wrapper"].filter(Boolean).join(" ")}
+        className={[className, "staggered-menu-wrapper sm-fixed-wrapper", alwaysOpen && "sm-always-open"].filter(Boolean).join(" ")}
         style={accentColor ? ({ "--sm-accent": accentColor } as React.CSSProperties) : undefined}
         data-position={position}
         data-open={open || undefined}
@@ -344,7 +355,7 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
         {renderHeader && (
           <header className="staggered-menu-header" aria-label="Navigation header">
             <div className="sm-logo" aria-label="Logo">
-              {logoUrl && (
+              {logo ?? (logoUrl ? (
                 <img
                   src={logoUrl}
                   alt="Logo"
@@ -353,9 +364,10 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
                   width={110}
                   height={24}
                 />
-              )}
+              ) : null)}
             </div>
-            <button
+            {headerActions}
+            {!alwaysOpen ? <button
               ref={toggleBtnRef}
               className="sm-toggle"
               aria-label={open ? "Close menu" : "Open menu"}
@@ -364,25 +376,27 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
               onClick={toggleMenu}
               type="button"
             >
-              <span ref={textWrapRef} className="sm-toggle-textWrap" aria-hidden="true">
-                <span ref={textInnerRef} className="sm-toggle-textInner">
-                  {textLines.map((l, i) => (
-                    <span className="sm-toggle-line" key={i}>
-                      {l}
-                    </span>
-                  ))}
+              {!iconOnly ? (
+                <span ref={textWrapRef} className="sm-toggle-textWrap" aria-hidden="true">
+                  <span ref={textInnerRef} className="sm-toggle-textInner">
+                    {textLines.map((l, i) => (
+                      <span className="sm-toggle-line" key={i}>
+                        {l}
+                      </span>
+                    ))}
+                  </span>
                 </span>
-              </span>
+              ) : null}
               <span ref={iconRef} className="sm-icon" aria-hidden="true">
                 <span ref={plusHRef} className="sm-icon-line" />
                 <span ref={plusVRef} className="sm-icon-line" />
               </span>
-            </button>
+            </button> : null}
           </header>
         )}
 
         {/* Backdrop — captures clicks outside the panel to close the menu */}
-        {open && (
+        {open && !alwaysOpen && (
           <button
             type="button"
             className="sm-backdrop"
@@ -405,16 +419,31 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
             >
               {items.length ? (
                 items.map((item, idx) => (
-                  <li className="sm-panel-itemWrap" key={item.href}>
-                    <Link
-                      className="sm-panel-item"
-                      href={item.href}
-                      aria-label={item.ariaLabel ?? item.label}
-                      data-index={idx + 1}
-                      onClick={doClose}
-                    >
-                      <span className="sm-panel-itemLabel">{item.label}</span>
-                    </Link>
+                  <li className="sm-panel-itemWrap" key={`${item.href ?? "action"}-${item.label}`}>
+                    {item.href ? (
+                      <Link
+                        className="sm-panel-item"
+                        href={item.href}
+                        aria-label={item.ariaLabel ?? item.label}
+                        aria-current={item.active ? "page" : undefined}
+                        data-index={idx + 1}
+                        data-active={item.active || undefined}
+                        onClick={doClose}
+                      >
+                        <span className="sm-panel-itemLabel">{item.label}</span>
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="sm-panel-item sm-panel-itemButton"
+                        aria-label={item.ariaLabel ?? item.label}
+                        data-index={idx + 1}
+                        data-active={item.label === "More" || item.label === "Back" || undefined}
+                        onClick={item.onSelect}
+                      >
+                        <span className="sm-panel-itemLabel">{item.label}</span>
+                      </button>
+                    )}
                   </li>
                 ))
               ) : (

@@ -1,4 +1,6 @@
 from qlix.luna_teams import (
+    ContextRef,
+    ContextSelector,
     DispatchRequest,
     IntentPatch,
     IntentRequirement,
@@ -11,6 +13,13 @@ from qlix.luna_teams import (
     missing_requirement_ids,
     repeat_intent,
 )
+
+
+def test_context_contracts_are_provider_neutral() -> None:
+    ref = ContextRef(ref="ctx:abc:v1:aaaaaaaaaaaa", kind="team_result", summary={"summary": "done"})
+    selector = ContextSelector(refs=(ref.ref,), select=("data.findings",), max_chars=4000)
+    assert selector.refs == (ref.ref,)
+    assert selector.max_chars == 4000
 from qlix.luna_teams.recipes import CHANNEL_OUTREACH_RECIPE
 
 
@@ -45,6 +54,8 @@ def test_payloads_are_serializable_without_luna_runtime() -> None:
         "knowledge_mode": "none",
         "output_contract": {},
         "requirement_ids": (),
+        "context_refs": (),
+        "budget": None,
     }
     assert MailboxKind.RESULT.value == "result"
 

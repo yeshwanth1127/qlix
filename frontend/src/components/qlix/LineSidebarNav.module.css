@@ -1,0 +1,75 @@
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 38px;
+}
+
+.item {
+  --line-effect: 0;
+  position: relative;
+  display: block;
+  min-height: 34px;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 8px 4px;
+  color: inherit;
+}
+
+.item:hover,
+.active {
+  --line-effect: 1;
+  background: transparent !important;
+}
+
+.item::before {
+  content: "";
+  position: absolute;
+  inset: -4px -10px -4px -42px;
+}
+
+.label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: color-mix(in srgb, #8BC53D calc(var(--line-effect) * 100%), #ffffff);
+  font-size: 11px;
+  font-weight: calc(500 + var(--line-effect) * 200);
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: color 150ms ease;
+}
+
+.index {
+  min-width: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  opacity: calc(0.45 + var(--line-effect) * 0.55);
+}
+
+.marker {
+  position: absolute;
+  top: 50%;
+  left: -38px;
+  width: 32px;
+  height: 1px;
+  background: color-mix(in srgb, #8BC53D calc(var(--line-effect) * 100%), rgba(226, 240, 204, 0.38));
+  transform: translateY(-50%) scaleX(0.8);
+  transform-origin: left center;
+  transition: background-color 150ms ease;
+}
+
+.item:not(:last-of-type)::after {
+  content: "";
+  position: absolute;
+  top: calc(100% + 4px);
+  left: -38px;
+  width: 15px;
+  height: 1px;
+  background: rgba(226, 240, 204, 0.25);
+  transform: scaleX(0.8);
+  transform-origin: left center;
+}

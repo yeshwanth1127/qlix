@@ -1,0 +1,13 @@
+{
+  "contractVersion": "qlix.capability.v1",
+  "name": "research_read_url",
+  "description": "Read a public URL through an available research provider.",
+  "inputSchema": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] },
+  "requiredScopes": ["web.research"],
+  "scopeMode": "all",
+  "jit": { "required": false, "scopes": [] },
+  "runtimes": ["cloud", "hybrid"],
+  "risk": { "level": "low", "effects": ["read"] },
+  "provider": { "kind": "backend_proxy", "id": "legacy.research" },
+  "aliases": []
+}

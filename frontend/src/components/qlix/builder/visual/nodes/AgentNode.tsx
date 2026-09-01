@@ -31,7 +31,7 @@ function AgentNodeComponent({ data, selected }: NodeProps<BuilderNode>) {
   return (
     <div
       className={cn(
-        "w-56 rounded-2xl border bg-white/80 backdrop-blur-sm transition-shadow duration-200",
+        "w-56 rounded-2xl border bg-[#E2F0CC]/80 backdrop-blur-sm transition-shadow duration-200",
         HAIRLINE,
         selected
           ? "border-[color:var(--sketch-purple)] shadow-[0_10px_28px_-14px_rgba(16,14,22,0.5)]"
@@ -47,7 +47,7 @@ function AgentNodeComponent({ data, selected }: NodeProps<BuilderNode>) {
         <span
           className={cn(
             "grid size-6 shrink-0 place-items-center rounded-full",
-            isSupervisor ? "bg-black text-white" : cn("border bg-white/70 text-black", HAIRLINE),
+            isSupervisor ? "bg-black text-white" : cn("border bg-[#E2F0CC]/70 text-black", HAIRLINE),
           )}
           aria-hidden
         >

@@ -13,27 +13,33 @@ export function PublicSiteHeader() {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-black/10 px-6 sm:px-10">
-      <Link href="/" className="flex items-center text-[#1c1830]">
+      <Link href="/" className="flex items-center text-[#012F13]">
         <QlixWordmark className="text-[34px]" />
       </Link>
       <nav className="flex items-center gap-5 text-[12px] font-medium uppercase tracking-wider text-black/45">
-        <Link href="/docs" className="transition-colors hover:text-[#1c1830]">
+        <Link href="/" className="transition-colors hover:text-[#012F13]">
+          Home
+        </Link>
+        <Link href="/how-to-use" className="transition-colors hover:text-[#012F13]">
+          How to use
+        </Link>
+        <Link href="/docs" className="transition-colors hover:text-[#012F13]">
           Docs
         </Link>
-        <Link href="/privacy" className="transition-colors hover:text-[#1c1830]">
+        <Link href={apiHref} className="transition-colors hover:text-[#012F13]">
+          API
+        </Link>
+        <Link href="/privacy" className="transition-colors hover:text-[#012F13]">
           Privacy
         </Link>
-        <Link href="/terms" className="transition-colors hover:text-[#1c1830]">
+        <Link href="/terms" className="transition-colors hover:text-[#012F13]">
           Terms
         </Link>
         {!loading && session && !session.user.isGuest ? (
           <>
-            <Link href={apiHref} className="transition-colors hover:text-[#1c1830]">
-              API
-            </Link>
             <Link
               href={consoleHref}
-              className="rounded-full border border-black/15 bg-white/60 px-3.5 py-1.5 text-[12px] normal-case tracking-normal text-[#1c1830] transition-colors hover:border-black/30 hover:bg-white/90"
+              className="rounded-full border border-black/15 bg-[#E2F0CC]/60 px-3.5 py-1.5 text-[12px] normal-case tracking-normal text-[#012F13] transition-colors hover:border-black/30 hover:bg-[#E2F0CC]/90"
             >
               Console
             </Link>
@@ -41,7 +47,7 @@ export function PublicSiteHeader() {
         ) : (
           <Link
             href="/sign-in"
-            className="rounded-full border border-black/15 bg-white/60 px-3.5 py-1.5 text-[12px] normal-case tracking-normal text-[#1c1830] transition-colors hover:border-black/30 hover:bg-white/90"
+            className="rounded-full border border-black/15 bg-[#E2F0CC]/60 px-3.5 py-1.5 text-[12px] normal-case tracking-normal text-[#012F13] transition-colors hover:border-black/30 hover:bg-[#E2F0CC]/90"
           >
             Sign in
           </Link>

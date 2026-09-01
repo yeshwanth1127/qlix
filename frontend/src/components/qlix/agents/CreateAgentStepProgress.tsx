@@ -99,13 +99,13 @@ function StepIndicator({
           },
           active: {
             scale: 1.1,
-            backgroundColor: "#ea580c",
+            backgroundColor: "#74AD2B",
             boxShadow: "0 8px 18px -6px rgba(234,88,12,0.6), inset 0 0 0 2px #fb923c",
           },
           complete: {
             scale: 1,
-            backgroundColor: "#ea580c",
-            boxShadow: "inset 0 0 0 2px #ea580c",
+            backgroundColor: "#74AD2B",
+            boxShadow: "inset 0 0 0 2px #74AD2B",
           },
         }}
         transition={{ duration: 0.3 }}
@@ -116,7 +116,7 @@ function StepIndicator({
           <Loader2 className="size-4 animate-spin text-white" aria-hidden />
         ) : status === "active" ? (
           <motion.div
-            className="size-2.5 rounded-full bg-white"
+            className="size-2.5 rounded-full bg-[#E2F0CC]"
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ duration: 0.3 }}

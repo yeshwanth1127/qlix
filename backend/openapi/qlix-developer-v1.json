@@ -177,8 +177,8 @@
         "properties": {
           "id": { "type": "string" },
           "timestampMs": { "type": "number" },
-          "timeUtc": { "type": "string" },
-          "dateUtc": { "type": "string" },
+          "timeIst": { "type": "string" },
+          "dateIst": { "type": "string" },
           "actionType": { "type": "string" },
           "action": { "type": "string", "enum": ["READ", "WRITE", "AUTH"] },
           "result": { "type": "string", "enum": ["Success", "Blocked", "Flagged"] },

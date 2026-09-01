@@ -137,7 +137,13 @@ const COMPETITOR_RESEARCH_INTENT =
 // web.research is required; web.read/web.click give the browser tools as a silent
 // fallback when a platform API (Twitter/Reddit/etc.) is blocked; brain.query is
 // best-effort (added only if the org has it). All are cloud-capable.
-const COMPETITOR_SCOPES: readonly string[] = ['web.research', 'web.read', 'web.click', 'brain.query'];
+const COMPETITOR_SCOPES: readonly string[] = [
+  'web.research',
+  'files.create',
+  'web.read',
+  'web.click',
+  'brain.query',
+];
 
 // Hybrid/local-only scopes the model tends to add for "make a PDF" / "save a file".
 // The built-in cloud create_report_pdf tool covers PDF output, so we strip these to
@@ -337,8 +343,8 @@ export function enrichSchedulePlan(
 // Cloud preference / cloud documents
 //
 // The planner often stamps system.file_* for "Excel sheet" / "PDF", which forces
-// hybrid via reconcileRuntimeWithScopes. Cloud runners already have create_xlsx +
-// create_report_pdf (gated on web.research) that upload to the Qlix sandbox.
+// Cloud runners already have create_xlsx + create_report_pdf (gated on files.create)
+// that upload to the Qlix sandbox.
 // When the user asks for cloud-hosted agents or cloud documents — and does not
 // ask for local/desktop tools — strip hybrid-only scopes and stay on cloud.
 // ---------------------------------------------------------------------------
@@ -364,21 +370,21 @@ export function isCloudDocPrompt(prompt: string): boolean {
   return CLOUD_DOC_INTENT.test(prompt);
 }
 
-function stripHybridOnlyScopes(spec: NLAgentSpec, addResearch: boolean, allowed: Set<string>): NLAgentSpec {
+function stripHybridOnlyScopes(spec: NLAgentSpec, addDocs: boolean, allowed: Set<string>): NLAgentSpec {
   const hadHybridScopes = spec.permissionScopes.some((s) => CLOUD_STRIP_SCOPES.has(s));
   let permissionScopes = spec.permissionScopes.filter((s) => !CLOUD_STRIP_SCOPES.has(s));
   let jitScopes = spec.jitScopes.filter((s) => !CLOUD_STRIP_SCOPES.has(s));
-  let addedResearch = false;
-  if (addResearch && allowed.has('web.research') && !permissionScopes.includes('web.research')) {
-    permissionScopes = [...permissionScopes, 'web.research'];
-    addedResearch = true;
+  let addedDocs = false;
+  if (addDocs && allowed.has('files.create') && !permissionScopes.includes('files.create')) {
+    permissionScopes = [...permissionScopes, 'files.create'];
+    addedDocs = true;
   }
   const runtime = scopesRequireHybrid(permissionScopes)
     ? spec.runtime
     : spec.runtime === 'local'
       ? 'local'
       : 'cloud';
-  if (!hadHybridScopes && !addedResearch && runtime === spec.runtime) return spec;
+  if (!hadHybridScopes && !addedDocs && runtime === spec.runtime) return spec;
   return { ...spec, permissionScopes, jitScopes, runtime };
 }
 
@@ -401,7 +407,7 @@ export function enrichCloudPreferPlan(
     return {
       ...plan,
       agent,
-      rationale: `${plan.rationale} Cloud preference: stripped local-file scopes; documents use cloud sandbox tools (create_xlsx / create_report_pdf).`,
+      rationale: `${plan.rationale} Cloud preference: stripped local-file scopes; documents use files.create (create_xlsx / create_report_pdf).`,
     };
   }
 

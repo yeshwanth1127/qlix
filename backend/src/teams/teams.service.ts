@@ -381,6 +381,7 @@ export class TeamsService {
       autoSequence?: boolean;
       pipelineMode?: boolean;
       defaultModel?: string;
+      defaultReasoningEffort?: string;
       conversationWorkflowVersionId?: string | null;
     },
   ): Promise<TeamDTO> {

@@ -38,7 +38,7 @@ export function ConnectorLogo({ name, logo, size = "md", className }: ConnectorL
   return (
     <span
       className={cn(
-        "relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-black/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] transition-[transform,box-shadow] duration-300 ease-out group-hover:shadow-[0_4px_12px_-4px_rgba(16,14,22,0.2)]",
+        "relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-black/[0.08]",
         BOX[size],
         className,
       )}

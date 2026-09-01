@@ -1,0 +1,28 @@
+{
+  "contractVersion": "qlix.context-pack.v1",
+  "packId": "ctxpack_fixture",
+  "snapshotVersion": 1,
+  "goal": "Summarize the prior specialist Result",
+  "inline": [
+    {
+      "component": "intent",
+      "tokens": 12,
+      "text": "Summarize the prior specialist Result"
+    }
+  ],
+  "references": [
+    {
+      "ref": "ctx:cm123abc0000:v1:aaaaaaaaaaaa",
+      "component": "prior_result",
+      "summary": "Security findings with provenance",
+      "tokens": 18
+    }
+  ],
+  "omitted": [
+    {
+      "component": "full_transcript",
+      "reason": "not required by dispatch"
+    }
+  ],
+  "estimatedTokens": 30
+}

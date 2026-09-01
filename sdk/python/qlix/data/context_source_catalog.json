@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "ordering": [
+    "agent_identity",
+    "capability_contract",
+    "tool_schemas",
+    "run_clock",
+    "tool_preference",
+    "run_guidance",
+    "durable_memory",
+    "organization_brain",
+    "current_task",
+    "selected_skills",
+    "user_steering",
+    "assistant_turns",
+    "tool_calls",
+    "tool_results",
+    "continuation_prompts"
+  ],
+  "sources": [
+    {"id":"agent_identity","owner":"agent","trust":"authoritative","persistence":"agent","priority":100,"budgetTokens":1600},
+    {"id":"capability_contract","owner":"runtime","trust":"authoritative","persistence":"agent","priority":100,"budgetTokens":1200},
+    {"id":"tool_schemas","owner":"runtime","trust":"authoritative","persistence":"run","priority":95,"budgetTokens":12000},
+    {"id":"organization_brain","owner":"organization","trust":"retrieved","persistence":"run","priority":85,"budgetTokens":4000},
+    {"id":"durable_memory","owner":"user_agent","trust":"derived","persistence":"conversation","priority":90,"budgetTokens":1200},
+    {"id":"run_clock","owner":"runtime","trust":"authoritative","persistence":"run","priority":80,"budgetTokens":250},
+    {"id":"run_guidance","owner":"runtime","trust":"authoritative","persistence":"run","priority":90,"budgetTokens":1800},
+    {"id":"tool_preference","owner":"runtime","trust":"advisory","persistence":"run","priority":75,"budgetTokens":500},
+    {"id":"selected_skills","owner":"user","trust":"authoritative","persistence":"run","priority":90,"budgetTokens":500},
+    {"id":"current_task","owner":"user","trust":"authoritative","persistence":"run","priority":100,"budgetTokens":8000},
+    {"id":"user_steering","owner":"user","trust":"authoritative","persistence":"run","priority":100,"budgetTokens":4000},
+    {"id":"assistant_turns","owner":"agent","trust":"derived","persistence":"run","priority":55,"budgetTokens":8000},
+    {"id":"tool_calls","owner":"model","trust":"untrusted","persistence":"run","priority":45,"budgetTokens":5000},
+    {"id":"tool_results","owner":"provider","trust":"external","persistence":"artifact","priority":65,"budgetTokens":10000},
+    {"id":"continuation_prompts","owner":"runtime","trust":"authoritative","persistence":"run","priority":80,"budgetTokens":1200}
+  ]
+}

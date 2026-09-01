@@ -1,16 +1,29 @@
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import replace
 from typing import List
 
 from qlix.luna.core.registry import CompressionRegistry
 from qlix.luna.core.types import Message, Role
+from qlix.context_management import build_structured_context, make_context_artifact, serialize_messages
 
 
 class BaseCompressor(ABC):
     """Abstract base for context compression strategies."""
+
+    def _retain_artifact(self, content: str, source_kind: str):
+        artifact = make_context_artifact(content, source_kind=source_kind)
+        artifacts = getattr(self, "_context_artifacts", None)
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            self._context_artifacts = artifacts
+        artifacts[artifact.artifact_id] = artifact.content
+        return artifact
+
+    def get_context_artifact(self, artifact_id: str) -> str | None:
+        artifacts = getattr(self, "_context_artifacts", {})
+        return artifacts.get(artifact_id) if isinstance(artifacts, dict) else None
 
     @abstractmethod
     def compress(self, messages: List[Message], threshold: float) -> List[Message]: ...
@@ -28,10 +41,21 @@ class SessionConsolidation(BaseCompressor):
         recent = messages[split:]
         if not old:
             return messages
-        summary_text = "Summary of earlier conversation:\n"
-        for m in old:
-            summary_text += f"- [{m.role}]: {m.content[:100]}...\n"
-        summary = Message(role=Role.SYSTEM, content=summary_text)
+        artifact = self._retain_artifact(
+            serialize_messages(old), "in_memory_history"
+        )
+        structured = build_structured_context(old, source_artifact_ids=[artifact.artifact_id])
+        summary = Message(
+            role=Role.SYSTEM,
+            content=structured.to_text(),
+            metadata={
+                "kind": "context_compaction",
+                "version": "1.0",
+                "artifact_id": artifact.artifact_id,
+                "artifact_sha256": artifact.sha256,
+                "structured": structured.to_dict(),
+            },
+        )
         return [summary] + recent
 
 
@@ -45,15 +69,19 @@ class RuleBasedPrecompression(BaseCompressor):
         result: list[Message] = []
         for msg in messages:
             if msg.role == Role.TOOL and len(msg.content) > self.TOOL_OUTPUT_MAX:
-                suffix = "\n[...truncated]"
-                try:
-                    parsed = json.loads(msg.content)
-                    truncated = (
-                        json.dumps(parsed, indent=None)[: self.TOOL_OUTPUT_MAX] + suffix
+                artifact = self._retain_artifact(msg.content, "rule_based_tool_output")
+                preview = msg.content[: self.TOOL_OUTPUT_MAX]
+                result.append(
+                    replace(
+                        msg,
+                        content=f"{preview}\n[… full output: {artifact.reference_text()}]",
+                        metadata={
+                            **msg.metadata,
+                            "context_artifact_id": artifact.artifact_id,
+                            "context_artifact_sha256": artifact.sha256,
+                        },
                     )
-                except (json.JSONDecodeError, TypeError):
-                    truncated = msg.content[: self.TOOL_OUTPUT_MAX] + suffix
-                result.append(replace(msg, content=truncated))
+                )
             else:
                 result.append(msg)
         return result
@@ -83,19 +111,43 @@ class TieredSummaries(BaseCompressor):
         l0_msgs = messages[l1_end:]
         result: list[Message] = []
         if l2_msgs:
-            one_liners = "; ".join(f"{m.role}: {m.content[:50]}" for m in l2_msgs)
+            artifact = self._retain_artifact(
+                serialize_messages(l2_msgs), "tiered_oldest_history"
+            )
+            structured = build_structured_context(
+                l2_msgs, source_artifact_ids=[artifact.artifact_id]
+            )
             result.append(
                 Message(
                     role=Role.SYSTEM,
-                    content=f"[Oldest context] {one_liners}",
+                    content=structured.to_text(max_chars=3000),
+                    metadata={
+                        "kind": "context_compaction",
+                        "tier": "L2",
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_sha256": artifact.sha256,
+                        "structured": structured.to_dict(),
+                    },
                 )
             )
         if l1_msgs:
-            paragraphs = "\n".join(f"- {m.role}: {m.content[:200]}" for m in l1_msgs)
+            artifact = self._retain_artifact(
+                serialize_messages(l1_msgs), "tiered_earlier_history"
+            )
+            structured = build_structured_context(
+                l1_msgs, source_artifact_ids=[artifact.artifact_id]
+            )
             result.append(
                 Message(
                     role=Role.SYSTEM,
-                    content=f"[Earlier context]\n{paragraphs}",
+                    content=structured.to_text(max_chars=4500),
+                    metadata={
+                        "kind": "context_compaction",
+                        "tier": "L1",
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_sha256": artifact.sha256,
+                        "structured": structured.to_dict(),
+                    },
                 )
             )
         result.extend(l0_msgs)

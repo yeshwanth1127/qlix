@@ -49,7 +49,7 @@ import {
   type SketchTone,
 } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
-import { ActivityTimeline, LiveToolBar } from "@/components/qlix/agents/AgentRunActivity";
+import { ActivityTimeline } from "@/components/qlix/agents/AgentRunActivity";
 import { ModelHierarchyPicker } from "@/components/qlix/agents/ModelHierarchyPicker";
 import {
   type ActivityStep,
@@ -177,7 +177,7 @@ function MessageAttachments({ attachments }: { readonly attachments: ChatAttachm
             href={a.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-black/12 bg-white/60 px-2.5 py-1.5 text-[11px] text-black/75 transition-colors hover:bg-white hover:text-black"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-black/12 bg-[#E2F0CC]/60 px-2.5 py-1.5 text-[11px] text-black/75 transition-colors hover:bg-[#E2F0CC] hover:text-black"
           >
             <FileText className="size-3 shrink-0" aria-hidden />
             <span className="truncate font-medium">{a.fileName}</span>
@@ -575,14 +575,19 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
   if (getPendingJitStep(existing)) return messages;
 
   const sessionScoped = isSessionChatJitScope(latest.scope);
+  const isCapability = latest.scope === "agent.capability_grant";
 
   const step: ActivityStep = {
     id: `jit-pending-${latest.jitRequestId}`,
-    label: "Waiting for your approval",
+    label: isCapability ? "Add capability to continue?" : "Waiting for your approval",
     detail: [
-      "Waiting for your approval in Qlix",
-      latest.scopeLabel ? `Scope: ${latest.scopeLabel}` : "",
-      sessionScoped ? "Approving covers this whole conversation" : "",
+      isCapability
+        ? "I'm not allowed to do this yet — add the capability?"
+        : "Waiting for your approval in Qlix",
+      latest.scopeLabel
+        ? `${isCapability ? "Capability" : "Scope"}: ${latest.scopeLabel}`
+        : "",
+      !isCapability && sessionScoped ? "Approving covers this whole conversation" : "",
       latest.context,
     ]
       .filter(Boolean)
@@ -594,6 +599,7 @@ function mergePendingJitIntoMessages(messages: ChatMsg[], pending: PendingJitDTO
     jitChannel: "dashboard",
     jitScope: latest.scope,
     jitContext: latest.context?.trim() || undefined,
+    capabilityGrant: isCapability,
   };
 
   const next = [...messages];
@@ -1575,7 +1581,7 @@ export function AgentChatPanel({
               {error}
             </p>
           ) : (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
               {messages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-5 py-20 text-center">
                   <div className="qlix-empty-glow flex size-16 items-center justify-center border border-black bg-[var(--sketch-tint-blue)]">
@@ -1608,64 +1614,50 @@ export function AgentChatPanel({
                     )}
                     style={{ "--qlix-stagger-i": Math.min(msgIndex, 8) } as React.CSSProperties}
                   >
-                    {m.role !== "system" ? (
+                    {m.role === "user" ? (
                       <div
                         className={cn(
                           "mt-1 flex size-8 shrink-0 items-center justify-center rounded-full border border-black/10 transition-transform duration-300",
-                          m.role === "user"
-                            ? cn("text-black", sketchToneBg.purple)
-                            : cn("text-black", sketchToneBg.blue),
+                          "text-black",
+                          sketchToneBg.purple,
                         )}
                         aria-hidden
                       >
-                        {m.role === "user" ? (
-                          <UserRound className="size-3.5" />
-                        ) : (
-                          <Bot className="size-3.5" />
-                        )}
+                        <UserRound className="size-3.5" />
                       </div>
                     ) : null}
 
                     <div
                       className={cn(
-                        "flex min-w-0 max-w-[min(100%,32rem)] flex-col",
+                        "flex min-w-0 flex-col",
                         m.role === "user" ? "items-end" : "items-start",
+                        m.role === "agent" ? "w-full max-w-[38rem]" : "max-w-[min(100%,32rem)]",
                       )}
                     >
                     <div
                       className={cn(
-                        "w-full rounded-2xl border border-black/10 px-4 py-3.5 text-[13px] leading-relaxed shadow-[var(--sketch-shadow)] transition-shadow duration-300",
-                        m.role === "user" && sketchToneBg.purple,
-                        m.role === "agent" && sketchToneBg.blue,
+                        "w-full text-[13px] leading-relaxed",
+                        m.role === "user" && cn("rounded-2xl border border-black/10 px-4 py-3 shadow-[var(--sketch-shadow)]", sketchToneBg.purple),
+                        m.role === "agent" && "py-1 text-black/85",
                         m.role === "system" &&
                           cn(
-                            "max-w-full rounded-full px-3 py-1.5 text-center text-[12px] text-black/55 shadow-none",
+                            "max-w-full rounded-full px-3 py-1.5 text-center text-[12px] text-black/55",
                             sketchToneBg.green,
                           ),
                       )}
                     >
                       {m.role === "agent" && m.activity && m.activity.length > 0 ? (
-                        <>
-                          {thisStreaming ? (
-                            <div className="mb-2">
-                              <LiveToolBar steps={m.activity} />
-                            </div>
-                          ) : null}
-                          <ActivityTimeline
-                            steps={m.activity}
-                            running={thisStreaming}
-                            defaultOpen={thisStreaming}
-                            className="mb-3"
-                          />
-                        </>
+                        <ActivityTimeline
+                          steps={m.activity}
+                          running={thisStreaming}
+                          defaultOpen={thisStreaming}
+                          className="mb-3"
+                        />
                       ) : null}
                       {m.role === "agent" && (!m.content || m.content.trim() === "") && lastAgentStreaming && m.id === messages[messages.length - 1]?.id ? (
-                        <div className="flex items-center gap-2 py-1 text-black/50">
-                          <span className="relative flex size-2.5 items-center justify-center" aria-hidden>
-                            <span className="qlix-orb-ping absolute inline-flex size-2.5 rounded-full bg-[color:var(--sketch-purple)]/50" />
-                            <span className="qlix-orb-core relative inline-flex size-1.5 rounded-full bg-[color:var(--sketch-purple)]" />
-                          </span>
-                          <span className={cn("qlix-text-shimmer", sketchLabel)}>Thinking…</span>
+                        <div className="flex items-center gap-2 py-1 text-black/45">
+                          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                          <span className="text-[12px]">Working…</span>
                         </div>
                       ) : m.role === "agent" ? (
                         <AgentMessageContent
@@ -1768,7 +1760,7 @@ export function AgentChatPanel({
                 {pendingFiles.map((f, i) => (
                   <li
                     key={`${f.name}-${f.size}-${i}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/70"
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-[#E2F0CC]/90 px-2.5 py-1 text-[11px] text-black/70"
                   >
                     <FileText className="size-3 shrink-0" aria-hidden />
                     <span className="truncate max-w-[10rem]">{f.name}</span>
@@ -1789,7 +1781,7 @@ export function AgentChatPanel({
                 ))}
               </ul>
             ) : null}
-            <div className="chat-composer relative flex items-end gap-2 overflow-visible rounded-[1.35rem] border border-black/12 bg-white/85 p-2 shadow-[0_-4px_28px_-14px_rgba(17,12,34,0.1)] backdrop-blur-xl">
+            <div className="chat-composer relative flex items-end gap-2 overflow-visible rounded-[1.35rem] border border-black/12 bg-[#E2F0CC]/85 p-2 shadow-[0_-4px_28px_-14px_rgba(17,12,34,0.1)] backdrop-blur-xl">
               <input
                 ref={fileInputRef}
                 key={fileInputKey}
@@ -1814,12 +1806,13 @@ export function AgentChatPanel({
                       ? `Maximum ${CHAT_MAX_FILES} files`
                       : "Attach files (up to 8, max 50 MB each)"
                 }
-                className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/12 bg-white text-black/55 transition-all duration-200 hover:border-black/25 hover:text-black disabled:opacity-30"
+                className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/12 bg-[#E2F0CC] text-black/55 transition-all duration-200 hover:border-black/25 hover:text-black disabled:opacity-30"
               >
                 <Paperclip className="size-4" aria-hidden />
               </button>
               <div className="flex min-w-0 flex-1 flex-col">
                 <textarea
+                  data-chat-input
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -1874,7 +1867,7 @@ export function AgentChatPanel({
                     onClick={() => void send()}
                     disabled={!conversationId || input.trim().length === 0}
                     title="Steer the active run (inject guidance)"
-                    className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-white text-black transition-transform duration-200 hover:scale-[1.03] disabled:opacity-30"
+                    className="sketch-press flex size-10 shrink-0 items-center justify-center rounded-full border border-black/90 bg-[#E2F0CC] text-black transition-transform duration-200 hover:scale-[1.03] disabled:opacity-30"
                   >
                     <SendHorizonal className="size-3.5" aria-hidden />
                   </button>
@@ -1957,7 +1950,7 @@ export function AgentChatPanel({
               </svg>
             </button>
             {selectedImage.label && (
-              <div className="absolute bottom-4 left-4 border border-white bg-white px-3 py-2 text-sm text-black">
+              <div className="absolute bottom-4 left-4 border border-white bg-[#E2F0CC] px-3 py-2 text-sm text-black">
                 <p className="font-medium">{selectedImage.label}</p>
                 <p className="text-xs text-black/60">{selectedImage.tool}</p>
               </div>

@@ -209,7 +209,7 @@ export default function TermsOfServicePage() {
               Our collection and use of personal information is described in our{" "}
               <Link
                 href="/privacy"
-                className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
               >
                 Privacy Policy
               </Link>
@@ -249,7 +249,7 @@ export default function TermsOfServicePage() {
               Questions about these Terms:{" "}
               <a
                 href={`mailto:${CONTACT_EMAIL}`}
-                className="text-[#1c1830] underline underline-offset-2 hover:opacity-70"
+                className="text-[#012F13] underline underline-offset-2 hover:opacity-70"
               >
                 {CONTACT_EMAIL}
               </a>

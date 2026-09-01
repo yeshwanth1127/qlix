@@ -29,6 +29,7 @@ export type TeamRunEventType =
   | 'artifact_produced'
   | 'subtask_completed'
   | 'run_completed'
+  | 'run_canceled'
   | 'run_failed'
   | 'result_delivered'
   | 'outbound_blocked'
@@ -39,7 +40,8 @@ export type TeamRunEventType =
   | 'wait_progress'
   | 'live_artifact_updated'
   | 'wait_fulfilled'
-  | 'wait_expired';
+  | 'wait_expired'
+  | 'budget_shadow';
 
 /**
  * Which deterministic stage-goal playbook the orchestrator applies to a run.
@@ -53,6 +55,7 @@ export type TeamRunEventType =
  * existed. Those are detected once on their next run and then persisted.
  */
 export type TeamPlaybook = 'none';
+export type TeamResultPolicy = 'lineage.v1' | 'tool_evidence.v1';
 
 export interface TeamConfig {
   maxParallelWorkers: number;
@@ -77,6 +80,23 @@ export interface TeamConfig {
   waitSteps?: WaitStep[];
   /** Published workflow used for every per-contact reply thread after outreach. */
   conversationWorkflowVersionId?: string | null;
+  /** Worker Result provenance policy. Existing Teams default to lineage.v1. */
+  resultPolicy?: TeamResultPolicy;
+  /** Store handbacks once and pass compact ctx:* references to later stages. */
+  contextPolicy?: {
+    mode: 'inline' | 'referenced';
+    maxInlineChars?: number;
+    maxResolveChars?: number;
+  };
+  /** Hierarchical guardrails inherited by every dispatch in this Team run. */
+  executionBudget?: {
+    maxPromptTokens?: number;
+    maxCompletionTokens?: number;
+    maxInferenceRounds?: number;
+    maxToolCalls?: number;
+    maxContextTokens?: number;
+    maxLatencyMs?: number;
+  };
 }
 
 export interface TeamMemberDTO {
@@ -239,6 +259,12 @@ export interface TeamRunCheckpoint {
    * enters wait mode and the user sets a wait TTL — prevents replies arriving before capture is ready.
    */
   pendingWaitOutbounds?: PendingWaitOutbound[];
+  /**
+   * Assessment interactive-review conversation for this run, if one was started
+   * (see backend/src/conversations/). Independent of waitTriggerIds/WaitTrigger —
+   * the review pause/resume path never touches the WhatsApp wait mechanism.
+   */
+  reviewConversation?: { processId: string } | null;
 }
 
 export type PendingWaitOutbound = {
@@ -276,6 +302,7 @@ export interface SubtaskCheckpoint {
   allowedScopes: PermissionScope[];
   stageOrder: number;
   contractId?: string;
+  resultPolicy?: TeamResultPolicy;
   inputRefs: string[];
   allowedSources: TeamRunInputPurpose[];
   knowledgeMode: 'none' | 'reference_only' | 'required';
@@ -291,6 +318,7 @@ export interface WorkerResultCheckpoint {
   summary: string;
   findings: string;
   payload?: unknown;
+  contextRef?: string;
   mailboxMessageId?: string;
   artifacts: TeamRunArtifact[];
   status: 'completed' | 'failed';
@@ -380,6 +408,8 @@ export interface CreateTeamInput {
     agentId: string;
     role: string;
     delegatedScopes: PermissionScope[];
+    /** Optional dependency stage; equal values execute concurrently. */
+    stageOrder?: number;
   }>;
   config?: Partial<TeamConfig>;
 }

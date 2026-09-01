@@ -54,6 +54,105 @@ model Organization {
   orgSkills         OrgSkill[]
   builderCanvases   BuilderCanvas[]
   nlBuilderSessions NlBuilderSession[]
+
+  workSessions         WorkSession[]
+  evaluationFrameworks EvaluationFramework[]
+  orgPlugins           OrgPlugin[]
+  contextObjects       ContextObject[]
+  contextVersions      ContextVersion[]
+  contextEdges         ContextEdge[]
+  executionRunStates   ExecutionRunState[]
+}
+
+/// Content-addressed, permission-scoped context shared by agents and workflow nodes.
+/// Large payloads are stored once; prompts carry compact ctx:* references and agents
+/// resolve only the fields they need through the Context Plane.
+model ContextObject {
+  id              String    @id @default(cuid())
+  orgId           String    @map("org_id") @db.Uuid
+  kind            String
+  sourceType      String    @map("source_type")
+  sourceId        String?   @map("source_id")
+  version         Int       @default(1)
+  contentHash     String    @map("content_hash")
+  content         Json
+  summary         Json      @default("{}")
+  metadata        Json      @default("{}")
+  allowedAgentIds String[]  @default([]) @map("allowed_agent_ids")
+  readScopes      String[]  @default([]) @map("read_scopes")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime? @map("expires_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  versions      ContextVersion[]
+  outgoingEdges ContextEdge[] @relation("ContextEdgeFrom")
+  incomingEdges ContextEdge[] @relation("ContextEdgeTo")
+
+  @@index([orgId, kind, createdAt])
+  @@index([sourceType, sourceId])
+  @@index([orgId, contentHash])
+  @@map("context_objects")
+}
+
+/// One immutable snapshot of a ContextObject. The object row keeps a current
+/// snapshot so existing ctx:* refs keep working; lineage queries use this table.
+model ContextVersion {
+  id          String   @id @default(cuid())
+  objectId    String   @map("object_id")
+  orgId       String   @map("org_id") @db.Uuid
+  version     Int
+  contentHash String   @map("content_hash")
+  content     Json
+  summary     Json     @default("{}")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  object       ContextObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([objectId, version])
+  @@index([orgId, contentHash])
+  @@map("context_versions")
+}
+
+/// Directed lineage between context objects (supersedes, derived_from, references, produced_by).
+model ContextEdge {
+  id           String   @id @default(cuid())
+  orgId        String   @map("org_id") @db.Uuid
+  fromObjectId String   @map("from_object_id")
+  toObjectId   String   @map("to_object_id")
+  relation     String
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  from         ContextObject @relation("ContextEdgeFrom", fields: [fromObjectId], references: [id], onDelete: Cascade)
+  to           ContextObject @relation("ContextEdgeTo", fields: [toObjectId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([fromObjectId, toObjectId, relation])
+  @@index([orgId, relation])
+  @@map("context_edges")
+}
+
+/// Versioned structured state for one AgentRun or TeamRun. Agents patch selected
+/// namespaces with optimistic concurrency instead of reconstructing state from prose.
+model ExecutionRunState {
+  id                String   @id @default(cuid())
+  orgId             String   @map("org_id") @db.Uuid
+  executionId       String   @map("execution_id")
+  /// `agent_run` | `team_run`
+  executionKind     String   @map("execution_kind")
+  version           Int      @default(1)
+  namespaces        Json     @default("{}")
+  appliedPatchKeys  String[] @default([]) @map("applied_patch_keys")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([executionKind, executionId])
+  @@index([orgId, updatedAt])
+  @@map("execution_run_states")
 }
 
 /// Human operator; password_hash for email/password auth. public_key / biometric_ref optional for crypto/biometric flows.
@@ -759,6 +858,9 @@ model AgentRun {
   id             String    @id @default(cuid())
   agentId        String    @map("agent_id")
   conversationId String    @map("conversation_id")
+  /// Exact chat records that opened and closed this run (nullable for legacy rows).
+  inputMessageId  String?   @map("input_message_id")
+  outputMessageId String?   @map("output_message_id")
   userId         String    @map("user_id") @db.Uuid
   orgId          String?   @map("org_id") @db.Uuid
   status         String    @default("queued")
@@ -804,6 +906,8 @@ model AgentRun {
 
   @@index([agentId, createdAt])
   @@index([conversationId, createdAt])
+  @@index([inputMessageId])
+  @@index([outputMessageId])
   @@index([status, createdAt])
   @@index([teamRunId])
   @@index([parentRunId])
@@ -1292,6 +1396,7 @@ model Team {
   supervisorAgent Agent?       @relation("TeamSupervisor", fields: [supervisorAgentId], references: [id], onDelete: SetNull)
   members         TeamMember[]
   runs            TeamRun[]
+  workSessions    WorkSession[]
 
   @@index([orgId])
   @@index([createdByUserId])
@@ -1369,6 +1474,7 @@ model TeamRun {
   mailbox        TeamMailboxMessage[]
   waitTriggers   WaitTrigger[]
   channelSession TeamRunChannelSession?
+  assessmentRecords AssessmentRecord[]
 
   @@index([teamId, createdAt])
   @@index([orgId, createdAt])
@@ -1703,6 +1809,247 @@ model A2ATask {
 
 // ─── End Teams ────────────────────────────────────────────────────────────────
 
+// ─── Assessment ───────────────────────────────────────────────────────────────
+// Evidence-based evaluation: observe authorized work, collect evidence, evaluate
+// it against a customer-defined framework, run an adaptive interactive review,
+// and produce a traceable, human-confirmed report. Student final-project
+// assessment is the first recipe (see sdk/python/qlix/assessment/recipes/), not
+// the definition of these models. Evaluator agents run as an ordinary Team
+// (see WorkSession.teamId); the interactive review step runs on the existing
+// conversation-workflow engine (see backend/src/conversations/) — WorkSession
+// stores only the process/thread ids it needs, per that engine's own convention.
+
+/// One durable record for a piece of work under assessment. For the student
+/// recipe, one WorkSession is one student's final-project attempt.
+model WorkSession {
+  id               String    @id @default(cuid())
+  orgId            String    @map("org_id") @db.Uuid
+  recipeId         String    @map("recipe_id")
+  /// Qlix user being assessed, when the subject has an account (e.g. this platform's own students).
+  subjectUserId    String?   @map("subject_user_id") @db.Uuid
+  /// Opaque external identifier for the subject when they are not a Qlix User.
+  subjectRef       String    @map("subject_ref")
+  /// active | submitted | evaluating | reviewing | reported | closed
+  status           String    @default("active")
+  /// Team running the evaluator roster for this session.
+  teamId           String?   @map("team_id")
+  frameworkId      String?   @map("framework_id")
+  /// ConversationProcess id for this session's interactive review, once started.
+  reviewProcessId  String?   @map("review_process_id")
+  metadata         Json      @default("{}")
+  consentGrantedAt DateTime? @map("consent_granted_at")
+  startedAt        DateTime  @default(now()) @map("started_at")
+  submittedAt      DateTime? @map("submitted_at")
+  closedAt         DateTime? @map("closed_at")
+
+  // ─── Intake brief — set by the staff member when creating the assessment ───
+  /// Free-text description of what the student is meant to build.
+  projectDescription String?  @map("project_description") @db.Text
+  /// e.g. ["React", "Postgres", "Express"] — what the student is expected to use.
+  expectedStack       String[] @default([]) @map("expected_stack")
+  windowStartsAt      DateTime? @map("window_starts_at")
+  windowEndsAt        DateTime? @map("window_ends_at")
+  /// Optional — what AI assistance is/isn't allowed for this assessment.
+  aiUsagePolicy       String?  @map("ai_usage_policy") @db.Text
+  /// [{id, text}] — staff-authored checklist shown to the student, distinct from
+  /// EvaluationFramework.criteria (the org-wide rubric an evaluator agent scores against).
+  checklist            Json     @default("[]")
+  requiredDeliverables String[] @default([]) @map("required_deliverables")
+
+  organization      Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team              Team?               @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  framework         EvaluationFramework? @relation(fields: [frameworkId], references: [id], onDelete: SetNull)
+  evidence          EvidenceRecord[]
+  snapshots         ProjectSnapshot[]
+  assessmentRecords AssessmentRecord[]
+  deviceGrants      DeviceGrant[]
+
+  @@index([orgId, status])
+  @@index([subjectUserId])
+  @@map("work_sessions")
+}
+
+/// One authorized fact about a WorkSession's work: a file change, a test run, a
+/// terminal command, a commit, etc. Payload is expected to already be redacted
+/// by the collecting adapter (e.g. the VS Code extension) before it reaches here.
+model EvidenceRecord {
+  id         String   @id @default(cuid())
+  sessionId  String   @map("session_id")
+  /// file_snapshot | git_event | terminal_event | test_result | build_result | lint_result | ai_prompt | artifact_upload | manual_note
+  kind       String
+  /// vscode_extension | git_connect | manual_upload | sandbox_run
+  source     String
+  occurredAt DateTime @map("occurred_at")
+  payload    Json     @default("{}")
+  /// Sandbox blob id (backend/src/sandbox/sandboxClient.ts) for large content.
+  contentRef String?  @map("content_ref")
+  redacted   Boolean  @default(false)
+  ingestedAt DateTime @default(now()) @map("ingested_at")
+
+  session WorkSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, occurredAt])
+  @@index([sessionId, kind])
+  @@map("evidence_records")
+}
+
+/// Point-in-time copy of the assessed project: folder structure, file hashes,
+/// dependency list, approved test/build output. Captured at session start,
+/// submission, before/after a live-task demonstration, and completion.
+model ProjectSnapshot {
+  id           String   @id @default(cuid())
+  sessionId    String   @map("session_id")
+  /// e.g. "start" | "submission" | "pre_demo" | "post_demo" | "completion"
+  label        String
+  fileTreeHash String   @map("file_tree_hash")
+  /// [{path, sha256, sizeBytes}] inline, or use contentRef for the full archive.
+  fileHashes   Json     @default("[]") @map("file_hashes")
+  contentRef   String?  @map("content_ref")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  session WorkSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("project_snapshots")
+}
+
+/// Customer-defined, versioned checklist/rubric. Each org can supply its own
+/// without changing the underlying evaluation system.
+model EvaluationFramework {
+  id              String   @id @default(cuid())
+  orgId           String   @map("org_id") @db.Uuid
+  recipeId        String   @map("recipe_id")
+  name            String
+  version         Int      @default(1)
+  /// CriterionRef[] — see sdk/python/qlix/assessment/core.py
+  criteria        Json     @default("[]")
+  /// Structural guardrails, e.g. {"never_auto_accuse": true}. Defaults match
+  /// IntegrityPolicy() in the SDK contract.
+  integrityPolicy Json     @default("{\"never_auto_accuse\":true,\"escalate_to_human_on_suspicion\":true}") @map("integrity_policy")
+  /// draft | published | archived
+  status          String   @default("draft")
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sessions     WorkSession[]
+
+  @@unique([orgId, recipeId, version])
+  @@index([orgId, recipeId])
+  @@map("evaluation_frameworks")
+}
+
+/// Findings from every specialist evaluator for one WorkSession, plus the
+/// interactive-review transcript. Never a bare pass/fail — see overallReadiness.
+model AssessmentRecord {
+  id               String   @id @default(cuid())
+  sessionId        String   @map("session_id")
+  frameworkId      String   @map("framework_id")
+  /// The Team run that produced these findings — its TeamRunEvent hash-chain is
+  /// the audit trail; this record does not duplicate one.
+  teamRunId        String?  @map("team_run_id")
+  /// CriterionFinding[]
+  findings         Json     @default("[]")
+  /// Snapshot of the ConversationThread transcript once the interactive review
+  /// (if any) completes — see WorkSession.reviewProcessId.
+  reviewTranscript Json     @default("[]") @map("review_transcript")
+  /// ready | not_ready | needs_human_review
+  overallReadiness String   @default("needs_human_review") @map("overall_readiness")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  session WorkSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  teamRun TeamRun?          @relation(fields: [teamRunId], references: [id], onDelete: SetNull)
+  report  AssessmentReport?
+
+  @@index([sessionId])
+  @@map("assessment_records")
+}
+
+/// The evidence-backed readiness report. Creation is gated behind JIT approval
+/// (assessment.report.create); confirmation is the human reviewer's decision.
+model AssessmentReport {
+  id                 String    @id @default(cuid())
+  assessmentRecordId String    @unique @map("assessment_record_id")
+  summary            String    @db.Text
+  humanReviewerId    String?   @map("human_reviewer_id") @db.Uuid
+  /// pending | confirmed | overridden
+  humanDecision      String    @default("pending") @map("human_decision")
+  /// Approval.id for the JIT request that gated this report, if any.
+  jitRequestId       String?   @map("jit_request_id") @db.Uuid
+  confirmedAt        DateTime? @map("confirmed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  assessmentRecord AssessmentRecord @relation(fields: [assessmentRecordId], references: [id], onDelete: Cascade)
+
+  @@map("assessment_reports")
+}
+
+// ─── End Assessment ───────────────────────────────────────────────────────────
+
+// ─── Plugins ──────────────────────────────────────────────────────────────────
+// Optional product capabilities an org turns on from the dashboard's Plugins page.
+// The catalog of what's available (id, name, description, nav entry) is code
+// (backend/src/plugins/pluginCatalog.ts), not data — this table only records
+// which catalog entries a given org has enabled. Enabling a plugin is what makes
+// its nav item appear (see sessionOrganizationPayload's enabledPluginIds).
+
+model OrgPlugin {
+  id            String    @id @default(cuid())
+  orgId         String    @map("org_id") @db.Uuid
+  /// Matches an id in the code-level PLUGIN_CATALOG (e.g. "assessment").
+  pluginId      String    @map("plugin_id")
+  enabled       Boolean   @default(true)
+  /// Per-plugin settings, shape defined by the plugin itself. Empty for now.
+  config        Json      @default("{}")
+  /// registered | active | draining | inactive | failed
+  lifecycleState String   @default("active") @map("lifecycle_state")
+  lifecycleError String?  @map("lifecycle_error") @db.Text
+  enabledAt     DateTime  @default(now()) @map("enabled_at")
+  enabledByUserId String  @map("enabled_by_user_id") @db.Uuid
+  disabledAt    DateTime? @map("disabled_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, pluginId])
+  @@index([orgId, enabled])
+  @@map("org_plugins")
+}
+
+// ─── End Plugins ──────────────────────────────────────────────────────────────
+
+// ─── Assessment device auth (VS Code extension) ────────────────────────────────
+// One row per connected VS Code instance. Minted via a one-time connect code
+// (stored transiently in EphemeralGrant, namespace "device_connect_code") —
+// see backend/src/assessment/deviceAuth.ts. Bound to exactly one WorkSession +
+// one workspace folder; the extension refuses to observe outside workspaceRoot.
+
+model DeviceGrant {
+  id             String    @id @default(cuid())
+  orgId          String    @map("org_id") @db.Uuid
+  sessionId      String    @map("session_id")
+  subjectUserId  String?   @map("subject_user_id") @db.Uuid
+  deviceLabel    String    @map("device_label")
+  /// Absolute path the extension is bound to; it never observes outside this folder.
+  workspaceRoot  String    @map("workspace_root")
+  /// HMAC-SHA256 of the device token (same discipline as Agent.hybridRunnerTokenHash) — the
+  /// plaintext token is returned once at connect time and never stored.
+  tokenHash      String    @unique @map("token_hash")
+  allowedActions String[]  @default(["evidence.ingest"]) @map("allowed_actions")
+  expiresAt      DateTime  @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  lastSeenAt     DateTime? @map("last_seen_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  session WorkSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([expiresAt])
+  @@map("device_grants")
+}
+
+// ─── End Assessment device auth ─────────────────────────────────────────────────
+
 /// Saved NL agent builder prompts per user for history/reuse (newest first, max 20).
 model NlBuilderHistory {
   id        String   @id @default(cuid())
@@ -1724,6 +2071,14 @@ model NlBuilderSession {
   title           String   @default("New chat") @db.VarChar(160)
   /// Durable chat items (user/info/error/plan/done) — no private keys or starter packs.
   transcript      Json     @default("[]")
+  /// Server-owned discovery lifecycle. Kept as a string for forward-compatible phases.
+  phase           String   @default("discovering") @db.VarChar(32)
+  stateVersion    Int      @default(0) @map("state_version")
+  latestMessageSequence Int @default(0) @map("latest_message_sequence")
+  /// Materialized current truth; normalized facts and events below remain authoritative.
+  requirements    Json     @default("{\"facts\":[],\"unresolved\":[],\"assumptions\":[]}")
+  readiness       Json     @default("{\"score\":0,\"canPlan\":false,\"blocking\":[]}")
+  rollingSummary  String   @default("") @map("rolling_summary") @db.Text
   createdAgentIds String[] @default([]) @map("created_agent_ids")
   teamId          String?  @map("team_id")
   createdAt       DateTime @default(now()) @map("created_at")
@@ -1731,9 +2086,130 @@ model NlBuilderSession {
 
   user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  messages NlBuilderMessage[]
+  requirementFacts NlBuilderRequirementFact[]
+  stateSnapshots NlBuilderStateSnapshot[]
+  stateEvents NlBuilderStateEvent[]
+  memorySummaries NlBuilderMemorySummary[]
+  plans NlBuilderPlan[]
 
   @@index([userId, orgId, updatedAt])
   @@map("nl_builder_sessions")
+}
+
+/// Append-only, server-owned builder messages. The legacy transcript remains for UI compatibility.
+model NlBuilderMessage {
+  id          String   @id @default(cuid())
+  sessionId   String   @map("session_id")
+  sequence    Int
+  role        String   @db.VarChar(16)
+  content     String   @db.Text
+  status      String   @default("completed") @db.VarChar(16)
+  model       String?  @db.VarChar(200)
+  provider    String?  @db.VarChar(40)
+  inputTokens Int?     @map("input_tokens")
+  cachedInputTokens Int? @map("cached_input_tokens")
+  outputTokens Int?    @map("output_tokens")
+  latencyMs   Int?     @map("latency_ms")
+  createdAt   DateTime @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, sequence])
+  @@index([sessionId, createdAt])
+  @@map("nl_builder_messages")
+}
+
+/// Versioned semantic facts, retaining corrections and their originating message.
+model NlBuilderRequirementFact {
+  id               String   @id @default(cuid())
+  sessionId        String   @map("session_id")
+  key              String   @db.VarChar(100)
+  category         String   @db.VarChar(40)
+  value            Json
+  status           String   @default("active") @db.VarChar(16)
+  confidence       Float    @default(0.8)
+  sourceMessageId  String   @map("source_message_id")
+  supersedesFactId String?  @map("supersedes_fact_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status, category])
+  @@index([sessionId, key, status])
+  @@map("nl_builder_requirement_facts")
+}
+
+/// Immutable state checkpoint, enabling exact replay and cheap reads of older plan inputs.
+model NlBuilderStateSnapshot {
+  id                     String   @id @default(cuid())
+  sessionId              String   @map("session_id")
+  version                Int
+  requirements           Json
+  readiness              Json
+  derivedThroughSequence Int      @map("derived_through_sequence")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, version])
+  @@map("nl_builder_state_snapshots")
+}
+
+/// Append-only audit trail of how the canonical discovery state changed.
+model NlBuilderStateEvent {
+  id          String   @id @default(cuid())
+  sessionId   String   @map("session_id")
+  messageId   String   @map("message_id")
+  eventType   String   @map("event_type") @db.VarChar(40)
+  payload     Json
+  fromVersion Int      @map("from_version")
+  toVersion   Int      @map("to_version")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("nl_builder_state_events")
+}
+
+/// Token-bounded summaries are context accelerators, never the source of truth.
+model NlBuilderMemorySummary {
+  id                     String   @id @default(cuid())
+  sessionId              String   @map("session_id")
+  type                   String   @db.VarChar(24)
+  topic                  String?  @db.VarChar(100)
+  content                String   @db.Text
+  coveredFromSequence    Int      @map("covered_from_sequence")
+  coveredThroughSequence Int      @map("covered_through_sequence")
+  tokenCount             Int      @default(0) @map("token_count")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, type, updatedAt])
+  @@map("nl_builder_memory_summaries")
+}
+
+/// Reviewable plans pinned to the exact requirements version that produced them.
+model NlBuilderPlan {
+  id                  String   @id @default(cuid())
+  sessionId           String   @map("session_id")
+  requirementsVersion Int      @map("requirements_version")
+  planVersion         Int      @map("plan_version")
+  plan                Json
+  status              String   @default("draft") @db.VarChar(20)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, planVersion])
+  @@index([sessionId, status])
+  @@map("nl_builder_plans")
 }
 
 // ─── Job apply copilot ────────────────────────────────────────────────────────

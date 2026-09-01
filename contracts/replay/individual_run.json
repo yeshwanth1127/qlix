@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "individual",
+  "run": {
+    "runId": "fixture-run-individual",
+    "agentId": "fixture-agent",
+    "conversationId": "fixture-conversation",
+    "inputMessageId": "fixture-message-in",
+    "outputMessageId": "fixture-message-out"
+  },
+  "expectedOrder": [
+    "message_user",
+    "run_created",
+    "run_started",
+    "replay_snapshot",
+    "tool_started",
+    "action_start",
+    "approval_approved",
+    "tool_finished",
+    "message_agent",
+    "model_usage",
+    "agent_run",
+    "run_success"
+  ],
+  "privacy": {
+    "promptStorage": "hash_only_in_diagnostics",
+    "hiddenReasoning": "excluded",
+    "credentials": "redacted"
+  }
+}

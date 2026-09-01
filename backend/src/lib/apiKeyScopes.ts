@@ -149,6 +149,11 @@ const DEVELOPER_API_SCOPE_RULES: readonly ScopeRule[] = [
     scopes: ['builder:write'],
   },
   {
+    methods: ['POST'],
+    pattern: /^\/api\/v1\/nl-builder\/sessions\/[^/]+\/messages\/?$/,
+    scopes: ['builder:write'],
+  },
+  {
     methods: ['GET'],
     pattern: /^\/api\/v1\/nl-builder\/history\/?$/,
     scopes: ['builder:read'],

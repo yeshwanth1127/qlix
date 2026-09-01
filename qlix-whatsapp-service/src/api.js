@@ -361,26 +361,35 @@ export function createApiRouter() {
     res.status(result.error?.includes('not connected') ? 503 : status).json(result);
   });
 
-  /** Send a text message to a contact (phone / jid / contact name) — not self-chat. */
+  /** Send a text message or native poll to a contact (phone / jid / contact name) — not self-chat. */
   router.post('/send-to', async (req, res) => {
     const connectorId = req.body?.connector_id;
     const recipient = req.body?.recipient;
     const message = req.body?.message;
+    const poll = req.body?.poll;
     if (!connectorId || typeof recipient !== 'string' || !recipient.trim()) {
       res.status(400).json({ ok: false, error: 'connector_id and recipient required' });
-      return;
-    }
-    if (typeof message !== 'string' || !message.trim()) {
-      res.status(400).json({ ok: false, error: 'message required' });
       return;
     }
     if (!isSessionConnected(connectorId)) {
       res.status(503).json({ ok: false, error: 'WhatsApp not connected' });
       return;
     }
-    const result = await sendToRecipient(connectorId, recipient, message);
+    const hasPoll = poll && typeof poll === 'object';
+    const hasMessage = typeof message === 'string' && message.trim();
+    if (!hasPoll && !hasMessage) {
+      res.status(400).json({ ok: false, error: 'message or poll required' });
+      return;
+    }
+    const result = hasPoll
+      ? await sendPollToRecipient(connectorId, recipient, {
+          name: poll.name ?? message,
+          values: poll.values,
+          selectableCount: poll.selectableCount,
+        })
+      : await sendToRecipient(connectorId, recipient, message);
     if (result.ok) {
-      console.log(`[qlix-whatsapp] /send-to ok connector=${connectorId} to=${result.jid}`);
+      console.log(`[qlix-whatsapp] /send-to ok connector=${connectorId} to=${result.jid}${hasPoll ? ' poll' : ''}`);
       res.json(result);
       return;
     }

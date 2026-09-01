@@ -19,19 +19,19 @@ export default function DocsOverviewPage() {
       </p>
       <div className="flex flex-col gap-12">
         <section>
-          <h2 className="text-[17px] font-semibold tracking-tight text-[#1c1830]">Get started</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-[#012F13]">Get started</h2>
           <div className="mt-4">
             <GuideSectionContent section="start" apiBase={apiBase} variant="docs" />
           </div>
         </section>
         <section>
-          <h2 className="text-[17px] font-semibold tracking-tight text-[#1c1830]">Common recipes</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-[#012F13]">Common recipes</h2>
           <div className="mt-4">
             <GuideSectionContent section="recipes" apiBase={apiBase} variant="docs" />
           </div>
         </section>
         <section>
-          <h2 className="text-[17px] font-semibold tracking-tight text-[#1c1830]">Not in this API</h2>
+          <h2 className="text-[17px] font-semibold tracking-tight text-[#012F13]">Not in this API</h2>
           <div className="mt-4">
             <GuideSectionContent section="not-in-api" apiBase={apiBase} variant="docs" />
           </div>

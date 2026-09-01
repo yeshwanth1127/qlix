@@ -4,11 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   AlertTriangle,
   CheckCircle2,
-  FileText,
-  Folder,
   Info,
-  Search,
-  Sparkles,
   XCircle,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -17,7 +13,6 @@ import {
   activityEndedInFailure,
   isWaitingForJitApproval,
 } from "@/components/qlix/agents/agentToolActivity";
-import { sketchToneBg } from "@/components/qlix/sketch/tokens";
 import { cn } from "@/lib/utils/cn";
 import { safeModelOutputUrl } from "@/lib/safe-model-output";
 
@@ -33,16 +28,6 @@ type MessageBlock =
   | { type: "list"; items: string[] }
   | { type: "hr" }
   | { type: "callout"; tone: "success" | "error" | "warn" | "info"; text: string };
-
-const EMOJI_INLINE: Array<{ re: RegExp; Icon: LucideIcon; label: string }> = [
-  { re: /✅/g, Icon: CheckCircle2, label: "Success" },
-  { re: /❌/g, Icon: XCircle, label: "Failed" },
-  { re: /⚠️|⚠/g, Icon: AlertTriangle, label: "Warning" },
-  { re: /📁|🗂️/g, Icon: Folder, label: "Folder" },
-  { re: /📄|📝/g, Icon: FileText, label: "File" },
-  { re: /🔎|🔍/g, Icon: Search, label: "Search" },
-  { re: /✨/g, Icon: Sparkles, label: "Note" },
-];
 
 const CALLOUT_PREFIX: Array<{
   re: RegExp;
@@ -178,7 +163,7 @@ function renderWithLinks(text: string, keyPrefix: string): ReactNode[] {
 
   const pushPlain = (segment: string) => {
     if (!segment) return;
-    nodes.push(...renderEmojisAndInline(segment, `${keyPrefix}-p${key++}`));
+    nodes.push(...renderBoldItalic(segment, `${keyPrefix}-p${key++}`));
   };
 
   let last = 0;
@@ -191,47 +176,6 @@ function renderWithLinks(text: string, keyPrefix: string): ReactNode[] {
   }
   if (last < text.length) pushPlain(text.slice(last));
   if (nodes.length === 0) pushPlain(text);
-  return nodes;
-}
-
-function renderEmojisAndInline(text: string, keyPrefix: string): ReactNode[] {
-  let segments: Array<string | { emoji: (typeof EMOJI_INLINE)[number] }> = [text];
-  for (const emoji of EMOJI_INLINE) {
-    const next: typeof segments = [];
-    for (const seg of segments) {
-      if (typeof seg !== "string") {
-        next.push(seg);
-        continue;
-      }
-      let last = 0;
-      emoji.re.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = emoji.re.exec(seg)) !== null) {
-        if (m.index > last) next.push(seg.slice(last, m.index));
-        next.push({ emoji });
-        last = m.index + m[0].length;
-      }
-      if (last < seg.length) next.push(seg.slice(last));
-    }
-    segments = next;
-  }
-
-  const nodes: ReactNode[] = [];
-  let i = 0;
-  for (const seg of segments) {
-    if (typeof seg !== "string") {
-      const { Icon, label } = seg.emoji;
-      nodes.push(
-        <Icon
-          key={`${keyPrefix}-e${i++}`}
-          className="mx-0.5 inline size-3.5 shrink-0 translate-y-[-1px] text-black/70"
-          aria-label={label}
-        />,
-      );
-      continue;
-    }
-    nodes.push(...renderBoldItalic(seg, `${keyPrefix}-i${i++}`));
-  }
   return nodes;
 }
 
@@ -313,25 +257,25 @@ function calloutStyles(tone: "success" | "error" | "warn" | "info") {
     case "success":
       return {
         Icon: CheckCircle2,
-        box: cn("border-black/20", sketchToneBg.green),
+        box: "border-emerald-700/25",
         icon: "text-emerald-700/80",
       };
     case "error":
       return {
         Icon: XCircle,
-        box: cn("border-black/20", sketchToneBg.rose),
+        box: "border-red-700/25",
         icon: "text-red-700/80",
       };
     case "warn":
       return {
         Icon: AlertTriangle,
-        box: cn("border-black/20", sketchToneBg.amber),
+        box: "border-amber-700/25",
         icon: "text-amber-800/80",
       };
     default:
       return {
         Icon: Info,
-        box: cn("border-black/20", sketchToneBg.blue),
+        box: "border-black/15",
         icon: "text-black/60",
       };
   }
@@ -373,7 +317,7 @@ function BlockView({ block }: { readonly block: MessageBlock }) {
     case "callout": {
       const { Icon, box, icon } = calloutStyles(block.tone);
       return (
-        <div className={cn("flex items-start gap-2 border px-2.5 py-2 text-[12px]", box)}>
+        <div className={cn("flex items-start gap-2 border-l-2 pl-3 text-[12px]", box)}>
           <Icon className={cn("mt-0.5 size-3.5 shrink-0", icon)} aria-hidden />
           <span className="min-w-0 leading-relaxed text-black/85">{renderWithLinks(block.text, "co")}</span>
         </div>
@@ -425,38 +369,33 @@ function OutcomeFrame({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border border-[color:var(--ink-border)] shadow-[var(--sketch-shadow)]",
-        success ? "bg-[var(--sketch-tint-green)]" : "bg-[var(--sketch-tint-rose)]",
+        "border-l-2 pl-4",
+        success ? "border-emerald-700/25" : "border-red-700/35",
       )}
-      role="status"
-      aria-label={success ? "Completed result" : "Failed result"}
     >
-      <div
-        className={cn(
-          "absolute inset-y-2.5 left-0 w-[2px] rounded-full",
-          success ? "bg-[color:var(--sketch-green)]" : "bg-[color:var(--sketch-red)]",
-        )}
-        aria-hidden
-      />
-      <div className="px-4 py-3.5 pl-[1.15rem]">
-        <div className="mb-2.5 flex items-center gap-2 border-b border-[color:var(--ink-border)] pb-2">
+      <div>
+        <div
+          className="mb-2 flex items-center gap-1.5"
+          role="status"
+          aria-label={success ? "Completed result" : "Failed result"}
+        >
           <Icon
             className={cn(
-              "size-3.5 shrink-0",
+              "size-3 shrink-0",
               success ? "text-[color:var(--sketch-green)]" : "text-[color:var(--sketch-red)]",
             )}
             aria-hidden
           />
           <span
             className={cn(
-              "text-[10.5px] font-medium uppercase tracking-[0.16em]",
+              "text-[11px] font-medium",
               success ? "text-[color:var(--sketch-green)]" : "text-[color:var(--sketch-red)]",
             )}
           >
-            {success ? "Completed" : "Failed"}
+            {success ? "Done" : "Run failed"}
           </span>
         </div>
-        <div className="relative">{children}</div>
+        <div>{children}</div>
       </div>
     </div>
   );

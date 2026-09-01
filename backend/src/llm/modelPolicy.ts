@@ -45,7 +45,9 @@ export function assertModelAllowed(model: string, provider?: LlmProviderId): voi
     normalized === 'exora/qlix/auto' ||
     normalized === 'exora/qlix/auto-economy' ||
     normalized === 'exora/qlix/auto-standard' ||
-    normalized === 'qlix/auto'
+    normalized === 'qlix/auto' ||
+    normalized === 'openrouter/free' ||
+    normalized === 'openrouter/openrouter/free'
   ) {
     return;
   }

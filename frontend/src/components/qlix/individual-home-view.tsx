@@ -183,7 +183,7 @@ export function IndividualHomeView() {
                       "pl-2",
                     )}
                   >
-                    <span className="font-mono text-[11px] text-black/45">{row.timeUtc}</span>
+                    <span className="font-mono text-[11px] text-black/45">{row.timeIst}</span>
                     <span>{row.agentName}</span>
                     <span className="text-black/65">{row.description}</span>
                   </div>

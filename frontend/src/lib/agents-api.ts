@@ -11,6 +11,7 @@ export type PermissionScope =
   | "web.click"
   | "web.transaction"
   | "web.research"
+  | "files.create"
   | "system.file_read"
   | "system.file_write"
   | "system.gui_control"
@@ -54,6 +55,7 @@ export type PermissionScope =
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "web.read",
   "web.research",
+  "files.create",
   "web.click",
   "web.transaction",
   "system.file_read",
@@ -121,6 +123,7 @@ export const FORCE_JIT_SCOPES: PermissionScope[] = [
 export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "web.read": "Read web pages",
   "web.research": "Web research (platform APIs)",
+  "files.create": "Create files (PDF, spreadsheet)",
   "web.click": "Click on web pages",
   "web.transaction": "Submit web forms / transactions",
   "system.file_read": "Read local files",
@@ -309,6 +312,7 @@ export const CLOUD_MODELS = [
   "openrouter/anthropic/claude-sonnet-4.6",
   "openrouter/google/gemini-2.5-flash",
   "openrouter/qwen/qwen-2.5-72b-instruct",
+  "openrouter/stealth/ox-alpha",
 ] as const;
 
 export const EXORA_MODELS = [

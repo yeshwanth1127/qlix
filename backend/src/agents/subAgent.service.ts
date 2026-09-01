@@ -1,7 +1,14 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { appendAgentRunLogEvent } from '../agentChat/agentRunService.js';
+import { appendAgentRunLogEvent, cancelAgentRun } from '../agentChat/agentRunService.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 import { agentAskScopeFor } from './peerAgentScopes.js';
+
+const SUBAGENT_TERMINAL = ['completed', 'failed', 'canceled'] as const;
+
+export function canTransitionSubAgent(status: string): boolean {
+  return !(SUBAGENT_TERMINAL as readonly string[]).includes(status);
+}
 
 export type SubAgentTaskInput = {
   prompt: string;
@@ -255,6 +262,12 @@ export class SubAgentService {
       ),
     );
 
+    const parentRun = await prisma.agentRun.findUnique({
+      where: { id: params.parentRunId },
+      select: { teamRunId: true },
+    });
+    const parentTraceId = parentRun?.teamRunId ?? params.parentRunId;
+
     for (const [index, row] of created.entries()) {
       // V2 tasks become real runs on the target agent. V1 tasks are left alone — the SDK runs
       // those in-process, and enqueuing a same-agent run here would deadlock against the parent.
@@ -263,7 +276,7 @@ export class SubAgentService {
         await this.dispatchPeerRun({ invocationId: row.id, callerAgentId: params.agentId, parentRunId: params.parentRunId, target, prompt: row.prompt, skills: row.skills });
       }
 
-      await appendAgentRunLogEvent(params.parentRunId, {
+      await appendAgentRunLogEvent(params.parentRunId, attachTrace({
         message: 'subagent_spawned',
         invocationId: row.id,
         name: row.name,
@@ -272,7 +285,14 @@ export class SubAgentService {
         childAgentId: target?.id ?? null,
         childAgentName: target?.name ?? null,
         promptPreview: row.prompt.slice(0, 200),
-      });
+      }, createTraceEnvelope({
+        traceId: parentTraceId,
+        spanId: `subagent:${row.id}`,
+        parentSpanId: params.parentRunId,
+        executionId: row.id,
+        executionKind: 'subagent',
+        agentId: target?.id ?? params.agentId,
+      })) as Record<string, unknown>);
     }
 
     const rows = await prisma.subAgentInvocation.findMany({
@@ -390,9 +410,12 @@ export class SubAgentService {
       (err as Error & { code: string }).code = 'not_found';
       throw err;
     }
-    const updated = await prisma.subAgentInvocation.update({
-      where: { id: invocationId },
+    await prisma.subAgentInvocation.updateMany({
+      where: { id: invocationId, status: 'queued' },
       data: { status: 'running', startedAt: row.startedAt ?? new Date() },
+    });
+    const updated = await prisma.subAgentInvocation.findUniqueOrThrow({
+      where: { id: invocationId },
     });
     return toDto(updated);
   }
@@ -413,8 +436,8 @@ export class SubAgentService {
       throw err;
     }
 
-    const updated = await prisma.subAgentInvocation.update({
-      where: { id: params.invocationId },
+    const transitioned = await prisma.subAgentInvocation.updateMany({
+      where: { id: params.invocationId, status: { notIn: [...SUBAGENT_TERMINAL] } },
       data: {
         status: params.status,
         result:
@@ -426,8 +449,20 @@ export class SubAgentService {
         startedAt: row.startedAt ?? new Date(),
       },
     });
+    if (transitioned.count === 0) return toDto(row);
+    const updated = await prisma.subAgentInvocation.findUniqueOrThrow({
+      where: { id: params.invocationId },
+    });
 
-    await appendAgentRunLogEvent(row.parentRunId, {
+    if (params.status === 'canceled' && row.childRunId) {
+      await cancelAgentRun(row.childRunId, params.errorMessage ?? 'Sub-agent canceled');
+    }
+
+    const parentRun = await prisma.agentRun.findUnique({
+      where: { id: row.parentRunId },
+      select: { teamRunId: true },
+    });
+    await appendAgentRunLogEvent(row.parentRunId, attachTrace({
       message: 'subagent_completed',
       invocationId: updated.id,
       name: updated.name,
@@ -439,7 +474,14 @@ export class SubAgentService {
         'content' in (updated.result as Record<string, unknown>)
           ? String((updated.result as Record<string, unknown>).content ?? '').slice(0, 300)
           : undefined,
-    });
+    }, createTraceEnvelope({
+      traceId: parentRun?.teamRunId ?? row.parentRunId,
+      spanId: `subagent:${updated.id}:complete`,
+      parentSpanId: row.parentRunId,
+      executionId: updated.id,
+      executionKind: 'subagent',
+      agentId: row.parentAgentId,
+    })) as Record<string, unknown>);
 
     return toDto(updated);
   }

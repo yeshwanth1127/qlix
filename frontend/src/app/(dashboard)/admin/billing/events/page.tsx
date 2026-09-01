@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { SectionHeading } from "@/components/qlix/section-heading";
 import { SketchBox, sketchButton, sketchLabel } from "@/components/qlix/sketch";
 import { getAdminBillingEvents, type AdminBillingEventsResponse } from "@/lib/admin-billing-api";
+import { formatDateTimeInDisplayTz } from "@/lib/display-datetime";
 import { cn } from "@/lib/utils/cn";
 
 function formatUsd(input: string): string {
@@ -61,7 +62,7 @@ export default function AdminBillingEventsPage() {
         <table className="w-full border-collapse text-left text-[13px]">
           <thead className="border-b border-black">
             <tr>
-              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Time (UTC)</th>
+              <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Time (IST)</th>
               <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Org</th>
               <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Type</th>
               <th className={cn(sketchLabel, "px-4 py-3 text-left")}>Charge</th>
@@ -85,7 +86,7 @@ export default function AdminBillingEventsPage() {
                   )}
                 >
                   <td className="px-4 py-3 font-mono text-black">
-                    {new Date(e.occurredAt).toISOString().replace("T", " ").slice(0, 19)}
+                    {formatDateTimeInDisplayTz(e.occurredAt)}
                   </td>
                   <td className="px-4 py-3 text-black">{e.org.name}</td>
                   <td className="px-4 py-3 font-mono text-black">{e.eventType}</td>

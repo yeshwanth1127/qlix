@@ -156,7 +156,7 @@ function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
                 className={`${sketchInput} appearance-none pl-8`}
               >
                 {(["cloud", "hybrid", "local"] as AgentRuntime[]).map((rt) => (
-                  <option key={rt} value={rt} className="bg-white text-black">
+                  <option key={rt} value={rt} className="bg-[#E2F0CC] text-black">
                     {RUNTIME_LABELS[rt]}
                   </option>
                 ))}
@@ -182,7 +182,7 @@ function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
                   className={sketchInput}
                 >
                   {availableModels.map((m) => (
-                    <option key={m} value={m} className="bg-white text-black">
+                    <option key={m} value={m} className="bg-[#E2F0CC] text-black">
                       {m}
                     </option>
                   ))}
@@ -204,7 +204,7 @@ function AgentCard({ spec, label, accent = false, onChange }: AgentCardProps) {
                   type="button"
                   title={`Remove ${s}`}
                   onClick={() => patch(toggleScope(s, spec.permissionScopes, spec.jitScopes))}
-                  className="group inline-flex items-center gap-1 border border-black bg-white px-2 py-0.5 font-mono text-[10.5px] text-black transition-colors hover:bg-black hover:text-white"
+                  className="group inline-flex items-center gap-1 border border-black bg-[#E2F0CC] px-2 py-0.5 font-mono text-[10.5px] text-black transition-colors hover:bg-black hover:text-white"
                 >
                   {isJit && <ShieldAlert className="size-2.5 opacity-70" aria-hidden />}
                   {s}

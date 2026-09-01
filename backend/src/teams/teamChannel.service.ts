@@ -124,9 +124,12 @@ export async function cancelTeamRunForConnector(connectorId: string): Promise<st
   if (!['queued', 'running'].includes(active.status)) {
     return `Team run is already ${active.status}.`;
   }
+  await teamsRepo.updateRunStatus(active.id, 'canceled', {
+    completedAt: new Date(),
+    checkpointJson: null,
+  });
   await stopInFlightTeamRunWorkers(active.id);
-  await teamsRepo.updateRunStatus(active.id, 'canceled');
-  await teamsRepo.appendEvent(active.id, active.teamId, null, 'run_failed', { reason: 'canceled_by_user' });
+  await teamsRepo.appendEvent(active.id, active.teamId, null, 'run_canceled', { reason: 'canceled_by_user' });
   await teamsRepo.clearChannelSession(connectorId);
   const team = await prisma.team.findUnique({ where: { id: active.teamId }, select: { name: true } });
   return `Canceled team run for ${team?.name ?? 'team'} (${active.id.slice(0, 8)}…).`;

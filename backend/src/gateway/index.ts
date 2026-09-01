@@ -21,7 +21,14 @@ export function ensureGatewayAdapters(): void {
 }
 
 export { gatewayService, replyDispatcher };
-export { registerChannelAdapter, getChannelAdapter, listChannelAdapters } from './pluginSdk.js';
+export {
+  registerChannelAdapter,
+  getChannelAdapter,
+  listChannelAdapters,
+  getChannelAdapterMetadata,
+  deactivateChannelAdapter,
+  disposeGatewayPlugin,
+} from './pluginSdk.js';
 export { beginGatewayDrain, isGatewayDraining, GatewayDrainingError } from './drain.js';
 export { runEventBus } from './runEventBus.js';
 export { buildSessionKey, buildSessionKeyFromInbound, parseSessionKey } from './sessionKey.js';

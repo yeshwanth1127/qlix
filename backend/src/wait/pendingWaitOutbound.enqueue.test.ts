@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  applyConversationPromptToOutbound,
   completePendingOutreachPack,
   distinctPendingContactCount,
   enqueuePendingWaitOutbound,
@@ -185,5 +186,29 @@ describe('completePendingOutreachPack', () => {
     );
     assert.deepEqual(next.map((row) => row.kind ?? 'text'), ['text', 'document', 'poll']);
     assert.equal(next.filter((row) => row.kind === 'poll').length, 1);
+  });
+});
+
+describe('applyConversationPromptToOutbound', () => {
+  it('renders a choice prompt as a WhatsApp poll outbound DTO', () => {
+    const row = applyConversationPromptToOutbound(
+      {
+        agentId: 'agent-1',
+        connectorId: 'conn-1',
+        recipient: '+919999999999',
+        message: 'hello',
+        kind: 'text',
+      },
+      {
+        kind: 'choice',
+        content: 'Are you interested?',
+        options: ['Yes', 'No'],
+        maxSelections: 1,
+      },
+    );
+    assert.equal(row.kind, 'poll');
+    assert.equal(row.pollName, 'Are you interested?');
+    assert.deepEqual(row.pollValues, ['Yes', 'No']);
+    assert.equal(row.pollSelectableCount, 1);
   });
 });

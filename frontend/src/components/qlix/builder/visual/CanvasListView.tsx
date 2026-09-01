@@ -153,7 +153,7 @@ export function CanvasListView({ routePrefix }: CanvasListViewProps) {
             <div
               key={canvas.id}
               className={cn(
-                "flex items-center gap-3 rounded-2xl border bg-white/60 px-3.5 py-2.5 transition-colors hover:bg-white/85",
+                "flex items-center gap-3 rounded-2xl border bg-[#E2F0CC]/60 px-3.5 py-2.5 transition-colors hover:bg-[#E2F0CC]/85",
                 HAIRLINE,
               )}
             >
@@ -172,7 +172,7 @@ export function CanvasListView({ routePrefix }: CanvasListViewProps) {
                   maxLength={120}
                   aria-label="Canvas name"
                   className={cn(
-                    "min-w-0 flex-1 rounded-lg border bg-white px-2 py-1 text-[13px] text-black outline-none",
+                    "min-w-0 flex-1 rounded-lg border bg-[#E2F0CC] px-2 py-1 text-[13px] text-black outline-none",
                     HAIRLINE,
                   )}
                 />

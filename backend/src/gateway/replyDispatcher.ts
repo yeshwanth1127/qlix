@@ -24,6 +24,10 @@ class ReplyDispatcherImpl {
     this.adapters.set(adapter.channel, adapter);
   }
 
+  unregisterAdapter(channel: GatewayChannel, adapter?: ChannelAdapter): void {
+    if (!adapter || this.adapters.get(channel) === adapter) this.adapters.delete(channel);
+  }
+
   track(runId: string, deliveryTarget: DeliveryTarget, sessionKey: string): void {
     this.pending.set(runId, {
       deliveryTarget,

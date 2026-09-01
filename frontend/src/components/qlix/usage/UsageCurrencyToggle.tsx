@@ -9,7 +9,7 @@ export function UsageCurrencyToggle({
   onChange: (currency: UsageDisplayCurrency) => void;
 }) {
   return (
-    <div className="inline-flex self-start border border-black bg-white" aria-label="Display currency">
+    <div className="inline-flex self-start border border-black bg-[#E2F0CC]" aria-label="Display currency">
       {(["USD", "INR"] as const).map((currency) => (
         <button
           key={currency}

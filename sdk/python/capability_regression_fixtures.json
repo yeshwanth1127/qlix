@@ -1,0 +1,107 @@
+{
+  "formatVersion": 1,
+  "semantics": "Keyless compatibility fixtures. Each example names an existing user job and the minimum Qlix surfaces that must remain available; live provider quality is evaluated separately.",
+  "fixtures": [
+    {
+      "id": "research_compare_sources",
+      "area": "research",
+      "example": "Research competing products, read the strongest sources, and summarize the comparison.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["web.research"],
+      "requiredTools": ["research_web_search", "research_read_url"]
+    },
+    {
+      "id": "browser_complete_web_task",
+      "area": "browser",
+      "example": "Open a website, inspect it, fill a form, and click submit when permitted.",
+      "runtimes": ["cloud"],
+      "requiredScopes": ["web.read", "web.click"],
+      "requiredTools": ["browser", "browser_ab_open", "browser_ab_snapshot", "browser_ab_fill", "browser_ab_click"]
+    },
+    {
+      "id": "coding_modify_and_verify",
+      "area": "coding",
+      "example": "Inspect a codebase, make a focused code change, and run its tests.",
+      "runtimes": ["hybrid"],
+      "requiredScopes": ["system.file_read", "system.file_write"],
+      "requiredTools": ["luna_local_code_task", "luna_local_bash", "luna_local_python"]
+    },
+    {
+      "id": "files_read_write_search",
+      "area": "files",
+      "example": "Find a local file, read it, update it, and preserve its path.",
+      "runtimes": ["hybrid"],
+      "requiredScopes": ["system.file_read", "system.file_write"],
+      "requiredTools": ["luna_local_search_files", "luna_local_read_file", "luna_local_write_file"]
+    },
+    {
+      "id": "documents_create_report",
+      "area": "documents",
+      "example": "Turn research into a PDF report and a spreadsheet, while retaining cloud document access.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["web.research", "docs.read", "docs.write"],
+      "requiredTools": ["create_report_pdf", "create_xlsx", "docs_read", "docs_write"]
+    },
+    {
+      "id": "email_read_and_reply",
+      "area": "email",
+      "example": "Read a relevant email and send a user-approved reply.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["email.read", "email.send"],
+      "requiredTools": ["email_read", "email_send"]
+    },
+    {
+      "id": "whatsapp_message_and_document",
+      "area": "whatsapp",
+      "example": "Find a WhatsApp contact, send a message, and deliver a generated document.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["whatsapp.read", "whatsapp.send", "whatsapp.contact_send"],
+      "requiredTools": ["whatsapp_list_contacts", "whatsapp_send_message", "whatsapp_send_document"]
+    },
+    {
+      "id": "scheduling_check_and_book",
+      "area": "scheduling",
+      "example": "Check the calendar and create an approved meeting.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["calendar.read", "calendar.write", "meet.manage"],
+      "requiredTools": ["calendar_read", "calendar_write", "meet_manage"]
+    },
+    {
+      "id": "brain_find_grounded_context",
+      "area": "brain",
+      "example": "Find the right stored documents and answer from the user's Brain knowledge.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["brain.query"],
+      "requiredTools": ["brain_find_documents", "brain_query"]
+    },
+    {
+      "id": "mcp_use_connected_server",
+      "area": "mcp",
+      "example": "Discover and call a tool from a configured MCP server without changing its public identity.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredMcpTransports": ["http"],
+      "requiredMcpToolPattern": "mcp__<server-slug>__<sanitized-tool-name>"
+    },
+    {
+      "id": "teams_delegate_and_collect",
+      "area": "teams",
+      "example": "A commander delegates work to specialists and collects their traceable results.",
+      "requiredTeamTools": ["dispatch_to", "wait_result"]
+    },
+    {
+      "id": "teams_pause_and_resume",
+      "area": "waits",
+      "example": "A Team pauses for an external event and resumes without losing unfinished work.",
+      "requiredTeamTools": ["request_wait", "wait_result"]
+    },
+    {
+      "id": "assessment_evidence_backed_report",
+      "area": "assessment",
+      "example": "Inspect assessment artifacts, cite verified evidence, and create a traceable report.",
+      "runtimes": ["cloud", "hybrid"],
+      "requiredScopes": ["assessment.artifact.read", "assessment.evidence.search", "assessment.report.create"],
+      "requiredTools": ["assessment_artifact_read", "assessment_evidence_search", "assessment_report_create"],
+      "requiredProvenanceFields": ["toolRefs", "evidenceRefs", "artifactRefs"]
+    }
+  ]
+}

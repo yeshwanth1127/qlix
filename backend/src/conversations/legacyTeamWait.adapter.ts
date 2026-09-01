@@ -3,7 +3,9 @@ import { prisma } from '../lib/prisma.js';
 import type { WaitTriggerInbound } from '../teams/waitTrigger.service.js';
 import type { ConversationEffect, ConversationRuntimeState } from './conversation.types.js';
 import { signalConversation } from './conversationEngine.service.js';
-import { sendWhatsAppToRecipient } from '../connectors/whatsappServiceClient.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
+import { conversationPluginRegistry } from './registry.js';
+import { fallbackPromptFromContent } from './conversationPrompt.js';
 
 export type TeamConversationInboundResult = {
   managed: boolean;
@@ -84,6 +86,7 @@ export async function ensureLegacyTeamWaitThread(input: {
             contactJid: input.contactJid,
             teamRunId: input.teamRunId,
             waitTriggerId: input.waitTriggerId,
+            ...(input.agentId ? { agentId: input.agentId } : {}),
           },
           nodeVisits: { [entry!.id]: 1 },
           frameStack: [],
@@ -134,13 +137,24 @@ export async function ensureLegacyTeamWaitThread(input: {
         seq: 0,
         eventType: 'legacy_wait_armed',
         idempotencyKey: `wait:${input.waitTriggerId}:armed`,
-        payload: {
-          waitTriggerId: input.waitTriggerId,
-          workflowVersionId: managed ? workflowVersion!.id : null,
-          teamRunId: input.teamRunId,
-          agentId: input.agentId ?? null,
-          contactJid: input.contactJid,
-        },
+        payload: attachTrace(
+          {
+            waitTriggerId: input.waitTriggerId,
+            workflowVersionId: managed ? workflowVersion!.id : null,
+            teamRunId: input.teamRunId,
+            agentId: input.agentId ?? null,
+            contactJid: input.contactJid,
+          },
+          createTraceEnvelope({
+            traceId: input.teamRunId,
+            spanId: `conversation:${thread.id}:0`,
+            parentSpanId: input.teamRunId,
+            executionId: thread.id,
+            executionKind: 'conversation',
+            orgId: input.orgId,
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+          }),
+        ) as object,
       },
     });
     const claimed = await tx.waitTrigger.updateMany({
@@ -228,7 +242,17 @@ export async function recordLegacyTeamWaitInbound(input: {
         channel: 'whatsapp',
         idempotencyKey: input.idempotencyKey ?? null,
         providerEventId: input.providerEventId ?? null,
-        payload: input.inbound as unknown as Prisma.InputJsonValue,
+        payload: attachTrace(
+          input.inbound,
+          createTraceEnvelope({
+            traceId: thread.processId ?? thread.id,
+            spanId: `conversation:${thread.id}:${nextVersion}`,
+            parentSpanId: thread.processId ?? thread.id,
+            executionId: thread.id,
+            executionKind: 'conversation',
+            orgId: thread.orgId,
+          }),
+        ) as Prisma.InputJsonValue,
         occurredAt: new Date(input.inbound.timestampMs),
       },
     });
@@ -377,14 +401,20 @@ async function runManagedTeamConversation(input: {
       (effect): effect is Extract<ConversationEffect, { type: 'send' }> => effect.type === 'send',
     );
     for (const effect of sends) {
-      const connectorId = String(input.state.variables.connectorId ?? '');
-      const contactJid = String(input.state.variables.contactJid ?? input.inbound.jid);
-      const delivery = await sendWhatsAppToRecipient({
-        connectorId,
-        recipient: contactJid,
-        message: effect.content,
-      });
-      if (!delivery.ok) throw new Error(delivery.error ?? 'Conversation WhatsApp send failed');
+      const prompt = fallbackPromptFromContent(effect.content, effect.prompt);
+      await conversationPluginRegistry.deliverSend(
+        effect.channel || 'whatsapp',
+        {
+          orgId: String(input.state.variables.orgId ?? ''),
+          threadId: input.conversationThreadId,
+          idempotencyKey: `${input.conversationThreadId}:${effect.nodeId}:${effect.operationIndex}:send`,
+        },
+        {
+          content: prompt.content,
+          prompt,
+          metadata: effect.metadata,
+        },
+      );
       sentMessages.push(effect.content);
       await completeOutboxEffect(input.conversationThreadId, effect);
     }
@@ -449,7 +479,17 @@ export async function closeLegacyTeamWaitThreads(
           seq: nextVersion,
           eventType: status === 'expired' ? 'thread_expired' : 'thread_canceled',
           idempotencyKey: `wait:${trigger.id}:${status}`,
-          payload: { waitTriggerId: trigger.id, status },
+          payload: attachTrace(
+            { waitTriggerId: trigger.id, status },
+            createTraceEnvelope({
+              traceId: thread.processId ?? thread.id,
+              spanId: `conversation:${thread.id}:${nextVersion}`,
+              parentSpanId: thread.processId ?? thread.id,
+              executionId: thread.id,
+              executionKind: 'conversation',
+              orgId: thread.orgId,
+            }),
+          ) as object,
         },
       });
       await tx.conversationBinding.updateMany({ where: { threadId: thread.id }, data: { active: false } });

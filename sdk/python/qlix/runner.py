@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -129,6 +130,7 @@ class AgentRunner:
         self._system: Any = None  # LunaSystem, set in boot()
         self._lock = asyncio.Lock()  # serialise concurrent run() calls
         self._history: list[Any] = []  # list[Message], stateful per instance
+        self._context_artifacts: dict[str, str] = {}
         self._class_tool_map: dict[str, Callable[..., Any]] = {}
         self._luna_tool_map: dict[str, Any] = {}  # name → BaseTool
         self._all_tool_defs: list[dict[str, Any]] = []
@@ -290,6 +292,7 @@ class AgentRunner:
         from qlix.luna.core.types import Message, Role, ToolCall as LunaToolCall
 
         self._history.append(Message(role=Role.USER, content=message))
+        self._compact_history_if_needed()
 
         # Assemble messages: system prompt (if any) + full history
         messages: list[Any] = []
@@ -371,6 +374,65 @@ class AgentRunner:
                 messages.append(tool_msg)
 
         return content, turns, tool_calls_made, metadata
+
+    def _compact_history_if_needed(self) -> None:
+        """Compact very long local history while retaining its private full artifact."""
+        max_chars = max(8_000, int(os.environ.get("QLIX_LOCAL_HISTORY_MAX_CHARS", "60000")))
+        keep_recent = max(4, int(os.environ.get("QLIX_LOCAL_HISTORY_KEEP_MESSAGES", "12")))
+        total_chars = sum(len(str(getattr(message, "content", "") or "")) for message in self._history)
+        if total_chars <= max_chars or len(self._history) <= keep_recent:
+            return
+
+        from qlix.context_management import (
+            build_structured_context,
+            make_context_artifact,
+            serialize_messages,
+        )
+        from qlix.luna.core.events import EventType
+        from qlix.luna.core.types import Message, Role
+
+        old = self._history[:-keep_recent]
+        recent = self._history[-keep_recent:]
+        artifact = make_context_artifact(
+            serialize_messages(old), source_kind="agent_runner_history"
+        )
+        self._context_artifacts[artifact.artifact_id] = artifact.content
+        prior_ids = [
+            str(artifact_id)
+            for item in old
+            for artifact_id in (getattr(item, "metadata", {}).get("source_artifact_ids") or [])
+            if artifact_id
+        ]
+        structured = build_structured_context(
+            old,
+            source_artifact_ids=[*prior_ids, artifact.artifact_id],
+        )
+        summary = Message(
+            role=Role.SYSTEM,
+            content=structured.to_text(),
+            metadata={
+                "kind": "context_compaction",
+                "version": "1.0",
+                "source_artifact_ids": structured.source_artifact_ids,
+                "structured": structured.to_dict(),
+            },
+        )
+        self._history = [summary, *recent]
+        if self._system is not None and getattr(self._system, "bus", None) is not None:
+            self._system.bus.publish(
+                EventType.CONTEXT_COMPACTED,
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "sha256": artifact.sha256,
+                    "char_count": artifact.char_count,
+                    "references": list(artifact.references[:8]),
+                    "messages_compacted": len(old),
+                },
+            )
+
+    def get_context_artifact(self, artifact_id: str) -> str | None:
+        """Return a private in-process history artifact created by compaction."""
+        return self._context_artifacts.get(artifact_id)
 
     async def _dispatch_tool(
         self,

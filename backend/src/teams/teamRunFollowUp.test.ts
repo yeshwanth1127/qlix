@@ -8,6 +8,9 @@ import {
   extractTeamRunUserGoal,
   firstInputsInContinueChain,
   firstRealGoalInContinueChain,
+  isUnusableTeamSynthesis,
+  lastResultFromEnvelope,
+  pickUsableSynthesis,
   priorContextFromRun,
   resolveContinuedGoal,
 } from './teamRunFollowUp.js';
@@ -210,5 +213,59 @@ describe('firstRealGoalInContinueChain', () => {
       { goal: 'read the file, filter leads by city, bangalore, then send WhatsApp' },
     ]);
     assert.match(goal, /bangalore/i);
+  });
+
+  it('prefers the root draft over a later create-pdf follow-up', () => {
+    const pdfContinue = [
+      FOLLOW_UP_NOTE_START,
+      'Intent: draft a small opening scene',
+      'Result: {"draft":"FADE IN"}',
+      FOLLOW_UP_NOTE_END,
+      '',
+      'Follow-up:',
+      'create a pdf for this',
+    ].join('\n');
+    const goal = firstRealGoalInContinueChain([
+      { goal: pdfContinue },
+      { goal: 'draft a small opening scene for a thriller about a missing train' },
+    ]);
+    assert.match(goal, /missing train/i);
+  });
+});
+
+describe('lastResultFromEnvelope / unusable synthesis', () => {
+  it('captures multiline Result JSON', () => {
+    const goal = [
+      FOLLOW_UP_NOTE_START,
+      'Intent: draft',
+      'Result: {',
+      '  "draft": "FADE IN",',
+      '  "status": "ok"',
+      '}',
+      FOLLOW_UP_NOTE_END,
+      '',
+      'Follow-up:',
+      'create a pdf for this',
+    ].join('\n');
+    const result = lastResultFromEnvelope(goal);
+    assert.ok(result);
+    assert.match(result!, /FADE IN/);
+    assert.match(result!, /"status": "ok"/);
+  });
+
+  it('detects blocked PDF failure JSON as unusable', () => {
+    const blocked = JSON.stringify({
+      reason: "Dispatch says 'create a pdf for this' but provides no attached source",
+      status: 'blocked',
+      needed_to_proceed: ['Attach the source'],
+    });
+    assert.equal(isUnusableTeamSynthesis(blocked), true);
+    assert.equal(isUnusableTeamSynthesis('{"draft":"FADE IN"}'), false);
+  });
+
+  it('pickUsableSynthesis skips blocked and returns the draft', () => {
+    const blocked = '{"status":"blocked","reason":"no pdf tool"}';
+    const draft = '{"draft":"FADE IN"}';
+    assert.equal(pickUsableSynthesis([blocked, draft]), draft);
   });
 });

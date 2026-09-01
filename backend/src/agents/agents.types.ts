@@ -6,6 +6,8 @@ export type BuiltinPermissionScope =
   | 'web.click'
   | 'web.transaction'
   | 'web.research'
+  /** Cloud/hybrid sandbox PDF + spreadsheet generation (create_report_pdf / create_xlsx). */
+  | 'files.create'
   | 'system.file_read'
   | 'system.file_write'
   | 'system.gui_control'
@@ -42,7 +44,18 @@ export type BuiltinPermissionScope =
   | 'slack.read'
   | 'slack.send'
   | 'notion.read'
-  | 'notion.write';
+  | 'notion.write'
+  | 'assessment.session.get'
+  | 'assessment.evidence.search'
+  | 'assessment.evidence.read'
+  | 'assessment.artifact.read'
+  | 'assessment.snapshot.read'
+  | 'assessment.snapshot.compare'
+  | 'assessment.framework.read'
+  | 'assessment.record'
+  | 'assessment.review.ask'
+  | 'assessment.review.request_demonstration'
+  | 'assessment.report.create';
 
 /** Per-org MCP tool scopes (`mcp.<server-slug>.<tool-name>`). */
 export type McpPermissionScope = `mcp.${string}`;

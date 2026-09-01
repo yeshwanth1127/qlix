@@ -148,7 +148,7 @@ No full browser — structured CLIs / APIs for search and content.
 
 ### 3.4 WhatsApp
 
-**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT), `whatsapp.auto_reply` (listen after send)
+**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT; includes native polls), `whatsapp.auto_reply` (listen after send). Reply-wait also requires the org plugin **`whatsapp_outreach`**. There is no `whatsapp.poll` scope — polls are a rendering of a conversation `choice` prompt under `whatsapp.contact_send`.
 
 | Tool | Notes |
 |------|-------|
@@ -156,6 +156,8 @@ No full browser — structured CLIs / APIs for search and content.
 | `whatsapp_list_contacts` | Search phonebook contacts by name/phone |
 | `whatsapp_read_chat` | Read recent 1:1 messages with a contact (only when user asks) |
 | `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT). With `whatsapp.auto_reply`, arms a 24h listener for that contact. Optional `reply_instructions` stored on the session |
+| `whatsapp_send_document` | Send a file to a contact (JIT `whatsapp.contact_send`) |
+| `whatsapp_send_poll` | Native WhatsApp poll / MCQ (2–12 options). Same `whatsapp.contact_send` JIT as text. Poll votes arrive as inbound text |
 | `whatsapp_auto_reply_status` | List active auto-reply listeners for this agent |
 | `whatsapp_auto_reply_stop` | Stop listening for one contact (or all) |
 | `whatsapp_auto_reply_set_instructions` | Set/update what to do when that contact replies |
@@ -164,6 +166,8 @@ No full browser — structured CLIs / APIs for search and content.
 **Auto-reply flow:** standalone agents receive a new agent run when an active contact listener matches; the prompt includes stored `replyInstructions` and the result is sent back to the same contact (not self-chat).
 
 **Team wait flow:** when a team worker has both `whatsapp.contact_send` and `whatsapp.auto_reply`, and the team has a configured **wait step** (`TeamConfig.waitSteps`) or the run goal requests reply-wait, the send arms a durable `whatsapp_inbound` wait **per contacted lead**. The team pauses after that stage (workers stop; the run stays observable via SSE). On pause, team chat asks how long to wait (1h / 6h / 24h / 48h / custom). Progress events show “N of M replies received” until every lead replies or the chosen TTL ends.
+
+**Managed conversation workflow:** attach a published workflow (`TeamConfig.conversationWorkflowVersionId`). `ask`/`collect` nodes may set `prompt.kind: "choice"` (MCQ). The conversation engine is channel-agnostic; the WhatsApp adapter renders `choice` as a native poll and `text` as a message. Follow-up turns reuse the same `whatsapp.contact_send` conversation JIT grant. NL builder does not set the workflow id — attach it on the team. Poll votes arrive as inbound **text** (the selected option).
 
 **Wait side-effects (generic):** a wait step can declare side effects such as `live_sandbox_artifact` (xlsx/csv/json). While waiting, each included inbound reply appends a row to a **stable sandbox download URL** (same link, file replaced in place). Contact ack policy is configurable (`fixed` ack to the lead is the default preset). Delivery to the owner (`whatsapp.send` self-chat) typically happens `on_resume` when the next stage runs.
 
@@ -314,7 +318,8 @@ Supporting agent APIs (non-exhaustive): run poll / events / complete, email & Wh
 | Scope | Primary tools |
 |-------|----------------|
 | `web.read` / `web.click` | `browser_ab_*`, `browser_exec` |
-| `web.research` | `research_*`, `create_report_pdf`, `create_xlsx` |
+| `web.research` | `research_*` |
+| `files.create` | `create_report_pdf`, `create_xlsx` (cloud/hybrid sandbox download links) |
 | `web.transaction` | Form/checkout intent (JIT); used with browser tools |
 | `system.file_read` | `luna_local_read_file`, `luna_local_list_dir`, `luna_local_open_file` |
 | `system.file_write` | `luna_local_write_file`, `luna_local_bash`, `luna_local_python`, `luna_local_code_task`, `luna_local_create_pdf`, `luna_local_create_xlsx` |

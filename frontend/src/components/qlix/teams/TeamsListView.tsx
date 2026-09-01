@@ -125,7 +125,7 @@ export function TeamsListView({
             {total >= SEARCH_THRESHOLD ? (
               <label
                 className={cn(
-                  "hidden items-center gap-2 rounded-full border bg-white/60 px-3 py-1.5 sm:flex",
+                  "hidden items-center gap-2 rounded-full border bg-[#E2F0CC]/60 px-3 py-1.5 sm:flex",
                   HAIRLINE,
                 )}
               >
@@ -181,7 +181,7 @@ export function TeamsListView({
               return (
                 <div
                   key={team.id}
-                  className="agents-list-row group relative flex items-center gap-4 px-5 py-4 transition-colors hover:bg-white/55"
+                  className="agents-list-row group relative flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[#E2F0CC]/55"
                   style={{ animationDelay: `${index * 40}ms` } as React.CSSProperties}
                 >
                   <Link
@@ -192,7 +192,7 @@ export function TeamsListView({
 
                   <span
                     className={cn(
-                      "pointer-events-none relative grid size-8 shrink-0 place-items-center rounded-full border bg-white/70 text-[12px] font-semibold text-black",
+                      "pointer-events-none relative grid size-8 shrink-0 place-items-center rounded-full border bg-[#E2F0CC]/70 text-[12px] font-semibold text-black",
                       HAIRLINE,
                     )}
                     aria-hidden
@@ -244,7 +244,7 @@ export function TeamsListView({
                     <Link
                       href={`${routePrefix}/teams/${team.id}`}
                       className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full border bg-white/70 px-3 py-1 text-[11px] font-medium text-black transition-colors hover:bg-black hover:text-white",
+                        "inline-flex items-center gap-1.5 rounded-full border bg-[#E2F0CC]/70 px-3 py-1 text-[11px] font-medium text-black transition-colors hover:bg-black hover:text-white",
                         HAIRLINE,
                       )}
                     >
@@ -272,8 +272,8 @@ export function TeamsListView({
       </SketchBox>
 
       {deleteTarget ? (
-        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-white/70 p-4 backdrop-blur-sm">
-          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-white/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
+        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-[#E2F0CC]/70 p-4 backdrop-blur-sm">
+          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-[#E2F0CC]/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
             <h2 className={sketchLabel}>Delete team?</h2>
             <p className={cn("mt-2 text-[12.5px] leading-relaxed", INK_SOFT)}>
               This permanently deletes{" "}

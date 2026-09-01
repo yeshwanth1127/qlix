@@ -83,6 +83,18 @@ export interface CompleteResult {
   amountCharged: string | null;
   walletAfter: string | null;
   successfulEventId: string | null;
+  /** True when this request safely replayed the same terminal outcome. */
+  idempotentReplay?: boolean;
+}
+
+export function isCompatibleCompletionReplay(
+  existingPayload: unknown,
+  requestedSuccess: boolean,
+): boolean {
+  if (!existingPayload || typeof existingPayload !== 'object' || Array.isArray(existingPayload)) {
+    return false;
+  }
+  return (existingPayload as Record<string, unknown>).success === requestedSuccess;
 }
 
 export class ActionsService {
@@ -209,7 +221,23 @@ export class ActionsService {
     await assertSignature(signedPayload, signature, agent.publicKey);
 
     const existingCompletion = await findCompletionFor(signedPayload.actionId);
-    if (existingCompletion) throw new ActionAlreadyCompletedError();
+    if (existingCompletion) {
+      // A caller may retry after the backend committed but its HTTP response was
+      // lost. Returning the existing outcome makes that retry safe. A contradictory
+      // terminal result remains an error and can never rewrite the signed ledger.
+      if (!isCompatibleCompletionReplay(existingCompletion.payload, signedPayload.success)) {
+        throw new ActionAlreadyCompletedError();
+      }
+      return {
+        actionId: startRow.id,
+        completionLogId: existingCompletion.id,
+        status: signedPayload.success ? 'success' : 'failed',
+        amountCharged: null,
+        walletAfter: null,
+        successfulEventId: null,
+        idempotentReplay: true,
+      };
+    }
 
     const eventType = signedPayload.eventType ?? startRow.actionType;
     const eventKey = signedPayload.eventKey ?? signedPayload.actionId;

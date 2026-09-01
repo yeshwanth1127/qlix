@@ -12,6 +12,7 @@ import httpx
 from qlix.luna.core.registry import ToolRegistry
 from qlix.luna.core.types import ToolResult
 from qlix.luna.security.ssrf import check_ssrf
+from qlix.luna.security.safe_http import request_with_ssrf_protection
 from qlix.luna.tools._stubs import BaseTool, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -136,13 +137,12 @@ class HttpRequestTool(BaseTool):
 
         try:
             t0 = time.time()
-            response = httpx.request(
+            response = request_with_ssrf_protection(
                 method,
                 url,
                 headers=headers,
                 content=body,
                 timeout=float(timeout),
-                follow_redirects=True,
             )
             elapsed_ms = (time.time() - t0) * 1000
 
@@ -171,6 +171,12 @@ class HttpRequestTool(BaseTool):
                     "elapsed_ms": round(elapsed_ms, 2),
                     "truncated": truncated,
                 },
+            )
+        except ValueError as exc:
+            return ToolResult(
+                tool_name="http_request",
+                content=f"SSRF protection blocked request: {exc}",
+                success=False,
             )
         except httpx.TimeoutException as exc:
             return ToolResult(

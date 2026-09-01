@@ -371,7 +371,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
   };
 
   return (
-    <div className="space-y-6 bg-white">
+    <div className="space-y-6 bg-[#E2F0CC]">
       <Link
         href={`${routePrefix}/agents`}
         className="inline-flex items-center gap-1 text-[12px] text-black/50 hover:text-black"
@@ -755,7 +755,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
 
         <section className="mt-6">
           <h2 className={sketchLabel}>Public key</h2>
-          <div className="mt-2 flex flex-wrap items-center gap-2 border border-black bg-white px-3 py-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2 border border-black bg-[#E2F0CC] px-3 py-2">
             <span className="min-w-0 flex-1 font-mono text-[11px] text-black/70" title={agent.publicKey}>
               {shortHexKey(agent.publicKey)}
             </span>
@@ -810,7 +810,7 @@ export function AgentDetailView({ agentId, routePrefix }: AgentDetailViewProps) 
                   </span>
                 </div>
                 <p className="mt-1 font-mono text-[11px] text-black/50">issuer: {vc.issuerDid}</p>
-                <pre className="mt-2 overflow-x-auto border border-black bg-white px-2 py-1.5 font-mono text-[11px] text-black/70">
+                <pre className="mt-2 overflow-x-auto border border-black bg-[#E2F0CC] px-2 py-1.5 font-mono text-[11px] text-black/70">
                   {JSON.stringify(vc.claims, null, 2)}
                 </pre>
                 <p
@@ -979,7 +979,7 @@ function CopyInline({ value, label }: { readonly value: string; readonly label: 
     <button
       type="button"
       onClick={() => void onCopy()}
-      className="inline-flex size-7 shrink-0 items-center justify-center border border-black bg-white text-black/50 transition-colors hover:bg-black hover:text-white"
+      className="inline-flex size-7 shrink-0 items-center justify-center border border-black bg-[#E2F0CC] text-black/50 transition-colors hover:bg-black hover:text-white"
       title={`Copy ${label}`}
       aria-label={`Copy ${label}`}
     >

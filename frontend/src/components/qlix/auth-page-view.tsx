@@ -187,19 +187,19 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
   }
 
   const inputFocus =
-    "focus:border-[#1c1830]/50 focus:ring-1 focus:ring-[#1c1830]/25 focus:outline-none transition-all";
+    "focus:border-[#012F13]/50 focus:ring-1 focus:ring-[#012F13]/25 focus:outline-none transition-all";
 
   const glassCard =
-    "rounded-2xl border border-[color:var(--qlix-card-border)] bg-white/65 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_70px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl";
+    "rounded-2xl border border-[color:var(--qlix-card-border)] bg-[#E2F0CC]/65 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_70px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-2xl";
 
   return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-[#f2efe8] text-[#1c1830]">
+    <div data-swiss-layout="auth" className="relative flex h-screen w-full overflow-hidden bg-[#E2F0CC] text-[#012F13]">
       {/* PixelBlast animated background — ink pixels on paper */}
       <div className="absolute inset-0">
         <PixelBlast
           variant="circle"
           pixelSize={6}
-          color="#1c1830"
+          color="#012F13"
           patternScale={3}
           patternDensity={1.2}
           pixelSizeJitter={0.5}
@@ -213,14 +213,14 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
         />
       </div>
       {/* Readability scrim over the background */}
-      <div className="pointer-events-none absolute inset-0 bg-[#f2efe8]/80" aria-hidden />
+      <div className="pointer-events-none absolute inset-0 bg-[#E2F0CC]/80" aria-hidden />
 
       {/* Foreground — pointer-events-none so the background keeps tracking the
           pointer for parallax; re-enabled on the interactive controls below. */}
       <div className="pointer-events-none relative z-10 flex w-full flex-col overflow-y-auto">
         {/* Top nav */}
         <div className="flex h-14 shrink-0 items-center justify-between px-6 sm:px-10">
-          <Link href="/" className="pointer-events-auto flex items-center text-[#1c1830]">
+          <Link href="/" className="pointer-events-auto flex items-center text-[#012F13]">
             <QlixWordmark className="text-[34px]" />
           </Link>
           <div className="pointer-events-auto ml-auto flex items-center gap-3 text-[13px]">
@@ -230,7 +230,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
             <button
               type="button"
               onClick={() => setAuthMode(mode === "sign-in" ? "sign-up" : "sign-in")}
-              className="rounded-full border border-black/15 bg-white/60 px-4 py-1.5 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/30 hover:bg-white/90"
+              className="rounded-full border border-black/15 bg-[#E2F0CC]/60 px-4 py-1.5 text-[13px] font-medium text-[#012F13] backdrop-blur-sm transition-colors hover:border-black/30 hover:bg-[#E2F0CC]/90"
             >
               {mode === "sign-in" ? "Create account" : "Sign in"}
             </button>
@@ -243,7 +243,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
             {mode === "sign-in" ? (
               <>
                 <div className="mb-8">
-                  <h1 className="text-2xl font-semibold tracking-tight text-[#1c1830]">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[#012F13]">
                     Welcome back
                   </h1>
                   <p className="mt-1 text-[14px] text-black/55">
@@ -261,7 +261,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                   <button
                     type="button"
                     onClick={() => startOAuth("github")}
-                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
+                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-[#E2F0CC]/60 text-[14px] font-medium text-[#012F13] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-[#E2F0CC]/90 active:opacity-80"
                   >
                     <GitHubMark />
                     Continue with GitHub
@@ -269,7 +269,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                   <button
                     type="button"
                     onClick={() => startOAuth("google")}
-                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[14px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
+                    className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-[#E2F0CC]/60 text-[14px] font-medium text-[#012F13] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-[#E2F0CC]/90 active:opacity-80"
                   >
                     <GoogleMark />
                     Continue with Google
@@ -281,7 +281,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <div className="w-full border-t border-black/10" />
                   </div>
                   <div className="relative flex justify-center">
-                    <span className="rounded-full bg-[#f2efe8] px-3 text-[12px] uppercase tracking-widest text-black/40">
+                    <span className="rounded-full bg-[#E2F0CC] px-3 text-[12px] uppercase tracking-widest text-black/40">
                       or
                     </span>
                   </div>
@@ -303,7 +303,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignInEmail(ev.target.value)}
                         placeholder="dev@qlix.io"
                         className={cn(
-                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
+                          "h-10 w-full rounded-xl border border-black/12 bg-[#E2F0CC]/70 px-3 text-[14px] text-[#012F13] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -313,7 +313,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         <label htmlFor="password" className="text-[11px] font-semibold uppercase tracking-widest text-black/50">
                           Password
                         </label>
-                        <a href="#" className="text-[12px] text-black/45 transition-colors hover:text-[#1c1830]">
+                        <a href="#" className="text-[12px] text-black/45 transition-colors hover:text-[#012F13]">
                           Forgot?
                         </a>
                       </div>
@@ -327,7 +327,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignInPassword(ev.target.value)}
                         placeholder="••••••••"
                         className={cn(
-                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
+                          "h-10 w-full rounded-xl border border-black/12 bg-[#E2F0CC]/70 px-3 text-[14px] text-[#012F13] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -335,7 +335,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="submit"
                       disabled={signInLoading}
-                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#1c1830] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#012F13] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
                     >
                       {signInLoading ? "Signing in…" : "Sign In"}
                     </button>
@@ -345,7 +345,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
             ) : (
               <>
                 <div className="mb-8">
-                  <h1 className="text-2xl font-semibold tracking-tight text-[#1c1830]">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[#012F13]">
                     Create your account
                   </h1>
                   <p className="mt-1 text-[14px] text-black/55">
@@ -366,11 +366,11 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         Workspace type
                       </legend>
                       {inviteFromUrl ? (
-                        <div className="rounded-xl border border-[#1c1830]/15 bg-[#1c1830]/[0.04] px-3 py-2.5">
+                        <div className="rounded-xl border border-[#012F13]/15 bg-[#012F13]/[0.04] px-3 py-2.5">
                           <div className="flex items-start gap-2.5">
-                            <Building2 className="mt-0.5 size-4 shrink-0 text-[#1c1830]/70" aria-hidden />
+                            <Building2 className="mt-0.5 size-4 shrink-0 text-[#012F13]/70" aria-hidden />
                             <div>
-                              <p className="text-[13px] font-medium text-[#1c1830]">Organization invite</p>
+                              <p className="text-[13px] font-medium text-[#012F13]">Organization invite</p>
                               <p className="mt-0.5 text-[12px] leading-relaxed text-black/55">
                                 You&apos;re joining an organization via invitation.
                               </p>
@@ -387,8 +387,8 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                                 className={cn(
                                   "relative flex cursor-pointer flex-col gap-2.5 rounded-xl border p-3.5 transition-all duration-200",
                                   selected
-                                    ? "border-[#1c1830]/30 bg-[#1c1830]/[0.06] shadow-[inset_0_0_0_1px_rgba(28,24,48,0.06)]"
-                                    : "border-black/12 bg-white/55 hover:border-black/20 hover:bg-white/80",
+                                    ? "border-[#012F13]/30 bg-[#012F13]/[0.06] shadow-[inset_0_0_0_1px_rgba(28,24,48,0.06)]"
+                                    : "border-black/12 bg-[#E2F0CC]/55 hover:border-black/20 hover:bg-[#E2F0CC]/80",
                                 )}
                               >
                                 <input
@@ -404,20 +404,20 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                                     className={cn(
                                       "flex size-8 items-center justify-center rounded-lg border transition-colors",
                                       selected
-                                        ? "border-[#1c1830]/20 bg-white/80 text-[#1c1830]"
-                                        : "border-black/10 bg-white/70 text-black/45",
+                                        ? "border-[#012F13]/20 bg-[#E2F0CC]/80 text-[#012F13]"
+                                        : "border-black/10 bg-[#E2F0CC]/70 text-black/45",
                                     )}
                                   >
                                     <Icon className="size-4" strokeWidth={1.75} aria-hidden />
                                   </span>
                                   {selected ? (
-                                    <span className="flex size-5 items-center justify-center rounded-full bg-[#1c1830] text-white">
+                                    <span className="flex size-5 items-center justify-center rounded-full bg-[#012F13] text-white">
                                       <Check className="size-3" strokeWidth={2.5} aria-hidden />
                                     </span>
                                   ) : null}
                                 </div>
                                 <div>
-                                  <span className="block text-[13px] font-semibold text-[#1c1830]">
+                                  <span className="block text-[13px] font-semibold text-[#012F13]">
                                     {title}
                                   </span>
                                   <span className="mt-1 block text-[11px] leading-snug text-black/50">
@@ -444,7 +444,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpName(ev.target.value)}
                         placeholder="Alan Turing"
                         className={cn(
-                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
+                          "h-10 w-full rounded-xl border border-black/12 bg-[#E2F0CC]/70 px-3 text-[14px] text-[#012F13] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -463,7 +463,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpEmail(ev.target.value)}
                         placeholder="name@company.com"
                         className={cn(
-                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
+                          "h-10 w-full rounded-xl border border-black/12 bg-[#E2F0CC]/70 px-3 text-[14px] text-[#012F13] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -483,7 +483,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                         onChange={(ev) => setSignUpPassword(ev.target.value)}
                         placeholder="••••••••"
                         className={cn(
-                          "h-10 w-full rounded-xl border border-black/12 bg-white/70 px-3 text-[14px] text-[#1c1830] placeholder:text-black/30",
+                          "h-10 w-full rounded-xl border border-black/12 bg-[#E2F0CC]/70 px-3 text-[14px] text-[#012F13] placeholder:text-black/30",
                           inputFocus,
                         )}
                       />
@@ -491,7 +491,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="submit"
                       disabled={signUpLoading}
-                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#1c1830] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+                      className="mt-2 flex h-10 w-full items-center justify-center rounded-xl bg-[#012F13] text-[14px] font-semibold text-white shadow-[0_14px_30px_-14px_rgba(28,24,48,0.5)] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
                     >
                       {signUpLoading ? "Creating account…" : "Create Account"}
                     </button>
@@ -510,7 +510,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="button"
                       onClick={() => startOAuth("github")}
-                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
+                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-[#E2F0CC]/60 text-[13px] font-medium text-[#012F13] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-[#E2F0CC]/90 active:opacity-80"
                     >
                       <GitHubMark />
                       Sign up with GitHub
@@ -518,7 +518,7 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
                     <button
                       type="button"
                       onClick={() => startOAuth("google")}
-                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-white/60 text-[13px] font-medium text-[#1c1830] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-white/90 active:opacity-80"
+                      className="flex h-10 w-full items-center justify-center gap-3 rounded-xl border border-black/12 bg-[#E2F0CC]/60 text-[13px] font-medium text-[#012F13] backdrop-blur-sm transition-colors hover:border-black/25 hover:bg-[#E2F0CC]/90 active:opacity-80"
                     >
                       <GoogleMark />
                       Sign up with Google
@@ -540,11 +540,11 @@ export function AuthPageView({ initialMode, defaultWorkspaceType }: AuthPageView
 
                 <p className="mt-6 text-center text-[11px] uppercase leading-relaxed tracking-wider text-black/40">
                   By signing up, you agree to our{" "}
-                  <Link className="text-[#1c1830]/70 transition-all hover:underline" href="/terms">
+                  <Link className="text-[#012F13]/70 transition-all hover:underline" href="/terms">
                     Terms
                   </Link>{" "}
                   and{" "}
-                  <Link className="text-[#1c1830]/70 transition-all hover:underline" href="/privacy">
+                  <Link className="text-[#012F13]/70 transition-all hover:underline" href="/privacy">
                     Privacy Policy
                   </Link>
                   .

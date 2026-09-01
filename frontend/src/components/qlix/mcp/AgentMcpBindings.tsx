@@ -141,7 +141,7 @@ export function AgentMcpBindings({ agentId, canManage }: AgentMcpBindingsProps) 
                             title={tool.description}
                             className={cn(
                               "border border-black px-2 py-0.5 font-mono text-[11px] disabled:opacity-40",
-                              on ? "bg-black text-white" : "bg-white text-black hover:bg-black/5",
+                              on ? "bg-black text-white" : "bg-[#E2F0CC] text-black hover:bg-black/5",
                             )}
                           >
                             {tool.name}

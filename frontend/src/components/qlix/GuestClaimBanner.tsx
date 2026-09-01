@@ -13,7 +13,7 @@ export function GuestClaimBanner() {
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-black/10 bg-white/60 px-4 py-2.5 backdrop-blur-sm">
+      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-black/10 bg-[#E2F0CC]/60 px-4 py-2.5 backdrop-blur-sm">
         <span className="font-serif text-[11px] uppercase tracking-widest text-black">
           Guest workspace
         </span>

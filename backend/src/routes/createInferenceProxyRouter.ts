@@ -27,6 +27,7 @@ import {
 import { getPlanConfig } from '../billings/lib/subscriptionPlans.js';
 import {
   isModelRoutingEnabled,
+  isOpenRouterFreeModelId,
   isQlixAutoModelId,
   parseReasoningEffort,
   selectInferenceModel,
@@ -65,7 +66,17 @@ function handleInferenceProxyError(
     return;
   }
   if (error instanceof InferenceProviderError) {
-    response.status(502).json({ error: { code: 'provider_error', message: error.message } });
+    const msg = error.message.toLowerCase();
+    let code = 'provider_error';
+    const status = error.status || 502;
+    if (status === 429 || msg.includes('rate') || msg.includes('429')) code = 'rate_limited';
+    else if (msg.includes('quota') || /free.*(limit|exhaust)/i.test(error.message)) code = 'quota_exhausted';
+    else if (msg.includes('context') || msg.includes('too long') || msg.includes('maximum')) {
+      code = 'context_overflow';
+    }
+    response.status(status === 429 ? 429 : status >= 400 && status < 600 ? status : 502).json({
+      error: { code, message: error.message },
+    });
     return;
   }
   const msg = String((error as Error)?.message ?? 'Unauthorized');
@@ -182,16 +193,49 @@ function resolveRoute(
     tools: request.tools,
     planAllowedTiers: agent.planAllowedTiers,
     routingEnabled: isModelRoutingEnabled(),
+    cascade: {
+      phase: request.cascade_phase,
+      forceHandoff: request.cascade_force_handoff === true,
+      escalateReason: request.cascade_escalate_reason,
+      scoutFailures: request.cascade_scout_failures,
+      synthesisRound: request.cascade_synthesis_round === true,
+    },
   });
 
-  // Rounds 2+ of a tool loop: keep the model the run started on. Switching provider
-  // mid-run throws away the prompt-prefix cache and re-scores complexity against a
-  // tool nudge rather than the real task. Still gated by policy + plan tier below.
+  // Phase pin: keep model within scout or paid for cache warmth, unless handoff/escalate.
   const pinned = request.pinned_model?.trim();
-  if (pinned && pinned !== decision.routedModel && !isQlixAutoModelId(pinned)) {
+  const forceHandoff = request.cascade_force_handoff === true;
+  const escalatingToPaid =
+    decision.cascadePhase === 'paid' && pinned && isOpenRouterFreeModelId(pinned);
+
+  if (
+    pinned &&
+    !forceHandoff &&
+    !escalatingToPaid &&
+    pinned !== decision.routedModel &&
+    !isQlixAutoModelId(pinned)
+  ) {
+    // Free router pin: allow openrouter/free and :free variants in scout
+    if (decision.cascadePhase === 'scout' && isOpenRouterFreeModelId(pinned)) {
+      return {
+        ...decision,
+        routedModel: pinned,
+        routingTier: 'economy',
+        reason: 'pinned_for_phase',
+      };
+    }
     const pinnedTier = tierForModelId(pinned);
     if (TIER_RANK[pinnedTier] <= TIER_RANK[decision.billableTier]) {
-      return { ...decision, routedModel: pinned, routingTier: pinnedTier, reason: 'pinned_for_run' };
+      // Don't pin a paid model while still in scout decision
+      if (decision.cascadePhase === 'scout' && !isOpenRouterFreeModelId(pinned)) {
+        return decision;
+      }
+      return {
+        ...decision,
+        routedModel: pinned,
+        routingTier: pinnedTier,
+        reason: decision.cascadePhase ? 'pinned_for_phase' : 'pinned_for_run',
+      };
     }
   }
   return decision;
@@ -293,7 +337,7 @@ export function createInferenceProxyRouter(): Router {
       const inferenceRequest = applyRouteToRequest(withTools, decision, agent.reasoningEffort);
 
       console.log(
-        `[inference] route agentProvider=${agent.llmProvider} execProvider=${execProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} score=${decision.complexityScore}`,
+        `[inference] route agentProvider=${agent.llmProvider} execProvider=${execProvider} applicationId=${LLM_APPLICATION_IDS.agentInference} agentId=${agentId} requested=${decision.requestedModel} routed=${decision.routedModel} billable=${decision.billableTier} reason=${decision.reason} cascade=${decision.cascadePhase ?? 'n/a'} score=${decision.complexityScore}`,
       );
 
       if (parsed.data.stream === true) {
@@ -458,6 +502,8 @@ export function createInferenceProxyRouter(): Router {
         requested_model: decision.requestedModel,
         routing_reason: decision.reason,
         billable_tier: decision.billableTier,
+        cascade_phase: decision.cascadePhase ?? null,
+        cascade_escalate_reason: decision.cascadeEscalateReason ?? null,
         cache_hit: false,
       });
     } catch (error: any) {

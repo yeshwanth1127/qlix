@@ -29,9 +29,20 @@ import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAcce
 import { assertRunnerAuth, RunnerUnauthorizedError } from '../agentChat/runnerAuth.js';
 import { McpRepository } from '../mcp/mcp.repository.js';
 import { askableAgentIds } from '../agents/peerAgentScopes.js';
+import { filterScopesByDisabledPlugins } from '../agents/scopeCatalog.js';
+import { getExplicitlyDisabledPluginIds } from '../plugins/plugins.service.js';
+import {
+  decodeNestedJsonValue,
+  parseRunnerResponse,
+  unwrapRunnerResponse,
+  wrapLegacyRunnerRequest,
+} from '../contracts/agentRuntimeContracts.js';
 import { drainInjections } from '../teams/runInjectionStore.js';
+import { brainKnowledgeSourceVersion, loadBrainContextForAgentRun } from '../context/brainContextAdapter.js';
+import { getOrCompileCachedContextPack } from '../context/contextPackCache.js';
 import { assertModelAllowed, ModelPolicyError, normalizeQlixInferenceModelId } from '../llm/modelPolicy.js';
-import { appendAgentRunLogEvent, cancelAgentRun, ensureLocalConversation } from '../agentChat/agentRunService.js';
+import { appendAgentRunEvent, appendAgentRunLogEvent, cancelAgentRun, ensureLocalConversation } from '../agentChat/agentRunService.js';
+import { getAgentRunTimeline } from '../agentChat/runTimeline.service.js';
 import {
   createLocalConversation,
   forkConversation,
@@ -260,6 +271,8 @@ const runnerBrainQueryBody = z.object({
 
 const pollBody = z.object({
   maxWaitMs: z.number().int().min(0).max(30_000).default(0),
+  // Omitted by older runners; explicit for versioned contract consumers.
+  runtime: z.enum(['cloud', 'hybrid']).optional(),
 });
 
 const runnerLocalEnvironmentBody = z.object({
@@ -274,50 +287,22 @@ const runnerLogBody = z.object({
   data: z.unknown(),
 });
 
-async function appendAgentRunEvent(
-  runId: string,
-  type: 'delta' | 'log' | 'status',
-  data: unknown,
-): Promise<number> {
-  if (type === 'log' && data && typeof data === 'object' && !Array.isArray(data)) {
-    return appendAgentRunLogEvent(runId, data as Record<string, unknown>);
-  }
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const agg = await prisma.agentRunEvent.aggregate({
-      where: { runId },
-      _max: { seq: true },
-    });
-    const seq = (agg._max.seq ?? -1) + 1;
-    try {
-      await prisma.agentRunEvent.create({
-        data: { runId, seq, type, data: data as any },
-      });
-      const createdAt = new Date().toISOString();
-      void import('../gateway/runEventBus.js')
-        .then(({ runEventBus }) =>
-          runEventBus.publish({ runId, seq, type, data, createdAt }),
-        )
-        .catch(() => undefined);
-      return seq;
-    } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002' &&
-        attempt < 3
-      ) {
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error('Failed to append run event after retries');
-}
-
-const runnerCompleteBody = z.object({
+const legacyRunnerCompleteBody = z.object({
   ok: z.boolean(),
   result: z.unknown().optional(),
   errorMessage: z.string().max(10_000).optional(),
 });
+
+const runnerCompleteBody = z.union([
+  legacyRunnerCompleteBody,
+  z.object({
+    contractVersion: z.literal('qlix.runner-response.v1'),
+    runId: z.string().trim().min(1).max(100),
+    ok: z.boolean(),
+    result: z.unknown().optional(),
+    errorMessage: z.string().max(10_000).optional(),
+  }),
+]);
 
 const emailReadBody = z.object({
   runId: z.string().trim().min(1).max(80).optional(),
@@ -793,6 +778,8 @@ async function claimNextQueuedRun(agentId: string): Promise<{
   reasoningEffort: string | null;
   useBrain: boolean;
   teamRunId: string | null;
+  teamId: string | null;
+  orgId: string | null;
 } | null> {
   const claimed = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     WITH next_run AS (
@@ -826,8 +813,10 @@ async function claimNextQueuedRun(agentId: string): Promise<{
       inferenceModel: true,
       reasoningEffort: true,
       useBrain: true,
-      teamRunId: true,
-    },
+          teamRunId: true,
+          teamId: true,
+          orgId: true,
+        },
   });
   return row;
 }
@@ -950,7 +939,7 @@ async function streamAgentRunEvents(
 
   const pumpEvents = async (): Promise<void> => {
     const events = await prisma.agentRunEvent.findMany({
-      where: { runId, seq: { gt: lastSeq } },
+      where: { runId, seq: { gt: lastSeq }, type: { not: 'replay_snapshot' } },
       orderBy: { seq: 'asc' },
       take: 200,
       select: { seq: true, type: true, data: true, createdAt: true },
@@ -978,7 +967,7 @@ async function streamAgentRunEvents(
 
   const { runEventBus } = await import('../gateway/runEventBus.js');
   unsubscribe = await runEventBus.subscribe(runId, (ev) => {
-    if (closed || ev.seq <= lastSeq) return;
+    if (closed || ev.seq <= lastSeq || ev.type === 'replay_snapshot') return;
     lastSeq = Math.max(lastSeq, ev.seq);
     writeEvent(ev.type, { seq: ev.seq, data: ev.data, createdAt: ev.createdAt });
   });
@@ -1785,6 +1774,7 @@ export function createAgentChatRouter(): Router {
         response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
         return;
       }
+
       const worker = await prisma.agent.findUnique({
         where: { id: agentId },
         select: { orgId: true },
@@ -1996,9 +1986,48 @@ export function createAgentChatRouter(): Router {
         console.error('[poll] askableAgents failed', err);
         return [];
       });
+      const explicitlyDisabledPlugins = agentRow?.orgId
+        ? await getExplicitlyDisabledPluginIds(agentRow.orgId)
+        : [];
 
-      response.json({
-        run: {
+      const orgId = run.orgId ?? agentRow?.orgId ?? null;
+      const memoryText = run.teamRunId ? null : memoryBlock;
+      const contextPack = await getOrCompileCachedContextPack({
+        sources: {
+          runId: run.id,
+          orgId,
+          agentId,
+          taskText: run.prompt,
+          memoryText,
+          useBrain: run.useBrain,
+          brainSourceVersion: run.useBrain ? await brainKnowledgeSourceVersion(orgId) : 'none',
+          permissionFingerprint: `${orgId ?? ''}:${agentId}:${[...run.skills].sort().join(',')}`,
+        },
+        compile: {
+          orgId,
+          agentId,
+          runId: run.id,
+          goal: run.prompt.slice(0, 500),
+          taskText: run.prompt,
+          memoryText,
+          grantedScopes: run.skills,
+          sources: run.useBrain ? ['run.brain'] : undefined,
+        },
+        loadBrain: () => loadBrainContextForAgentRun({
+          agentId,
+          userId: run.userId,
+          orgId,
+          question: run.prompt,
+          runId: run.id,
+        }),
+      })
+        .then((resolved) => resolved.pack)
+        .catch((err) => {
+          console.error('[context-pack] compile failed', err instanceof Error ? err.message : err);
+          return null;
+        });
+
+      const runPayload = {
           id: run.id,
           prompt: run.prompt,
           attachments: run.attachments ?? null,
@@ -2011,19 +2040,38 @@ export function createAgentChatRouter(): Router {
             (agentRow?.llmModel ? normalizeQlixInferenceModelId(agentRow.llmModel) : null),
           reasoningEffort: run.reasoningEffort ?? agentRow?.reasoningEffort ?? null,
           conversationId: run.conversationId,
+          teamRunId: run.teamRunId ?? null,
+          teamId: run.teamId ?? null,
           userId: run.userId,
           createdAt: run.createdAt.toISOString(),
           useBrain: run.useBrain,
           agentDescription: agentRow?.description ?? null,
           waConnectorId: waConnectorResolved?.id ?? null,
           memoryBlock: memoryBlock ?? null,
+          contextPack,
           mcpServers: mcpServersFiltered,
           toolProfile: agentRow?.toolProfile ?? 'full',
           // Live scopes so runners pick up post-create scope edits without a restart.
-          permissionScopes: agentRow?.permissionScopes ?? [],
-          jitScopes: agentRow?.jitScopes ?? [],
-          alwaysScopes: agentRow?.alwaysScopes ?? [],
-        },
+          permissionScopes: filterScopesByDisabledPlugins(
+            agentRow?.permissionScopes ?? [],
+            explicitlyDisabledPlugins,
+          ),
+          jitScopes: filterScopesByDisabledPlugins(
+            agentRow?.jitScopes ?? [],
+            explicitlyDisabledPlugins,
+          ),
+          alwaysScopes: filterScopesByDisabledPlugins(
+            agentRow?.alwaysScopes ?? [],
+            explicitlyDisabledPlugins,
+          ),
+      };
+      response.json({
+        run: runPayload,
+        // Only explicitly version-aware runners receive the envelope.  The
+        // legacy field remains for a mixed-version rollout.
+        ...(parsed.data.runtime
+          ? { runnerRequest: wrapLegacyRunnerRequest({ agentId, runtime: parsed.data.runtime, payload: runPayload }) }
+          : {}),
       });
     } catch (e: any) {
       response.status(401).json({ error: { code: 'runner_unauthorized', message: e?.message ?? 'Unauthorized' } });
@@ -2431,6 +2479,13 @@ export function createAgentChatRouter(): Router {
     const runId = String(request.params.runId);
     try {
       await assertRunnerAuth(agentId, request);
+      const completion: { ok: boolean; result?: unknown; errorMessage?: string } = 'contractVersion' in parsed.data
+        ? unwrapRunnerResponse(parseRunnerResponse(parsed.data)) as { ok: boolean; result?: unknown; errorMessage?: string }
+        : parsed.data;
+      if ('contractVersion' in parsed.data && parsed.data.runId !== runId) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Completion run ID does not match URL' } });
+        return;
+      }
       const run = await prisma.agentRun.findUnique({
         where: { id: runId },
         select: {
@@ -2449,6 +2504,13 @@ export function createAgentChatRouter(): Router {
         return;
       }
 
+      // Team workers must hand structured Results back to the orchestrator.
+      // Normalize JSON that a legacy or mixed-version runner encoded as text,
+      // while preserving ordinary text results for individual agent chats.
+      const completionResult = run.teamRunId && completion.ok
+        ? decodeNestedJsonValue(completion.result)
+        : completion.result;
+
       // Stop from Active Runs wins — do not overwrite canceled with success/failed.
       if (run.status === 'canceled' || run.status === 'cancelled') {
         response.json({ ok: true, status: 'canceled', ignored: true });
@@ -2462,37 +2524,50 @@ export function createAgentChatRouter(): Router {
       });
 
       const finishedAt = new Date();
-      await prisma.$transaction(async (tx) => {
+      const outputMessageId = randomUUID();
+      const transitioned = await prisma.$transaction(async (tx) => {
         const updated = await tx.agentRun.updateMany({
-          where: { id: runId, status: { notIn: ['canceled', 'cancelled'] } },
+          where: { id: runId, status: { in: ['queued', 'running'] } },
           data: {
-            status: parsed.data.ok ? 'success' : 'failed',
+            status: completion.ok ? 'success' : 'failed',
             finishedAt,
-            result: parsed.data.result as any,
-            errorMessage: parsed.data.errorMessage ?? null,
+            result: completionResult as any,
+            errorMessage: completion.errorMessage ?? null,
+            outputMessageId,
           },
         });
         if (updated.count === 0) {
-          return;
+          return false;
         }
-        if (parsed.data.ok) {
+        if (completion.ok) {
           const content =
-            typeof parsed.data.result === 'string'
-              ? parsed.data.result
-              : JSON.stringify(parsed.data.result ?? {}, null, 2);
+            typeof completionResult === 'string'
+              ? completionResult
+              : JSON.stringify(completionResult ?? {}, null, 2);
           await tx.agentMessage.create({
-            data: { conversationId: run.conversationId, role: 'agent', content },
+            data: { id: outputMessageId, conversationId: run.conversationId, role: 'agent', content },
           });
         } else {
           await tx.agentMessage.create({
             data: {
+              id: outputMessageId,
               conversationId: run.conversationId,
               role: 'system',
-              content: `Run failed: ${parsed.data.errorMessage ?? 'unknown error'}`,
+              content: `Run failed: ${completion.errorMessage ?? 'unknown error'}`,
             },
           });
         }
+        return true;
       });
+
+      if (!transitioned) {
+        const current = await prisma.agentRun.findUnique({
+          where: { id: runId },
+          select: { status: true },
+        });
+        response.json({ ok: true, status: current?.status ?? run.status, ignored: true });
+        return;
+      }
 
       const after = await prisma.agentRun.findUnique({
         where: { id: runId },
@@ -2502,18 +2577,18 @@ export function createAgentChatRouter(): Router {
         response.json({ ok: true, status: 'canceled', ignored: true });
         return;
       }
-      if (!parsed.data.ok) {
+      if (!completion.ok) {
         console.warn(
-          `[agent-run] failed runId=${runId} agentId=${agentId} error=${String(parsed.data.errorMessage ?? '').slice(0, 500)}`,
+          `[agent-run] failed runId=${runId} agentId=${agentId} error=${String(completion.errorMessage ?? '').slice(0, 500)}`,
         );
       }
 
       // Unified channel delivery (WhatsApp / Slack / tracked targets).
       void replyDispatcher
         .deliver(runId, {
-          ok: parsed.data.ok,
-          result: parsed.data.result,
-          errorMessage: parsed.data.errorMessage ?? null,
+          ok: completion.ok,
+          result: completionResult,
+          errorMessage: completion.errorMessage ?? null,
         })
         .catch((err) => {
           console.warn('[gateway] replyDispatcher.deliver', err instanceof Error ? err.message : err);
@@ -2522,9 +2597,9 @@ export function createAgentChatRouter(): Router {
       // Fire-and-forget: learn long-term memory (facts / episode / recipe) from this run.
       // Never allowed to affect the run outcome.
       const resultContent =
-        typeof parsed.data.result === 'string'
-          ? parsed.data.result
-          : JSON.stringify(parsed.data.result ?? {}, null, 2);
+        typeof completionResult === 'string'
+          ? completionResult
+          : JSON.stringify(completionResult ?? {}, null, 2);
       if (!run.teamRunId) {
         void extractAndStoreMemories({
           agentId,
@@ -2532,7 +2607,7 @@ export function createAgentChatRouter(): Router {
           orgId: run.orgId,
           prompt: run.prompt,
           resultContent,
-          ok: parsed.data.ok,
+          ok: completion.ok,
           skills: run.skills ?? [],
         }).catch((err) => {
           console.error('[agent-memory] extractAndStoreMemories', err instanceof Error ? err.message : err);
@@ -2545,7 +2620,7 @@ export function createAgentChatRouter(): Router {
       }
 
       // Fire-and-forget: record run usage and post-execution billing
-      if (parsed.data.ok && user?.email) {
+      if (completion.ok && user?.email) {
         void recordRunUsage(prisma, { runId, agentId, orgId: run.orgId, userId: run.userId }).catch((err) => {
           console.error('[record-run-usage]', err);
         });
@@ -2567,6 +2642,35 @@ export function createAgentChatRouter(): Router {
       response.status(401).json({ error: { code: 'runner_unauthorized', message: e?.message ?? 'Unauthorized' } });
     }
   });
+
+  // UI: one privacy-safe chronological view across runtime, tools, approvals,
+  // Teams, usage, and billing. Signed ActionLog rows remain the audit authority.
+  router.get(
+    '/:agentId/runs/:runId/timeline',
+    authenticateUser(true),
+    requireSubscriptionAccess,
+    async (request: Request, response: Response) => {
+      try {
+        const agentId = String(request.params.agentId);
+        const runId = String(request.params.runId);
+        await assertOwnsAgent(request, agentId);
+        const timeline = await getAgentRunTimeline(runId);
+        if (timeline.run.agentId !== agentId) {
+          response.status(404).json({ error: { code: 'not_found', message: 'Run not found' } });
+          return;
+        }
+        response.json(timeline);
+      } catch (err: any) {
+        const status = Number(err?.status) || (err?.code === 'not_found' ? 404 : 500);
+        response.status(status).json({
+          error: {
+            code: err?.code ?? 'timeline_failed',
+            message: status === 500 ? 'Failed to build run timeline' : err.message,
+          },
+        });
+      }
+    },
+  );
 
   // UI: SSE stream for a run (polls AgentRunEvent rows)
   router.get(
@@ -3703,6 +3807,65 @@ export function createAgentChatRouter(): Router {
       }
       console.error('[jit] runner request', err);
       response.status(500).json({ error: { code: 'jit_request_failed', message: 'Failed to create JIT request' } });
+    }
+  });
+
+  const capabilityGrantBody = z.object({
+    scopes: z.array(z.string().trim().min(1).max(128)).min(1).max(16),
+    reason: z.string().trim().max(500).optional(),
+    runId: z.string().trim().min(1).max(128).optional(),
+    teamId: z.string().trim().min(1).max(128).optional(),
+  });
+
+  router.post('/:agentId/capability-grants/request', async (request: Request, response: Response) => {
+    const agentId = String(request.params.agentId);
+    try {
+      await assertRunnerAuth(agentId, request);
+      const parsed = capabilityGrantBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({
+          error: {
+            code: 'invalid_body',
+            message: 'Invalid capability grant request',
+            issues: parsed.error.issues,
+          },
+        });
+        return;
+      }
+      const { CapabilityGrantService } = await import('../capabilityGrant/capabilityGrant.service.js');
+      const result = await new CapabilityGrantService().requestFromRunner({
+        agentId,
+        scopes: parsed.data.scopes,
+        reason: parsed.data.reason,
+        runId: parsed.data.runId ?? null,
+        teamId: parsed.data.teamId ?? null,
+      });
+      response.status(201).json(result);
+    } catch (err) {
+      if (err instanceof RunnerUnauthorizedError) {
+        response.status(401).json({ error: { code: 'runner_unauthorized', message: err.message } });
+        return;
+      }
+      const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : '';
+      if (code === 'agent_not_found') {
+        response.status(404).json({
+          error: { code: 'agent_not_found', message: err instanceof Error ? err.message : 'Agent not found' },
+        });
+        return;
+      }
+      if (code === 'invalid_capability_grant') {
+        response.status(400).json({
+          error: {
+            code: 'invalid_capability_grant',
+            message: err instanceof Error ? err.message : 'Invalid capability grant',
+          },
+        });
+        return;
+      }
+      console.error('[capability-grant] runner request', err);
+      response.status(500).json({
+        error: { code: 'capability_grant_failed', message: 'Failed to create capability grant request' },
+      });
     }
   });
 

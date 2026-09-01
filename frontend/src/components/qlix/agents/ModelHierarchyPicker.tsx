@@ -367,8 +367,8 @@ export function ModelHierarchyPicker({
           "sketch-press flex items-center gap-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
           HAIRLINE,
           compact
-            ? "max-w-full rounded-full border bg-white/60 px-2.5 py-1 hover:bg-white"
-            : "w-full rounded-2xl border bg-white/70 px-3.5 py-2.5 hover:bg-white",
+            ? "max-w-full rounded-full border bg-[#E2F0CC]/60 px-2.5 py-1 hover:bg-[#E2F0CC]"
+            : "w-full rounded-2xl border bg-[#E2F0CC]/70 px-3.5 py-2.5 hover:bg-[#E2F0CC]",
         )}
       >
         {selectedProvider === "exora" ? (
@@ -404,7 +404,7 @@ export function ModelHierarchyPicker({
           aria-activedescendant={activeId ? `model-opt-${activeId}` : undefined}
           onKeyDown={onKeyDown}
           className={cn(
-            "absolute z-50 overflow-hidden rounded-2xl border bg-white/90 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl",
+            "absolute z-50 overflow-hidden rounded-2xl border bg-[#E2F0CC]/90 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl",
             HAIRLINE,
             compact ? "left-0 w-[min(23rem,calc(100vw-3rem))]" : "left-0 right-0 w-full",
             placement === "above" ? "bottom-full mb-2" : "top-full mt-2",
@@ -413,7 +413,7 @@ export function ModelHierarchyPicker({
           <div className="p-2.5 pb-1.5">
             <label
               className={cn(
-                "flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1.5",
+                "flex items-center gap-2 rounded-full border bg-[#E2F0CC]/70 px-3 py-1.5",
                 HAIRLINE,
               )}
             >

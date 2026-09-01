@@ -1,0 +1,27 @@
+{
+  "contractVersion": "qlix.runner-request.v1",
+  "runId": "run_example_1",
+  "agentId": "agent_example_1",
+  "runtime": "hybrid",
+  "payload": {
+    "id": "run_example_1",
+    "prompt": "Research this topic and create a report.",
+    "attachments": null,
+    "skills": ["web.research"],
+    "askableAgents": [],
+    "inferenceModel": "openrouter/stealth/ox-alpha",
+    "reasoningEffort": "high",
+    "conversationId": "conversation_example_1",
+    "userId": "user_example_1",
+    "createdAt": "2026-08-23T10:00:00.000Z",
+    "useBrain": true,
+    "agentDescription": "A research agent",
+    "waConnectorId": null,
+    "memoryBlock": "Existing trusted context",
+    "mcpServers": [],
+    "toolProfile": "full",
+    "permissionScopes": ["web.research", "brain.query"],
+    "jitScopes": [],
+    "alwaysScopes": []
+  }
+}

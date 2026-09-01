@@ -2,8 +2,6 @@
 
 import { useCallback, useMemo, useRef, type DragEvent } from "react";
 import {
-  Background,
-  BackgroundVariant,
   Controls,
   MarkerType,
   Panel,
@@ -173,14 +171,13 @@ export function BuilderCanvas({
         maxZoom={1.75}
         deleteKeyCode={["Backspace", "Delete"]}
       >
-        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="var(--ink-border)" />
         <Controls showInteractive={false} position="bottom-right" />
 
         {!isEmpty && (
           <Panel position="top-right">
             <div
               className={cn(
-                "flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 backdrop-blur-sm",
+                "flex items-center gap-2 border-b pb-1",
                 HAIRLINE,
               )}
             >

@@ -1,0 +1,70 @@
+{
+  "name": "qlix-assessment",
+  "displayName": "Qlix Assessment",
+  "description": "Observes your selected project workspace as evidence for a Qlix assessment session you've explicitly connected to. Never watches anything outside that one folder.",
+  "version": "0.2.1",
+  "publisher": "qlix",
+  "private": true,
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Qlix Assessment",
+      "properties": {
+        "qlix.backendUrl": {
+          "type": "string",
+          "default": "https://qlixdev.exora.solutions",
+          "description": "Qlix backend base URL."
+        }
+      }
+    },
+    "commands": [
+      { "command": "qlix.connect", "title": "Qlix: Connect Assessment" },
+      { "command": "qlix.disconnect", "title": "Qlix: Disconnect Assessment" },
+      { "command": "qlix.pause", "title": "Qlix: Pause Observation" },
+      { "command": "qlix.resume", "title": "Qlix: Resume Observation" },
+      { "command": "qlix.submit", "title": "Qlix: Submit Project" },
+      { "command": "qlix.showStatus", "title": "Qlix: Show Assessment Status" },
+      { "command": "qlix.openMenu", "title": "Qlix: Open Menu" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "qlixAssessment",
+          "title": "Qlix Assessment",
+          "icon": "media/qlix-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "qlixAssessment": [
+        {
+          "type": "webview",
+          "id": "qlix.statusView",
+          "name": "Assessment"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "watch": "npm run build -- --watch",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.2",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.94.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}

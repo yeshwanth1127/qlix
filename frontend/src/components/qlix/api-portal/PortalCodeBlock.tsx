@@ -14,7 +14,7 @@ export function PortalCodeBlock({
 }) {
   const preClass =
     variant === "docs"
-      ? "overflow-x-auto rounded-lg bg-[#1c1830]/[0.06] p-3 pr-24 font-mono text-[11px] leading-relaxed text-[#1c1830]/90 whitespace-pre-wrap break-all"
+      ? "overflow-x-auto rounded-lg bg-[#012F13]/[0.06] p-3 pr-24 font-mono text-[11px] leading-relaxed text-[#012F13]/90 whitespace-pre-wrap break-all"
       : "overflow-x-auto rounded-lg bg-black/[0.04] p-3 pr-24 font-mono text-[11px] leading-relaxed text-black/85 whitespace-pre-wrap break-all";
 
   return (

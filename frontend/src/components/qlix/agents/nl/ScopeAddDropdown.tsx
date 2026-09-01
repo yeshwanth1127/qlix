@@ -128,7 +128,7 @@ export function ScopeAddDropdown({ availableScopes, assignedScopes = [], onSelec
         aria-expanded={open}
         aria-haspopup="listbox"
         onClick={() => (open ? setOpen(false) : openMenu())}
-        className="inline-flex items-center gap-1 border border-dashed border-black/40 bg-white px-2 py-0.5 text-[10.5px] text-black/50 transition-colors hover:border-black hover:text-black"
+        className="inline-flex items-center gap-1 border border-dashed border-black/40 bg-[#E2F0CC] px-2 py-0.5 text-[10.5px] text-black/50 transition-colors hover:border-black hover:text-black"
       >
         <Plus className="size-2.5" aria-hidden />
         Add
@@ -140,7 +140,7 @@ export function ScopeAddDropdown({ availableScopes, assignedScopes = [], onSelec
               ref={panelRef}
               role="listbox"
               aria-label="Add permission scope"
-              className="fixed z-[300] flex flex-col overflow-hidden border border-[color:var(--sketch-card-border,var(--qlix-card-border))] bg-white shadow-[0_16px_40px_-20px_rgba(16,14,22,0.35)]"
+              className="fixed z-[300] flex flex-col overflow-hidden border border-[color:var(--sketch-card-border,var(--qlix-card-border))] bg-[#E2F0CC] shadow-[0_16px_40px_-20px_rgba(16,14,22,0.35)]"
               style={{
                 top: position.top,
                 left: position.left,

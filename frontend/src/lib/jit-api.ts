@@ -137,6 +137,8 @@ export function jitScopeLabel(scope: string): string {
     "whatsapp.contact_send": "Message WhatsApp contacts",
     "whatsapp.read": "Read WhatsApp chats",
     "whatsapp.send": "Send files to WhatsApp",
+    "web.research": "Web research",
+    "files.create": "Create files (PDF, spreadsheet)",
     "web.transaction": "Web transaction",
     "system.file_write": "Write files",
   };

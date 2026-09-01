@@ -185,13 +185,13 @@ export function CreateAgentModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[#E2F0CC]/80 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="create-agent-title"
     >
       <div
-        className="relative flex w-full max-w-xl flex-col overflow-hidden border-2 border-black bg-white"
+        className="relative flex w-full max-w-xl flex-col overflow-hidden border-2 border-black bg-[#E2F0CC]"
         style={{ maxHeight: "min(90vh, 700px)" }}
       >
         <header className="flex shrink-0 items-center justify-between border-b border-black px-5 py-3">
@@ -723,7 +723,7 @@ function Step3({
             className="mt-1.5 w-full rounded-md border border-[--border-subtle] bg-[--bg-base] px-3 py-1.5 text-[13px] text-[--text-primary] outline-none focus:border-[--accent]"
           >
             {LOCAL_MODELS.map((m) => (
-              <option key={m} value={m} className="bg-white text-black">
+              <option key={m} value={m} className="bg-[#E2F0CC] text-black">
                 {m}
               </option>
             ))}
@@ -743,8 +743,8 @@ function Step3({
   );
 }
 
-const runtimeCardSelected = "border-2 border-black bg-white";
-const runtimeCardIdle = "border border-black bg-white hover:bg-black/5";
+const runtimeCardSelected = "border-2 border-black bg-[#E2F0CC]";
+const runtimeCardIdle = "border border-black bg-[#E2F0CC] hover:bg-black/5";
 
 function InferenceModeCard({
   active,

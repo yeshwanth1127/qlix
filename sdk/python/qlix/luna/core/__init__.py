@@ -8,6 +8,9 @@ from qlix.luna.core.registry import (
     MemoryRegistry,
     ModelRegistry,
     ToolRegistry,
+    DisposableRegistration,
+    RegistrationMetadata,
+    RegistryUnavailableError,
 )
 from qlix.luna.core.types import (
     Conversation,
@@ -33,5 +36,8 @@ __all__ = [
     "TelemetryRecord",
     "ToolCall",
     "ToolRegistry",
+    "DisposableRegistration",
+    "RegistrationMetadata",
+    "RegistryUnavailableError",
     "ToolResult",
 ]

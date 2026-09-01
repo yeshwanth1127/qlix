@@ -11,7 +11,12 @@ from typing import Any
 from .cloud_adk_loader import load_cloud_adk
 from .http_client import QlixHttpClient
 from .identity import AgentIdentity, load_identity
-from .backend_inference_client import backend_proxy_chat_completion
+from .runner_common import (
+    emit_inference_result_events,
+    emit_event as _emit_event,
+    get_adaptive_settle_time as _get_adaptive_settle_time,
+    maybe_prepend_brain_context as _shared_maybe_prepend_brain_context,
+)
 
 # Orchestrator mode removed: using agent-browser tools only
 
@@ -19,60 +24,6 @@ from .backend_inference_client import backend_proxy_chat_completion
 def _log(stage: str, **kwargs: object) -> None:
     payload = {"stage": stage, **kwargs}
     print(f"[cloud_runner] {json.dumps(payload, ensure_ascii=False)}", file=sys.stderr, flush=True)
-
-
-def _context_sections_from_block(block: str) -> list[dict[str, object]]:
-    """Parse brain contextBlock into per-document excerpts for the team run UI."""
-    if not block.strip():
-        return []
-    sections: list[dict[str, object]] = []
-    for part in re.split(r"\n\n---\n\n", block.strip()):
-        part = part.strip()
-        if not part:
-            continue
-        match = re.match(
-            r'\[(\d+)\]\s+Collection:\s+"([^"]*)"\s+\|\s+Document:\s+"([^"]*)"\s*\n([\s\S]*)',
-            part,
-        )
-        if match:
-            sections.append(
-                {
-                    "index": int(match.group(1)),
-                    "collectionName": match.group(2),
-                    "documentTitle": match.group(3),
-                    "excerpt": match.group(4).strip(),
-                }
-            )
-        else:
-            sections.append({"excerpt": part[:4000]})
-        if len(sections) >= 5:
-            break
-    return sections
-
-
-def _brain_event_payload(resp: dict[str, Any]) -> dict[str, object]:
-    """Shape team-timeline payload for a company brain lookup."""
-    citations = resp.get("citations") if isinstance(resp.get("citations"), list) else []
-    titles: list[str] = []
-    for c in citations[:5]:
-        if not isinstance(c, dict):
-            continue
-        title = str(c.get("documentTitle") or c.get("collectionName") or "").strip()
-        if title:
-            titles.append(title)
-    block = resp.get("contextBlock") if isinstance(resp.get("contextBlock"), str) else ""
-    context_sections = _context_sections_from_block(block)
-    preview = " · ".join(titles) if titles else (block[:200] if block else "No matching policy found")
-    return {
-        "message": "tool_finished",
-        "tool": "brain.query",
-        "citationCount": len(citations),
-        "policyPreview": preview,
-        "citationTitles": titles,
-        "citations": citations[:5],
-        "contextSections": context_sections,
-        "contextExcerpt": block[:8000] if block else "",
-    }
 
 
 async def _maybe_prepend_brain_context(
@@ -85,206 +36,16 @@ async def _maybe_prepend_brain_context(
     use_brain: bool,
     seq: int,
 ) -> tuple[str, int]:
-    """Retrieve org AI brain snippets for this run (audited on backend) and prepend to the user prompt."""
-    if not use_brain:
-        return prompt, seq
-    try:
-        resp = await http.post_json(
-            f"/api/v1/agents/{agent_id}/runs/{run_id}/brain/query",
-            {"contextOnly": True},
-            headers=headers,
-        )
-    except Exception as exc:
-        _log("brain_context_error", run_id=run_id, error=str(exc))
-        seq = await _emit_event(
-            http,
-            agent_id=agent_id,
-            run_id=run_id,
-            headers=headers,
-            seq=seq,
-            event_type="log",
-            data={
-                "message": "tool_finished",
-                "tool": "brain.query",
-                "citationCount": 0,
-                "policyPreview": f"Brain query failed: {exc}",
-                "citationTitles": [],
-                "citations": [],
-            },
-        )
-        return prompt, seq
-    if not isinstance(resp, dict):
-        return prompt, seq
-    seq = await _emit_event(
+    return await _shared_maybe_prepend_brain_context(
         http,
         agent_id=agent_id,
         run_id=run_id,
         headers=headers,
+        prompt=prompt,
+        use_brain=use_brain,
         seq=seq,
-        event_type="log",
-        data=_brain_event_payload(resp),
+        log=_log,
     )
-    block = resp.get("contextBlock")
-    if not isinstance(block, str) or not block.strip():
-        return prompt, seq
-    return f"{block}\n\n---\n\nUser task:\n{prompt}", seq
-
-
-async def _emit_event(
-    http: QlixHttpClient,
-    *,
-    agent_id: str,
-    run_id: str,
-    headers: dict[str, str],
-    seq: int,
-    event_type: str,
-    data: dict[str, object],
-) -> int:
-    await http.post_json(
-        f"/api/v1/agents/{agent_id}/runs/{run_id}/event",
-        {"seq": seq, "type": event_type, "data": data},
-        headers=headers,
-    )
-    return seq + 1
-
-
-def _get_adaptive_settle_time(tool_name: str) -> float:
-    """Return UI settle time (seconds) based on tool type.
-
-    Navigation/page loads need longest settle, form interactions medium, queries/screenshots none.
-    """
-    # Navigation: page load/render
-    if tool_name in ("browser_navigate", "browser_ab_open"):
-        return 0.5
-
-    # Form interactions: click, type, check, select, upload
-    if tool_name in (
-        "browser_click",
-        "browser_type",
-        "browser_ab_click",
-        "browser_ab_dblclick",
-        "browser_ab_fill",
-        "browser_ab_type",
-        "browser_ab_check",
-        "browser_ab_uncheck",
-        "browser_ab_select",
-        "browser_ab_upload",
-    ):
-        return 0.15
-
-    # Hover/scroll: might trigger CSS animations
-    if tool_name in ("browser_ab_hover", "browser_ab_scroll", "browser_ab_scrollinto"):
-        return 0.1
-
-    # Screenshots/queries: no settle needed
-    if tool_name in ("browser_screenshot", "browser_ab_screenshot"):
-        return 0.0
-
-    # Default: small settle for unknown mutations
-    return 0.0
-
-
-def _build_tool_executor_map(
-    identity: "AgentIdentity",
-    selected_skills: list[str] | None,
-    *,
-    agent_id: str = "",
-    run_id: str = "",
-    backend_url: str = "",
-    runner_token: str = "",
-) -> dict[str, callable]:
-    """Pre-compile tool executors once per session, reuse throughout inference.
-
-    OPTIMIZATION: Instead of doing ToolRegistry.get() + instantiate for every tool call,
-    pre-bind executors once at session start.
-    """
-    from .cloud_browser_runtime import (
-        openai_browser_tool_definitions,
-        resolve_tool_name,
-        _use_agent_browser_suite,
-        _remap_legacy_params,
-        _effective_granted_scopes,
-    )
-    from .luna.core.registry import ToolRegistry
-
-    executor_map: dict[str, callable] = {}
-    tools_list = openai_browser_tool_definitions(identity, selected_skills)
-
-    for tool_def in tools_list:
-        tool_name = tool_def["function"]["name"]
-        original_name = tool_name
-        resolved_name = resolve_tool_name(tool_name)
-
-        # Check which execution path this tool uses
-        use_agent_browser = (
-            _use_agent_browser_suite()
-            and (resolved_name.startswith("browser_ab_") or resolved_name == "browser_exec")
-        )
-
-        if use_agent_browser:
-            from .browser_failover import run_agent_browser_tool_with_failover
-
-            scopes = _effective_granted_scopes(identity)
-
-            def _make_agent_browser_executor(name, scps):
-                def _execute(args_json: str):
-                    params = json.loads(args_json) if args_json.strip() else {}
-                    if not isinstance(params, dict):
-                        params = {}
-                    ok, content = run_agent_browser_tool_with_failover(
-                        name, params, granted_scopes=scps
-                    )
-                    return ("" if ok else "[failed] ") + content
-
-                return _execute
-
-            executor_map[original_name] = _make_agent_browser_executor(resolved_name, scopes)
-        else:
-            # Pre-instantiate tool once (not on every call)
-            try:
-                tool_cls = ToolRegistry.get(resolved_name)
-                tool_instance = tool_cls()
-            except KeyError:
-                # Tool not found - create error executor
-                def _make_error_executor(name):
-                    def _execute(args_json: str):
-                        return f"Unknown tool: {name}"
-
-                    return _execute
-
-                executor_map[original_name] = _make_error_executor(original_name)
-                continue
-
-            def _make_legacy_executor(inst, orig, resolved):
-                def _execute(args_json: str):
-                    params = json.loads(args_json) if args_json.strip() else {}
-                    if not isinstance(params, dict):
-                        params = {}
-                    if orig != resolved:
-                        params = _remap_legacy_params(orig, resolved, params)
-                    result = inst.execute(**params)
-                    return ("" if result.success else "[failed] ") + (result.content or "")
-
-                return _execute
-
-            executor_map[original_name] = _make_legacy_executor(
-                tool_instance, original_name, resolved_name
-            )
-
-    if agent_id and run_id and backend_url and runner_token:
-        from .cloud_email_runtime import build_email_tool_executors
-
-        email_executors = build_email_tool_executors(
-            identity=identity,
-            skill_filter=selected_skills,
-            agent_id=agent_id,
-            run_id=run_id,
-            backend_url=backend_url,
-            runner_token=runner_token,
-        )
-        executor_map.update(email_executors)
-
-    return executor_map
 
 
 def _build_run_guidance(
@@ -387,6 +148,12 @@ async def _run_backend_proxy_inference(
     tool_profile: str = "full",
     askable_agents: list[dict[str, Any]] | None = None,
     reasoning_effort: str | None = None,
+    conversation_id: str | None = None,
+    team_run_id: str | None = None,
+    team_id: str | None = None,
+    context_components: dict[str, int] | None = None,
+    has_context_refs: bool = False,
+    enable_context_search: bool = False,
 ) -> tuple[int, str, int, int, list[str], dict[str, Any], list[dict[str, str]]]:
     """Multi-turn proxy inference with ToolRouter-selected browser/email/MCP tools."""
     import hashlib
@@ -418,6 +185,8 @@ async def _run_backend_proxy_inference(
         mcp_servers=mcp_servers,
         tool_profile=tool_profile,
         askable_agents=askable_agents,
+        has_context_refs=has_context_refs,
+        enable_context_search=enable_context_search,
     )
     if router.last_budget_report:
         _log("tool_budget", run_id=run_id, **router.last_budget_report)
@@ -441,6 +210,11 @@ async def _run_backend_proxy_inference(
         from .sdk import QlixSDK
 
         mcp_sdk = QlixSDK(identity=identity, http=http)
+        mcp_sdk.set_run_context(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            team_run_id=team_run_id,
+        )
 
     from .subagents import SubAgentRunContext
 
@@ -470,6 +244,10 @@ async def _run_backend_proxy_inference(
         qlix_sdk=mcp_sdk,
         mcp_servers=mcp_servers,
         subagent_context=subagent_context,
+        live_tools=tools,
+        team_id=team_id,
+        has_context_refs=has_context_refs,
+        enable_context_search=enable_context_search,
     )
 
     tools_json = json.dumps(tools, sort_keys=True)
@@ -530,6 +308,7 @@ async def _run_backend_proxy_inference(
         live_view_enabled=live_view_enabled,
         subagent_context=subagent_context,
         reasoning_effort=reasoning_effort,
+        context_components=context_components,
     )
 
 
@@ -629,10 +408,11 @@ async def _poll_and_execute_loop() -> None:
             try:
                 polled = await http.post_json(
                     f"/api/v1/agents/{identity.agent_id}/runs/poll",
-                    {"maxWaitMs": 0},
+                    {"maxWaitMs": 0, "runtime": "cloud"},
                     headers=headers,
                 )
-                run = polled.get("run")
+                from .runner_common import extract_polled_run, runner_completion_body
+                run = extract_polled_run(polled, agent_id=identity.agent_id, runtime="cloud")
                 if not run:
                     idle_polls += 1
                     if idle_polls % 15 == 0:
@@ -691,21 +471,71 @@ async def _poll_and_execute_loop() -> None:
                     except Exception as info_exc:
                         _log("browser_engine_info_error", run_id=run_id, error=str(info_exc))
                 use_brain = bool(run.get("useBrain"))
-                prompt_for_skills, seq = await _maybe_prepend_brain_context(
+                from .context_pack import assemble_run_prompt, pack_allows_context_search, pack_has_references, should_prepend_brain
+                from .runner_common import brain_event_from_pack
+
+                assembled_prompt, context_components = assemble_run_prompt(
+                    prompt,
+                    run.get("contextPack"),
+                    run.get("memoryBlock"),
+                )
+                pack = run.get("contextPack")
+                if should_prepend_brain(use_brain, pack):
+                    prompt_for_skills, seq = await _maybe_prepend_brain_context(
+                        http,
+                        agent_id=identity.agent_id,
+                        run_id=run_id,
+                        headers=headers,
+                        prompt=assembled_prompt,
+                        use_brain=use_brain,
+                        seq=seq,
+                    )
+                    if use_brain and prompt_for_skills != assembled_prompt:
+                        from .context_pack import estimate_tokens as _estimate_tokens
+
+                        context_components = {
+                            **context_components,
+                            "brain": max(
+                                0,
+                                _estimate_tokens(prompt_for_skills) - _estimate_tokens(assembled_prompt),
+                            ),
+                        }
+                else:
+                    prompt_for_skills = assembled_prompt
+                    owned = brain_event_from_pack(pack) if use_brain else None
+                    if owned:
+                        seq = await _emit_event(
+                            http,
+                            agent_id=identity.agent_id,
+                            run_id=run_id,
+                            headers=headers,
+                            seq=seq,
+                            event_type="log",
+                            data=owned,
+                        )
+                seq = await _emit_event(
                     http,
                     agent_id=identity.agent_id,
                     run_id=run_id,
                     headers=headers,
-                    prompt=prompt,
-                    use_brain=use_brain,
                     seq=seq,
+                    event_type="log",
+                    data={
+                        "message": "context_pack",
+                        "packId": (run.get("contextPack") or {}).get("packId")
+                        if isinstance(run.get("contextPack"), dict)
+                        else None,
+                        "estimatedTokens": (run.get("contextPack") or {}).get("estimatedTokens")
+                        if isinstance(run.get("contextPack"), dict)
+                        else None,
+                        "components": context_components,
+                        "referenceCount": len((run.get("contextPack") or {}).get("references") or [])
+                        if isinstance(run.get("contextPack"), dict)
+                        else 0,
+                    },
+                    soft=True,
                 )
-                # Prepend the agent's memory (recent conversation + saved facts/episodes/recipes),
-                # assembled by the backend and delivered on the poll response. Same mechanism as
-                # the brain context block above.
-                memory_block = run.get("memoryBlock")
-                if isinstance(memory_block, str) and memory_block.strip():
-                    prompt_for_skills = f"{memory_block.strip()}\n\n---\n\n{prompt_for_skills}"
+                # Prepend the agent's memory only for legacy polls that omit contextPack.
                 enriched_prompt = prompt_for_skills
                 if isinstance(skills, list) and skills:
                     enriched_prompt = (
@@ -765,46 +595,34 @@ async def _poll_and_execute_loop() -> None:
                         tool_profile=tool_profile,
                         askable_agents=run.get("askableAgents") or [],
                         reasoning_effort=run_reasoning_effort,
+                        conversation_id=str(run.get("conversationId") or "") or None,
+                        team_run_id=str(run.get("teamRunId") or "") or None,
+                        team_id=str(run.get("teamId") or run.get("team_id") or "") or None,
+                        context_components=context_components,
+                        has_context_refs=pack_has_references(run.get("contextPack")),
+                        enable_context_search=pack_allows_context_search(
+                            run.get("contextPack"),
+                            bool(run.get("useBrain")),
+                        ),
                     )
                 )
-                seq = await _emit_event(
+                seq = await emit_inference_result_events(
                     http,
                     agent_id=identity.agent_id,
                     run_id=run_id,
                     headers=headers,
                     seq=seq,
-                    event_type="log",
-                    data={
-                        "message": "inference_success",
-                        "model": model,
-                        "provider": None,
-                        "usage": proxy_usage,
-                        "tool_calls_executed": tool_calls,
-                    },
-                )
-                from .runner_common import stream_assistant_deltas
-
-                seq = await stream_assistant_deltas(
-                    http,
-                    agent_id=identity.agent_id,
-                    run_id=run_id,
-                    headers=headers,
-                    seq=seq,
+                    model=model,
+                    provider=None,
+                    usage=proxy_usage,
+                    tool_calls=tool_calls,
                     content=content,
-                )
-                seq = await _emit_event(
-                    http,
-                    agent_id=identity.agent_id,
-                    run_id=run_id,
-                    headers=headers,
-                    seq=seq,
-                    event_type="log",
-                    data={"message": "run_result", "turns": turns, "tool_calls": tool_calls},
+                    turns=turns,
                 )
 
                 await http.post_json(
                     f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
-                    {"ok": True, "result": content},
+                    runner_completion_body(run_id=run_id, ok=True, result=content),
                     headers=headers,
                 )
                 _log("run_complete", run_id=run_id, turns=turns, duration_ms=duration_ms)
@@ -822,7 +640,7 @@ async def _poll_and_execute_loop() -> None:
                     try:
                         await http.post_json(
                             f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",
-                            {"ok": False, "errorMessage": error_msg},
+                            runner_completion_body(run_id=run_id, ok=False, error_message=error_msg),
                             headers=headers,
                         )
                     except Exception:
@@ -839,4 +657,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

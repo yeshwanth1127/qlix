@@ -32,17 +32,27 @@ def is_private_ip(ip_str: str) -> bool:
     """Check if an IP address is private/reserved."""
     try:
         addr = ipaddress.ip_address(ip_str)
-        return any(addr in net for net in _BLOCKED_CIDR)
+        return (
+            any(addr in net for net in _BLOCKED_CIDR)
+            or addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_multicast
+            or addr.is_reserved
+            or addr.is_unspecified
+        )
     except ValueError:
         return False
 
 
 def check_ssrf(url: str) -> Optional[str]:
-    """Check a URL for SSRF vulnerabilities — always via Rust backend."""
-    from qlix.luna._rust_bridge import get_rust_module
+    """Check a URL with Rust when installed and a fail-safe Python fallback."""
+    try:
+        from qlix.luna._rust_bridge import get_rust_module
 
-    _rust = get_rust_module()
-    return _rust.check_ssrf(url)
+        return get_rust_module().check_ssrf(url)
+    except (ImportError, AttributeError):
+        return _check_ssrf_python(url)
 
 
 def _check_ssrf_python(url: str) -> Optional[str]:
@@ -50,12 +60,17 @@ def _check_ssrf_python(url: str) -> Optional[str]:
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return "Only http:// and https:// URLs are allowed"
+    if parsed.username is not None or parsed.password is not None:
+        return "Credentials in URLs are not allowed"
     hostname = parsed.hostname
     if not hostname:
         return "No hostname in URL"
 
     # Check blocked hosts
-    if hostname in _BLOCKED_HOSTS:
+    hostname = hostname.lower().rstrip(".")
+    if hostname in _BLOCKED_HOSTS or hostname == "localhost" or hostname.endswith(".localhost"):
         return f"Blocked host: {hostname} (cloud metadata endpoint)"
 
     # DNS resolution check

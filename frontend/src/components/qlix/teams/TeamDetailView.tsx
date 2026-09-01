@@ -168,7 +168,7 @@ function AgentRow({
   const presence = presenceOf(entry);
 
   return (
-    <div className="group px-5 py-4 transition-colors hover:bg-white/55">
+    <div className="group px-5 py-4 transition-colors hover:bg-[#E2F0CC]/55">
       <div className="flex items-center gap-4">
         <span
           className={cn(
@@ -662,7 +662,7 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
             )}
             <span
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border bg-white/55 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]",
+                "inline-flex items-center gap-1.5 rounded-full border bg-[#E2F0CC]/55 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]",
                 HAIRLINE,
                 INK_SOFT,
               )}
@@ -792,7 +792,7 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
                     >
                       <span
                         className={cn(
-                          "absolute top-[2px] size-[10px] rounded-full bg-white transition-all",
+                          "absolute top-[2px] size-[10px] rounded-full bg-[#E2F0CC] transition-all",
                           autoSequence ? "left-[14px]" : "left-[2px]",
                         )}
                       />
@@ -932,7 +932,7 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
                       onChange={(event) => void handleConversationModeChange(event.target.value)}
                       disabled={savingConversationMode || workflowsLoading}
                       className={cn(
-                        "w-full rounded-xl border bg-white/60 px-3.5 py-2.5 text-[13px] text-black outline-none focus:border-black disabled:opacity-50",
+                        "w-full rounded-xl border bg-[#E2F0CC]/60 px-3.5 py-2.5 text-[13px] text-black outline-none focus:border-black disabled:opacity-50",
                         HAIRLINE,
                       )}
                     >
@@ -983,7 +983,9 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
           </div>
         )}
 
-        {tab === "run" && <TeamRunView team={team} canSend={canRun} />}
+        {tab === "run" && (
+          <TeamRunView team={team} canSend={canRun} onTeamUpdated={onUpdated} />
+        )}
       </div>
 
       {showCreateAgent && (
@@ -1063,7 +1065,7 @@ function ExistingAgentPicker({
         </div>
 
         <div className="px-6 pt-4">
-          <div className={cn("flex items-center gap-2 rounded-full border bg-white/60 px-3.5 py-2", HAIRLINE)}>
+          <div className={cn("flex items-center gap-2 rounded-full border bg-[#E2F0CC]/60 px-3.5 py-2", HAIRLINE)}>
             <Search size={13} className={cn("shrink-0", INK_FAINT)} />
             <input
               type="text"

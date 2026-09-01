@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, Info, Sparkles } from "lucide-react";
+import { useEffect, type ReactNode } from "react";
+import { AlertCircle, CheckCircle2, ChevronDown, Info, Sparkles, X } from "lucide-react";
 import { SketchBox } from "@/components/qlix/sketch";
 import { cn } from "@/lib/utils/cn";
 
@@ -232,5 +232,161 @@ export function ConnectorFilterChip({
       {label}
       {count !== undefined ? <span className="ml-1.5 tabular-nums opacity-55">{count}</span> : null}
     </button>
+  );
+}
+
+/* ── Tabs ────────────────────────────────────────────────────────────────── */
+
+export function ConnectorTabs<T extends string>({
+  value,
+  onChange,
+  items,
+}: {
+  readonly value: T;
+  readonly onChange: (id: T) => void;
+  readonly items: ReadonlyArray<{ id: T; label: string }>;
+}) {
+  return (
+    <div className="connector-tabs" role="tablist">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={value === item.id}
+          onClick={() => onChange(item.id)}
+          className={cn("connector-tab", value === item.id && "connector-tab--active")}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ── Card (board) ────────────────────────────────────────────────────────── */
+
+export function ConnectorCard({
+  id,
+  icon,
+  name,
+  meta,
+  status,
+  highlight = false,
+  onClick,
+}: {
+  readonly id?: string;
+  readonly icon: ReactNode;
+  readonly name: string;
+  readonly meta?: ReactNode;
+  readonly status?: ConnectorStatus;
+  readonly highlight?: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={id}
+      onClick={onClick}
+      className={cn(
+        "connector-card group",
+        status === "connected" && "connector-card--on",
+        status === "pending" && "connector-card--pending",
+        highlight && "connector-card--highlight",
+      )}
+    >
+      <span className="connector-card-top">
+        {icon}
+        {status ? <ConnectorStatusDot status={status} /> : <span className="sketch-skeleton size-1.5 rounded-full" />}
+      </span>
+      <span className="connector-card-name">{name}</span>
+      {meta ? <span className="connector-card-meta">{meta}</span> : null}
+    </button>
+  );
+}
+
+export function ConnectorCardSkeleton() {
+  return (
+    <div className="connector-card connector-card--skeleton" aria-hidden>
+      <span className="sketch-skeleton size-10 rounded-lg" />
+      <span className="sketch-skeleton mt-3 h-3 w-20 rounded-full" />
+      <span className="sketch-skeleton mt-1.5 h-2.5 w-28 rounded-full" />
+    </div>
+  );
+}
+
+/* ── Detail sheet ────────────────────────────────────────────────────────── */
+
+export function ConnectorSheet({
+  open,
+  onClose,
+  icon,
+  title,
+  meta,
+  action,
+  children,
+}: {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly icon?: ReactNode;
+  readonly title: string;
+  readonly meta?: ReactNode;
+  readonly action?: ReactNode;
+  readonly children?: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="connector-sheet-backdrop qlix-backdrop-in"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="connector-sheet qlix-scale-in"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connector-sheet-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="connector-sheet-head">
+          <div className="flex min-w-0 items-center gap-3">
+            {icon}
+            <div className="min-w-0">
+              <h2 id="connector-sheet-title" className="truncate text-[15px] font-medium tracking-[-0.015em] text-black">
+                {title}
+              </h2>
+              {meta ? <p className="connector-meta mt-0.5 truncate">{meta}</p> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {action}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="connector-sheet-close"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </header>
+        {children ? <div className="connector-sheet-body">{children}</div> : null}
+      </div>
+    </div>
   );
 }

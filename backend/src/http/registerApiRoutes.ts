@@ -47,6 +47,11 @@ import { createVcVerifyRouter } from '../routes/createVcVerifyRouter.js';
 import { createChannelDefaultsRouter } from '../routes/createChannelDefaultsRouter.js';
 import { createOpenApiRouter } from '../routes/createOpenApiRouter.js';
 import { createConversationsRouter } from '../routes/createConversationsRouter.js';
+import { createAssessmentToolRoutes } from '../assessment/assessmentToolRoutes.js';
+import { createAssessmentRoutes } from '../assessment/assessment.routes.js';
+import { createPluginsRouter } from '../plugins/plugins.routes.js';
+import { createDeviceIngestRoutes } from '../assessment/deviceIngest.routes.js';
+import { createContextToolRoutes } from '../context/contextToolRoutes.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -70,11 +75,20 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/agents', createAgentsRouter());
   application.use('/api/v1/agents', createAgentChatRouter());
   application.use('/api/v1/agents', createInferenceProxyRouter());
+  application.use('/api/v1/agents', createContextToolRoutes());
+  application.use('/api/v1/agents', createAssessmentToolRoutes());
   application.use('/api/v1/inference', createInferenceCatalogRouter());
   application.use('/api/v1/inference', createAutoRoutingInfoRouter());
   application.use('/api/v1/ai-brain', createAiBrainRouter());
   application.use('/api/v1/teams', createTeamsRouter());
   application.use('/api/v1/conversations', createConversationsRouter());
+  // Must be registered before /api/v1/assessment below — Express matches routers by
+  // registration order, not specificity, and the general assessment router applies a
+  // blanket dashboard-auth middleware that would otherwise intercept every request
+  // under /api/v1/assessment/device/* (device-token auth, no dashboard login) first.
+  application.use('/api/v1/assessment/device', createDeviceIngestRoutes());
+  application.use('/api/v1/assessment', createAssessmentRoutes());
+  application.use('/api/v1/plugins', createPluginsRouter());
   application.use('/api/v1/connectors', createConnectorsRouter());
   application.use('/api/v1/mcp', createMcpRouter());
   application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());

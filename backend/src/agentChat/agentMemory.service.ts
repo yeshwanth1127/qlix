@@ -44,6 +44,49 @@ const URL_RE = /https?:\/\/[^\s<>"'\)\]]+/gi;
 const DURABLE_ID_RE =
   /\b(?:formId|documentId|spreadsheetId|presentationId|pageId|fileId|responderUri)\s*[:=]\s*["']?[A-Za-z0-9_./:-]{6,}/gi;
 
+export function buildDeterministicMemoryAnchors(
+  messages: Array<{ role: string; content: string }>,
+): string {
+  const requirements: string[] = [];
+  const decisions: string[] = [];
+  const approvals: string[] = [];
+  const unfinished: string[] = [];
+  const artifacts: string[] = [];
+  const add = (target: string[], value: string, limit = 8): void => {
+    const clean = value.replace(/\s+/g, ' ').trim();
+    if (clean && !target.includes(clean) && target.length < limit) target.push(clip(clean, 220));
+  };
+
+  for (const message of messages) {
+    const chunks = message.content.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+    for (const chunk of chunks) {
+      const lower = chunk.toLowerCase();
+      if (/\b(must|need to|do not|don't|without|preserve|keep|require)\b/.test(lower)) {
+        add(requirements, chunk);
+      }
+      if (/\b(decided|decision|chosen|selected|we will)\b/.test(lower)) add(decisions, chunk);
+      if (/\b(approved|approve|permission granted|allow this)\b/.test(lower)) add(approvals, chunk);
+      if (/\b(todo|pending|remaining|unfinished|next step|blocker|continue)\b/.test(lower)) {
+        add(unfinished, chunk);
+      }
+    }
+    for (const ref of [...(message.content.match(URL_RE) ?? []), ...(message.content.match(DURABLE_ID_RE) ?? [])]) {
+      add(artifacts, ref, 12);
+    }
+  }
+
+  const sections: string[] = [];
+  const section = (label: string, values: string[]): void => {
+    if (values.length > 0) sections.push(`${label}: ${values.join(' | ')}`);
+  };
+  section('Requirements', requirements);
+  section('Decisions', decisions);
+  section('Approvals', approvals);
+  section('Unfinished work', unfinished);
+  section('Artifacts', artifacts);
+  return clip(sections.join('\n'), 700);
+}
+
 /**
  * Clip prose for the memory sticky note, but keep durable crumbs (URLs / IDs)
  * so follow-ups like "send the link again" do not require re-running tools.
@@ -221,7 +264,7 @@ export async function updateConversationSummary(conversationId: string): Promise
   const system = [
     'You maintain a running summary of an ongoing conversation between a user and an AI agent.',
     `Merge the existing summary with the new older messages into ONE updated summary under ${MAX_SUMMARY_CHARS} characters.`,
-    'Keep durable, useful context: what the user wants, decisions made, key facts, and open threads.',
+    'Keep durable, useful context: objectives, explicit requirements, decisions, approvals, artifact links/IDs, and unfinished work.',
     'Drop pleasantries and redundant detail. Write tight third-person notes. Return ONLY the summary text.',
   ].join('\n');
   const user = [
@@ -249,7 +292,13 @@ export async function updateConversationSummary(conversationId: string): Promise
         retries: 1,
       },
     );
-    summary = clip(llm.content, MAX_SUMMARY_CHARS);
+    const anchors = buildDeterministicMemoryAnchors(newlyOlder);
+    summary = clip(
+      [anchors ? `Deterministic anchors:\n${anchors}` : '', `Narrative summary:\n${llm.content}`]
+        .filter(Boolean)
+        .join('\n\n'),
+      MAX_SUMMARY_CHARS,
+    );
   } catch (err) {
     console.error('[agent-memory] summary update failed', err instanceof Error ? err.message : err);
     return;

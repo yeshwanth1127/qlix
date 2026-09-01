@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ArrowDown,
   Brain,
   CheckCircle,
   ChevronDown,
@@ -37,6 +38,8 @@ import {
 } from "lucide-react";
 import {
   cancelTeamRun,
+  answerTeamRunDefense,
+  getTeamRunDefense,
   getTeamRun,
   injectTeamRunMessage,
   listTeamRunPendingJit,
@@ -44,12 +47,14 @@ import {
   setTeamRunWaitTtl,
   startTeamRun,
   streamTeamRun,
+  updateTeamConfig,
   type TeamDTO,
   type TeamRunDTO,
   type TeamRunEventDTO,
   type TeamRunArtifact,
   type ChatAttachmentChip,
   type TeamRunPendingJit,
+  type DefenseInterviewState,
 } from "@/lib/teams-api";
 import { decideJit, isSessionChatJitScope } from "@/lib/jit-api";
 import { JitApprovalCard } from "@/components/qlix/agents/JitApprovalCard";
@@ -84,6 +89,7 @@ import {
   type AgentStatus as GraphAgentStatus,
 } from "@/components/qlix/teams/TeamRunGraph";
 import { LiveArtifactPanel } from "@/components/qlix/teams/LiveArtifactPanel";
+import { DefenseInterviewPanel } from "@/components/qlix/teams/DefenseInterviewPanel";
 import {
   liveArtifactFromCheckpoint,
   liveArtifactFromEventPayload,
@@ -105,6 +111,7 @@ type AgentState = GraphAgentState;
 type AgentStatus = GraphAgentStatus;
 
 type RunViewMode = "chat" | "graph";
+type LiveConnectionState = "idle" | "connecting" | "live" | "reconnecting" | "closed";
 
 type ProcessedEvent =
   | { kind: "run_started"; eventId: string; timestampMs: number }
@@ -156,6 +163,7 @@ type ProcessedEvent =
       jitContext?: string;
       jitWhatsappExpected?: boolean;
       jitWhatsappStatus?: "disconnected" | "not_linked";
+      capabilityGrant?: boolean;
     }
   | {
       kind: "jit_resolved";
@@ -464,20 +472,30 @@ function jitPendingFromPayload(
     p.whatsappStatus === "disconnected" || p.whatsappStatus === "not_linked"
       ? p.whatsappStatus
       : undefined;
-  const detailParts = [
-    channel === "whatsapp"
-      ? "Reply on WhatsApp to approve or deny"
-      : "Waiting for your approval in Qlix",
-    scopeLabel ? `Scope: ${scopeLabel}` : "",
-    isSessionChatJitScope(scope) ? "Approving covers this whole conversation" : "",
-    context,
-  ].filter(Boolean);
+  const isCapability =
+    String(p.message ?? "") === "capability_grant_pending" ||
+    p.kind === "capability_grant" ||
+    scope === "agent.capability_grant";
+  const detailParts = isCapability
+    ? [
+        "I'm not allowed to do this yet — add the capability?",
+        scopeLabel ? `Capability: ${scopeLabel}` : "",
+        context,
+      ].filter(Boolean)
+    : [
+        channel === "whatsapp"
+          ? "Reply on WhatsApp to approve or deny"
+          : "Waiting for your approval in Qlix",
+        scopeLabel ? `Scope: ${scopeLabel}` : "",
+        isSessionChatJitScope(scope) ? "Approving covers this whole conversation" : "",
+        context,
+      ].filter(Boolean);
   return {
     kind: "jit_pending",
     eventId,
     timestampMs,
     agentId: agentId ?? "",
-    label: "Waiting for your approval",
+    label: isCapability ? "Add capability to continue?" : "Waiting for your approval",
     detail: detailParts.join(" · ") || undefined,
     jitRequestId:
       typeof p.jitRequestId === "string" && p.jitRequestId ? p.jitRequestId : undefined,
@@ -486,6 +504,7 @@ function jitPendingFromPayload(
     jitContext: context || undefined,
     jitWhatsappExpected: whatsappExpected || undefined,
     jitWhatsappStatus: whatsappStatus,
+    capabilityGrant: isCapability,
   };
 }
 
@@ -498,17 +517,35 @@ function jitResolvedFromPayload(
   const msg = String(p.message ?? "");
   const scopeLabel = String(p.scopeLabel ?? p.scope ?? "");
   const decisionRaw = String(p.decision ?? "");
+  const isCapability =
+    msg.startsWith("capability_grant_") || p.kind === "capability_grant" || p.scope === "agent.capability_grant";
   let decision: "approved" | "denied" | "expired" = "approved";
-  if (msg === "jit_approval_denied" || decisionRaw === "denied") decision = "denied";
-  else if (msg === "jit_approval_expired" || decisionRaw === "expired") decision = "expired";
+  if (
+    msg === "jit_approval_denied" ||
+    msg === "capability_grant_denied" ||
+    decisionRaw === "denied"
+  )
+    decision = "denied";
+  else if (
+    msg === "jit_approval_expired" ||
+    msg === "capability_grant_expired" ||
+    decisionRaw === "expired"
+  )
+    decision = "expired";
 
   const auto = p.auto === true;
   const conversationGrant = String(p.reason ?? "") === "conversation";
-  let label = "You approved the action";
-  if (decision === "denied") label = "You denied the action";
-  else if (decision === "expired") label = "Approval request expired";
+  let label = isCapability ? "Capability added — continuing" : "You approved the action";
+  if (decision === "denied")
+    label = isCapability ? "You declined adding the capability" : "You denied the action";
+  else if (decision === "expired")
+    label = isCapability ? "Capability request expired" : "Approval request expired";
   else if (auto) {
-    label = conversationGrant ? "Approved for this conversation" : "Pre-approved for this run";
+    label = isCapability
+      ? "Capability already available"
+      : conversationGrant
+        ? "Approved for this conversation"
+        : "Pre-approved for this run";
   }
 
   return {
@@ -517,7 +554,9 @@ function jitResolvedFromPayload(
     timestampMs,
     agentId: agentId ?? "",
     label,
-    detail: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
+    detail: scopeLabel
+      ? `${isCapability ? "Added" : "Scope"}: ${scopeLabel}`
+      : undefined,
     decision,
   };
 }
@@ -535,10 +574,14 @@ function pendingJitToSyntheticEvent(
     seq: 0,
     eventType: "scope_requested",
     payload: {
-      message: "jit_approval_pending",
+      message:
+        pending.scope === "agent.capability_grant"
+          ? "capability_grant_pending"
+          : "jit_approval_pending",
       scope: pending.scope,
       scopeLabel: pending.scopeLabel,
       channel: "dashboard",
+      ...(pending.scope === "agent.capability_grant" ? { kind: "capability_grant" } : {}),
       context: pending.context,
       jitRequestId: pending.jitRequestId,
     },
@@ -685,7 +728,7 @@ function Avatar({ name, role }: { readonly name: string; readonly role: "supervi
         "grid size-7 shrink-0 place-items-center rounded-full text-[11px] font-semibold",
         role === "supervisor"
           ? "bg-black text-white"
-          : cn("border bg-white/70 text-black", HAIRLINE),
+          : cn("border bg-[#E2F0CC]/70 text-black", HAIRLINE),
       )}
       aria-hidden
     >
@@ -751,7 +794,7 @@ function UserMessage({
                     reached
                       ? "border-emerald-600/25 bg-emerald-50 text-emerald-950"
                       : pending
-                        ? "border-black/15 bg-white/90 text-black/65"
+                        ? "border-black/15 bg-[#E2F0CC]/90 text-black/65"
                         : "border-amber-600/30 bg-amber-50 text-amber-950",
                   )}
                   title={
@@ -807,27 +850,23 @@ function SystemLine({
   readonly children: ReactNode;
 }) {
   const toneClass = {
-    muted: "border-black/[0.06] bg-black/[0.025] text-[color:var(--ink-faint)]",
-    info: "border-violet-500/15 bg-violet-50/70 text-violet-900/70",
-    success: "border-emerald-600/15 bg-emerald-50/80 text-emerald-900/75",
-    warning: "border-amber-500/20 bg-amber-50/80 text-amber-950/70",
-    danger: "border-red-500/15 bg-red-50/75 text-[color:var(--sketch-red)]",
+    muted: "text-[color:var(--ink-faint)]",
+    info: "text-black/55",
+    success: "text-emerald-800/75",
+    warning: "text-amber-800/80",
+    danger: "text-[color:var(--sketch-red)]",
   }[tone];
   return (
     <div
       className={cn(
-        "mx-auto flex w-fit max-w-full items-center justify-center gap-2 rounded-full border px-3 py-1.5 text-center text-[11px] leading-relaxed transition-colors",
+        "mx-auto flex w-fit max-w-full items-center justify-center gap-1.5 py-1 text-center text-[11px] leading-relaxed",
         toneClass,
-        active && "motion-safe:animate-pulse",
       )}
       role="status"
       aria-live={active ? "polite" : undefined}
     >
       {active ? (
-        <span className="relative flex size-2 shrink-0" aria-hidden>
-          <span className="absolute inline-flex size-full rounded-full bg-violet-500/45 motion-safe:animate-ping" />
-          <span className="relative inline-flex size-2 rounded-full bg-violet-600" />
-        </span>
+        <Loader2 size={11} className="shrink-0 animate-spin" aria-hidden />
       ) : Icon ? (
         <Icon size={11} className="shrink-0" />
       ) : null}
@@ -851,27 +890,28 @@ function PlanBody({
   const subtasks = (payload.subtasks as SubtaskEntry[]) ?? [];
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-violet-500/15 bg-gradient-to-br from-violet-50/65 via-white/80 to-white">
-      <div className="flex items-center justify-between border-b border-violet-500/10 px-3.5 py-2.5">
-        <div>
-          <p className="text-[12.5px] font-semibold text-violet-950/85">Execution plan</p>
-          <p className="mt-0.5 text-[10.5px] text-violet-900/50">
-            {subtasks.length} specialist step{subtasks.length === 1 ? "" : "s"}
-          </p>
-        </div>
-        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-800">
-          Live
-        </span>
+    <div className={cn("border-y", HAIRLINE)}>
+      <div className={cn("flex items-baseline justify-between gap-3 border-b py-2", HAIRLINE)}>
+        <p className="text-[12px] font-medium text-black/80">Plan</p>
+        <p className={cn("text-[10.5px] tabular-nums", INK_FAINT)}>
+          {subtasks.length} step{subtasks.length === 1 ? "" : "s"}
+        </p>
       </div>
       {subtasks.length > 0 && (
-        <ol className="divide-y divide-black/[0.05] px-3.5">
+        <ol>
           {subtasks.map((st, i) => {
             const state = st.agentId ? agentStates.get(st.agentId)?.state ?? "idle" : "idle";
             const running = state === "thinking" || state === "tool_active";
             const failed = state === "failed";
             const completed = state === "completed";
             return (
-              <li key={st.subtaskId ?? i} className="flex items-center gap-2.5 py-2.5 text-[12.5px]">
+              <li
+                key={st.subtaskId ?? i}
+                className={cn(
+                  "flex items-center gap-2.5 py-2 text-[12.5px]",
+                  i > 0 && "border-t border-black/[0.05]",
+                )}
+              >
                 <span
                   className={cn(
                     "grid size-5 shrink-0 place-items-center rounded-full text-[9.5px] font-semibold tabular-nums",
@@ -880,7 +920,7 @@ function PlanBody({
                       : failed
                         ? "bg-red-100 text-red-700"
                         : running
-                          ? "bg-violet-100 text-violet-800"
+                          ? "bg-[color:var(--sketch-purple)]/15 text-black/70"
                           : "bg-black/[0.05] text-black/45",
                   )}
                 >
@@ -892,20 +932,16 @@ function PlanBody({
                   </p>
                   {st.goal ? <p className={cn("mt-0.5 truncate text-[10.5px]", INK_FAINT)}>{st.goal}</p> : null}
                 </div>
-                <span
-                  className={cn(
-                    "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9.5px] font-medium",
-                    completed
-                      ? "bg-emerald-100/80 text-emerald-800"
-                      : failed
-                        ? "bg-red-100/80 text-red-700"
-                        : running
-                          ? "bg-violet-100 text-violet-800"
-                          : "bg-black/[0.04] text-black/45",
+                <span className={cn("shrink-0 text-[10px]", INK_FAINT)}>
+                  {running ? (
+                    <Loader2 size={11} className="motion-safe:animate-spin" aria-label="Running" />
+                  ) : completed ? (
+                    "Done"
+                  ) : failed ? (
+                    "Failed"
+                  ) : (
+                    "Waiting"
                   )}
-                >
-                  {running ? <Loader2 size={9} className="motion-safe:animate-spin" /> : null}
-                  {completed ? "Completed" : failed ? "Failed" : running ? "Running" : "Waiting"}
                 </span>
               </li>
             );
@@ -951,6 +987,7 @@ function ActivityBody({
                   jitContext: entry.jitContext,
                   jitWhatsappExpected: entry.jitWhatsappExpected,
                   jitWhatsappStatus: entry.jitWhatsappStatus,
+                  capabilityGrant: entry.capabilityGrant,
                 }}
                 deciding={Boolean(entry.jitRequestId && jitDeciding?.[entry.jitRequestId])}
                 error={jitError}
@@ -966,12 +1003,12 @@ function ActivityBody({
           <li key={entry.id} className="min-w-0">
             <div
               className={cn(
-                "flex items-start gap-2 rounded-xl border px-2.5 py-2 transition-colors",
+                "flex items-start gap-2 border-l-2 py-1.5 pl-3",
                 isRunningStep
-                  ? "border-violet-500/15 bg-violet-50/65"
+                  ? "border-violet-500/30"
                   : isError
-                    ? "border-red-500/15 bg-red-50/60"
-                    : "border-emerald-600/10 bg-emerald-50/55",
+                    ? "border-red-500/35"
+                    : "border-black/10",
               )}
             >
               {isRunningStep ? (
@@ -998,16 +1035,7 @@ function ActivityBody({
                   >
                     {entry.label}
                   </span>
-                  <span
-                    className={cn(
-                      "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium",
-                      isRunningStep
-                        ? "bg-violet-100 text-violet-700"
-                        : isError
-                          ? "bg-red-100 text-red-700"
-                          : "bg-emerald-100 text-emerald-800",
-                    )}
-                  >
+                  <span className={cn("ml-auto shrink-0 text-[9.5px] font-medium", INK_FAINT)}>
                     {isRunningStep ? "Running" : isError ? "Failed" : "Succeeded"}
                   </span>
                 </div>
@@ -1058,20 +1086,17 @@ function CompletedBody({
   readonly durationMs?: number;
 }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-emerald-600/15 bg-emerald-50/55">
-      <div className="flex items-center gap-2 border-b border-emerald-600/10 px-3.5 py-2">
-        <CheckCircle size={13} className="shrink-0 text-emerald-700" />
-        <span className="text-[11px] font-semibold text-emerald-900/80">Step completed</span>
+    <div className="border-l-2 border-emerald-700/25 pl-3">
+      <div className="flex items-center gap-1.5">
+        <CheckCircle size={12} className="shrink-0 text-emerald-700" />
+        <span className="text-[11px] font-medium text-emerald-800/80">Done</span>
         {durationMs != null && <span className="ml-auto text-[10px] text-emerald-900/45">{formatDuration(durationMs)}</span>}
       </div>
-      <div className="px-3.5 py-3">
-        <p className="mb-1 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-emerald-800/55">
-          Step output
-        </p>
+      <div className="mt-1.5">
         {summary ? (
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-emerald-950/75">{summary}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-black/80">{summary}</p>
         ) : (
-          <p className="text-[12px] text-emerald-900/50">Completed successfully. No text output was returned.</p>
+          <p className="text-[12px] text-black/45">No text output.</p>
         )}
       </div>
     </div>
@@ -1079,17 +1104,7 @@ function CompletedBody({
 }
 
 function ResultBody({ result }: { readonly result: string }) {
-  return (
-    <div className="overflow-hidden rounded-2xl border border-emerald-600/20 bg-gradient-to-br from-emerald-50/80 via-white to-white shadow-[0_8px_30px_rgba(16,185,129,0.07)]">
-      <div className="flex items-center gap-2 border-b border-emerald-600/10 px-4 py-2.5">
-        <CheckCircle size={14} className="text-emerald-700" />
-        <span className="text-[11px] font-semibold text-emerald-950/80">Team result</span>
-      </div>
-      <div className="px-4 py-3.5">
-        <AgentMessageContent content={result} completed />
-      </div>
-    </div>
-  );
+  return <AgentMessageContent content={result} completed />;
 }
 
 function TypingIndicator({
@@ -1108,20 +1123,15 @@ function TypingIndicator({
   return (
     <div className="flex gap-3">
       <Avatar name={name} role={role} />
-      <div className="min-w-0 flex-1 rounded-2xl border border-violet-500/15 bg-violet-50/55 px-3 py-2">
+      <div className="min-w-0 flex-1 border-l border-black/10 pl-3 py-1">
         <button
           type="button"
           onClick={() => steps.length > 0 && setOpen((v) => !v)}
           aria-expanded={open}
-          className={cn(
-            "flex w-full items-center gap-2 rounded-xl py-1 text-left",
-            steps.length > 0 && "transition-colors hover:bg-black/[0.04]",
-          )}
+          className="flex w-full items-center gap-2 py-1 text-left"
         >
           <span className="flex shrink-0 items-center gap-1" aria-hidden>
-            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce" />
-            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce [animation-delay:150ms]" />
-            <span className="size-1.5 rounded-full bg-violet-500 motion-safe:animate-bounce [animation-delay:300ms]" />
+            <Loader2 size={12} className="animate-spin text-black/45" />
           </span>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-violet-950/70">
             {label ?? "Thinking…"}
@@ -1158,6 +1168,76 @@ function TypingIndicator({
   );
 }
 
+function LiveExecutionBar({
+  paused,
+  connection,
+  agentName,
+  action,
+  completedSteps,
+  totalSteps,
+  elapsedMs,
+}: {
+  readonly paused: boolean;
+  readonly connection: LiveConnectionState;
+  readonly agentName: string;
+  readonly action: string;
+  readonly completedSteps: number;
+  readonly totalSteps: number;
+  readonly toolCount: number;
+  readonly elapsedMs: number;
+  readonly lastEventAt: number | null;
+  readonly nowMs: number;
+}) {
+  const connected = connection === "live";
+  const reconnecting = connection === "reconnecting" || connection === "connecting";
+  const stepsLabel =
+    totalSteps > 0 ? `${completedSteps}/${totalSteps}` : completedSteps > 0 ? String(completedSteps) : null;
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2.5 border-y py-2",
+        HAIRLINE,
+      )}
+      aria-label="Live execution status"
+      aria-live="polite"
+      data-testid="live-execution-bar-inner"
+    >
+      <span className="relative flex size-2 shrink-0" aria-hidden>
+        {!paused && connected ? (
+          <span className="absolute inline-flex size-full rounded-full bg-[color:var(--sketch-purple)]/40 motion-safe:animate-ping" />
+        ) : null}
+        <span
+          className={cn(
+            "relative inline-flex size-2 rounded-full",
+            paused
+              ? "bg-amber-500"
+              : connected
+                ? "bg-[color:var(--sketch-purple)]"
+                : "bg-black/25",
+          )}
+        />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[12.5px] text-black/85">
+          <span className="font-medium">{agentName}</span>
+          <span className={cn("mx-1.5", INK_FAINT)}>·</span>
+          <span className={INK_SOFT}>{paused ? "Waiting" : action}</span>
+        </p>
+      </div>
+      <p className={cn("hidden shrink-0 tabular-nums sm:block text-[11px]", INK_FAINT)}>
+        {[
+          stepsLabel ? `${stepsLabel} steps` : null,
+          formatDuration(elapsedMs),
+          paused ? "Paused" : connected ? "Live" : reconnecting ? "Reconnecting" : "Connecting",
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
+    </div>
+  );
+}
+
 // ─── Sidebar pieces ───────────────────────────────────────────────────────────
 
 function SidebarAgent({ status }: { readonly status: AgentStatus }) {
@@ -1172,7 +1252,7 @@ function SidebarAgent({ status }: { readonly status: AgentStatus }) {
             ? "border-emerald-600/10 bg-emerald-50/55"
             : status.state === "failed"
               ? "border-red-500/10 bg-red-50/50"
-              : "border-transparent hover:bg-white/60",
+              : "border-transparent hover:bg-[#E2F0CC]/60",
       )}
     >
       <Avatar name={status.name} role={status.role} />
@@ -1235,7 +1315,7 @@ function ArtifactRow({
       type="button"
       onClick={download}
       title={sandboxUrl ? "Open download link" : "Download"}
-      className="group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-white/60"
+      className="group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-[#E2F0CC]/60"
     >
       <FileText size={12} className={cn("shrink-0", INK_FAINT)} />
       <span className="min-w-0 flex-1">
@@ -1267,6 +1347,7 @@ interface ActivityEntry {
   jitContext?: string;
   jitWhatsappExpected?: boolean;
   jitWhatsappStatus?: "disconnected" | "not_linked";
+  capabilityGrant?: boolean;
 }
 
 type ChatItem =
@@ -1320,9 +1401,10 @@ type ChatItem =
 interface TeamRunViewProps {
   readonly team: TeamDTO;
   readonly canSend?: boolean;
+  readonly onTeamUpdated?: (team: TeamDTO) => void;
 }
 
-export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
+export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunViewProps) {
   const [composer, setComposer] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingFilePurposes, setPendingFilePurposes] = useState<
@@ -1352,12 +1434,17 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [clarificationNotice, setClarificationNotice] = useState<string | null>(null);
   const [injecting, setInjecting] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
   const [viewMode, setViewMode] = useState<RunViewMode>("chat");
   const [jitDeciding, setJitDeciding] = useState<Record<string, boolean>>({});
   const [waitTtlSubmitting, setWaitTtlSubmitting] = useState(false);
   const [waitTtlError, setWaitTtlError] = useState<string | null>(null);
+  const [defenseInterview, setDefenseInterview] = useState<DefenseInterviewState | null>(null);
+  const [defenseLoading, setDefenseLoading] = useState(false);
+  const [defenseSubmittingThreadId, setDefenseSubmittingThreadId] = useState<string | null>(null);
+  const [defenseError, setDefenseError] = useState<string | null>(null);
   const [customWaitValue, setCustomWaitValue] = useState("30");
   const [customWaitUnit, setCustomWaitUnit] = useState<"minutes" | "hours">("minutes");
   const [jitError, setJitError] = useState<string | null>(null);
@@ -1368,6 +1455,10 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [conversations, setConversations] = useState<TeamConversation[]>([]);
   const [activeRootId, setActiveRootId] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<LiveConnectionState>("idle");
+  const [lastLiveEventAt, setLastLiveEventAt] = useState<number | null>(null);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [followingLive, setFollowingLive] = useState(true);
   const showChat = viewMode === "chat";
   const hydrateGen = useRef(0);
 
@@ -1416,6 +1507,72 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     [allAgents],
   );
 
+  const defenseAgentId = useMemo(
+    () => (team.members ?? []).find((member) =>
+      member.role.toLowerCase() === "interviewer" || /defense interviewer/i.test(member.agent?.name ?? ""),
+    )?.agentId ?? null,
+    [team.members],
+  );
+
+  const defenseStarted = Boolean(
+    defenseInterview?.processId ||
+    run?.checkpointJson?.reviewConversation?.processId ||
+    (defenseAgentId && events.some((event) => {
+      const payload = event.payload && typeof event.payload === "object"
+        ? event.payload as Record<string, unknown>
+        : {};
+      const eventAgentId = event.agentId ?? String(payload.agentId ?? payload.toAgentId ?? "");
+      return eventAgentId === defenseAgentId &&
+        ["task_delegated", "task_status_update", "tool_called", "subtask_completed"].includes(event.eventType);
+    })),
+  );
+
+  const refreshDefenseInterview = useCallback(async () => {
+    if (!run || !defenseAgentId) return;
+    setDefenseLoading(true);
+    try {
+      const state = await getTeamRunDefense(team.id, run.id);
+      setDefenseInterview(state);
+      setDefenseError(null);
+    } catch (loadError) {
+      setDefenseError(loadError instanceof Error ? loadError.message : "Failed to load defense interview");
+    } finally {
+      setDefenseLoading(false);
+    }
+  }, [defenseAgentId, run, team.id]);
+
+  useEffect(() => {
+    if (!defenseStarted || !run || !defenseAgentId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      if (cancelled) return;
+      await refreshDefenseInterview();
+      if (!cancelled && (run.status === "running" || run.status === "paused")) {
+        timer = setTimeout(() => void poll(), 2000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [defenseAgentId, defenseStarted, refreshDefenseInterview, run]);
+
+  const handleDefenseAnswer = useCallback(async (threadId: string, text: string) => {
+    if (!run) return;
+    setDefenseSubmittingThreadId(threadId);
+    setDefenseError(null);
+    try {
+      await answerTeamRunDefense(team.id, run.id, threadId, text);
+      await refreshDefenseInterview();
+    } catch (answerError) {
+      setDefenseError(answerError instanceof Error ? answerError.message : "Failed to send defense answer");
+    } finally {
+      setDefenseSubmittingThreadId(null);
+    }
+  }, [refreshDefenseInterview, run, team.id]);
+
   const agentRoleById = useCallback(
     (id: string | null): "supervisor" | "worker" =>
       allAgents.find((a) => a.agentId === id)?.role ?? "worker",
@@ -1426,6 +1583,26 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     const fromTeam = team.config?.defaultModel?.trim();
     if (fromTeam) setSelectedModel(fromTeam);
   }, [team.id, team.config?.defaultModel]);
+
+  useEffect(() => {
+    const fromTeam = team.config?.defaultReasoningEffort as ReasoningEffort | undefined;
+    setSelectedReasoningEffort(fromTeam ?? null);
+  }, [team.id, team.config?.defaultReasoningEffort]);
+
+  const persistTeamModelPreferences = useCallback(
+    async (model: string, effort: ReasoningEffort | null) => {
+      try {
+        const updated = await updateTeamConfig(team.id, {
+          defaultModel: model,
+          ...(effort ? { defaultReasoningEffort: effort } : {}),
+        });
+        onTeamUpdated?.(updated);
+      } catch {
+        // Server also persists on run start; local picker state still applies.
+      }
+    },
+    [onTeamUpdated, team.id],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1883,6 +2060,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
             jitContext: ev.jitContext,
             jitWhatsappExpected: ev.jitWhatsappExpected,
             jitWhatsappStatus: ev.jitWhatsappStatus,
+            capabilityGrant: ev.capabilityGrant,
           };
         } else if (ev.kind === "jit_resolved") {
           if (
@@ -2106,6 +2284,21 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const { steps: reasoningSteps, isThinking: isAgentThinking, activeLabel: reasoningActiveLabel } =
     reasoningState;
 
+  /** Latest unresolved JIT — pinned above the composer like agent chat. */
+  const stickyJitPending = useMemo(() => {
+    for (let i = chatItems.length - 1; i >= 0; i -= 1) {
+      const item = chatItems[i];
+      if (item?.kind !== "activity") continue;
+      for (let j = item.entries.length - 1; j >= 0; j -= 1) {
+        const entry = item.entries[j];
+        if (entry?.kind === "jit_pending" && entry.jitRequestId) {
+          return entry;
+        }
+      }
+    }
+    return null;
+  }, [chatItems]);
+
   // ── All browser frames flat list for live view panel ──────────────────────
   const allBrowserFrames = useMemo(
     () => Object.values(browserFrames).flat(),
@@ -2197,11 +2390,15 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
   // Recover approval cards if the live stream missed `scope_requested`.
   useEffect(() => {
-    if (!run?.id || (!isRunning && !isPaused)) return;
+    if (!run?.id) return;
+    // Keep polling while the run is live OR a sticky card is still waiting —
+    // otherwise a late JIT after status flicker never appears.
+    if (!isRunning && !isPaused && !stickyJitPending) return;
     let cancelled = false;
     const sync = async () => {
       const pending = await listTeamRunPendingJit(team.id, run.id);
-      if (cancelled || pending.length === 0) return;
+      if (cancelled) return;
+      if (pending.length === 0) return;
       setEvents((prev) => mergePendingJitIntoEvents(prev, pending, team.id, run.id));
     };
     void sync();
@@ -2212,7 +2409,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [run?.id, team.id, isRunning, isPaused]);
+  }, [run?.id, team.id, isRunning, isPaused, stickyJitPending]);
 
   const liveBrowserAction = useMemo(() => {
     const inferenceHintsByAgent = new Map<string, Map<string, string>>();
@@ -2284,12 +2481,79 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     return team.supervisorAgentId ?? null;
   }, [events, team.supervisorAgentId]);
 
+  const liveExecution = useMemo(() => {
+    const active = [...agentStates.values()].filter(
+      (agent) => agent.state === "tool_active" || agent.state === "thinking",
+    );
+    const toolActive = active.filter((agent) => agent.state === "tool_active");
+    const foreground = toolActive.length > 0 ? toolActive : active;
+    const primary = foreground.at(-1);
+    const planEvent = [...events].reverse().find((event) => event.eventType === "supervisor_step");
+    const subtasks = planEvent && Array.isArray((planEvent.payload as Record<string, unknown>).subtasks)
+      ? (planEvent.payload as { subtasks: unknown[] }).subtasks
+      : [];
+    const completedIds = new Set<string>();
+    let toolCount = 0;
+    for (const event of events) {
+      const payload = event.payload as Record<string, unknown>;
+      if (event.eventType === "subtask_completed") {
+        completedIds.add(String(payload.subtaskId ?? payload.agentId ?? event.agentId ?? event.id));
+      }
+      if (
+        event.eventType === "tool_called" &&
+        payload.message === "tool_finished" &&
+        payload.status !== "error"
+      ) {
+        toolCount += 1;
+      } else if (event.eventType === "brain_queried") {
+        toolCount += 1;
+      }
+    }
+    const parallelLabel = foreground.length > 1
+      ? `${foreground.length} agents working`
+      : primary?.name ?? agentNameById(activeAgentId);
+    const action = isPaused
+      ? run?.checkpointJson?.waitReason ?? "Waiting for the next signal…"
+      : foreground.length > 1
+        ? foreground.slice(0, 3).map((agent) => agent.name).join(" · ")
+        : primary?.currentAction ?? reasoningActiveLabel ?? liveBrowserAction?.label ?? "Coordinating the next step…";
+    const started = run?.startedAt ?? run?.createdAt;
+    const startedMs = started ? new Date(started).getTime() : clockNow;
+    return {
+      agentName: parallelLabel,
+      action,
+      completedSteps: completedIds.size,
+      totalSteps: subtasks.length,
+      toolCount,
+      elapsedMs: Math.max(0, clockNow - startedMs),
+    };
+  }, [
+    activeAgentId,
+    agentNameById,
+    agentStates,
+    clockNow,
+    events,
+    isPaused,
+    liveBrowserAction?.label,
+    reasoningActiveLabel,
+    run?.checkpointJson?.waitReason,
+    run?.createdAt,
+    run?.startedAt,
+  ]);
+
+  useEffect(() => {
+    if (!isRunning && !isPaused) return;
+    setClockNow(Date.now());
+    const interval = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [isPaused, isRunning]);
+
   // ── Auto-scroll conversation (contained — does not scroll the page) ────────
   useEffect(() => {
     const el = timelineScrollRef.current;
-    if (!el) return;
+    if (!el || !followingLive) return;
     el.scrollTop = el.scrollHeight;
-  }, [chatItems.length, reasoningSteps.length, isAgentThinking, isRunning]);
+  }, [chatItems.length, reasoningSteps.length, isAgentThinking, isRunning, followingLive]);
 
   // ── Composer auto-grow ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -2345,6 +2609,21 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
   const processRunStreamEvent = useCallback((event: TeamRunEventDTO) => {
     processEventForFrames(event);
     const p = event.payload as Record<string, unknown>;
+
+    // The durable terminal event is authoritative. Apply it as soon as it is
+    // replayed/streamed instead of waiting for the separate SSE `complete`
+    // frame, which may be lost when a proxy or connection closes first.
+    if (event.eventType === "run_failed") {
+      setRunStatus("failed");
+      setRun((current) => current ? { ...current, status: "failed" } : current);
+      const failure = typeof p.error === "string" ? p.error : null;
+      if (failure) setFinalResult(failure);
+    } else if (event.eventType === "run_completed") {
+      setRunStatus("completed");
+      setRun((current) => current ? { ...current, status: "completed" } : current);
+      const synthesis = typeof p.synthesis === "string" ? p.synthesis : null;
+      if (synthesis) setFinalResult(synthesis);
+    }
 
     if (event.eventType === "artifact_produced" && p.artifact) {
       const artifact = p.artifact as TeamRunArtifact;
@@ -2409,6 +2688,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     const localFollowUpId = isFollowUp ? `followup-local-${Date.now()}` : null;
     setSubmitting(true);
     setError(null);
+    setClarificationNotice(null);
     const display =
       text.trim() ||
       (files.length === 1 ? `Attached ${files[0]!.name}` : `Attached ${files.length} files`);
@@ -2486,6 +2766,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
       const cleanup = streamTeamRun(team.id, started.run.id, {
         onEvent: (event) => {
+          setLastLiveEventAt(Date.now());
           setEvents((prev) => {
             if (prev.some((e) => e.id === event.id)) return prev;
             return [...prev, event];
@@ -2496,22 +2777,32 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
           setRunStatus("paused");
         },
         onComplete: (data) => {
+          setConnectionState("closed");
           setRunStatus(data.status);
+          setRun((current) => current ? { ...current, status: data.status } : current);
           if (typeof data.result === "object" && data.result !== null) {
             const r = data.result as Record<string, unknown>;
             if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
           }
         },
         onError: () => {
-          /* EventSource may error on reconnect; keep paused runs alive */
+          void getTeamRun(team.id, started.run.id).then(({ run: latest }) => {
+            setRun(latest);
+            setRunStatus(latest.status);
+            if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
+              setFinalResult(String((latest.result as { synthesis: string }).synthesis));
+            }
+          }).catch(() => undefined);
         },
+        onConnectionChange: setConnectionState,
       });
       streamCleanup.current = cleanup;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start run");
+      const message = err instanceof Error ? err.message : "Failed to start run";
+      setError(message);
       setRunStatus(isFollowUp ? (run?.status ?? "failed") : "failed");
       if (isFollowUp && localFollowUpId) {
-        setEvents((prev) => prev.filter((e) => e.id !== localFollowUpId));
+        setClarificationNotice(message);
       } else {
         setStartedGoal(null);
         setGoalAttachments(null);
@@ -2629,6 +2920,9 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     setFileInputKey((k) => k + 1);
     setBrowserFrames({});
     setToolFrames({});
+    setConnectionState("idle");
+    setLastLiveEventAt(null);
+    setFollowingLive(true);
     pendingToolEventByAgent.current = {};
   }
 
@@ -2732,6 +3026,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
     streamCleanup.current?.();
     streamCleanup.current = streamTeamRun(team.id, runId, {
       onEvent: (event) => {
+        setLastLiveEventAt(Date.now());
         setEvents((prev) => (prev.some((e) => e.id === event.id) ? prev : [...prev, event]));
         processRunStreamEvent(event);
       },
@@ -2739,15 +3034,24 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
         setRunStatus("paused");
       },
       onComplete: (data) => {
+        setConnectionState("closed");
         setRunStatus(data.status);
+        setRun((current) => current ? { ...current, status: data.status } : current);
         if (typeof data.result === "object" && data.result !== null) {
           const r = data.result as Record<string, unknown>;
           if (typeof r.synthesis === "string") setFinalResult(r.synthesis);
         }
       },
       onError: () => {
-        /* EventSource errors on reconnect; paused runs stay open */
+        void getTeamRun(team.id, runId).then(({ run: latest }) => {
+          setRun(latest);
+          setRunStatus(latest.status);
+          if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
+            setFinalResult(String((latest.result as { synthesis: string }).synthesis));
+          }
+        }).catch(() => undefined);
       },
+      onConnectionChange: setConnectionState,
     }, afterSeq);
   }
 
@@ -2843,7 +3147,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
       {/* ── Agents sidebar ───────────────────────────────────────────────── */}
       <aside
         className={cn(
-          "absolute inset-y-0 left-0 z-20 flex w-60 min-h-0 flex-col overflow-hidden border-r bg-white/85 backdrop-blur-xl transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 md:bg-transparent md:backdrop-blur-none",
+          "absolute inset-y-0 left-0 z-20 flex w-60 min-h-0 flex-col overflow-hidden border-r bg-[#E2F0CC]/85 backdrop-blur-xl transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 md:bg-transparent md:backdrop-blur-none",
           HAIRLINE,
           showAgents ? "translate-x-0" : "-translate-x-full",
         )}
@@ -2927,7 +3231,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
               className="absolute inset-0 z-30 bg-black/10"
             />
             <aside
-              className="absolute inset-y-0 left-0 z-40 flex w-[min(17rem,82%)] flex-col border-r bg-white shadow-[5px_0_0_rgba(0,0,0,0.08)]"
+              className="absolute inset-y-0 left-0 z-40 flex w-[min(17rem,82%)] flex-col border-r bg-[#E2F0CC] shadow-[5px_0_0_rgba(0,0,0,0.08)]"
               style={{ borderColor: "var(--ink-border)" }}
               aria-label="Recent chats"
             >
@@ -3105,8 +3409,32 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
         </div>
 
+        {(isRunning || isPaused) && run ? (
+          <div className="shrink-0 px-4 pb-2 sm:px-6" data-testid="live-execution-bar">
+            <div className="mx-auto w-full max-w-2xl">
+              <LiveExecutionBar
+                paused={isPaused}
+                connection={connectionState}
+                agentName={liveExecution.agentName}
+                action={liveExecution.action}
+                completedSteps={liveExecution.completedSteps}
+                totalSteps={liveExecution.totalSteps}
+                toolCount={liveExecution.toolCount}
+                elapsedMs={liveExecution.elapsedMs}
+                lastEventAt={lastLiveEventAt}
+                nowMs={clockNow}
+              />
+            </div>
+          </div>
+        ) : null}
+
         <div
           ref={timelineScrollRef}
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+            setFollowingLive(nearBottom);
+          }}
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4"
         >
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
@@ -3148,12 +3476,23 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
               </>
             )}
 
+            {showChat && defenseStarted ? (
+              <DefenseInterviewPanel
+                state={defenseInterview}
+                preparing={!defenseInterview?.processId}
+                loading={defenseLoading}
+                submittingThreadId={defenseSubmittingThreadId}
+                error={defenseError}
+                onAnswer={handleDefenseAnswer}
+              />
+            ) : null}
+
             {showChat && chatItems.map((item) => {
               switch (item.kind) {
                 case "started":
                   return (
                     <SystemLine key={item.id} icon={Zap} tone="info" active={planningActive}>
-                      Luna-Teams started · preparing specialist dispatches
+                      Started
                     </SystemLine>
                   );
                 case "plan":
@@ -3276,7 +3615,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                             value={customWaitValue}
                             disabled={ttlDisabled}
                             onChange={(e) => setCustomWaitValue(e.target.value)}
-                            className="w-24 rounded-lg border border-black/15 bg-white px-2 py-1.5 text-[12px]"
+                            className="w-24 rounded-lg border border-black/15 bg-[#E2F0CC] px-2 py-1.5 text-[12px]"
                             aria-label={`Custom wait ${customWaitUnit}`}
                           />
                           <select
@@ -3287,7 +3626,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                               setCustomWaitUnit(next);
                               setCustomWaitValue(next === "minutes" ? "30" : "2");
                             }}
-                            className="rounded-lg border border-black/15 bg-white px-2 py-1.5 text-[12px]"
+                            className="rounded-lg border border-black/15 bg-[#E2F0CC] px-2 py-1.5 text-[12px]"
                             aria-label="Custom wait unit"
                           >
                             <option value="minutes">minutes</option>
@@ -3391,11 +3730,16 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
 
                 case "user":
                   return (
-                    <UserMessage
-                      key={item.id}
-                      text={item.message}
-                      attachments={item.attachments}
-                    />
+                    <div key={item.id} className="flex flex-col gap-2">
+                      {item.id.startsWith("followup-local-") ||
+                      item.id.startsWith("conversation-turn-") ? (
+                        <SystemLine tone="muted">Continuing prior run</SystemLine>
+                      ) : null}
+                      <UserMessage
+                        text={item.message}
+                        attachments={item.attachments}
+                      />
+                    </div>
                   );
 
                 case "delivered":
@@ -3421,6 +3765,10 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
               }
             })}
 
+            {showChat && clarificationNotice ? (
+              <SystemLine tone="warning">{clarificationNotice}</SystemLine>
+            ) : null}
+
             {showChat && isRunning && (
               <TypingIndicator
                 name={agentNameById(activeAgentId)}
@@ -3432,15 +3780,55 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
           </div>
         </div>
 
+        {!followingLive && (isRunning || isPaused) ? (
+          <button
+            type="button"
+            onClick={() => {
+              setFollowingLive(true);
+              const element = timelineScrollRef.current;
+              if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+            }}
+            className="absolute bottom-32 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-black/10 bg-[#E2F0CC]/95 px-3 py-1.5 text-[11px] font-medium text-black shadow-[0_8px_25px_rgba(0,0,0,0.12)] backdrop-blur transition-transform hover:-translate-y-0.5"
+          >
+            <ArrowDown size={12} />
+            Jump to live
+          </button>
+        ) : null}
+
         {/* ── Composer ───────────────────────────────────────────────────── */}
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="mx-auto w-full max-w-2xl">
+            {stickyJitPending ? (
+              <JitApprovalCard
+                className="mb-2.5"
+                step={{
+                  label: stickyJitPending.label,
+                  detail: stickyJitPending.detail,
+                  jitRequestId: stickyJitPending.jitRequestId,
+                  jitChannel: stickyJitPending.jitChannel,
+                  jitScope: stickyJitPending.jitScope,
+                  jitContext: stickyJitPending.jitContext,
+                  jitWhatsappExpected: stickyJitPending.jitWhatsappExpected,
+                  jitWhatsappStatus: stickyJitPending.jitWhatsappStatus,
+                  capabilityGrant: stickyJitPending.capabilityGrant,
+                }}
+                deciding={Boolean(
+                  stickyJitPending.jitRequestId &&
+                    jitDeciding[stickyJitPending.jitRequestId],
+                )}
+                error={jitError}
+                onDecide={(approved) => {
+                  if (!stickyJitPending.jitRequestId) return;
+                  void handleJitDecision(stickyJitPending.jitRequestId, approved);
+                }}
+              />
+            ) : null}
             {pendingFiles.length > 0 ? (
               <ul className="mb-2 flex flex-wrap gap-1.5">
                 {pendingFiles.map((f, i) => (
                   <li
                     key={`${f.name}-${f.size}-${i}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/70"
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-black/12 bg-[#E2F0CC]/90 px-2.5 py-1 text-[11px] text-black/70"
                   >
                     <FileText className="size-3 shrink-0" aria-hidden />
                     <span className="truncate max-w-[10rem]">{f.name}</span>
@@ -3493,7 +3881,7 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
             ) : null}
             <div
               className={cn(
-                "flex items-end gap-2 rounded-3xl border bg-white/70 px-3 py-2 backdrop-blur-sm transition-colors focus-within:border-[color:var(--sketch-purple)]/45",
+                "chat-composer flex items-end gap-2 rounded-3xl bg-[#E2F0CC]/70 px-3 py-2 backdrop-blur-sm",
                 HAIRLINE,
               )}
             >
@@ -3522,11 +3910,12 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                       : `Attach files (up to ${TEAM_CHAT_MAX_FILES}, max ${TEAM_CHAT_MAX_FILE_MB} MB each)`
                 }
                 aria-label="Attach files"
-                className="mb-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-black/10 bg-white text-black/55 transition-colors hover:border-black/25 hover:text-black disabled:opacity-30"
+                className="mb-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-black/10 bg-[#E2F0CC] text-black/55 transition-colors hover:border-black/25 hover:text-black disabled:opacity-30"
               >
                 <Paperclip size={14} />
               </button>
               <textarea
+                data-chat-input
                 ref={composerRef}
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
@@ -3570,14 +3959,18 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
                       ? selectedModel
                       : TEAM_RUN_AGENT_DEFAULT_MODEL
                   }
-                  onChange={(e) => setSelectedModel(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setSelectedModel(next);
+                    void persistTeamModelPreferences(next, selectedReasoningEffort);
+                  }}
                   disabled={isRunning || submitting}
                   title={
                     isRunning
                       ? "Model applies to the next new run"
                       : "LLM used by all agents in this team run"
                   }
-                  className="max-w-[20rem] truncate rounded-full border border-black/12 bg-white/90 px-2.5 py-1 text-[11px] text-black/80 outline-none disabled:opacity-50"
+                  className="max-w-[20rem] truncate rounded-full border border-black/12 bg-[#E2F0CC]/90 px-2.5 py-1 text-[11px] text-black/80 outline-none disabled:opacity-50"
                 >
                   {!modelOptionIds.has(selectedModel) ? (
                     <option value={selectedModel}>{formatModelOptionLabel(selectedModel)}</option>
@@ -3596,7 +3989,10 @@ export function TeamRunView({ team, canSend = true }: TeamRunViewProps) {
               <ReasoningEffortPicker
                 size="compact"
                 value={selectedReasoningEffort}
-                onChange={setSelectedReasoningEffort}
+                onChange={(next) => {
+                  setSelectedReasoningEffort(next);
+                  void persistTeamModelPreferences(selectedModel, next);
+                }}
                 disabled={isRunning || submitting}
               />
               <p className={cn("text-[10.5px]", INK_FAINT)}>

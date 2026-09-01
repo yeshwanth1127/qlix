@@ -1,0 +1,21 @@
+{
+  "formatVersion": 1,
+  "cases": [
+    { "id": "luna_search", "operation": "search", "runtime": "local", "publicTool": "web_search", "providers": ["tavily", "duckduckgo"] },
+    { "id": "luna_direct_read", "operation": "read", "runtime": "local", "publicTool": "web_search", "providers": ["direct_http"] },
+    { "id": "managed_search", "operation": "search", "runtime": "cloud", "publicTool": "research_web_search", "providers": ["exa_agent_reach"] },
+    { "id": "managed_generic_read", "operation": "read", "runtime": "cloud", "publicTool": "research_read_url", "providers": ["jina_reader"] },
+    { "id": "twitter_read", "operation": "read", "runtime": "cloud", "publicTool": "research_read_url", "platform": "twitter", "providers": ["twitter_cli", "jina_reader"] },
+    { "id": "github_read", "operation": "read", "runtime": "cloud", "publicTool": "research_read_url", "platform": "github", "providers": ["github_cli", "jina_reader"] },
+    { "id": "youtube_read", "operation": "read", "runtime": "cloud", "publicTool": "research_read_url", "platform": "youtube", "providers": ["youtube_ytdlp", "jina_reader"] },
+    { "id": "bilibili_read", "operation": "read", "runtime": "cloud", "publicTool": "research_read_url", "platform": "bilibili", "providers": ["bilibili_cli", "jina_reader"] },
+    { "id": "twitter_search", "operation": "platform_search", "runtime": "cloud", "publicTool": "research_social_search", "platform": "twitter", "providers": ["twitter_cli"] },
+    { "id": "reddit_search", "operation": "platform_search", "runtime": "cloud", "publicTool": "research_social_search", "platform": "reddit", "providers": ["reddit_cli"] },
+    { "id": "xiaohongshu_search", "operation": "platform_search", "runtime": "cloud", "publicTool": "research_social_search", "platform": "xiaohongshu", "providers": ["xiaohongshu_cli"] },
+    { "id": "youtube_video", "operation": "platform_research", "runtime": "cloud", "publicTool": "research_video", "platform": "youtube", "providers": ["youtube_ytdlp"], "fallbacks": ["jina_reader", "exa_agent_reach"] },
+    { "id": "bilibili_video", "operation": "platform_research", "runtime": "cloud", "publicTool": "research_video", "platform": "bilibili", "providers": ["bilibili_cli"] },
+    { "id": "github_research", "operation": "platform_research", "runtime": "cloud", "publicTool": "research_github", "platform": "github", "providers": ["github_cli"] },
+    { "id": "local_browser", "operation": "browser", "runtime": "local", "publicTool": "browser_navigate", "providers": ["luna_browser"], "includeBrowserEscalation": true },
+    { "id": "cloud_browser", "operation": "browser", "runtime": "cloud", "publicTool": "browser", "providers": ["generic_remote_cdp", "browserbase", "agent_browser", "cloudflare_browser_run"], "includeBrowserEscalation": true }
+  ]
+}

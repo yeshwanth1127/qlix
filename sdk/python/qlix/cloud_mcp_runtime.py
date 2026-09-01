@@ -158,6 +158,67 @@ def openai_mcp_tool_definitions(
     return out
 
 
+def mcp_capability_descriptors(
+    identity: AgentIdentity,
+    mcp_servers: Any,
+    *,
+    runner_runtime: str,
+) -> list[Any]:
+    """Describe currently bound MCP tools without changing discovery or execution.
+
+    Exact and wildcard MCP scopes are represented as an ``any`` gate, matching
+    ``_scope_granted``. Standard MCP annotations inform conservative risk metadata.
+    """
+    from qlix.contracts import (
+        CapabilityDescriptor,
+        CapabilityJit,
+        CapabilityProvider,
+        CapabilityRisk,
+    )
+
+    descriptors: list[CapabilityDescriptor] = []
+    granted = _granted_scopes(identity)
+    for server in _coerce_servers(mcp_servers):
+        slug = str(server.get("slug"))
+        transport = str(server.get("transport") or "http")
+        if not _server_allowed_for_runtime(transport, runner_runtime):
+            continue
+        runtimes = ("hybrid",) if transport == "stdio" else ("cloud", "hybrid")
+        for tool in server.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            original_name = str(tool.get("name") or "")
+            if not original_name or not _scope_granted(granted, slug, original_name):
+                continue
+            exact_scope = _scope_for(slug, original_name)
+            wildcard_scope = _wildcard_for(slug)
+            annotations = tool.get("annotations") if isinstance(tool.get("annotations"), dict) else {}
+            if annotations.get("readOnlyHint") is True:
+                risk = CapabilityRisk(level="low", effects=("read",))
+            elif annotations.get("destructiveHint") is True:
+                risk = CapabilityRisk(level="high", effects=("write", "execute"))
+            else:
+                risk = CapabilityRisk(level="moderate", effects=("execute",))
+            schema = tool.get("inputSchema")
+            descriptors.append(
+                CapabilityDescriptor(
+                    name=_namespaced(slug, original_name),
+                    description=str(tool.get("description") or f"{original_name} (via {slug} MCP server)")[:1024],
+                    input_schema=schema if isinstance(schema, dict) else {"type": "object", "properties": {}},
+                    required_scopes=(exact_scope, wildcard_scope),
+                    scope_mode="any",
+                    jit=CapabilityJit(
+                        required=_is_jit(identity, slug, original_name),
+                        scopes=(exact_scope, wildcard_scope),
+                    ),
+                    runtimes=runtimes,
+                    risk=risk,
+                    provider=CapabilityProvider(kind="mcp", id=slug),
+                )
+            )
+    return descriptors
+
+
 def _format_call_result(result: dict[str, Any]) -> tuple[bool, str]:
     """Turn an MCP tools/call result into (is_error, text)."""
     is_error = bool(result.get("isError"))

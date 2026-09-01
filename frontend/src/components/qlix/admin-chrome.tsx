@@ -45,7 +45,7 @@ export function AdminChrome({ children }: { children: React.ReactNode }) {
 
   const sidebar = (
     <aside
-      className="fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-black/10 bg-white/55 shadow-[inset_-1px_0_0_rgba(255,255,255,0.6),10px_0_36px_-28px_rgba(16,14,22,0.35)] backdrop-blur-2xl md:flex"
+      className="fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-black/10 bg-[#E2F0CC]/55 shadow-[inset_-1px_0_0_rgba(255,255,255,0.6),10px_0_36px_-28px_rgba(16,14,22,0.35)] backdrop-blur-2xl md:flex"
       style={{ width: SKETCH_SIDEBAR_WIDTH }}
       aria-label="Admin navigation"
     >
@@ -80,7 +80,7 @@ export function AdminChrome({ children }: { children: React.ReactNode }) {
   );
 
   const bottomNav = (
-    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-black/10 bg-white/80 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-black/10 bg-[#E2F0CC]/80 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
       <nav className="flex h-14 items-center gap-1 overflow-x-auto px-3" aria-label="Admin navigation">
         {moreOpen ? (
           <>

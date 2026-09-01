@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import type { TeamRunReplyChannel, TeamRunSourceChannel } from './teams.types.js';
 import { createHash } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 import type {
   A2ATaskDTO,
   A2ATaskStatus,
@@ -200,7 +201,7 @@ export class TeamsRepository {
             role: m.role,
             delegatedScopes: m.delegatedScopes,
             // Members declared in the create payload are assigned stages in declaration order.
-            stageOrder: i + 1,
+            stageOrder: Math.max(1, Math.floor(m.stageOrder ?? (i + 1))),
           })),
         },
       },
@@ -512,9 +513,15 @@ export class TeamsRepository {
     result?: unknown;
     errorMessage?: string;
     checkpointJson?: unknown | null;
-  }): Promise<void> {
-    await prisma.teamRun.update({
-      where: { id: runId },
+  }): Promise<boolean> {
+    const terminalStatuses: TeamRunStatus[] = ['completed', 'failed', 'canceled'];
+    // Terminal state is monotonic. A late worker/finalizer must never resurrect
+    // or overwrite a run after Stop has committed `canceled`.
+    const allowedCurrentStatuses = terminalStatuses.includes(status)
+      ? ['queued', 'running', 'paused', status]
+      : ['queued', 'running', 'paused'];
+    const updated = await prisma.teamRun.updateMany({
+      where: { id: runId, status: { in: allowedCurrentStatuses } },
       data: {
         status,
         ...(extra?.startedAt ? { startedAt: extra.startedAt } : {}),
@@ -531,6 +538,7 @@ export class TeamsRepository {
           : {}),
       },
     });
+    return updated.count > 0;
   }
 
   async appendSupervisorTrace(runId: string, step: unknown): Promise<void> {
@@ -688,6 +696,17 @@ export class TeamsRepository {
     const prevHash = last
       ? createHash('sha256').update(JSON.stringify(last.payload)).digest('hex')
       : 'genesis';
+    const stamped = attachTrace(
+      payload,
+      createTraceEnvelope({
+        traceId: runId,
+        spanId: `team:${runId}:${seq}`,
+        parentSpanId: runId,
+        executionId: runId,
+        executionKind: 'team_run',
+        ...(agentId ? { agentId } : {}),
+      }),
+    );
 
     const event = await prisma.teamRunEvent.create({
       data: {
@@ -696,7 +715,7 @@ export class TeamsRepository {
         agentId,
         seq,
         eventType,
-        payload: payload as object,
+        payload: stamped as object,
         prevHash,
         timestampMs: BigInt(Date.now()),
       },

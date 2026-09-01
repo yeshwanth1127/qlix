@@ -25,7 +25,7 @@ function ToolNodeComponent({ data, selected }: NodeProps<BuilderNode>) {
   return (
     <div
       className={cn(
-        "w-48 rounded-xl border border-dashed bg-white/70 px-3 py-2 backdrop-blur-sm transition-shadow duration-200",
+        "w-48 rounded-xl border border-dashed bg-[#E2F0CC]/70 px-3 py-2 backdrop-blur-sm transition-shadow duration-200",
         HAIRLINE,
         selected && "border-solid border-[color:var(--sketch-purple)]",
         (unavailable || missing) && "opacity-75",

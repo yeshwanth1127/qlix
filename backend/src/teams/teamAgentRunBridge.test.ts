@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTeamPromptEnvelope, TeamAgentRunBridge } from './teamAgentRunBridge.js';
+import { buildTeamPromptEnvelope, completedToolRef, TeamAgentRunBridge } from './teamAgentRunBridge.js';
 import { TEAM_DISPATCH_ONLY_SKILL } from './lunaTeamsHost.js';
 import { DEFAULT_TEAM_CONFIG } from './teams.types.js';
 import type { TeamDTO } from './teams.types.js';
@@ -45,5 +45,30 @@ describe('teamAgentRunBridge', () => {
 
   it('extractResultText reads text field', () => {
     assert.equal(TeamAgentRunBridge.extractResultText({ text: 'hello' }), 'hello');
+  });
+
+  it('extractResultText preserves a normalized Result envelope', () => {
+    const result = {
+      summary: 'done',
+      findings: { scene: 'opening' },
+      artifacts: [],
+      provenance: { inputRefs: [], recordRefs: [], knowledgeRefs: [] },
+    };
+    assert.deepEqual(JSON.parse(TeamAgentRunBridge.extractResultText(result)), result);
+  });
+
+  it('captures only successful tool_finished events as provenance', () => {
+    assert.equal(completedToolRef({
+      type: 'log',
+      data: { message: 'tool_finished', tool: 'assessment_evidence_search', ok: true },
+    }), 'assessment_evidence_search');
+    assert.equal(completedToolRef({
+      type: 'log',
+      data: { message: 'tool_finished', tool: 'assessment_evidence_search', ok: false },
+    }), null);
+    assert.equal(completedToolRef({
+      type: 'log',
+      data: { message: 'tool_started', tool: 'assessment_evidence_search' },
+    }), null);
   });
 });

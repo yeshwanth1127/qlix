@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
-import { Loader2, Share2 } from "lucide-react";
+import { Loader2, Search, Share2, X } from "lucide-react";
 import { SketchPageHeader, sketchLabel } from "@/components/qlix/sketch";
+import { McpServersView } from "@/components/qlix/mcp/McpServersView";
 import {
   disconnectGoogle,
   disconnectGoogleService,
@@ -47,7 +48,7 @@ import {
   type OrbitChannelDTO,
   type WhatsAppLinkStatusDTO,
 } from "@/lib/connectors-api";
-import { getCatalogEntry } from "@/lib/connector-catalog";
+import { getCatalogEntry, filterConnectorCatalog } from "@/lib/connector-catalog";
 import {
   GOOGLE_SERVICE_LOGOS,
   GOOGLE_SERVICES,
@@ -62,9 +63,13 @@ import { ConnectorCatalogSection } from "./ConnectorCatalogSection";
 import { ConnectorLogo } from "./ConnectorLogo";
 import {
   ConnectorAlert,
+  ConnectorCard,
+  ConnectorCardSkeleton,
+  ConnectorFilterChip,
   ConnectorPanel,
-  ConnectorRow,
+  ConnectorSheet,
   ConnectorStatusDot,
+  ConnectorTabs,
   ConnectorsSummary,
   SectionHeading,
   type ConnectorStatus,
@@ -102,6 +107,31 @@ const ORBIT_CONNECT_BUTTONS = [
 
 const selectClass = "connector-select";
 
+type LiveConnectorId =
+  | "google"
+  | "whatsapp"
+  | "slack"
+  | "telegram"
+  | "microsoft"
+  | "notion"
+  | "discord"
+  | "github"
+  | "zoho"
+  | "orbit";
+
+type BoardFilter = "all" | "connected" | "soon";
+type ConnectorsTab = "apps" | "mcp";
+
+const OAUTH_SHEET: Record<string, LiveConnectorId> = {
+  google: "google",
+  zoho: "zoho",
+  slack: "slack",
+  discord: "discord",
+  github: "github",
+  microsoft: "microsoft",
+  notion: "notion",
+};
+
 export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const searchParams = useSearchParams();
   const [data, setData] = useState<ConnectorsListResponse | null>(null);
@@ -130,8 +160,14 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const [orbitChannelsLoading, setOrbitChannelsLoading] = useState(false);
   const [orbitSocialBusy, setOrbitSocialBusy] = useState<string | null>(null);
   const [googleBusy, setGoogleBusy] = useState<string | null>(null);
-  /** Accordion — at most one connector shows its settings at a time. Google open by default so services are visible. */
-  const [openRow, setOpenRow] = useState<string | null>("google");
+  const [openRow, setOpenRow] = useState<LiveConnectorId | null>(null);
+  const [query, setQuery] = useState("");
+  const [boardFilter, setBoardFilter] = useState<BoardFilter>("all");
+  const [tab, setTab] = useState<ConnectorsTab>("apps");
+  const soonEntries = useMemo(
+    () => filterConnectorCatalog({ query, availability: "Coming soon" }),
+    [query],
+  );
 
   const googleLogo = getCatalogEntry("google")!.logo;
   const whatsappLogo = getCatalogEntry("whatsapp")!.logo;
@@ -143,9 +179,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
   const notionLogo = getCatalogEntry("notion")!.logo;
   const zohoLogo = getCatalogEntry("zoho")!.logo;
 
-  const toggleRow = useCallback((id: string) => {
-    setOpenRow((cur) => (cur === id ? null : id));
-  }, []);
+  const closeSheet = useCallback(() => setOpenRow(null), []);
 
   const refreshOrbitChannels = useCallback(async () => {
     setOrbitChannelsLoading(true);
@@ -300,14 +334,22 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
       .filter(Boolean),
   );
 
-  // Open the Google card when returning from OAuth or when an agent needs Google.
-  useEffect(() => {
-    if (oauthSuccess === "google" || neededProviders.has("google")) {
-      setOpenRow("google");
-    }
-    // Only react to the URL flags, not the Set identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional URL-driven open
-  }, [oauthSuccess, searchParams]);
+  const sheetFromUrl: LiveConnectorId | null = oauthSuccess && OAUTH_SHEET[oauthSuccess]
+    ? OAUTH_SHEET[oauthSuccess]
+    : neededProviders.has("google")
+      ? "google"
+      : neededProviders.has("zoho")
+        ? "zoho"
+        : neededProviders.has("whatsapp_baileys")
+          ? "whatsapp"
+          : neededProviders.has("orbit")
+            ? "orbit"
+            : null;
+  const [openedFromUrl, setOpenedFromUrl] = useState<LiveConnectorId | null>(null);
+  if (sheetFromUrl && sheetFromUrl !== openedFromUrl) {
+    setOpenedFromUrl(sheetFromUrl);
+    setOpenRow(sheetFromUrl);
+  }
   const googleScopes = connected?.scopes ?? [];
   const googleServiceCount = connectedGoogleServiceCount(googleScopes);
   const anyGoogleService = googleServiceCount > 0;
@@ -745,6 +787,268 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
     error ? <ConnectorAlert key="error" variant="error">{error}</ConnectorAlert> : null,
   ].filter(Boolean);
 
+  const liveCards: Array<{
+    id: LiveConnectorId;
+    name: string;
+    search: string;
+    icon: ReactNode;
+    status: ConnectorStatus | undefined;
+    meta: ReactNode;
+    sheetMeta: ReactNode;
+    highlight: boolean;
+    action: ReactNode;
+    description: string;
+  }> = [
+    {
+      id: "google",
+      name: "Google",
+      search: "google gmail drive docs sheets slides forms calendar meet youtube workspace",
+      icon: <ConnectorLogo name="Google" logo={googleLogo} size="md" />,
+      status: loading ? undefined : rowStatus(anyGoogleService),
+      meta: loading ? (
+        <LoadingMeta />
+      ) : anyGoogleService ? (
+        `${googleServiceCount} of ${GOOGLE_SERVICES.length}`
+      ) : (
+        "Workspace"
+      ),
+      sheetMeta: anyGoogleService
+        ? connected?.emailAddress ?? `${googleServiceCount} services connected`
+        : "Gmail, Drive, Docs, Sheets, Slides, Forms, Calendar, Meet, YouTube",
+      highlight: needsGoogle,
+      action: anyGoogleService ? (
+        <QuietAction onClick={() => void handleDisconnect()} disabled={busy || googleBusy !== null}>
+          Disconnect all
+        </QuietAction>
+      ) : null,
+      description: "Gmail, Drive, Docs, Sheets, Slides, Forms, Calendar, Meet, YouTube",
+    },
+    {
+      id: "whatsapp",
+      name: "WhatsApp",
+      search: "whatsapp messaging chat phone",
+      icon: <ConnectorLogo name="WhatsApp" logo={whatsappLogo} size="md" />,
+      status: loading ? undefined : rowStatus(waConnected, waPending),
+      meta: loading ? (
+        <LoadingMeta />
+      ) : waConnected ? (
+        (waPhone ?? "Linked")
+      ) : waPending ? (
+        "Scan to link"
+      ) : (
+        "Messaging"
+      ),
+      sheetMeta: waConnected
+        ? (waPhone ?? "Linked")
+        : waPending
+          ? "Scan the code in WhatsApp › Linked devices"
+          : "Chat with your agents and approve actions",
+      highlight: needsWhatsApp,
+      action: waConnected ? (
+        <QuietAction onClick={() => void handleWhatsAppDisconnect()} disabled={busy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleWhatsAppConnect()} disabled={busy || loading}>
+          {waPending ? "Restart" : "Link"}
+        </PrimaryAction>
+      ),
+      description: "Chat with your agents and approve actions",
+    },
+    {
+      id: "slack",
+      name: "Slack",
+      search: "slack channels messages workspace",
+      icon: <ConnectorLogo name="Slack" logo={slackLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(slack)),
+      meta: loading ? <LoadingMeta /> : slack ? (slack.emailAddress ?? "Workspace") : "Channels",
+      sheetMeta: slack ? (slack.emailAddress ?? "Slack workspace") : "Read channels and post messages",
+      highlight: false,
+      action: slack ? (
+        <QuietAction onClick={() => void handleSlackDisconnect()} disabled={slackBusy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleSlackConnect()} disabled={slackBusy}>
+          {slackBusy ? "Opening…" : "Connect"}
+        </PrimaryAction>
+      ),
+      description: "Read channels and post messages as the signed-in Slack user.",
+    },
+    {
+      id: "telegram",
+      name: "Telegram",
+      search: "telegram bot dm messages",
+      icon: <ConnectorLogo name="Telegram" logo={telegramLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(telegram)),
+      meta: loading ? <LoadingMeta /> : telegram ? (telegram.emailAddress ?? "Bot") : "Direct messages",
+      sheetMeta: telegram ? (telegram.emailAddress ?? "Telegram bot") : "DM a bot — agent replies in Telegram",
+      highlight: false,
+      action: telegram ? (
+        <QuietAction onClick={() => void handleTelegramDisconnect()} disabled={telegramBusy}>
+          Disconnect
+        </QuietAction>
+      ) : null,
+      description: "DM a bot — agent replies in Telegram.",
+    },
+    {
+      id: "microsoft",
+      name: "Microsoft 365",
+      search: "microsoft outlook teams onedrive office entra",
+      icon: <ConnectorLogo name="Microsoft 365" logo={microsoftLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(microsoft)),
+      meta: loading ? <LoadingMeta /> : microsoft ? (microsoft.emailAddress ?? "Account") : "Outlook & OneDrive",
+      sheetMeta: microsoft ? (microsoft.emailAddress ?? "Microsoft 365 account") : "Outlook, calendar, and OneDrive",
+      highlight: false,
+      action: microsoft ? (
+        <QuietAction onClick={() => void handleMicrosoftDisconnect()} disabled={microsoftBusy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleMicrosoftConnect()} disabled={microsoftBusy}>
+          {microsoftBusy ? "Opening…" : "Connect"}
+        </PrimaryAction>
+      ),
+      description: "Outlook, calendar, and OneDrive via Microsoft Graph.",
+    },
+    {
+      id: "notion",
+      name: "Notion",
+      search: "notion pages databases wiki",
+      icon: <ConnectorLogo name="Notion" logo={notionLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(notion)),
+      meta: loading ? <LoadingMeta /> : notion ? (notion.emailAddress ?? "Workspace") : "Pages",
+      sheetMeta: notion ? (notion.emailAddress ?? "Notion workspace") : "Pages and databases",
+      highlight: false,
+      action: notion ? (
+        <QuietAction onClick={() => void handleNotionDisconnect()} disabled={notionBusy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleNotionConnect()} disabled={notionBusy}>
+          {notionBusy ? "Opening…" : "Connect"}
+        </PrimaryAction>
+      ),
+      description: "Pages and databases in your Notion workspace.",
+    },
+    {
+      id: "discord",
+      name: "Discord",
+      search: "discord guilds servers",
+      icon: <ConnectorLogo name="Discord" logo={discordLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(discord)),
+      meta: loading ? <LoadingMeta /> : discord ? (discord.emailAddress ?? "Account") : "Servers",
+      sheetMeta: discord ? (discord.emailAddress ?? "Discord account") : "Identity, email, and guilds",
+      highlight: false,
+      action: discord ? (
+        <QuietAction onClick={() => void handleDiscordDisconnect()} disabled={discordBusy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleDiscordConnect()} disabled={discordBusy}>
+          {discordBusy ? "Opening…" : "Connect"}
+        </PrimaryAction>
+      ),
+      description: "Identity, email, and guilds for the signed-in Discord user.",
+    },
+    {
+      id: "github",
+      name: "GitHub",
+      search: "github repos issues pull requests git",
+      icon: <ConnectorLogo name="GitHub" logo={githubLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(github)),
+      meta: loading ? <LoadingMeta /> : github ? (github.emailAddress ?? "Account") : "Repos",
+      sheetMeta: github ? (github.emailAddress ?? "GitHub account") : "Repos, issues, and pull requests",
+      highlight: false,
+      action: github ? (
+        <QuietAction onClick={() => void handleGitHubDisconnect()} disabled={githubBusy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleGitHubConnect()} disabled={githubBusy}>
+          {githubBusy ? "Opening…" : "Connect"}
+        </PrimaryAction>
+      ),
+      description: "Repos, issues, and pull requests.",
+    },
+    {
+      id: "zoho",
+      name: "Zoho CRM",
+      search: "zoho crm leads contacts deals",
+      icon: <ConnectorLogo name="Zoho" logo={zohoLogo} size="md" />,
+      status: loading ? undefined : rowStatus(Boolean(zoho)),
+      meta: loading ? <LoadingMeta /> : zoho ? (zoho.emailAddress ?? "Account") : "CRM",
+      sheetMeta: zoho ? (zoho.emailAddress ?? "Zoho account") : "Leads, contacts and deals",
+      highlight: needsZoho,
+      action: zoho ? (
+        <QuietAction onClick={() => void handleZohoDisconnect()} disabled={busy}>
+          Disconnect
+        </QuietAction>
+      ) : (
+        <PrimaryAction onClick={() => void handleZohoConnect()} disabled={busy || loading}>
+          Connect
+        </PrimaryAction>
+      ),
+      description: "Leads, contacts and deals via Zoho CRM.",
+    },
+    {
+      id: "orbit",
+      name: "Social",
+      search: "social instagram facebook x twitter linkedin youtube tiktok orbit",
+      icon: (
+        <span className="connector-glyph">
+          <Share2 size={19} />
+        </span>
+      ),
+      status: loading ? undefined : rowStatus(Boolean(orbit)),
+      meta: loading ? (
+        <LoadingMeta />
+      ) : orbit ? (
+        orbitChannels.length > 0 ? (
+          `${orbitChannels.length} channel${orbitChannels.length === 1 ? "" : "s"}`
+        ) : (
+          "On"
+        )
+      ) : (
+        "Publishing"
+      ),
+      sheetMeta: orbit
+        ? orbitChannels.length > 0
+          ? `${orbitChannels.length} channel${orbitChannels.length === 1 ? "" : "s"} connected`
+          : "No channels yet"
+        : orbitPlatformConfigured === false
+          ? "Not available on this workspace yet"
+          : "Post to Instagram, X, LinkedIn and more",
+      highlight: needsOrbit,
+      action: orbit ? (
+        <QuietAction onClick={() => void handleOrbitDisconnect()} disabled={busy}>
+          Turn off
+        </QuietAction>
+      ) : (
+        <PrimaryAction
+          onClick={() => void handleOrbitEnable()}
+          disabled={orbitConnecting || busy || loading || orbitPlatformConfigured === false}
+        >
+          {orbitConnecting ? "Turning on…" : "Turn on"}
+        </PrimaryAction>
+      ),
+      description: "Post to Instagram, X, LinkedIn and more.",
+    },
+  ];
+
+  const q = query.trim().toLowerCase();
+  const visibleCards = liveCards.filter((card) => {
+    if (boardFilter === "soon") return false;
+    if (boardFilter === "connected" && card.status !== "connected" && card.status !== "pending") {
+      return false;
+    }
+    if (!q) return true;
+    return card.search.includes(q) || card.name.toLowerCase().includes(q);
+  });
+  const active = liveCards.find((card) => card.id === openRow) ?? null;
+  const showUpcoming = tab === "apps" && boardFilter !== "connected";
+  const showEmptySearch = !loading && visibleCards.length === 0 && soonEntries.length === 0 && q.length > 0;
+
   return (
     <div className="w-full max-w-none animate-qlix-fade-in">
       <SketchPageHeader
@@ -757,41 +1061,149 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
 
       {alerts.length > 0 ? <div className="mb-5 space-y-2">{alerts}</div> : null}
 
-      <ConnectorPanel>
-        {/* Google — one card, each product connects on its own */}
-        <ConnectorRow
-          id="connector-google"
-          icon={<ConnectorLogo name="Google" logo={googleLogo} size="md" />}
-          name="Google"
-          status={loading ? undefined : rowStatus(anyGoogleService)}
-          statusLabel={
-            anyGoogleService
-              ? `${googleServiceCount} of ${GOOGLE_SERVICES.length}`
-              : undefined
-          }
-          highlight={needsGoogle}
-          expandable
-          expanded={openRow === "google"}
-          onToggle={() => toggleRow("google")}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : anyGoogleService ? (
-              connected?.emailAddress
-                ? `${connected.emailAddress} · ${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"}`
-                : `${googleServiceCount} service${googleServiceCount === 1 ? "" : "s"} connected`
-            ) : (
-              "Gmail, Drive, Docs, Sheets, Slides, Forms, Calendar, GMeet, YouTube"
-            )
-          }
-          action={
-            anyGoogleService ? (
-              <QuietAction onClick={() => void handleDisconnect()} disabled={busy || googleBusy !== null}>
-                Disconnect all
-              </QuietAction>
-            ) : null
-          }
-        >
+      <div className="connector-toolbar">
+        <ConnectorTabs
+          value={tab}
+          onChange={(id) => {
+            setTab(id);
+            setOpenRow(null);
+          }}
+          items={[
+            { id: "apps", label: "Apps" },
+            { id: "mcp", label: "MCP" },
+          ]}
+        />
+        {tab === "apps" ? (
+          <>
+            <label className="relative min-w-[11rem] flex-1 sm:max-w-xs">
+              <span className="sr-only">Search apps</span>
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[color:var(--ink-faint)]"
+              />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search"
+                className="connector-search"
+                autoComplete="off"
+              />
+              {query ? (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  aria-label="Clear search"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--ink-faint)] transition-colors hover:text-black"
+                >
+                  <X size={13} />
+                </button>
+              ) : null}
+            </label>
+            <div className="flex flex-wrap items-center gap-1">
+              <ConnectorFilterChip
+                label="All"
+                active={boardFilter === "all"}
+                onClick={() => setBoardFilter("all")}
+              />
+              <ConnectorFilterChip
+                label="Connected"
+                active={boardFilter === "connected"}
+                onClick={() => setBoardFilter("connected")}
+              />
+              <ConnectorFilterChip
+                label="Soon"
+                active={boardFilter === "soon"}
+                onClick={() => setBoardFilter("soon")}
+              />
+            </div>
+          </>
+        ) : null}
+      </div>
+
+      {tab === "mcp" ? (
+        <McpServersView embedded />
+      ) : (
+        <>
+          {loading ? (
+            <ul className="connector-board">
+              {Array.from({ length: 10 }, (_, i) => (
+                <li key={i}>
+                  <ConnectorCardSkeleton />
+                </li>
+              ))}
+            </ul>
+          ) : visibleCards.length > 0 ? (
+            <ul className="connector-board">
+              {visibleCards.map((card, i) => (
+                <li key={card.id} className="sketch-rise" style={{ animationDelay: `${Math.min(i, 8) * 30}ms` }}>
+                  <ConnectorCard
+                    id={`connector-${card.id}`}
+                    icon={card.icon}
+                    name={card.name}
+                    meta={card.meta}
+                    status={card.status}
+                    highlight={card.highlight}
+                    onClick={() => setOpenRow(card.id)}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : boardFilter === "connected" ? (
+            <p className="connector-meta py-10 text-center">Nothing connected yet.</p>
+          ) : showEmptySearch ? (
+            <p className="connector-meta py-10 text-center">No matches.</p>
+          ) : null}
+
+          {grants.length > 0 ? (
+            <section className="mt-8">
+              <SectionHeading title="Standing approvals" hint="Active until you revoke them." />
+              <ConnectorPanel>
+                <ul className="connector-sublist connector-sublist--panel">
+                  {grants.map((g) => (
+                    <li key={g.id}>
+                      <div className="min-w-0">
+                        <p className="truncate text-[13px] text-black">
+                          {jitScopeLabel(g.scope)}
+                          {g.agentName ? ` · ${g.agentName}` : ""}
+                        </p>
+                        <p className="connector-meta truncate">
+                          {g.expiresAt
+                            ? `Expires ${new Date(g.expiresAt).toLocaleDateString(undefined, {
+                                month: "short",
+                                day: "numeric",
+                              })}`
+                            : "This conversation"}
+                        </p>
+                      </div>
+                      <QuietAction
+                        disabled={Boolean(revoking[g.id])}
+                        onClick={() => void handleRevokeGrant(g.id)}
+                      >
+                        {revoking[g.id] ? "Revoking…" : "Revoke"}
+                      </QuietAction>
+                    </li>
+                  ))}
+                </ul>
+              </ConnectorPanel>
+            </section>
+          ) : null}
+
+          {showUpcoming && !showEmptySearch ? (
+            <ConnectorCatalogSection query={q} forceExpanded={boardFilter === "soon" || q.length > 0} />
+          ) : null}
+        </>
+      )}
+
+      <ConnectorSheet
+        open={active !== null}
+        onClose={closeSheet}
+        icon={active?.icon}
+        title={active?.name ?? ""}
+        meta={active?.sheetMeta}
+        action={active?.action}
+      >
+        {openRow === "google" ? (
           <ul className="connector-sublist">
             {GOOGLE_SERVICES.map((svc) => {
               const on = googleServiceConnected(svc.id, googleScopes);
@@ -803,9 +1215,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
               return (
                 <li key={svc.id}>
                   <div className="flex min-w-0 items-center gap-2.5">
-                    {logo ? (
-                      <ConnectorLogo name={svc.label} logo={logo} size="sm" />
-                    ) : null}
+                    {logo ? <ConnectorLogo name={svc.label} logo={logo} size="sm" /> : null}
                     <div className="min-w-0">
                       <p className="flex items-center gap-1.5 truncate text-[13px] text-black">
                         {svc.label}
@@ -836,43 +1246,8 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
               );
             })}
           </ul>
-        </ConnectorRow>
-
-        {/* WhatsApp */}
-        <ConnectorRow
-          id="connector-whatsapp"
-          icon={<ConnectorLogo name="WhatsApp" logo={whatsappLogo} size="md" />}
-          name="WhatsApp"
-          status={loading ? undefined : rowStatus(waConnected, waPending)}
-          statusLabel={waPending && !waConnected ? "Scan the code" : undefined}
-          highlight={needsWhatsApp}
-          expandable={waConnected || waPending}
-          expanded={openRow === "whatsapp"}
-          onToggle={() => toggleRow("whatsapp")}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : waConnected ? (
-              (waPhone ?? "Linked")
-            ) : waPending ? (
-              "Scan the code in WhatsApp › Linked devices"
-            ) : (
-              "Chat with your agents and approve actions"
-            )
-          }
-          action={
-            waConnected ? (
-              <QuietAction onClick={() => void handleWhatsAppDisconnect()} disabled={busy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleWhatsAppConnect()} disabled={busy || loading}>
-                {waPending ? "Restart" : "Link"}
-              </PrimaryAction>
-            )
-          }
-        >
-          {waPending && !waConnected ? (
+        ) : openRow === "whatsapp" ? (
+          waPending && !waConnected ? (
             <div className="flex flex-col items-center gap-3 py-1">
               {waStatus?.qr ? (
                 <div className="connector-qr">
@@ -891,7 +1266,7 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
                 {isOrgWorkspace ? " · one number per workspace" : ""}
               </p>
             </div>
-          ) : (
+          ) : waConnected ? (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block">
@@ -949,81 +1324,17 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
                 </QuietAction>
               </div>
             </div>
-          )}
-        </ConnectorRow>
-
-        {/* Slack */}
-        <ConnectorRow
-          id="connector-slack"
-          icon={<ConnectorLogo name="Slack" logo={slackLogo} size="md" />}
-          name="Slack"
-          status={loading ? undefined : rowStatus(Boolean(slack))}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : slack ? (
-              (slack.emailAddress ?? "Slack workspace")
-            ) : (
-              "Read channels and post messages"
-            )
-          }
-          action={
-            slack ? (
-              <QuietAction onClick={() => void handleSlackDisconnect()} disabled={slackBusy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleSlackConnect()} disabled={slackBusy}>
-                {slackBusy ? "Opening…" : "Connect"}
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* Telegram */}
-        <ConnectorRow
-          id="connector-telegram"
-          icon={<ConnectorLogo name="Telegram" logo={telegramLogo} size="md" />}
-          name="Telegram"
-          status={loading ? undefined : rowStatus(Boolean(telegram))}
-          expandable
-          expanded={openRow === "telegram"}
-          onToggle={() => toggleRow("telegram")}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : telegram ? (
-              (telegram.emailAddress ?? "Telegram bot")
-            ) : (
-              "DM a bot — agent replies in Telegram"
-            )
-          }
-          action={
-            telegram ? (
-              <QuietAction onClick={() => void handleTelegramDisconnect()} disabled={telegramBusy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction
-                onClick={() => {
-                  setOpenRow("telegram");
-                }}
-                disabled={telegramBusy || loading}
-              >
-                Connect
-              </PrimaryAction>
-            )
-          }
-        >
-          {telegram ? (
-            <div className="space-y-3">
-              <p className="connector-meta">
-                Connected as {telegram.emailAddress ?? "bot"}. Default agent:{" "}
-                {agents.find((a) => a.id === (telegram.whatsappDefaultAgentId ?? ""))?.name ??
-                  (telegram.whatsappDefaultAgentId ? telegram.whatsappDefaultAgentId : "none (intent picker)")}
-                . Disconnect and reconnect to change the default.
-              </p>
-            </div>
+          ) : (
+            <p className="connector-meta leading-relaxed">{active?.description}</p>
+          )
+        ) : openRow === "telegram" ? (
+          telegram ? (
+            <p className="connector-meta leading-relaxed">
+              Connected as {telegram.emailAddress ?? "bot"}. Default agent:{" "}
+              {agents.find((a) => a.id === (telegram.whatsappDefaultAgentId ?? ""))?.name ??
+                (telegram.whatsappDefaultAgentId ? telegram.whatsappDefaultAgentId : "none (intent picker)")}
+              . Disconnect and reconnect to change the default.
+            </p>
           ) : (
             <div className="space-y-3">
               <label className="block space-y-1.5">
@@ -1045,211 +1356,16 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
               </label>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="connector-meta">
-                  Uses the server Telegram bot. Without a default, Qlix lists agents and you reply with a number.
+                  Uses the server Telegram bot. Without a default, Qlix lists agents and you reply with a
+                  number.
                 </p>
-                <PrimaryAction
-                  onClick={() => void handleTelegramConnect()}
-                  disabled={telegramBusy}
-                >
+                <PrimaryAction onClick={() => void handleTelegramConnect()} disabled={telegramBusy}>
                   {telegramBusy ? "Connecting…" : "Save & connect"}
                 </PrimaryAction>
               </div>
             </div>
-          )}
-        </ConnectorRow>
-
-        {/* Microsoft 365 */}
-        <ConnectorRow
-          id="connector-microsoft"
-          icon={<ConnectorLogo name="Microsoft 365" logo={microsoftLogo} size="md" />}
-          name="Microsoft 365"
-          status={loading ? undefined : rowStatus(Boolean(microsoft))}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : microsoft ? (
-              (microsoft.emailAddress ?? "Microsoft 365 account")
-            ) : (
-              "Outlook, calendar, and OneDrive"
-            )
-          }
-          action={
-            microsoft ? (
-              <QuietAction
-                onClick={() => void handleMicrosoftDisconnect()}
-                disabled={microsoftBusy}
-              >
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction
-                onClick={() => void handleMicrosoftConnect()}
-                disabled={microsoftBusy}
-              >
-                {microsoftBusy ? "Opening…" : "Connect"}
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* Notion */}
-        <ConnectorRow
-          id="connector-notion"
-          icon={<ConnectorLogo name="Notion" logo={notionLogo} size="md" />}
-          name="Notion"
-          status={loading ? undefined : rowStatus(Boolean(notion))}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : notion ? (
-              (notion.emailAddress ?? "Notion workspace")
-            ) : (
-              "Pages and databases"
-            )
-          }
-          action={
-            notion ? (
-              <QuietAction onClick={() => void handleNotionDisconnect()} disabled={notionBusy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleNotionConnect()} disabled={notionBusy}>
-                {notionBusy ? "Opening…" : "Connect"}
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* Discord */}
-        <ConnectorRow
-          id="connector-discord"
-          icon={<ConnectorLogo name="Discord" logo={discordLogo} size="md" />}
-          name="Discord"
-          status={loading ? undefined : rowStatus(Boolean(discord))}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : discord ? (
-              (discord.emailAddress ?? "Discord account")
-            ) : (
-              "Identity, email, and guilds"
-            )
-          }
-          action={
-            discord ? (
-              <QuietAction onClick={() => void handleDiscordDisconnect()} disabled={discordBusy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleDiscordConnect()} disabled={discordBusy}>
-                {discordBusy ? "Opening…" : "Connect"}
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* GitHub */}
-        <ConnectorRow
-          id="connector-github"
-          icon={<ConnectorLogo name="GitHub" logo={githubLogo} size="md" />}
-          name="GitHub"
-          status={loading ? undefined : rowStatus(Boolean(github))}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : github ? (
-              (github.emailAddress ?? "GitHub account")
-            ) : (
-              "Repos, issues, and pull requests"
-            )
-          }
-          action={
-            github ? (
-              <QuietAction onClick={() => void handleGitHubDisconnect()} disabled={githubBusy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleGitHubConnect()} disabled={githubBusy}>
-                {githubBusy ? "Opening…" : "Connect"}
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* Zoho CRM */}
-        <ConnectorRow
-          id="connector-zoho"
-          icon={<ConnectorLogo name="Zoho" logo={zohoLogo} size="md" />}
-          name="Zoho CRM"
-          status={loading ? undefined : rowStatus(Boolean(zoho))}
-          highlight={needsZoho}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : zoho ? (
-              (zoho.emailAddress ?? "Zoho account")
-            ) : (
-              "Leads, contacts and deals"
-            )
-          }
-          action={
-            zoho ? (
-              <QuietAction onClick={() => void handleZohoDisconnect()} disabled={busy}>
-                Disconnect
-              </QuietAction>
-            ) : (
-              <PrimaryAction onClick={() => void handleZohoConnect()} disabled={busy || loading}>
-                Connect
-              </PrimaryAction>
-            )
-          }
-        />
-
-        {/* Social */}
-        <ConnectorRow
-          id="connector-orbit"
-          icon={
-            <span className="connector-glyph">
-              <Share2 size={19} />
-            </span>
-          }
-          name="Social"
-          status={loading ? undefined : rowStatus(Boolean(orbit))}
-          statusLabel={orbit ? "On" : undefined}
-          highlight={needsOrbit}
-          expandable={Boolean(orbit)}
-          expanded={openRow === "orbit"}
-          onToggle={() => toggleRow("orbit")}
-          meta={
-            loading ? (
-              <LoadingMeta />
-            ) : orbit ? (
-              orbitChannels.length > 0 ? (
-                `${orbitChannels.length} channel${orbitChannels.length === 1 ? "" : "s"} connected`
-              ) : (
-                "No channels yet"
-              )
-            ) : orbitPlatformConfigured === false ? (
-              "Not available on this workspace yet"
-            ) : (
-              "Post to Instagram, X, LinkedIn and more"
-            )
-          }
-          action={
-            orbit ? (
-              <QuietAction onClick={() => void handleOrbitDisconnect()} disabled={busy}>
-                Turn off
-              </QuietAction>
-            ) : (
-              <PrimaryAction
-                onClick={() => void handleOrbitEnable()}
-                disabled={orbitConnecting || busy || loading || orbitPlatformConfigured === false}
-              >
-                {orbitConnecting ? "Turning on…" : "Turn on"}
-              </PrimaryAction>
-            )
-          }
-        >
+          )
+        ) : openRow === "orbit" && orbit ? (
           <div className="space-y-4">
             <div>
               <span className={sketchLabel}>Add a channel</span>
@@ -1299,44 +1415,10 @@ export function ConnectorsView({ isOrgWorkspace }: ConnectorsViewProps) {
               </ul>
             ) : null}
           </div>
-        </ConnectorRow>
-      </ConnectorPanel>
-
-      {grants.length > 0 ? (
-        <section className="mt-8">
-          <SectionHeading title="Standing approvals" hint="Active until you revoke them." />
-          <ConnectorPanel>
-            <ul className="connector-sublist connector-sublist--panel">
-              {grants.map((g) => (
-                <li key={g.id}>
-                  <div className="min-w-0">
-                    <p className="truncate text-[13px] text-black">
-                      {jitScopeLabel(g.scope)}
-                      {g.agentName ? ` · ${g.agentName}` : ""}
-                    </p>
-                    <p className="connector-meta truncate">
-                      {g.expiresAt
-                        ? `Expires ${new Date(g.expiresAt).toLocaleDateString(undefined, {
-                            month: "short",
-                            day: "numeric",
-                          })}`
-                        : "This conversation"}
-                    </p>
-                  </div>
-                  <QuietAction
-                    disabled={Boolean(revoking[g.id])}
-                    onClick={() => void handleRevokeGrant(g.id)}
-                  >
-                    {revoking[g.id] ? "Revoking…" : "Revoke"}
-                  </QuietAction>
-                </li>
-              ))}
-            </ul>
-          </ConnectorPanel>
-        </section>
-      ) : null}
-
-      <ConnectorCatalogSection />
+        ) : active ? (
+          <p className="connector-meta leading-relaxed">{active.description}</p>
+        ) : null}
+      </ConnectorSheet>
     </div>
   );
 }

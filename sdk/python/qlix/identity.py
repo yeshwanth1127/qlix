@@ -26,6 +26,7 @@ Both camelCase and snake_case keys are accepted on load.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from .exceptions import IdentityError
 DEFAULT_BACKEND_URL = "http://localhost:8080"
 
 ENV_AGENT_FILE = "QLIX_AGENT_FILE"
+ENV_AGENT_JSON_B64 = "QLIX_AGENT_JSON_B64"
 
 
 def _default_agent_json_candidates() -> list[Path]:
@@ -70,7 +72,7 @@ def resolve_agent_json_path(explicit: str | os.PathLike[str] | None) -> Path:
 class AgentIdentity:
     did: str
     agent_id: str
-    private_key_hex: str
+    private_key_hex: str = field(repr=False)
     public_key_hex: str
     permission_scopes: tuple[str, ...]
     jit_scopes: tuple[str, ...]
@@ -204,6 +206,14 @@ def save_sdk_agent_json(path: str | os.PathLike[str], data: dict[str, Any]) -> P
 
 def load_identity(path: str | os.PathLike[str] | None = None) -> AgentIdentity:
     """Load agent credentials from ``path`` or from ``QLIX_AGENT_FILE``."""
+    inline = os.environ.get(ENV_AGENT_JSON_B64, "").strip()
+    if path is None and not os.environ.get(ENV_AGENT_FILE, "").strip() and inline:
+        try:
+            decoded = base64.b64decode(inline, validate=True).decode("utf-8")
+            data = json.loads(decoded)
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise IdentityError(f"{ENV_AGENT_JSON_B64} is not valid base64 JSON") from exc
+        return parse_identity(data)
     file_path = resolve_agent_json_path(path)
     if not file_path.exists():
         raise IdentityError(f"agent.json not found at {file_path}")

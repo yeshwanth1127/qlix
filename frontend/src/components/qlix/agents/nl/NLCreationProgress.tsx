@@ -15,14 +15,14 @@ interface NLCreationProgressProps {
 
 function StepRow({ step }: { readonly step: CreationStep }) {
   return (
-    <div className="flex w-[260px] shrink-0 items-start gap-3 rounded-lg border border-black/10 bg-white/60 p-3">
+    <div className="flex w-[260px] shrink-0 items-start gap-3 rounded-lg border border-black/10 bg-[#E2F0CC]/60 p-3">
       <div className="mt-0.5 flex size-5 shrink-0 items-center justify-center">
         {step.status === "active" && (
           <Loader2 className="size-4 animate-spin text-[--accent]" aria-hidden />
         )}
         {step.status === "done" && (
           <span className="flex size-5 items-center justify-center rounded-full bg-black/[0.06]">
-            <Check className="size-3 text-[#1c1830]" aria-hidden />
+            <Check className="size-3 text-[#012F13]" aria-hidden />
           </span>
         )}
         {step.status === "error" && (

@@ -1,0 +1,12 @@
+{
+  "contractVersion": "qlix.trace-envelope.v1",
+  "traceId": "team_run_example_1",
+  "spanId": "run:run_example_1:7",
+  "parentSpanId": "team_run_example_1",
+  "executionId": "run_example_1",
+  "executionKind": "agent_run",
+  "orgId": "org_example_1",
+  "agentId": "agent_example_1",
+  "roundId": "round_3",
+  "attempt": 0
+}

@@ -5,6 +5,7 @@ import {
   Bot,
   Brain,
   CalendarClock,
+  ClipboardCheck,
   CreditCard,
   FileText,
   Fingerprint,
@@ -12,6 +13,7 @@ import {
   KeyRound,
   LayoutDashboard,
   PlayCircle,
+  Puzzle,
   ScrollText,
   Settings,
   Shield,
@@ -21,7 +23,6 @@ import {
   UsersRound,
   Wallet,
   Wand2,
-  Workflow,
 } from "lucide-react";
 
 export interface ConsoleNavItem {
@@ -32,18 +33,43 @@ export interface ConsoleNavItem {
 
 const PRIMARY_NAV_SUFFIXES = [
   "/agent-builder",
-  "/ai-employees",
   "/overview",
   "/agents",
   "/active-runs",
   "/schedules",
   "/teams",
-  "/visual-builder",
   "/ai-brain",
   "/knowledge",
   "/passports",
-  "/audit",
+  "/plugins",
+  "/assessments",
 ] as const;
+
+/**
+ * Frontend mirror of backend/src/plugins/pluginCatalog.ts's per-plugin nav items.
+ * Can't import the backend catalog directly (separate build), and icons are React
+ * components so the backend only sends an icon *name* — this is where that name
+ * resolves to an actual component. Keep in sync with PLUGIN_CATALOG by hand;
+ * a plugin with no entry here simply contributes no nav items once enabled.
+ */
+const PLUGIN_ICONS: Record<string, LucideIcon> = {
+  ClipboardCheck,
+};
+
+const PLUGIN_NAV_ITEMS: Record<string, ReadonlyArray<{ href: string; label: string; iconName: string }>> = {
+  assessment: [{ href: "assessments", label: "Assessments", iconName: "ClipboardCheck" }],
+  whatsapp_outreach: [],
+};
+
+function pluginNavItems(routePrefix: string, enabledPluginIds: readonly string[]): ConsoleNavItem[] {
+  return enabledPluginIds.flatMap((pluginId) =>
+    (PLUGIN_NAV_ITEMS[pluginId] ?? []).map((item) => ({
+      href: `${routePrefix}/${item.href}`,
+      label: item.label,
+      icon: PLUGIN_ICONS[item.iconName] ?? Puzzle,
+    })),
+  );
+}
 
 function isPrimaryNavItem(href: string): boolean {
   return PRIMARY_NAV_SUFFIXES.some((suffix) => href.endsWith(suffix));
@@ -66,21 +92,27 @@ export function splitConsoleNavItems(items: ConsoleNavItem[]): {
  * `routePrefix` is `/individual` or `/organization`.
  * When `billingExempt` is true, the money-facing destinations (Billing / Wallet) are
  * omitted — exempt accounts are never charged, so only Usage is relevant to them.
+ * `enabledPluginIds` are this org's enabled plugins (session.organization.enabledPluginIds) —
+ * each contributes its own nav items (see PLUGIN_NAV_ITEMS above), spliced in after Teams.
  */
-export function getConsoleNavItems(routePrefix: string, billingExempt = false): ConsoleNavItem[] {
+export function getConsoleNavItems(
+  routePrefix: string,
+  billingExempt = false,
+  enabledPluginIds: readonly string[] = [],
+): ConsoleNavItem[] {
   const core: ConsoleNavItem[] = [
     { href: `${routePrefix}/agent-builder`, label: "AI Builder", icon: Wand2 },
-    { href: `${routePrefix}/ai-employees`, label: "AI Employees", icon: Bot },
     { href: `${routePrefix}/overview`, label: "Overview", icon: LayoutDashboard },
     { href: `${routePrefix}/agents`, label: "Agents", icon: Bot },
     { href: `${routePrefix}/active-runs`, label: "Active runs", icon: PlayCircle },
     { href: `${routePrefix}/schedules`, label: "Schedules", icon: CalendarClock },
     { href: `${routePrefix}/teams`, label: "Teams", icon: UsersRound },
-    { href: `${routePrefix}/visual-builder`, label: "Visual Builder", icon: Workflow },
-    { href: `${routePrefix}/ai-brain`, label: "exa (ai brain)", icon: Brain },
+    ...pluginNavItems(routePrefix, enabledPluginIds),
+    { href: `${routePrefix}/ai-brain`, label: "AI Brain", icon: Brain },
     { href: `${routePrefix}/knowledge`, label: "Knowledge", icon: BookOpen },
     { href: `${routePrefix}/passports`, label: "Passports", icon: Fingerprint },
     { href: `${routePrefix}/audit`, label: "Audit log", icon: ScrollText },
+    { href: `${routePrefix}/plugins`, label: "Plugins", icon: Puzzle },
     { href: `${routePrefix}/connectors`, label: "Connectors", icon: Plug },
     { href: `${routePrefix}/skills`, label: "Skills", icon: Hammer },
     { href: `${routePrefix}/credentials`, label: "Credentials", icon: ShieldCheck },

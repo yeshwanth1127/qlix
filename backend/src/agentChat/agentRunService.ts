@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { isBillingExempt } from '../billings/lib/isBillingExempt.js';
+import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 
 export interface EnqueueAgentRunInput {
   agentId: string;
@@ -91,6 +92,7 @@ export async function enqueueAgentRun(input: EnqueueAgentRunInput): Promise<Enqu
         id: runId,
         agentId: input.agentId,
         conversationId: input.conversationId,
+        inputMessageId: messageId,
         userId: input.userId,
         orgId: input.orgId,
         status: 'queued',
@@ -128,6 +130,11 @@ export async function getAgentRunStatus(runId: string): Promise<{
 }
 
 const TERMINAL = new Set<string>(['success', 'failed', 'canceled', 'cancelled']);
+export const ACTIVE_AGENT_RUN_STATUSES = ['queued', 'running'] as const;
+
+export function canTransitionAgentRunToTerminal(status: string): boolean {
+  return (ACTIVE_AGENT_RUN_STATUSES as readonly string[]).includes(status);
+}
 
 export function isAgentRunTerminal(status: string): boolean {
   return TERMINAL.has(status);
@@ -147,6 +154,23 @@ export async function cancelAgentRun(
     },
   });
   if (updated.count === 0) return false;
+  // A parent owns its outstanding children. Stop both nested invocation records
+  // and separately queued colleague runs before reporting the parent canceled.
+  const children = await prisma.subAgentInvocation.findMany({
+    where: { parentRunId: runId, status: { notIn: ['completed', 'failed', 'canceled'] } },
+    select: { id: true, childRunId: true },
+  });
+  if (children.length > 0) {
+    await prisma.subAgentInvocation.updateMany({
+      where: { id: { in: children.map((child) => child.id) } },
+      data: { status: 'canceled', errorMessage, finishedAt: new Date() },
+    });
+    for (const child of children) {
+      if (child.childRunId && child.childRunId !== runId) {
+        await cancelAgentRun(child.childRunId, errorMessage);
+      }
+    }
+  }
   await appendAgentRunLogEvent(runId, {
     message: 'run_canceled',
     reason: 'stopped_by_user',
@@ -278,45 +302,65 @@ export async function waitForAgentRunCompletion(
   }
 }
 
+/**
+ * Append one event with a database-serialized sequence allocation.
+ *
+ * Tool calls may execute concurrently and multiple backend processes may append
+ * to the same run. An advisory transaction lock keyed by run id makes the
+ * max(seq)+1 allocation atomic across every writer, rather than relying on a
+ * bounded optimistic retry loop that can be exhausted by a parallel tool batch.
+ */
+export async function appendAgentRunEvent(
+  runId: string,
+  type: 'delta' | 'log' | 'status',
+  data: unknown,
+): Promise<number> {
+  const event = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT (pg_advisory_xact_lock(hashtextextended(${runId}, 0)) IS NULL) AS acquired`;
+    const agg = await tx.agentRunEvent.aggregate({ where: { runId }, _max: { seq: true } });
+    const seq = (agg._max.seq ?? -1) + 1;
+    const run = await tx.agentRun.findUnique({
+      where: { id: runId },
+      select: { teamRunId: true, agentId: true, orgId: true },
+    });
+    const stamped = attachTrace(
+      data,
+      createTraceEnvelope({
+        traceId: run?.teamRunId ?? runId,
+        spanId: `run:${runId}:${seq}`,
+        parentSpanId: run?.teamRunId ?? runId,
+        executionId: runId,
+        executionKind: 'agent_run',
+        ...(run?.agentId ? { agentId: run.agentId } : {}),
+        ...(run?.orgId ? { orgId: run.orgId } : {}),
+      }),
+    );
+    const created = await tx.agentRunEvent.create({
+      data: { runId, seq, type, data: stamped as Prisma.InputJsonValue },
+      select: { seq: true, createdAt: true },
+    });
+    return { seq, createdAt: created.createdAt, stamped };
+  });
+  void import('../gateway/runEventBus.js')
+    .then(({ runEventBus }) =>
+      runEventBus.publish({
+        runId,
+        seq: event.seq,
+        type,
+        data: event.stamped,
+        createdAt: event.createdAt.toISOString(),
+      }),
+    )
+    .catch(() => undefined);
+  return event.seq;
+}
+
 /** Append a structured log row to an agent run (SSE / activity timeline). */
 export async function appendAgentRunLogEvent(
   runId: string,
   data: Record<string, unknown>,
 ): Promise<number> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const agg = await prisma.agentRunEvent.aggregate({
-      where: { runId },
-      _max: { seq: true },
-    });
-    const seq = (agg._max.seq ?? -1) + 1;
-    try {
-      await prisma.agentRunEvent.create({
-        data: { runId, seq, type: 'log', data: data as Prisma.InputJsonValue },
-      });
-      void import('../gateway/runEventBus.js')
-        .then(({ runEventBus }) =>
-          runEventBus.publish({
-            runId,
-            seq,
-            type: 'log',
-            data,
-            createdAt: new Date().toISOString(),
-          }),
-        )
-        .catch(() => undefined);
-      return seq;
-    } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002' &&
-        attempt < 3
-      ) {
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error('Failed to append run event after retries');
+  return appendAgentRunEvent(runId, 'log', data);
 }
 
 export async function listAgentRunEventsSince(runId: string, afterSeq: number): Promise<

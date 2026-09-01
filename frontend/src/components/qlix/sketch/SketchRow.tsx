@@ -49,14 +49,14 @@ export function SketchRow({
 
   if (as === "li") {
     return (
-      <li className={cn(base, "hover:bg-white/90")} style={style}>
+      <li className={cn(base, "hover:bg-[#E2F0CC]/90")} style={style}>
         {children}
       </li>
     );
   }
 
   return (
-    <div className={cn(base, "hover:bg-white/90")} style={style}>
+    <div className={cn(base, "hover:bg-[#E2F0CC]/90")} style={style}>
       {children}
     </div>
   );

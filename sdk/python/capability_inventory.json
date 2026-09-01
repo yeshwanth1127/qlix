@@ -1,0 +1,2681 @@
+{
+  "backend": {
+    "conversationPlugins": [
+      "assessment.record_review_answer"
+    ],
+    "gatewayChannels": [
+      "local",
+      "slack",
+      "telegram",
+      "web",
+      "whatsapp"
+    ],
+    "permissionScopes": [
+      "assessment.artifact.read",
+      "assessment.evidence.read",
+      "assessment.evidence.search",
+      "assessment.framework.read",
+      "assessment.record",
+      "assessment.report.create",
+      "assessment.review.ask",
+      "assessment.review.request_demonstration",
+      "assessment.session.get",
+      "assessment.snapshot.compare",
+      "assessment.snapshot.read",
+      "brain.knowledge_read",
+      "brain.query",
+      "calendar.read",
+      "calendar.write",
+      "crm.delete",
+      "crm.read",
+      "crm.write",
+      "docs.read",
+      "docs.write",
+      "drive.read",
+      "drive.write",
+      "email.read",
+      "email.send",
+      "files.create",
+      "finance.spend_100",
+      "finance.spend_50",
+      "forms.read",
+      "forms.write",
+      "meet.manage",
+      "notion.read",
+      "notion.write",
+      "sheets.read",
+      "sheets.write",
+      "slack.read",
+      "slack.send",
+      "slides.read",
+      "slides.write",
+      "social.publish",
+      "social.read",
+      "system.file_read",
+      "system.file_write",
+      "system.gui_control",
+      "web.click",
+      "web.read",
+      "web.research",
+      "web.transaction",
+      "whatsapp.auto_reply",
+      "whatsapp.contact_send",
+      "whatsapp.read",
+      "whatsapp.send",
+      "youtube.publish",
+      "youtube.read"
+    ]
+  },
+  "compatibilityPolicy": {
+    "additiveByDefault": true,
+    "preserveExistingNames": true,
+    "preserveExistingWireContracts": true
+  },
+  "consistency": {
+    "brokenAgentCompatibilityAliases": [],
+    "runnerToolsMissingCapabilityMetadata": [],
+    "unmappedPermissionScopes": []
+  },
+  "formatVersion": 1,
+  "luna": {
+    "compatibilityAliases": {
+      "agents": {
+        "react": "native_react"
+      },
+      "discoveredToolPrefixes": {
+        "functions.": "",
+        "tools.": ""
+      }
+    },
+    "configDefaults": {
+      "classes": {
+        "A2AConfig": {
+          "enabled": false
+        },
+        "AgentConfig": {
+          "context_from_memory": true,
+          "default_agent": "simple",
+          "default_system_prompt": "You are a helpful AI assistant running locally on the user's own hardware through Luna. You are not a cloud service. Respond helpfully, concisely, and accurately.",
+          "max_turns": 10,
+          "objective": "",
+          "system_prompt": "",
+          "system_prompt_path": "",
+          "tools": ""
+        },
+        "AgentLearningConfig": {
+          "policy": "none"
+        },
+        "AgentManagerConfig": {
+          "enabled": true
+        },
+        "AppleFmEngineConfig": {
+          "host": "http://localhost:8079"
+        },
+        "BlueBubblesChannelConfig": {
+          "password": "",
+          "url": ""
+        },
+        "BrowserConfig": {
+          "headless": true,
+          "timeout_ms": 30000,
+          "viewport_height": 720,
+          "viewport_width": 1280
+        },
+        "CapabilitiesConfig": {
+          "enabled": false,
+          "policy_path": ""
+        },
+        "ChannelConfig": {
+          "default_agent": "simple",
+          "default_channel": "",
+          "enabled": false
+        },
+        "CompressionConfig": {
+          "enabled": true,
+          "strategy": "session_consolidation",
+          "threshold": 0.5
+        },
+        "DSPyOptimizerConfig": {
+          "agent_filter": "",
+          "config_dir": "",
+          "max_bootstrapped_demos": 4,
+          "max_labeled_demos": 4,
+          "max_rounds": 1,
+          "metric_threshold": 0.7,
+          "min_traces": 20,
+          "num_candidate_programs": 10,
+          "optimize_few_shot": true,
+          "optimize_system_prompt": true,
+          "optimize_tool_descriptions": true,
+          "optimizer": "BootstrapFewShotWithRandomSearch",
+          "task_lm": "",
+          "teacher_lm": ""
+        },
+        "DigestConfig": {
+          "enabled": false,
+          "honorific": "sir",
+          "persona": "luna",
+          "schedule": "0 6 * * *",
+          "timezone": "America/Los_Angeles",
+          "tts_backend": "cartesia",
+          "voice_id": "",
+          "voice_speed": 1.0
+        },
+        "DigestSectionConfig": {
+          "max_items": 10
+        },
+        "DiscordChannelConfig": {
+          "bot_token": ""
+        },
+        "EmailChannelConfig": {
+          "imap_host": "",
+          "imap_port": 993,
+          "password": "",
+          "smtp_host": "",
+          "smtp_port": 587,
+          "use_tls": true,
+          "username": ""
+        },
+        "EngineConfig": {
+          "default": "ollama"
+        },
+        "ExoEngineConfig": {
+          "host": "http://localhost:52415"
+        },
+        "FeishuChannelConfig": {
+          "app_id": "",
+          "app_secret": ""
+        },
+        "GEPAOptimizerConfig": {
+          "agent_filter": "",
+          "assessment_batch_size": 10,
+          "config_dir": "",
+          "max_metric_calls": 150,
+          "min_traces": 20,
+          "optimize_max_turns": true,
+          "optimize_system_prompt": true,
+          "optimize_temperature": true,
+          "optimize_tools": true,
+          "population_size": 10,
+          "reflection_lm": ""
+        },
+        "GRPOConfig": {
+          "agent_filter": "",
+          "batch_size": 16,
+          "checkpoint_dir": "checkpoints/grpo",
+          "clip_ratio": 0.2,
+          "gradient_checkpointing": true,
+          "keep_last_n": 3,
+          "kl_coef": 0.0001,
+          "learning_rate": 1e-06,
+          "max_grad_norm": 1.0,
+          "max_response_length": 2048,
+          "max_seq_length": 4096,
+          "min_prompts": 10,
+          "model_name": "Qwen/Qwen3-1.7B",
+          "num_epochs": 10,
+          "num_samples_per_prompt": 8,
+          "save_every_n_epochs": 1,
+          "temperature": 1.0,
+          "use_8bit_ref": true
+        },
+        "GemmaCppEngineConfig": {
+          "model_path": "",
+          "model_type": "",
+          "num_threads": 0,
+          "tokenizer_path": ""
+        },
+        "GoogleChatChannelConfig": {
+          "webhook_url": ""
+        },
+        "GpuInfo": {
+          "compute_capability": "",
+          "count": 0,
+          "name": "",
+          "vendor": "",
+          "vram_gb": 0.0
+        },
+        "HardwareInfo": {
+          "cpu_brand": "",
+          "cpu_count": 0,
+          "gpu": null,
+          "platform": "",
+          "ram_gb": 0.0
+        },
+        "IRCChannelConfig": {
+          "nick": "",
+          "password": "",
+          "port": 6667,
+          "server": "",
+          "use_tls": false
+        },
+        "IntelligenceConfig": {
+          "checkpoint_path": "",
+          "default_model": "",
+          "fallback_model": "",
+          "max_tokens": 1024,
+          "model_path": "",
+          "preferred_engine": "",
+          "provider": "",
+          "quantization": "none",
+          "repetition_penalty": 1.0,
+          "stop_sequences": "",
+          "temperature": 0.7,
+          "top_k": 40,
+          "top_p": 0.9
+        },
+        "IntelligenceLearningConfig": {
+          "policy": "none"
+        },
+        "LMStudioEngineConfig": {
+          "host": "http://localhost:1234"
+        },
+        "LearningConfig": {
+          "auto_update": false,
+          "enabled": false,
+          "min_improvement": 0.02,
+          "training_enabled": false,
+          "training_schedule": "",
+          "update_interval": 100
+        },
+        "LemonadeEngineConfig": {
+          "host": "http://localhost:8000"
+        },
+        "LlamaCppEngineConfig": {
+          "binary_path": "",
+          "host": "http://localhost:8080"
+        },
+        "MCPConfig": {
+          "enabled": true,
+          "servers": ""
+        },
+        "MLXEngineConfig": {
+          "host": "http://localhost:8080"
+        },
+        "MatrixChannelConfig": {
+          "access_token": "",
+          "homeserver": ""
+        },
+        "MattermostChannelConfig": {
+          "token": "",
+          "url": ""
+        },
+        "MemoryFilesConfig": {
+          "memory_path": "~/.luna/MEMORY.md",
+          "nudge_interval": 10,
+          "soul_path": "~/.luna/SOUL.md",
+          "user_path": "~/.luna/USER.md"
+        },
+        "MetricsConfig": {
+          "accuracy_weight": 0.6,
+          "cost_weight": 0.1,
+          "efficiency_weight": 0.1,
+          "latency_weight": 0.2
+        },
+        "NexaEngineConfig": {
+          "device": "",
+          "host": "http://localhost:18181"
+        },
+        "OllamaEngineConfig": {
+          "host": ""
+        },
+        "OperatorsConfig": {
+          "auto_activate": "",
+          "enabled": false,
+          "manifests_dir": "~/.luna/operators"
+        },
+        "OptimizeConfig": {
+          "benchmark": "",
+          "early_stop_patience": 5,
+          "judge_model": "gpt-5-mini-2025-08-07",
+          "max_samples": 50,
+          "max_trials": 20,
+          "optimizer_model": "claude-sonnet-4-6",
+          "optimizer_provider": "anthropic"
+        },
+        "RoutingLearningConfig": {
+          "min_samples": 5,
+          "policy": "heuristic"
+        },
+        "SFTConfig": {
+          "agent_filter": "",
+          "batch_size": 8,
+          "checkpoint_dir": "checkpoints/sft",
+          "gradient_checkpointing": true,
+          "learning_rate": 2e-05,
+          "lora_alpha": 32,
+          "lora_dropout": 0.05,
+          "lora_rank": 16,
+          "max_grad_norm": 1.0,
+          "max_seq_length": 4096,
+          "min_pairs": 10,
+          "model_name": "Qwen/Qwen3-1.7B",
+          "num_epochs": 3,
+          "target_modules": "q_proj,v_proj",
+          "use_4bit": false,
+          "use_lora": true,
+          "warmup_ratio": 0.1,
+          "weight_decay": 0.01
+        },
+        "SGLangEngineConfig": {
+          "host": "http://localhost:30000"
+        },
+        "SandboxConfig": {
+          "enabled": false,
+          "image": "luna-sandbox:latest",
+          "max_concurrent": 5,
+          "mount_allowlist_path": "",
+          "runtime": "docker",
+          "timeout": 300,
+          "wasm_fuel_limit": 1000000,
+          "wasm_memory_limit_mb": 256,
+          "workspace": ""
+        },
+        "SchedulerConfig": {
+          "db_path": "",
+          "enabled": false,
+          "poll_interval": 60
+        },
+        "SecurityConfig": {
+          "enabled": true,
+          "enforce_tool_confirmation": true,
+          "local_engine_bypass": false,
+          "local_tool_bypass": false,
+          "merkle_audit": true,
+          "mode": "redact",
+          "pii_scanner": true,
+          "profile": "",
+          "rate_limit_burst": 10,
+          "rate_limit_enabled": true,
+          "rate_limit_rpm": 60,
+          "scan_input": true,
+          "scan_output": true,
+          "secret_scanner": true,
+          "signing_key_path": "",
+          "ssrf_protection": true
+        },
+        "ServerConfig": {
+          "agent": "orchestrator",
+          "host": "127.0.0.1",
+          "model": "",
+          "port": 8000,
+          "workers": 1
+        },
+        "SessionConfig": {
+          "consolidation_threshold": 100,
+          "enabled": false,
+          "max_age_hours": 24.0
+        },
+        "SignalChannelConfig": {
+          "api_url": "",
+          "phone_number": ""
+        },
+        "SkillSourceConfig": {
+          "auto_update": false,
+          "source": "",
+          "url": ""
+        },
+        "SkillsConfig": {
+          "active": "*",
+          "auto_discover": true,
+          "auto_sync": false,
+          "enabled": true,
+          "index_dir": "~/.luna/skill-index/",
+          "index_repo": "https://github.com/luna/skill-index.git",
+          "max_depth": 5,
+          "nudge_interval": 15,
+          "sandbox_dangerous": true,
+          "skills_dir": "~/.luna/skills/"
+        },
+        "SkillsLearningConfig": {
+          "auto_optimize": false,
+          "min_traces_per_skill": 20,
+          "optimization_interval_seconds": 86400,
+          "optimizer": "dspy",
+          "overlay_dir": "~/.luna/learning/skills/"
+        },
+        "SlackChannelConfig": {
+          "app_token": "",
+          "bot_token": ""
+        },
+        "SpeechConfig": {
+          "backend": "auto",
+          "compute_type": "float16",
+          "device": "auto",
+          "language": "",
+          "model": "base"
+        },
+        "StorageConfig": {
+          "chunk_overlap": 64,
+          "chunk_size": 512,
+          "context_max_tokens": 2048,
+          "context_min_score": 0.1,
+          "context_top_k": 5,
+          "default_backend": "sqlite"
+        },
+        "SystemPromptConfig": {
+          "memory_max_chars": 2500,
+          "skill_desc_max_chars": 60,
+          "soul_max_chars": 4000,
+          "truncation_strategy": "head_tail",
+          "user_max_chars": 1500
+        },
+        "TeamsChannelConfig": {
+          "app_id": "",
+          "app_password": "",
+          "service_url": ""
+        },
+        "TelegramChannelConfig": {
+          "allowed_chat_ids": "",
+          "bot_token": "",
+          "parse_mode": "Markdown"
+        },
+        "TelemetryConfig": {
+          "enabled": true,
+          "energy_vendor": "",
+          "gpu_metrics": false,
+          "gpu_poll_interval_ms": 50,
+          "steady_state_threshold": 0.05,
+          "steady_state_window": 5,
+          "warmup_samples": 0
+        },
+        "ToolsConfig": {
+          "enabled": ""
+        },
+        "TracesConfig": {
+          "enabled": true
+        },
+        "UzuEngineConfig": {
+          "host": "http://localhost:8000"
+        },
+        "VLLMEngineConfig": {
+          "host": "http://localhost:8000"
+        },
+        "WebhookChannelConfig": {
+          "method": "POST",
+          "secret": "",
+          "url": ""
+        },
+        "WhatsAppBaileysChannelConfig": {
+          "assistant_has_own_number": false,
+          "assistant_name": "Luna",
+          "auth_dir": ""
+        },
+        "WhatsAppChannelConfig": {
+          "access_token": "",
+          "phone_number_id": ""
+        },
+        "WorkflowConfig": {
+          "default_node_timeout": 300,
+          "enabled": false,
+          "max_parallel": 4
+        }
+      },
+      "semantics": "literal dataclass defaults; computed default_factory values are intentionally excluded"
+    },
+    "publicExports": [
+      "Luna",
+      "LunaSystem",
+      "MemoryHandle",
+      "SystemBuilder",
+      "__version__"
+    ],
+    "registries": {
+      "AgentRegistry": [
+        "claude_code",
+        "deep_research",
+        "monitor_operative",
+        "morning_digest",
+        "native_openhands",
+        "native_react",
+        "openhands",
+        "operative",
+        "orchestrator",
+        "rlm",
+        "simple"
+      ],
+      "CompressionRegistry": [
+        "model_summarization",
+        "rule_based_precompression",
+        "session_consolidation",
+        "tiered_summaries"
+      ],
+      "ConnectorRegistry": [
+        "apple_contacts",
+        "apple_health",
+        "apple_music",
+        "apple_notes",
+        "dropbox",
+        "gcalendar",
+        "gcontacts",
+        "gdrive",
+        "github_notifications",
+        "gmail",
+        "gmail_imap",
+        "google_tasks",
+        "granola",
+        "hackernews",
+        "imessage",
+        "news_rss",
+        "notion",
+        "obsidian",
+        "oura",
+        "outlook",
+        "slack",
+        "spotify",
+        "strava",
+        "weather",
+        "whatsapp"
+      ],
+      "EngineRegistry": [
+        "cloud",
+        "gemma_cpp",
+        "litellm",
+        "ollama"
+      ],
+      "MemoryRegistry": [
+        "bm25",
+        "colbert",
+        "dense",
+        "faiss",
+        "hybrid",
+        "knowledge",
+        "knowledge_graph",
+        "sqlite"
+      ],
+      "ToolRegistry": [
+        "agent_kill",
+        "agent_list",
+        "agent_send",
+        "agent_spawn",
+        "apply_patch",
+        "audio_transcribe",
+        "browser_axtree",
+        "browser_click",
+        "browser_extract",
+        "browser_navigate",
+        "browser_screenshot",
+        "browser_type",
+        "calculator",
+        "cancel_scheduled_task",
+        "code_interpreter",
+        "code_interpreter_docker",
+        "db_query",
+        "digest_collect",
+        "file_read",
+        "file_write",
+        "git_commit",
+        "git_diff",
+        "git_log",
+        "git_status",
+        "http_request",
+        "image_generate",
+        "kg_add_entity",
+        "kg_add_relation",
+        "kg_neighbors",
+        "kg_query",
+        "knowledge_search",
+        "knowledge_sql",
+        "list_scheduled_tasks",
+        "llm",
+        "memory_index",
+        "memory_manage",
+        "memory_retrieve",
+        "memory_search",
+        "memory_store",
+        "open_system_url",
+        "pause_scheduled_task",
+        "pdf_extract",
+        "repl",
+        "resume_scheduled_task",
+        "retrieval",
+        "scan_chunks",
+        "schedule_task",
+        "shell_exec",
+        "skill_manage",
+        "think",
+        "user_profile_manage",
+        "web_search"
+      ]
+    },
+    "skills": {
+      "builtIn": [
+        "backup-files",
+        "calendar-prep",
+        "code-lint",
+        "code-test-gen",
+        "compare-docs",
+        "daily-digest",
+        "data-analyze",
+        "dependency-audit",
+        "email-draft",
+        "file-deduplicator",
+        "file-organizer",
+        "knowledge-extract",
+        "meeting-notes",
+        "pdf-summarize",
+        "search-and-index",
+        "security-scan",
+        "todo-from-notes",
+        "topic-research",
+        "translate-doc",
+        "web-summarize"
+      ],
+      "discoveryLayouts": [
+        "SKILL.md",
+        "skill.toml"
+      ],
+      "externalSources": [
+        "github",
+        "hermes",
+        "openclaw"
+      ]
+    }
+  },
+  "lunaTeams": {
+    "commanderTools": [
+      "dispatch_to",
+      "interrupt_member",
+      "request_wait",
+      "wait_result"
+    ],
+    "provenanceFields": [
+      "artifactRefs",
+      "evidenceRefs",
+      "inputRefs",
+      "knowledgeRefs",
+      "recordRefs",
+      "toolRefs"
+    ],
+    "publicExports": [
+      "ConversationSignalRequest",
+      "ConversationStartRequest",
+      "ConversationStatus",
+      "ConversationWorkflow",
+      "DispatchContract",
+      "DispatchRequest",
+      "InputPurpose",
+      "IntentMode",
+      "IntentPatch",
+      "IntentRequirement",
+      "KnowledgeMode",
+      "MailboxEnvelope",
+      "MailboxKind",
+      "MailboxStatus",
+      "ResolvedIntent",
+      "ResultEnvelope",
+      "ResultProvenance",
+      "TeamMember",
+      "WaitRequest",
+      "apply_intent_patches",
+      "as_payload",
+      "commander_tool_definitions",
+      "missing_requirement_ids",
+      "repeat_intent"
+    ]
+  },
+  "managedRuntime": {
+    "availabilitySemantics": "maximum advertised surface; each tool remains scope, profile, config, dependency, and credential gated",
+    "groupRuntimes": {
+      "always": [
+        "cloud",
+        "hybrid"
+      ],
+      "assessment": [
+        "cloud",
+        "hybrid"
+      ],
+      "code": [
+        "hybrid"
+      ],
+      "comms": [
+        "cloud",
+        "hybrid"
+      ],
+      "files": [
+        "hybrid"
+      ],
+      "gui": [
+        "hybrid"
+      ],
+      "knowledge": [
+        "cloud",
+        "hybrid"
+      ],
+      "research": [
+        "cloud",
+        "hybrid"
+      ],
+      "web": [
+        "cloud"
+      ],
+      "documents": [
+        "cloud",
+        "hybrid"
+      ]
+    },
+    "groupTools": {
+      "always": [
+        "call_tool",
+        "delegate_task",
+        "done",
+        "find_tools",
+        "think"
+      ],
+      "assessment": [
+        "assessment_artifact_read",
+        "assessment_evidence_read",
+        "assessment_evidence_search",
+        "assessment_framework_read",
+        "assessment_record",
+        "assessment_report_create",
+        "assessment_review_ask",
+        "assessment_review_request_demonstration",
+        "assessment_session_get",
+        "assessment_snapshot_compare",
+        "assessment_snapshot_read"
+      ],
+      "code": [
+        "luna_local_bash",
+        "luna_local_code_task",
+        "luna_local_python"
+      ],
+      "comms": [
+        "calendar_read",
+        "calendar_write",
+        "crm_add_note",
+        "crm_bulk_create",
+        "crm_bulk_update",
+        "crm_convert_lead",
+        "crm_create",
+        "crm_delete",
+        "crm_describe_module",
+        "crm_download_attachment",
+        "crm_get",
+        "crm_link",
+        "crm_list_attachments",
+        "crm_list_modules",
+        "crm_query",
+        "crm_search",
+        "crm_unlink",
+        "crm_update",
+        "crm_upload_attachment",
+        "docs_read",
+        "docs_write",
+        "drive_read",
+        "drive_write",
+        "email_read",
+        "email_send",
+        "forms_read",
+        "forms_write",
+        "meet_manage",
+        "notion_read",
+        "notion_write",
+        "sheets_read",
+        "sheets_write",
+        "slack_create_channel",
+        "slack_create_list_item",
+        "slack_delete_list_item",
+        "slack_describe_list",
+        "slack_find_channel_lists",
+        "slack_get_history",
+        "slack_list_channels",
+        "slack_list_list_items",
+        "slack_list_users",
+        "slack_open_dm",
+        "slack_post_message",
+        "slack_search_messages",
+        "slack_set_channel_topic",
+        "slack_set_list_task_completion",
+        "slack_set_presence",
+        "slack_update_list_item",
+        "slides_read",
+        "slides_write",
+        "whatsapp_auto_reply_set_instructions",
+        "whatsapp_auto_reply_status",
+        "whatsapp_auto_reply_stop",
+        "whatsapp_list_contacts",
+        "whatsapp_read_chat",
+        "whatsapp_send",
+        "whatsapp_send_document",
+        "whatsapp_send_message",
+        "whatsapp_send_poll"
+      ],
+      "files": [
+        "luna_local_bash",
+        "luna_local_cd",
+        "luna_local_create_pdf",
+        "luna_local_create_xlsx",
+        "luna_local_list_dir",
+        "luna_local_open_file",
+        "luna_local_patch",
+        "luna_local_pwd",
+        "luna_local_python",
+        "luna_local_read_file",
+        "luna_local_search_files",
+        "luna_local_send_whatsapp_document",
+        "luna_local_write_file"
+      ],
+      "gui": [
+        "gui_control"
+      ],
+      "knowledge": [
+        "brain_find_documents",
+        "brain_query"
+      ],
+      "research": [
+        "research_github",
+        "research_read_url",
+        "research_social_search",
+        "research_video",
+        "research_web_search"
+      ],
+      "web": [
+        "browser",
+        "browser_ab_back",
+        "browser_ab_check",
+        "browser_ab_click",
+        "browser_ab_close",
+        "browser_ab_connect",
+        "browser_ab_console",
+        "browser_ab_cookies",
+        "browser_ab_dblclick",
+        "browser_ab_download",
+        "browser_ab_drag",
+        "browser_ab_errors",
+        "browser_ab_eval",
+        "browser_ab_fill",
+        "browser_ab_find",
+        "browser_ab_focus",
+        "browser_ab_forward",
+        "browser_ab_get",
+        "browser_ab_highlight",
+        "browser_ab_hover",
+        "browser_ab_is",
+        "browser_ab_mouse",
+        "browser_ab_network",
+        "browser_ab_open",
+        "browser_ab_pdf",
+        "browser_ab_press",
+        "browser_ab_record",
+        "browser_ab_reload",
+        "browser_ab_screenshot",
+        "browser_ab_scroll",
+        "browser_ab_scrollintoview",
+        "browser_ab_select",
+        "browser_ab_session",
+        "browser_ab_set",
+        "browser_ab_snapshot",
+        "browser_ab_storage",
+        "browser_ab_tab",
+        "browser_ab_trace",
+        "browser_ab_type",
+        "browser_ab_uncheck",
+        "browser_ab_upload",
+        "browser_ab_wait",
+        "browser_exec"
+      ],
+      "documents": [
+        "create_report_pdf",
+        "create_xlsx"
+      ]
+    },
+    "runtimeTools": {
+      "cloud": [
+        "assessment_artifact_read",
+        "assessment_evidence_read",
+        "assessment_evidence_search",
+        "assessment_framework_read",
+        "assessment_record",
+        "assessment_report_create",
+        "assessment_review_ask",
+        "assessment_review_request_demonstration",
+        "assessment_session_get",
+        "assessment_snapshot_compare",
+        "assessment_snapshot_read",
+        "brain_find_documents",
+        "brain_query",
+        "browser",
+        "browser_ab_back",
+        "browser_ab_check",
+        "browser_ab_click",
+        "browser_ab_close",
+        "browser_ab_connect",
+        "browser_ab_console",
+        "browser_ab_cookies",
+        "browser_ab_dblclick",
+        "browser_ab_download",
+        "browser_ab_drag",
+        "browser_ab_errors",
+        "browser_ab_eval",
+        "browser_ab_fill",
+        "browser_ab_find",
+        "browser_ab_focus",
+        "browser_ab_forward",
+        "browser_ab_get",
+        "browser_ab_highlight",
+        "browser_ab_hover",
+        "browser_ab_is",
+        "browser_ab_mouse",
+        "browser_ab_network",
+        "browser_ab_open",
+        "browser_ab_pdf",
+        "browser_ab_press",
+        "browser_ab_record",
+        "browser_ab_reload",
+        "browser_ab_screenshot",
+        "browser_ab_scroll",
+        "browser_ab_scrollintoview",
+        "browser_ab_select",
+        "browser_ab_session",
+        "browser_ab_set",
+        "browser_ab_snapshot",
+        "browser_ab_storage",
+        "browser_ab_tab",
+        "browser_ab_trace",
+        "browser_ab_type",
+        "browser_ab_uncheck",
+        "browser_ab_upload",
+        "browser_ab_wait",
+        "browser_exec",
+        "calendar_read",
+        "calendar_write",
+        "call_tool",
+        "create_report_pdf",
+        "create_xlsx",
+        "crm_add_note",
+        "crm_bulk_create",
+        "crm_bulk_update",
+        "crm_convert_lead",
+        "crm_create",
+        "crm_delete",
+        "crm_describe_module",
+        "crm_download_attachment",
+        "crm_get",
+        "crm_link",
+        "crm_list_attachments",
+        "crm_list_modules",
+        "crm_query",
+        "crm_search",
+        "crm_unlink",
+        "crm_update",
+        "crm_upload_attachment",
+        "delegate_task",
+        "docs_read",
+        "docs_write",
+        "done",
+        "drive_read",
+        "drive_write",
+        "email_read",
+        "email_send",
+        "find_tools",
+        "forms_read",
+        "forms_write",
+        "meet_manage",
+        "notion_read",
+        "notion_write",
+        "research_github",
+        "research_read_url",
+        "research_social_search",
+        "research_video",
+        "research_web_search",
+        "sheets_read",
+        "sheets_write",
+        "slack_create_channel",
+        "slack_create_list_item",
+        "slack_delete_list_item",
+        "slack_describe_list",
+        "slack_find_channel_lists",
+        "slack_get_history",
+        "slack_list_channels",
+        "slack_list_list_items",
+        "slack_list_users",
+        "slack_open_dm",
+        "slack_post_message",
+        "slack_search_messages",
+        "slack_set_channel_topic",
+        "slack_set_list_task_completion",
+        "slack_set_presence",
+        "slack_update_list_item",
+        "slides_read",
+        "slides_write",
+        "think",
+        "whatsapp_auto_reply_set_instructions",
+        "whatsapp_auto_reply_status",
+        "whatsapp_auto_reply_stop",
+        "whatsapp_list_contacts",
+        "whatsapp_read_chat",
+        "whatsapp_send",
+        "whatsapp_send_document",
+        "whatsapp_send_message",
+        "whatsapp_send_poll"
+      ],
+      "hybrid": [
+        "assessment_artifact_read",
+        "assessment_evidence_read",
+        "assessment_evidence_search",
+        "assessment_framework_read",
+        "assessment_record",
+        "assessment_report_create",
+        "assessment_review_ask",
+        "assessment_review_request_demonstration",
+        "assessment_session_get",
+        "assessment_snapshot_compare",
+        "assessment_snapshot_read",
+        "brain_find_documents",
+        "brain_query",
+        "calendar_read",
+        "calendar_write",
+        "call_tool",
+        "create_report_pdf",
+        "create_xlsx",
+        "crm_add_note",
+        "crm_bulk_create",
+        "crm_bulk_update",
+        "crm_convert_lead",
+        "crm_create",
+        "crm_delete",
+        "crm_describe_module",
+        "crm_download_attachment",
+        "crm_get",
+        "crm_link",
+        "crm_list_attachments",
+        "crm_list_modules",
+        "crm_query",
+        "crm_search",
+        "crm_unlink",
+        "crm_update",
+        "crm_upload_attachment",
+        "delegate_task",
+        "docs_read",
+        "docs_write",
+        "done",
+        "drive_read",
+        "drive_write",
+        "email_read",
+        "email_send",
+        "find_tools",
+        "forms_read",
+        "forms_write",
+        "gui_control",
+        "luna_local_bash",
+        "luna_local_cd",
+        "luna_local_code_task",
+        "luna_local_create_pdf",
+        "luna_local_create_xlsx",
+        "luna_local_list_dir",
+        "luna_local_open_file",
+        "luna_local_patch",
+        "luna_local_pwd",
+        "luna_local_python",
+        "luna_local_read_file",
+        "luna_local_search_files",
+        "luna_local_send_whatsapp_document",
+        "luna_local_write_file",
+        "meet_manage",
+        "notion_read",
+        "notion_write",
+        "research_github",
+        "research_read_url",
+        "research_social_search",
+        "research_video",
+        "research_web_search",
+        "sheets_read",
+        "sheets_write",
+        "slack_create_channel",
+        "slack_create_list_item",
+        "slack_delete_list_item",
+        "slack_describe_list",
+        "slack_find_channel_lists",
+        "slack_get_history",
+        "slack_list_channels",
+        "slack_list_list_items",
+        "slack_list_users",
+        "slack_open_dm",
+        "slack_post_message",
+        "slack_search_messages",
+        "slack_set_channel_topic",
+        "slack_set_list_task_completion",
+        "slack_set_presence",
+        "slack_update_list_item",
+        "slides_read",
+        "slides_write",
+        "think",
+        "whatsapp_auto_reply_set_instructions",
+        "whatsapp_auto_reply_status",
+        "whatsapp_auto_reply_stop",
+        "whatsapp_list_contacts",
+        "whatsapp_read_chat",
+        "whatsapp_send",
+        "whatsapp_send_document",
+        "whatsapp_send_message",
+        "whatsapp_send_poll"
+      ]
+    },
+    "toolCapabilities": {
+      "assessment_artifact_read": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_evidence_read": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_evidence_search": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_framework_read": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_record": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_report_create": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_review_ask": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_review_request_demonstration": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_session_get": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_snapshot_compare": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_snapshot_read": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "brain_find_documents": {
+        "dynamic": false,
+        "groups": [
+          "knowledge"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "brain_query": {
+        "dynamic": false,
+        "groups": [
+          "knowledge"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "browser": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_back": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_check": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_click": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_close": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_connect": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_console": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_cookies": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_dblclick": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_download": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_drag": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_errors": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_eval": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_fill": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_find": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_focus": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_forward": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_get": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_highlight": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_hover": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_is": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_mouse": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_network": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_open": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_pdf": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_press": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_record": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_reload": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_screenshot": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_scroll": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_scrollintoview": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_select": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_session": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_set": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_snapshot": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_storage": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_tab": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_trace": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_type": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_uncheck": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_upload": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_ab_wait": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "browser_exec": {
+        "dynamic": false,
+        "groups": [
+          "web"
+        ],
+        "runtimes": [
+          "cloud"
+        ],
+        "scopeGated": true
+      },
+      "calendar_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "calendar_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "call_tool": {
+        "dynamic": false,
+        "groups": [
+          "always"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "create_report_pdf": {
+        "dynamic": false,
+        "groups": [
+          "documents"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "create_xlsx": {
+        "dynamic": false,
+        "groups": [
+          "documents"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_add_note": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_bulk_create": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_bulk_update": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_convert_lead": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_create": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_delete": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_describe_module": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_download_attachment": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_get": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_link": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_list_attachments": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_list_modules": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_query": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_search": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_unlink": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_update": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "crm_upload_attachment": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "delegate_task": {
+        "dynamic": false,
+        "groups": [
+          "always"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "docs_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "docs_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "done": {
+        "dynamic": false,
+        "groups": [
+          "always"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "drive_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "drive_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "email_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "email_send": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "find_tools": {
+        "dynamic": false,
+        "groups": [
+          "always"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "forms_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "forms_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "gui_control": {
+        "dynamic": false,
+        "groups": [
+          "gui"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_bash": {
+        "dynamic": false,
+        "groups": [
+          "code",
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_cd": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_code_task": {
+        "dynamic": false,
+        "groups": [
+          "code"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_create_pdf": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_create_xlsx": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_list_dir": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_open_file": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_patch": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_pwd": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_python": {
+        "dynamic": false,
+        "groups": [
+          "code",
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_read_file": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_search_files": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_send_whatsapp_document": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "luna_local_write_file": {
+        "dynamic": false,
+        "groups": [
+          "files"
+        ],
+        "runtimes": [
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "meet_manage": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "notion_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "notion_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "research_github": {
+        "dynamic": false,
+        "groups": [
+          "research"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "research_read_url": {
+        "dynamic": false,
+        "groups": [
+          "research"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "research_social_search": {
+        "dynamic": false,
+        "groups": [
+          "research"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "research_video": {
+        "dynamic": false,
+        "groups": [
+          "research"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "research_web_search": {
+        "dynamic": false,
+        "groups": [
+          "research"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "sheets_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "sheets_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_create_channel": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_create_list_item": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_delete_list_item": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_describe_list": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_find_channel_lists": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_get_history": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_list_channels": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_list_list_items": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_list_users": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_open_dm": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_post_message": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_search_messages": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_set_channel_topic": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_set_list_task_completion": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_set_presence": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slack_update_list_item": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slides_read": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "slides_write": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "think": {
+        "dynamic": false,
+        "groups": [
+          "always"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_auto_reply_set_instructions": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_auto_reply_status": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_auto_reply_stop": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_list_contacts": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_read_chat": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_send": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_send_document": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_send_message": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "whatsapp_send_poll": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      }
+    }
+  },
+  "mcp": {
+    "dynamicTools": true,
+    "scopePatterns": [
+      "mcp.<server-slug>.*",
+      "mcp.<server-slug>.<tool-name>"
+    ],
+    "toolNamePattern": "mcp__<server-slug>__<sanitized-tool-name>",
+    "transports": {
+      "http": [
+        "cloud",
+        "hybrid"
+      ],
+      "stdio": [
+        "hybrid"
+      ]
+    }
+  }
+}

@@ -88,13 +88,13 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
     <>
       {children}
       {open ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto px-4 py-8 text-white backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-[#011207]/25 px-4 py-8 text-[#E2F0CC] backdrop-blur-[5px]">
           <section
             role="dialog"
             aria-modal="true"
             aria-labelledby="beta-title"
             aria-describedby="beta-description"
-            className="w-full max-w-md rounded-2xl border border-white/15 bg-[#18181b]/85 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl sm:p-7"
+            className="w-full max-w-md rounded-[1.75rem] border border-[#8BC53D]/25 bg-[#011207]/95 p-6 shadow-[0_32px_90px_rgba(1,18,7,0.42)] backdrop-blur-2xl sm:p-7"
           >
         {joined ? (
           <div className="text-center">
@@ -110,7 +110,7 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
             <button
               type="button"
               onClick={continueToBeta}
-              className="mt-6 inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-white px-4 text-[13px] font-medium text-zinc-950 transition-colors hover:bg-zinc-200 active:scale-[0.98]"
+              className="mt-6 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#8BC53D] px-4 text-[13px] font-semibold text-[#011207] transition-colors hover:bg-[#E2F0CC] active:scale-[0.98]"
             >
               Continue to Qlix
               <ArrowRight className="size-4" aria-hidden />
@@ -119,11 +119,11 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
         ) : (
           <>
             <div className="flex items-center gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-violet-400/20 bg-violet-400/10">
-                <FlaskConical className="size-5 text-violet-300" aria-hidden />
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-[#8BC53D]/25 bg-[#8BC53D]/10">
+                <FlaskConical className="size-5 text-[#8BC53D]" aria-hidden />
               </div>
               <div>
-                <span className="inline-flex rounded-full border border-violet-400/20 bg-violet-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-violet-300">
+                <span className="inline-flex rounded-full border border-[#8BC53D]/25 bg-[#8BC53D]/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#8BC53D]">
                   Beta
                 </span>
                 <h1 id="beta-title" className="mt-1 text-[17px] font-medium tracking-[-0.02em]">
@@ -137,7 +137,7 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
               experience.
             </p>
 
-            <div className="my-5 h-px bg-white/8" />
+            <div className="my-5 h-px bg-[#E2F0CC]/8" />
 
             <h2 className="text-[13px] font-medium text-zinc-100">Join the waitlist</h2>
             <p className="mt-1 text-[12px] text-zinc-500">
@@ -163,8 +163,8 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
                       className={cn(
                         "flex h-9 items-center justify-center gap-2 rounded-lg border text-[12px] font-medium capitalize transition-colors",
                         selected
-                          ? "border-violet-400/40 bg-violet-400/10 text-violet-200"
-                          : "border-white/10 bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200",
+                          ? "border-[#8BC53D]/50 bg-[#8BC53D]/15 text-[#E2F0CC]"
+                          : "border-white/10 bg-[#E2F0CC]/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200",
                       )}
                     >
                       <Icon className="size-3.5" aria-hidden />
@@ -203,7 +203,7 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
                     contactType === "email" ? "you@example.com" : "+1 555 123 4567"
                   }
                   disabled={submitting}
-                  className="h-10 w-full rounded-lg border border-white/10 bg-black/20 pl-10 pr-3 text-[13px] text-white outline-none transition-colors placeholder:text-zinc-600 focus:border-violet-400/50 focus:ring-1 focus:ring-violet-400/20 disabled:opacity-60"
+                  className="h-10 w-full rounded-xl border border-[#E2F0CC]/15 bg-black/20 pl-10 pr-3 text-[13px] text-[#E2F0CC] outline-none transition-colors placeholder:text-[#E2F0CC]/30 focus:border-[#8BC53D]/60 focus:ring-2 focus:ring-[#8BC53D]/15 disabled:opacity-60"
                 />
               </div>
 
@@ -216,7 +216,7 @@ export function BetaAccessGate({ children }: { readonly children: ReactNode }) {
               <button
                 type="submit"
                 disabled={submitting}
-                className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-white px-4 text-[13px] font-medium text-zinc-950 transition-colors hover:bg-zinc-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#8BC53D] px-4 text-[13px] font-semibold text-[#011207] transition-colors hover:bg-[#E2F0CC] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? (
                   <>

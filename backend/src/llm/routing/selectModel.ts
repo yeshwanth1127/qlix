@@ -1,5 +1,14 @@
 import { scoreComplexity } from './complexity.js';
 import {
+  type CascadeEscalateReason,
+  type CascadeHints,
+  OPENROUTER_FREE_ROUTER,
+  isMarginCascadeEnabled,
+  isOpenRouterFreeModelId,
+  pickPaidLadderModel,
+  shouldEscalateToPaid,
+} from './cascade.js';
+import {
   type ModelTierKey,
   TIER_RANK,
   isQlixAutoModelId,
@@ -16,6 +25,8 @@ export interface RouteDecision {
   complexityScore: number;
   suggestedMaxTokens: number;
   isAuto: boolean;
+  cascadePhase?: 'scout' | 'paid';
+  cascadeEscalateReason?: CascadeEscalateReason;
 }
 
 function lastUserText(messages: Array<{ role?: string; content?: unknown }>): string {
@@ -45,7 +56,7 @@ function hasTools(tools: unknown): boolean {
 
 /**
  * Select model for an inference request.
- * Pinned models pass through; Auto picks cheapest capable ≤ billable tier.
+ * Auto + margin cascade: scout on openrouter/free, escalate to paid ladder when needed.
  */
 export function selectInferenceModel(params: {
   requestedModel: string;
@@ -53,6 +64,7 @@ export function selectInferenceModel(params: {
   tools?: unknown;
   planAllowedTiers: string[];
   routingEnabled: boolean;
+  cascade?: CascadeHints;
 }): RouteDecision {
   const requested = params.requestedModel.trim();
   const provider = requested.toLowerCase().startsWith('exora/') ? 'exora' : 'openrouter';
@@ -79,9 +91,53 @@ export function selectInferenceModel(params: {
     requestedModel: requested,
     planAllowedTiers: params.planAllowedTiers,
   });
+
+  // Margin cascade (OpenRouter Auto only): free scout → paid ladder
+  if (isMarginCascadeEnabled() && provider === 'openrouter') {
+    const { escalate, reason: escReason } = shouldEscalateToPaid({
+      complexityScore: complexity.score,
+      hasCode: Boolean(complexity.signals.has_code),
+      toolsPresent,
+      hints: params.cascade,
+    });
+
+    if (!escalate) {
+      return {
+        requestedModel: requested,
+        routedModel: OPENROUTER_FREE_ROUTER,
+        billableTier,
+        routingTier: 'economy',
+        reason: 'cascade_scout',
+        complexityScore: complexity.score,
+        suggestedMaxTokens: complexity.suggestedMaxTokens,
+        isAuto: true,
+        cascadePhase: 'scout',
+        cascadeEscalateReason: 'none',
+      };
+    }
+
+    const paid = pickPaidLadderModel({
+      billableTier,
+      complexityScore: complexity.score,
+      hasCode: Boolean(complexity.signals.has_code),
+      toolsPresent,
+    });
+    return {
+      requestedModel: requested,
+      routedModel: paid.modelId,
+      billableTier,
+      routingTier: paid.routingTier,
+      reason: `${paid.reason}:${escReason}`,
+      complexityScore: complexity.score,
+      suggestedMaxTokens: complexity.suggestedMaxTokens,
+      isAuto: true,
+      cascadePhase: 'paid',
+      cascadeEscalateReason: escReason,
+    };
+  }
+
   const allowed = modelsAllowedForAuto(billableTier, provider);
   if (allowed.length === 0) {
-    // Should not happen; fall back to cheapest ladder entry within economy
     const fallback = modelsAllowedForAuto('economy', provider)[0]!;
     return {
       requestedModel: requested,
@@ -95,7 +151,6 @@ export function selectInferenceModel(params: {
     };
   }
 
-  // Prefer standard (or highest allowed) when tools + non-trivial work; else cheapest.
   const needsStrong =
     (toolsPresent && complexity.score >= 0.2) ||
     complexity.score >= 0.55 ||
@@ -103,16 +158,13 @@ export function selectInferenceModel(params: {
 
   let chosen = allowed[0]!;
   if (needsStrong) {
-    // Highest tier still ≤ billable
     for (const slot of allowed) {
       if (TIER_RANK[slot.tier] >= TIER_RANK[chosen.tier]) chosen = slot;
     }
   } else {
-    // Cheapest = lowest tier first in AUTO_LADDER order
     chosen = allowed[0]!;
   }
 
-  // Never above billable (belt and suspenders)
   if (TIER_RANK[chosen.tier] > TIER_RANK[billableTier]) {
     const capped = [...allowed].reverse().find((s) => TIER_RANK[s.tier] <= TIER_RANK[billableTier]);
     chosen = capped ?? allowed[0]!;
@@ -132,3 +184,14 @@ export function selectInferenceModel(params: {
 
 export { isQlixAutoModelId, resolveAutoBillableTier } from './ladder.js';
 export { scoreComplexity } from './complexity.js';
+export {
+  OPENROUTER_FREE_ROUTER,
+  buildDecisionBrief,
+  buildDecisionBriefFromMessages,
+  classifyHandoffError,
+  isMarginCascadeEnabled,
+  isOpenRouterFreeModelId,
+  simulateCascadeSavings,
+  type CascadeHints,
+  type CascadePhase,
+} from './cascade.js';

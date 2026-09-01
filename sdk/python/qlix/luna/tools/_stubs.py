@@ -8,6 +8,7 @@ Each tool is registered via ``@ToolRegistry.register("name")`` and implements
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import json
 import time
 from abc import ABC, abstractmethod
@@ -78,6 +79,49 @@ class BaseTool(ABC):
                 "parameters": s.parameters,
             },
         }
+
+    def to_capability_descriptor(self):
+        """Describe this existing tool using Qlix's versioned capability contract.
+
+        Tool implementations and registry names remain unchanged. A tool may add
+        precise overrides under ``ToolSpec.metadata['capability']``; otherwise the
+        adapter derives conservative values from its existing ToolSpec.
+        """
+        from qlix.contracts import (
+            CapabilityDescriptor,
+            CapabilityJit,
+            CapabilityProvider,
+            CapabilityRisk,
+        )
+
+        spec = self.spec
+        raw = spec.metadata.get("capability", {}) if isinstance(spec.metadata, dict) else {}
+        overrides = raw if isinstance(raw, dict) else {}
+        scopes = tuple(overrides.get("requiredScopes", spec.required_capabilities or ()))
+        runtimes = tuple(overrides.get("runtimes", ("local",) if self.is_local else ("cloud", "hybrid")))
+        provider_raw = overrides.get("provider", {})
+        provider = CapabilityProvider(
+            kind=provider_raw.get("kind", "local" if self.is_local else "builtin"),
+            id=provider_raw.get("id", f"luna.{self.__class__.__module__.rsplit('.', 1)[-1]}"),
+        )
+        risk_raw = overrides.get("risk", {})
+        risk = CapabilityRisk(
+            level=risk_raw.get("level", "moderate" if spec.requires_confirmation else "low"),
+            effects=tuple(risk_raw.get("effects", ())),
+        )
+        jit_scopes = tuple(overrides.get("jitScopes", scopes if spec.requires_confirmation else ()))
+        return CapabilityDescriptor(
+            name=spec.name,
+            description=spec.description,
+            input_schema=spec.parameters,
+            required_scopes=scopes,
+            scope_mode=overrides.get("scopeMode", "all"),
+            jit=CapabilityJit(required=spec.requires_confirmation, scopes=jit_scopes),
+            runtimes=runtimes,
+            risk=risk,
+            provider=provider,
+            aliases=tuple(overrides.get("aliases", ())),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +290,8 @@ class ToolExecutor:
         t0 = time.time()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(tool.execute, **params)
+                context = contextvars.copy_context()
+                future = pool.submit(context.run, tool.execute, **params)
                 result = future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             if self._bus:

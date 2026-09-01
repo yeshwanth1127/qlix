@@ -7,6 +7,7 @@ import { Terminal } from "lucide-react";
 import { postSuperAdminSignup } from "@/lib/auth-api";
 import { cn } from "@/lib/utils/cn";
 import { ReflectiveCard } from "@/components/qlix/ReflectiveCard";
+import { QlixWordmark } from "@/components/qlix/landing/QlixWordmark";
 
 const inputFocus =
   "focus:border-[#4d8eff] focus:ring-1 focus:ring-[#4d8eff] focus:outline-none transition-all";
@@ -44,16 +45,15 @@ export default function SuperAdminSignUpPage() {
 
   return (
     <div
-      className="flex min-h-dvh flex-col items-center justify-center bg-[#0A0A0A] px-6 py-12 text-[#e5e2e1]"
-      style={{ background: "radial-gradient(circle at 50% 20%, #1a1a22 0%, #0A0A0A 55%)" }}
+      className="flex min-h-dvh flex-col items-center justify-center bg-[#E2F0CC] px-6 py-12 text-[#011207]"
     >
       <header className="absolute left-0 top-0 flex w-full items-center justify-between px-6 py-4">
-        <Link href="/" className="text-lg font-semibold tracking-tight text-zinc-100">
-          Qlix
+        <Link href="/" aria-label="Qlix home">
+          <QlixWordmark className="text-[28px]" />
         </Link>
         <Link
           href="/sign-in?mode=sign-in"
-          className="text-[13px] font-medium text-[#adc6ff] hover:text-[#4d8eff]"
+          className="text-[13px] font-medium text-[#012F13] hover:text-[#8BC53D]"
         >
           Main sign in
         </Link>

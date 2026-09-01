@@ -6,6 +6,7 @@ Supports consolidation and decay.
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 import uuid
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from qlix.luna.core.config import DEFAULT_CONFIG_DIR
+from qlix.context_management import build_structured_context, serialize_messages
 
 
 @dataclass(slots=True)
@@ -104,6 +106,17 @@ class SessionStore:
                 ON session_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_user
                 ON sessions(user_id);
+            CREATE TABLE IF NOT EXISTS session_context_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                metadata TEXT DEFAULT '{}',
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_context_artifacts_session
+                ON session_context_artifacts(session_id, created_at);
         """)
         self._conn.commit()
 
@@ -235,7 +248,7 @@ class SessionStore:
             self.consolidate(session_id)
 
     def consolidate(self, session_id: str) -> None:
-        """Consolidate old messages: summarize oldest half, keep recent half."""
+        """Compact old messages without discarding their full durable transcript."""
         messages = self._load_messages(session_id)
         if len(messages) <= self._consolidation_threshold // 2:
             return
@@ -243,11 +256,34 @@ class SessionStore:
         split = len(messages) // 2
         old_messages = messages[:split]
 
-        # Create summary of old messages
-        summary_parts = []
-        for msg in old_messages[:10]:  # summarize first 10 of old batch
-            summary_parts.append(f"[{msg.role}] {msg.content[:100]}")
-        summary = "Session history summary:\n" + "\n".join(summary_parts)
+        serialized = serialize_messages(old_messages)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        artifact_id = f"session-{digest[:20]}"
+        prior_artifacts = [
+            str(artifact)
+            for message in old_messages
+            for artifact in (message.metadata.get("source_artifact_ids") or [])
+            if artifact
+        ]
+        structured = build_structured_context(
+            old_messages,
+            source_artifact_ids=[*prior_artifacts, artifact_id],
+        )
+        summary = structured.to_text(max_chars=6000)
+
+        self._conn.execute(
+            "INSERT OR IGNORE INTO session_context_artifacts "
+            "(artifact_id, session_id, sha256, content, created_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                artifact_id,
+                session_id,
+                digest,
+                serialized,
+                time.time(),
+                json.dumps({"kind": "session_compaction", "message_count": len(old_messages)}),
+            ),
+        )
 
         # Delete old messages
         oldest_ts = old_messages[-1].timestamp if old_messages else 0
@@ -259,11 +295,41 @@ class SessionStore:
         self._conn.execute(
             "INSERT INTO session_messages"
             " (session_id, role, content,"
-            " channel, timestamp) "
-            "VALUES (?, 'system', ?, '', ?)",
-            (session_id, summary, time.time()),
+            " channel, timestamp, metadata) "
+            "VALUES (?, 'system', ?, '', ?, ?)",
+            (
+                session_id,
+                summary,
+                time.time(),
+                json.dumps(
+                    {
+                        "kind": "context_compaction",
+                        "version": "1.0",
+                        "source_artifact_ids": structured.source_artifact_ids,
+                        "structured": structured.to_dict(),
+                    }
+                ),
+            ),
         )
         self._conn.commit()
+
+    def get_context_artifact(self, artifact_id: str) -> Dict[str, Any] | None:
+        """Read a full transcript retained by structured session compaction."""
+        row = self._conn.execute(
+            "SELECT artifact_id, session_id, sha256, content, created_at, metadata "
+            "FROM session_context_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "artifact_id": row[0],
+            "session_id": row[1],
+            "sha256": row[2],
+            "content": row[3],
+            "created_at": row[4],
+            "metadata": json.loads(row[5]) if row[5] else {},
+        }
 
     def decay(self, max_age_hours: Optional[float] = None) -> int:
         """Remove sessions older than max_age_hours. Returns count removed."""
@@ -277,6 +343,10 @@ class SessionStore:
         for sid in session_ids:
             self._conn.execute(
                 "DELETE FROM session_messages WHERE session_id = ?",
+                (sid,),
+            )
+            self._conn.execute(
+                "DELETE FROM session_context_artifacts WHERE session_id = ?",
                 (sid,),
             )
             self._conn.execute(

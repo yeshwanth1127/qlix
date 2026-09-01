@@ -21,10 +21,12 @@ from .runner_common import (
     default_log,
     describe_capabilities,
     emit_event,
+    emit_inference_result_events,
     identity_with_live_scopes,
+    extract_polled_run,
     maybe_prepend_brain_context,
     run_backend_proxy_inference,
-    stream_assistant_deltas,
+    runner_completion_body,
     tty_safe_notice,
 )
 from .sdk import QlixSDK
@@ -299,12 +301,12 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                 try:
                     polled = await http.post_json(
                         f"/api/v1/agents/{identity.agent_id}/runs/poll",
-                        {"maxWaitMs": max_wait_ms},
+                        {"maxWaitMs": max_wait_ms, "runtime": "hybrid"},
                         headers=headers,
                     )
                     global _poll_conn_error_logged
                     _poll_conn_error_logged = False
-                    run = polled.get("run")
+                    run = extract_polled_run(polled, agent_id=identity.agent_id, runtime="hybrid")
                     if not run:
                         idle_polls += 1
                         if idle_polls == 1:
@@ -320,6 +322,11 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
 
                     idle_polls = 0
                     run_id = str(run.get("id", ""))
+                    qlix.set_run_context(
+                        run_id=run_id,
+                        conversation_id=str(run.get("conversationId") or "") or None,
+                        team_run_id=str(run.get("teamRunId") or "") or None,
+                    )
                     seq = 0
                     prompt = str(run.get("prompt", ""))
                     try:
@@ -365,19 +372,69 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                     )
 
                     use_brain = bool(run.get("useBrain"))
-                    prompt_for_skills, seq = await maybe_prepend_brain_context(
+                    from .context_pack import assemble_run_prompt, pack_allows_context_search, pack_has_references, should_prepend_brain, estimate_tokens as _estimate_tokens
+                    from .runner_common import brain_event_from_pack
+
+                    assembled_prompt, context_components = assemble_run_prompt(
+                        prompt,
+                        run.get("contextPack"),
+                        run.get("memoryBlock"),
+                    )
+                    pack = run.get("contextPack")
+                    if should_prepend_brain(use_brain, pack):
+                        prompt_for_skills, seq = await maybe_prepend_brain_context(
+                            http,
+                            agent_id=identity.agent_id,
+                            run_id=run_id,
+                            headers=headers,
+                            prompt=assembled_prompt,
+                            use_brain=use_brain,
+                            seq=seq,
+                            log=_log,
+                        )
+                        if use_brain and prompt_for_skills != assembled_prompt:
+                            context_components = {
+                                **context_components,
+                                "brain": max(
+                                    0,
+                                    _estimate_tokens(prompt_for_skills) - _estimate_tokens(assembled_prompt),
+                                ),
+                            }
+                    else:
+                        prompt_for_skills = assembled_prompt
+                        owned = brain_event_from_pack(pack) if use_brain else None
+                        if owned:
+                            seq = await emit_event(
+                                http,
+                                agent_id=identity.agent_id,
+                                run_id=run_id,
+                                headers=headers,
+                                seq=seq,
+                                event_type="log",
+                                data=owned,
+                            )
+                    seq = await emit_event(
                         http,
                         agent_id=identity.agent_id,
                         run_id=run_id,
                         headers=headers,
-                        prompt=prompt,
-                        use_brain=use_brain,
                         seq=seq,
-                        log=_log,
+                        event_type="log",
+                        data={
+                            "message": "context_pack",
+                            "packId": (run.get("contextPack") or {}).get("packId")
+                            if isinstance(run.get("contextPack"), dict)
+                            else None,
+                            "estimatedTokens": (run.get("contextPack") or {}).get("estimatedTokens")
+                            if isinstance(run.get("contextPack"), dict)
+                            else None,
+                            "components": context_components,
+                            "referenceCount": len((run.get("contextPack") or {}).get("references") or [])
+                            if isinstance(run.get("contextPack"), dict)
+                            else 0,
+                        },
+                        soft=True,
                     )
-                    memory_block = run.get("memoryBlock")
-                    if isinstance(memory_block, str) and memory_block.strip():
-                        prompt_for_skills = f"{memory_block.strip()}\n\n---\n\n{prompt_for_skills}"
                     enriched_prompt = prompt_for_skills
                     if selected_skills:
                         enriched_prompt = (
@@ -468,6 +525,11 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         mcp_servers=mcp_servers,
                         tool_profile=tool_profile,
                         askable_agents=run.get("askableAgents") or [],
+                        has_context_refs=pack_has_references(run.get("contextPack")),
+                        enable_context_search=pack_allows_context_search(
+                            run.get("contextPack"),
+                            bool(run.get("useBrain")),
+                        ),
                     )
                     if run_router.last_budget_report:
                         _log("tool_budget", run_id=run_id, **run_router.last_budget_report)
@@ -543,6 +605,13 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                         agents3_context=agents3_context,
                         mcp_servers=mcp_servers,
                         subagent_context=subagent_context,
+                        live_tools=tools,
+                        team_id=str(run.get("teamId") or run.get("team_id") or "") or None,
+                        has_context_refs=pack_has_references(run.get("contextPack")),
+                        enable_context_search=pack_allows_context_search(
+                            run.get("contextPack"),
+                            bool(run.get("useBrain")),
+                        ),
                     )
 
                     tools_json = json.dumps(tools, sort_keys=True)
@@ -602,6 +671,7 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                                 identity,
                             ),
                             subagent_context=subagent_context,
+                            context_components=context_components,
                         )
                     )
 
@@ -630,36 +700,17 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                                 "tools": pipeline_tools,
                             },
                         )
-                    seq = await emit_event(
+                    seq = await emit_inference_result_events(
                         http,
                         agent_id=identity.agent_id,
                         run_id=run_id,
                         headers=headers,
                         seq=seq,
-                        event_type="log",
-                        data={
-                            "message": "inference_success",
-                            "model": model,
-                            "usage": proxy_usage,
-                            "tool_calls_executed": tool_calls,
-                        },
-                    )
-                    seq = await stream_assistant_deltas(
-                        http,
-                        agent_id=identity.agent_id,
-                        run_id=run_id,
-                        headers=headers,
-                        seq=seq,
+                        model=model,
+                        usage=proxy_usage,
+                        tool_calls=tool_calls,
                         content=content,
-                    )
-                    seq = await emit_event(
-                        http,
-                        agent_id=identity.agent_id,
-                        run_id=run_id,
-                        headers=headers,
-                        seq=seq,
-                        event_type="log",
-                        data={"message": "run_result", "turns": turns, "tool_calls": tool_calls},
+                        turns=turns,
                     )
 
                     # Fallback when the model ends on tool calls with no final text —
@@ -723,10 +774,11 @@ async def _poll_and_execute_loop(identity: AgentIdentity, runner_token: str) -> 
                                 turns=turns,
                             )
 
-                    complete_body = (
-                        {"ok": True, "result": final_content}
-                        if run_ok
-                        else {"ok": False, "errorMessage": run_error_msg, "result": final_content}
+                    complete_body = runner_completion_body(
+                        run_id=run_id,
+                        ok=run_ok,
+                        result=final_content,
+                        error_message=None if run_ok else run_error_msg,
                     )
                     await http.post_json(
                         f"/api/v1/agents/{identity.agent_id}/runs/{run_id}/complete",

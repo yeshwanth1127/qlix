@@ -16,6 +16,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["qlixdev.exora.solutions"],
   images: {
     remotePatterns: [
       {

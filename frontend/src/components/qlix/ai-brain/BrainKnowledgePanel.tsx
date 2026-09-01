@@ -275,14 +275,14 @@ export function BrainKnowledgePanel({
                   onClick={() => onSelectCollection(c.id)}
                   className={cn(
                     "agents-list-row group flex w-full items-center gap-4 px-5 py-4 text-left transition-colors",
-                    selectedRow ? "bg-white/70" : "hover:bg-white/55",
+                    selectedRow ? "bg-[#E2F0CC]/70" : "hover:bg-[#E2F0CC]/55",
                   )}
                   style={{ animationDelay: `${index * 40}ms` } as CSSProperties}
                   aria-pressed={selectedRow}
                 >
                   <span
                     className={cn(
-                      "relative grid size-9 shrink-0 place-items-center rounded-xl border bg-white/70",
+                      "relative grid size-9 shrink-0 place-items-center rounded-xl border bg-[#E2F0CC]/70",
                       HAIRLINE,
                       selectedRow && "border-black/25 bg-black text-white",
                     )}
@@ -342,7 +342,7 @@ export function BrainKnowledgePanel({
                   disabled={collections.length === 0}
                   onClick={() => setPickerOpen((o) => !o)}
                   className={cn(
-                    "inline-flex min-w-[11rem] items-center justify-between gap-2 rounded-full border bg-white/70 px-3.5 py-2 text-[12px] transition-colors",
+                    "inline-flex min-w-[11rem] items-center justify-between gap-2 rounded-full border bg-[#E2F0CC]/70 px-3.5 py-2 text-[12px] transition-colors",
                     HAIRLINE,
                     collections.length === 0 && "opacity-40",
                   )}
@@ -367,7 +367,7 @@ export function BrainKnowledgePanel({
                     />
                     <ul
                       role="listbox"
-                      className="absolute right-0 z-20 mt-1.5 max-h-56 min-w-[14rem] overflow-y-auto rounded-2xl border border-black/12 bg-white/95 py-1.5 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl"
+                      className="absolute right-0 z-20 mt-1.5 max-h-56 min-w-[14rem] overflow-y-auto rounded-2xl border border-black/12 bg-[#E2F0CC]/95 py-1.5 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl"
                     >
                       {collections.map((c) => {
                         const active = c.id === selectedCollectionId;
@@ -400,7 +400,7 @@ export function BrainKnowledgePanel({
 
             {/* Mode tabs */}
             <div
-              className={cn("mt-4 inline-flex rounded-full border bg-white/50 p-1", HAIRLINE)}
+              className={cn("mt-4 inline-flex rounded-full border bg-[#E2F0CC]/50 p-1", HAIRLINE)}
               role="tablist"
               aria-label="Ingest method"
             >
@@ -456,7 +456,7 @@ export function BrainKnowledgePanel({
                     "relative flex flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-10 text-center transition-colors",
                     dragOver
                       ? "border-black bg-black/[0.03]"
-                      : "border-black/20 bg-white/40 hover:border-black/35 hover:bg-white/55",
+                      : "border-black/20 bg-[#E2F0CC]/40 hover:border-black/35 hover:bg-[#E2F0CC]/55",
                   )}
                 >
                   <input
@@ -473,7 +473,7 @@ export function BrainKnowledgePanel({
                   />
                   <span
                     className={cn(
-                      "mb-3 grid size-10 place-items-center rounded-2xl border bg-white/80",
+                      "mb-3 grid size-10 place-items-center rounded-2xl border bg-[#E2F0CC]/80",
                       HAIRLINE,
                     )}
                     aria-hidden
@@ -501,7 +501,7 @@ export function BrainKnowledgePanel({
                       <li
                         key={`${f.name}-${f.size}-${f.lastModified}-${i}`}
                         className={cn(
-                          "flex items-center gap-3 rounded-xl border bg-white/60 px-3.5 py-2.5",
+                          "flex items-center gap-3 rounded-xl border bg-[#E2F0CC]/60 px-3.5 py-2.5",
                           HAIRLINE,
                         )}
                       >
@@ -547,7 +547,7 @@ export function BrainKnowledgePanel({
             )}
 
             {ingestProgress ? (
-              <div className={cn("rounded-xl border bg-white/60 px-4 py-3", HAIRLINE)}>
+              <div className={cn("rounded-xl border bg-[#E2F0CC]/60 px-4 py-3", HAIRLINE)}>
                 <div className="mb-2 flex items-center justify-between text-[12px]">
                   <span className={INK_SOFT}>
                     Ingesting {ingestProgress.done + 1} of {ingestProgress.total}…
@@ -610,8 +610,8 @@ export function BrainKnowledgePanel({
 
       {/* Create collection modal */}
       {createOpen ? (
-        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-white/70 p-4 backdrop-blur-sm">
-          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-white/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
+        <div className="qlix-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-[#E2F0CC]/70 p-4 backdrop-blur-sm">
+          <div className="qlix-scale-in w-full max-w-sm rounded-2xl border border-black/12 bg-[#E2F0CC]/95 p-6 shadow-[var(--sketch-shadow-hover)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className={sketchLabel}>New collection</h2>

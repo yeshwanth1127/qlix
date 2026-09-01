@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/agent-runtime/runner-response.v1.schema.json",
+  "title": "Qlix Runner Response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "runId", "ok"],
+  "properties": {
+    "contractVersion": { "const": "qlix.runner-response.v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "ok": { "type": "boolean" },
+    "result": {},
+    "errorMessage": { "type": "string" }
+  }
+}

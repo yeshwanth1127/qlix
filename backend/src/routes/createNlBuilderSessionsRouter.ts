@@ -4,6 +4,19 @@ import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { prisma } from '../lib/prisma.js';
+import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
+import {
+  InferenceConfigError,
+  InferenceProviderError,
+} from '../llm/inferenceRouter.js';
+import { NLParseError } from '../agents/nlParse.js';
+import { BuilderDiscoveryError } from '../builder/discovery.service.js';
+import {
+  BuilderSessionBusyError,
+  BuilderSessionConflictError,
+  BuilderSessionNotFoundError,
+  processBuilderTurn,
+} from '../builder/session.service.js';
 
 const SESSION_LIMIT = 50;
 
@@ -18,6 +31,12 @@ const updateSchema = z.object({
   teamId: z.string().min(1).max(80).nullable().optional(),
 });
 
+const messageSchema = z.object({
+  content: z.string().trim().min(1).max(5000),
+  model: z.string().trim().min(1).max(200).optional(),
+  intent: z.enum(['message', 'redesign']).optional(),
+});
+
 function serializeSession<T extends {
   id: string;
   title: string;
@@ -26,6 +45,11 @@ function serializeSession<T extends {
   createdAgentIds: string[];
   teamId: string | null;
   transcript?: unknown;
+  phase?: string;
+  stateVersion?: number;
+  requirements?: unknown;
+  readiness?: unknown;
+  rollingSummary?: string;
 }>(row: T) {
   return {
     id: row.id,
@@ -34,6 +58,11 @@ function serializeSession<T extends {
     updatedAt: row.updatedAt.toISOString(),
     createdAgentIds: row.createdAgentIds,
     teamId: row.teamId,
+    ...(row.phase !== undefined ? { phase: row.phase } : {}),
+    ...(row.stateVersion !== undefined ? { stateVersion: row.stateVersion } : {}),
+    ...(row.requirements !== undefined ? { requirements: row.requirements } : {}),
+    ...(row.readiness !== undefined ? { readiness: row.readiness } : {}),
+    ...(row.rollingSummary !== undefined ? { rollingSummary: row.rollingSummary } : {}),
     ...(row.transcript !== undefined ? { transcript: row.transcript } : {}),
   };
 }
@@ -89,6 +118,11 @@ export function createNlBuilderSessionsRouter(): Router {
           createdAgentIds: true,
           teamId: true,
           transcript: true,
+          phase: true,
+          stateVersion: true,
+          requirements: true,
+          readiness: true,
+          rollingSummary: true,
         },
       });
       res.status(201).json({ session: serializeSession(session) });
@@ -114,6 +148,11 @@ export function createNlBuilderSessionsRouter(): Router {
           createdAgentIds: true,
           teamId: true,
           transcript: true,
+          phase: true,
+          stateVersion: true,
+          requirements: true,
+          readiness: true,
+          rollingSummary: true,
         },
       });
       if (!session) {
@@ -166,6 +205,11 @@ export function createNlBuilderSessionsRouter(): Router {
           createdAgentIds: true,
           teamId: true,
           transcript: true,
+          phase: true,
+          stateVersion: true,
+          requirements: true,
+          readiness: true,
+          rollingSummary: true,
         },
       });
       res.json({ session: serializeSession(session) });
@@ -174,6 +218,73 @@ export function createNlBuilderSessionsRouter(): Router {
       res.status(500).json({ error: { code: 'session_update_failed', message: 'Failed to save chat' } });
     }
   });
+
+  /**
+   * Server-owned conversational discovery turn. It persists the raw message,
+   * semantic facts, state events and an immutable snapshot before responding.
+   * A plan is returned only after discovery is ready and the user explicitly
+   * asks to proceed.
+   */
+  router.post(
+    '/:sessionId/messages',
+    requireSubscriptionAccess,
+    async (req: Request, res: Response) => {
+      const parsed = messageSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({
+          error: { code: 'invalid_body', message: 'content is required (1-5000 chars)' },
+        });
+        return;
+      }
+      try {
+        const result = await processBuilderTurn({
+          sessionId: String(req.params.sessionId),
+          userId: req.auth!.userId,
+          orgId: req.auth!.orgId,
+          content: parsed.data.content,
+          model: parsed.data.model,
+          intent: parsed.data.intent,
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof BuilderSessionNotFoundError) {
+          res.status(404).json({ error: { code: 'not_found', message: err.message } });
+          return;
+        }
+        if (err instanceof BuilderSessionConflictError) {
+          res.status(409).json({ error: { code: 'session_conflict', message: err.message } });
+          return;
+        }
+        if (err instanceof BuilderSessionBusyError) {
+          res.status(409).json({ error: { code: 'session_busy', message: err.message } });
+          return;
+        }
+        if (err instanceof InferenceConfigError) {
+          res.status(503).json({
+            error: { code: 'inference_not_configured', message: err.message },
+          });
+          return;
+        }
+        if (err instanceof InferenceProviderError) {
+          res.status(502).json({
+            error: {
+              code: 'inference_provider_failed',
+              message: `${err.provider} is temporarily unavailable; please try again`,
+            },
+          });
+          return;
+        }
+        if (err instanceof BuilderDiscoveryError || err instanceof NLParseError) {
+          res.status(422).json({ error: { code: 'builder_turn_failed', message: err.message } });
+          return;
+        }
+        console.error('nl-builder/sessions:message', err);
+        res.status(500).json({
+          error: { code: 'builder_turn_error', message: 'Failed to continue builder conversation' },
+        });
+      }
+    },
+  );
 
   router.delete('/:sessionId', async (req: Request, res: Response) => {
     try {

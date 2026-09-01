@@ -19,6 +19,43 @@ interface UserAccountMenuProps {
   readonly onOpenChange?: (open: boolean) => void;
 }
 
+export function LogoutButton() {
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+  const { session, refresh } = useSession();
+
+  if (!session) return null;
+
+  async function logout() {
+    setBusy(true);
+    try {
+      await postLogout();
+      await refresh();
+      router.push("/sign-in");
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => void logout()}
+      className="inline-flex h-9 items-center gap-2 rounded-md border border-[#012F13] bg-[#E2F0CC] px-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#012F13] shadow-[3px_3px_0_rgba(1,47,19,0.18)] transition-transform hover:bg-[#012F13] hover:text-white active:translate-x-0.5 active:translate-y-0.5 active:shadow-none disabled:opacity-50"
+      aria-label="Log out"
+    >
+      {busy ? (
+        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+      ) : (
+        <LogOut className="size-3.5" strokeWidth={1.9} aria-hidden />
+      )}
+      <span>{busy ? "Logging out" : "Log out"}</span>
+    </button>
+  );
+}
+
 export function UserAccountMenu({
   variant = "chrome",
   open: openProp,
@@ -117,7 +154,7 @@ export function UserAccountMenu({
           : "hover:border-black hover:bg-[color:var(--sketch-purple-soft)]",
       )
     : cn(
-        "flex size-8 flex-shrink-0 items-center justify-center rounded-full border border-black/15 bg-white/70 text-black backdrop-blur-sm transition-colors hover:border-black hover:bg-black hover:text-white",
+        "flex size-8 flex-shrink-0 items-center justify-center rounded-full border border-black/15 bg-[#E2F0CC]/70 text-black backdrop-blur-sm transition-colors hover:border-black hover:bg-black hover:text-white",
       );
 
   const menuItemClass =
@@ -193,7 +230,7 @@ export function UserAccountMenu({
             ref={panelRef}
             role="menu"
             style={{ bottom: sidebarPanelPos.bottom, left: sidebarPanelPos.left }}
-            className="sketch-panel-in fixed z-[100] w-56 max-h-[min(70vh,28rem)] overflow-y-auto rounded-2xl border border-black/10 bg-white/92 p-3 shadow-[0_16px_40px_-20px_rgba(16,14,22,0.35)] backdrop-blur-2xl"
+            className="sketch-panel-in fixed z-[100] w-56 max-h-[min(70vh,28rem)] overflow-y-auto rounded-2xl border border-black/10 bg-[#E2F0CC]/92 p-3 shadow-[0_16px_40px_-20px_rgba(16,14,22,0.35)] backdrop-blur-2xl"
           >
             <div className="mb-2.5 flex items-center justify-between border-b border-black/8 pb-2">
               <span className={cn(sketchLabel, "text-[10px]")}>Account</span>
@@ -217,7 +254,7 @@ export function UserAccountMenu({
       <div
         ref={panelRef}
         role="menu"
-        className="absolute right-0 z-[100] mt-1 w-[min(280px,calc(100vw-2rem))] rounded-2xl border border-black/10 bg-white/90 p-2 shadow-[0_24px_56px_-24px_rgba(16,14,22,0.35)] backdrop-blur-xl"
+        className="absolute right-0 z-[100] mt-1 w-[min(280px,calc(100vw-2rem))] rounded-2xl border border-black/10 bg-[#E2F0CC]/90 p-2 shadow-[0_24px_56px_-24px_rgba(16,14,22,0.35)] backdrop-blur-xl"
       >
         <div className="border-b border-black/10 px-1 pb-2">
           <p className="text-[13px] font-medium text-black">Account</p>

@@ -1,0 +1,16 @@
+{
+  "contractVersion": "qlix.runtime-event.v1",
+  "eventId": "evt_example_1",
+  "runId": "run_example_1",
+  "sequence": 7,
+  "occurredAt": "2026-08-23T10:00:00.000Z",
+  "source": "hybrid_runner",
+  "type": "tool_finished",
+  "data": {
+    "toolName": "research_read_url",
+    "success": true
+  },
+  "links": {
+    "toolCallId": "tool_call_example_1"
+  }
+}

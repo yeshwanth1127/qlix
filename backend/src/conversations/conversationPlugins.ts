@@ -1,9 +1,25 @@
 import type { ConversationEffectHandler, ConversationOutboxJob } from './conversationWorkers.service.js';
+import type { PermissionScope } from '../agents/agents.types.js';
+import {
+  PluginLifecycleRegistry,
+  type DisposableRegistration,
+  type PluginOwner,
+} from '../plugins/pluginLifecycle.js';
+import {
+  fallbackPromptFromContent,
+  type ConversationPrompt,
+} from './conversationPrompt.js';
 
 export type ConversationPluginContext = {
   orgId: string;
   threadId: string;
   idempotencyKey: string;
+};
+
+export type ConversationSendInput = {
+  content: string;
+  prompt: ConversationPrompt;
+  metadata?: Record<string, unknown>;
 };
 
 export interface ConversationActionPlugin {
@@ -15,27 +31,61 @@ export interface ConversationActionPlugin {
 
 export interface ConversationChannelAdapter {
   channel: string;
-  send(
-    context: ConversationPluginContext,
-    input: { content: string; metadata?: Record<string, unknown> },
-  ): Promise<unknown>;
+  /** Existing agent PermissionScope this channel uses for outbound sends. Null = no JIT send. */
+  sendScope?: PermissionScope | null;
+  send(context: ConversationPluginContext, input: ConversationSendInput): Promise<unknown>;
+}
+
+/** Channel id → existing send scope. Choice prompts reuse these; they are not new catalog ids. */
+export const CHANNEL_SEND_SCOPES: Record<string, PermissionScope | null> = {
+  whatsapp: 'whatsapp.contact_send',
+  assessment: null,
+};
+
+export function sendScopeForChannel(channel: string): PermissionScope | null {
+  return CHANNEL_SEND_SCOPES[channel] ?? null;
 }
 
 /** Explicit registries keep workflow JSON from invoking arbitrary application code. */
 export class ConversationPluginRegistry {
-  private readonly actions = new Map<string, ConversationActionPlugin>();
-  private readonly channels = new Map<string, ConversationChannelAdapter>();
+  private readonly actions = new PluginLifecycleRegistry<ConversationActionPlugin>();
+  private readonly channels = new PluginLifecycleRegistry<ConversationChannelAdapter>();
 
-  registerAction(plugin: ConversationActionPlugin): this {
-    if (this.actions.has(plugin.name)) throw new Error(`Conversation action already registered: ${plugin.name}`);
-    this.actions.set(plugin.name, plugin);
+  registerAction(plugin: ConversationActionPlugin, owner?: PluginOwner): this {
+    this.registerActionDisposable(plugin, owner);
     return this;
   }
 
-  registerChannel(adapter: ConversationChannelAdapter): this {
-    if (this.channels.has(adapter.channel)) throw new Error(`Conversation channel already registered: ${adapter.channel}`);
-    this.channels.set(adapter.channel, adapter);
+  registerActionDisposable(plugin: ConversationActionPlugin, owner?: PluginOwner): DisposableRegistration {
+    return this.actions.register(plugin.name, plugin, { owner });
+  }
+
+  registerChannel(adapter: ConversationChannelAdapter, owner?: PluginOwner): this {
+    this.registerChannelDisposable(adapter, owner);
     return this;
+  }
+
+  registerChannelDisposable(adapter: ConversationChannelAdapter, owner?: PluginOwner): DisposableRegistration {
+    return this.channels.register(adapter.channel, adapter, { owner });
+  }
+
+  getChannel(channel: string): ConversationChannelAdapter | undefined {
+    return this.channels.get(channel);
+  }
+
+  async deliverSend(
+    channel: string,
+    context: ConversationPluginContext,
+    input: ConversationSendInput,
+  ): Promise<unknown> {
+    if (!this.channels.get(channel)) {
+      throw new Error(`Conversation channel is not registered: ${channel || '(missing)'}`);
+    }
+    return this.channels.run(channel, (adapter) => adapter.send(context, input));
+  }
+
+  async disposeOwner(ownerId: string): Promise<void> {
+    await Promise.all([this.actions.disposeOwner(ownerId), this.channels.disposeOwner(ownerId)]);
   }
 
   handlers(): Partial<Record<string, ConversationEffectHandler>> {
@@ -51,24 +101,24 @@ export class ConversationPluginRegistry {
 
   private async runAction(job: ConversationOutboxJob): Promise<unknown> {
     const action = typeof job.payload.action === 'string' ? job.payload.action : '';
-    const plugin = this.actions.get(action);
-    if (!plugin) throw new Error(`Conversation action is not allowlisted: ${action || '(missing)'}`);
-    const input = plugin.validate(job.payload.input);
-    const context = this.context(job);
-    await plugin.authorize(context, input);
-    return plugin.execute(context, input);
+    if (!this.actions.get(action)) throw new Error(`Conversation action is not allowlisted: ${action || '(missing)'}`);
+    return this.actions.run(action, async (plugin) => {
+      const input = plugin.validate(job.payload.input);
+      const context = this.context(job);
+      await plugin.authorize(context, input);
+      return plugin.execute(context, input);
+    });
   }
 
   private async runSend(job: ConversationOutboxJob): Promise<unknown> {
     const channel = typeof job.payload.channel === 'string' ? job.payload.channel : '';
-    const adapter = this.channels.get(channel);
-    if (!adapter) throw new Error(`Conversation channel is not registered: ${channel || '(missing)'}`);
     const content = typeof job.payload.content === 'string' ? job.payload.content : '';
-    if (!content) throw new Error('Conversation send content is required');
+    const prompt = fallbackPromptFromContent(content, job.payload.prompt);
+    if (!prompt.content.trim()) throw new Error('Conversation send content is required');
     const metadata = job.payload.metadata && typeof job.payload.metadata === 'object'
       ? job.payload.metadata as Record<string, unknown>
       : undefined;
-    return adapter.send(this.context(job), { content, metadata });
+    return this.deliverSend(channel, this.context(job), { content: prompt.content, prompt, metadata });
   }
 }
 

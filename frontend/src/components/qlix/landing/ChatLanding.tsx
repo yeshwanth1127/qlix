@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -23,10 +23,10 @@ import {
   Wand2,
 } from "lucide-react";
 import {
-  nlParsePrompt,
   saveBuilderPrompt,
   listBuilderSessions,
   createBuilderSession,
+  sendBuilderTurn,
   getBuilderSession,
   updateBuilderSession,
   deleteBuilderSession,
@@ -39,10 +39,14 @@ import {
   createAgent,
   deleteAgent,
   confirmDownload,
+  buildTeamRunModelGroups,
   CLOUD_MODELS,
   EXORA_MODELS,
+  fetchModelCatalog,
+  formatModelOptionLabel,
   type CreateAgentResponse,
   type AgentRuntime,
+  type ModelCatalogEntry,
 } from "@/lib/agents-api";
 import { createTeam, setSupervisorAgent, addTeamMember } from "@/lib/teams-api";
 import {
@@ -57,8 +61,9 @@ import {
 import { downloadBase64File, downloadJsonFile, stashStarterPack } from "@/lib/download";
 import { detectHybridClientPlatform } from "@/lib/hybrid-platform";
 import { scopesRequireHybrid } from "@/lib/agent-runtime";
-import { postGuestSession, type AuthSuccessResponse } from "@/lib/auth-api";
+import { getSession, postGuestSession, type AuthSuccessResponse } from "@/lib/auth-api";
 import { useSession } from "@/components/qlix/session-context";
+import { LogoutButton } from "@/components/qlix/user-account-menu";
 import { ClaimAccountModal } from "@/components/qlix/ClaimAccountModal";
 import { HybridRunnerSetupPopup } from "@/components/qlix/agents/HybridRunnerSetupPopup";
 import { NLPlanPreview } from "@/components/qlix/agents/nl/NLPlanPreview";
@@ -66,6 +71,7 @@ import { AddCapabilitiesPanel } from "@/components/qlix/agents/nl/AddCapabilitie
 import { NLCreationProgress, type CreationStep } from "@/components/qlix/agents/nl/NLCreationProgress";
 import { RequiredConnectorsPopup } from "@/components/qlix/agents/nl/RequiredConnectorsPopup";
 import { QlixWordmark } from "@/components/qlix/landing/QlixWordmark";
+import { ParticleText } from "@/components/qlix/landing/ParticleText";
 import {
   ParticleConstellation,
   type ConstellationShape,
@@ -249,25 +255,12 @@ const REDESIGN_HINTS = [
 const OPEN_REDESIGN_NOTE =
   "Take a different approach — rethink the permissions, the runtime, and whether a team fits better.";
 
-/** Folds the original prompt and every change request into one builder prompt. */
-function composeDesignPrompt(base: string, revisions: readonly string[]): string {
-  const prompt =
-    revisions.length === 0
-      ? base
-      : `${base}\n\nRedesign that agent with these changes:\n${revisions.map((r) => `- ${r}`).join("\n")}`;
-  return prompt.slice(0, 5000);
-}
-
 /** Guests: cloud-only for web agents; hybrid when scopes need local tools (desktop/files). */
 const GUEST_MAX_AGENTS = 3;
 /** Model used to design/plan agents in the AI Builder (OpenRouter). */
 const DEFAULT_BUILDER_PARSE_MODEL = "openrouter/openai/gpt-4o-mini";
 /** Default model stamped onto created agents (Exora). */
 const DEFAULT_AGENT_MODEL = "exora/exora-general";
-const BUILDER_MODELS = [
-  { id: DEFAULT_BUILDER_PARSE_MODEL, label: "GPT-4o Mini" },
-] as const;
-
 function adaptSpecForGuest<T extends NLAgentSpec | NLWorkerSpec>(spec: T): T {
   const proxyModels = [...CLOUD_MODELS, ...EXORA_MODELS] as readonly string[];
   const model = proxyModels.includes(spec.model)
@@ -393,9 +386,9 @@ function ResultRow({
   // History restore — no starter pack / credentials, just a link back to the agent.
   if (!response || !agent) {
     return (
-      <div className="rounded-xl border border-black/10 bg-white/70 p-3 text-[12px] shadow-[0_10px_24px_-18px_rgba(28,24,48,0.3)] backdrop-blur-sm">
-        <div className="flex items-center gap-2 font-medium text-[#1c1830]">
-          <Bot className="size-3.5 text-[#1c1830]" aria-hidden />
+      <div className="rounded-xl border border-black/10 bg-[#E2F0CC]/70 p-3 text-[12px] shadow-[0_10px_24px_-18px_rgba(28,24,48,0.3)] backdrop-blur-sm">
+        <div className="flex items-center gap-2 font-medium text-[#012F13]">
+          <Bot className="size-3.5 text-[#012F13]" aria-hidden />
           {doneAgent.label ?? doneAgent.name}
           <span className="ml-auto text-[10px] text-black/45">
             {doneAgent.runtime === "cloud" ? "Cloud" : doneAgent.runtime === "hybrid" ? "Hybrid" : "Local"}
@@ -404,13 +397,13 @@ function ResultRow({
         <div className="mt-2 flex items-center gap-3">
           <Link
             href={`${routePrefix}/agents/${doneAgent.id}/chat`}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[#1c1830] px-2.5 py-1 text-[11px] font-semibold text-white hover:brightness-110"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[#012F13] px-2.5 py-1 text-[11px] font-semibold text-white hover:brightness-110"
           >
             Chat with it →
           </Link>
           <Link
             href={`${routePrefix}/agents/${doneAgent.id}`}
-            className="text-[11px] text-black/55 hover:text-[#1c1830]"
+            className="text-[11px] text-black/55 hover:text-[#012F13]"
           >
             Open agent
           </Link>
@@ -429,10 +422,10 @@ function ResultRow({
         />
         <div className="flex items-center gap-2.5">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-amber-400/10">
-            <Download className="size-3.5 text-[#1c1830]" aria-hidden />
+            <Download className="size-3.5 text-[#012F13]" aria-hidden />
           </div>
           <div>
-            <p className="text-[12.5px] font-semibold text-[#1c1830]">{agent.name}</p>
+            <p className="text-[12.5px] font-semibold text-[#012F13]">{agent.name}</p>
             <p className="text-[10.5px] text-black/55">{hybridStarterPack?.filename ?? "starter-pack.zip"}</p>
           </div>
         </div>
@@ -446,7 +439,7 @@ function ResultRow({
             ] as const
           ).map(({ n, text }) => (
             <div key={n} className="flex items-center gap-2.5">
-              <span className="flex size-4.5 shrink-0 items-center justify-center rounded-full bg-amber-400/15 text-[9.5px] font-semibold text-[#1c1830]">
+              <span className="flex size-4.5 shrink-0 items-center justify-center rounded-full bg-amber-400/15 text-[9.5px] font-semibold text-[#012F13]">
                 {n}
               </span>
               <span className="text-[12px] text-black/65">{text}</span>
@@ -457,12 +450,12 @@ function ResultRow({
         <button
           type="button"
           onClick={download}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 px-4 py-2 text-[12.5px] font-semibold text-[#1c1830] transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-400/20 active:scale-[0.99]"
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 px-4 py-2 text-[12.5px] font-semibold text-[#012F13] transition-all duration-200 hover:border-amber-400/40 hover:bg-amber-400/20 active:scale-[0.99]"
         >
           {downloaded ? (
             <>
-              <Check className="size-3.5 text-[#1c1830]" aria-hidden />
-              <span className="text-[#1c1830]">Downloaded — download again</span>
+              <Check className="size-3.5 text-[#012F13]" aria-hidden />
+              <span className="text-[#012F13]">Downloaded — download again</span>
             </>
           ) : (
             <>
@@ -482,7 +475,7 @@ function ResultRow({
         <div className="flex items-center gap-3 pt-0.5">
           <Link
             href={`${routePrefix}/agents/${agent.id}/chat`}
-            className="text-[11px] font-medium text-black/55 hover:text-[#1c1830]"
+            className="text-[11px] font-medium text-black/55 hover:text-[#012F13]"
           >
             Chat with it →
           </Link>
@@ -498,14 +491,14 @@ function ResultRow({
   }
 
   return (
-    <div className="rounded-xl border border-black/10 bg-white/70 p-3 text-[12px] shadow-[0_10px_24px_-18px_rgba(28,24,48,0.3)] backdrop-blur-sm">
-      <div className="flex items-center gap-2 font-medium text-[#1c1830]">
-        <Bot className="size-3.5 text-[#1c1830]" aria-hidden />
+    <div className="rounded-xl border border-black/10 bg-[#E2F0CC]/70 p-3 text-[12px] shadow-[0_10px_24px_-18px_rgba(28,24,48,0.3)] backdrop-blur-sm">
+      <div className="flex items-center gap-2 font-medium text-[#012F13]">
+        <Bot className="size-3.5 text-[#012F13]" aria-hidden />
         {agent.name}
         <span className="ml-auto flex items-center gap-1 text-[10px] text-black/45">
           {agent.runtime === "cloud" ? (
             <>
-              <Check className="size-3 text-[#1c1830]" aria-hidden />
+              <Check className="size-3 text-[#012F13]" aria-hidden />
               live on Qlix cloud
             </>
           ) : (
@@ -521,13 +514,13 @@ function ResultRow({
       <div className="mt-2 flex items-center gap-3">
         <Link
           href={`${routePrefix}/agents/${agent.id}/chat`}
-          className="inline-flex items-center gap-1.5 rounded-full bg-[#1c1830] px-2.5 py-1 text-[11px] font-semibold text-white hover:brightness-110"
+          className="inline-flex items-center gap-1.5 rounded-full bg-[#012F13] px-2.5 py-1 text-[11px] font-semibold text-white hover:brightness-110"
         >
           Chat with it →
         </Link>
         <Link
           href={`${routePrefix}/agents/${agent.id}`}
-          className="text-[11px] text-black/55 hover:text-[#1c1830]"
+          className="text-[11px] text-black/55 hover:text-[#012F13]"
         >
           Open agent
         </Link>
@@ -535,7 +528,7 @@ function ResultRow({
           <button
             type="button"
             onClick={download}
-            className="inline-flex items-center gap-1 text-[11px] text-[#1c1830] hover:text-black/70"
+            className="inline-flex items-center gap-1 text-[11px] text-[#012F13] hover:text-black/70"
           >
             <Download className="size-3" aria-hidden />
             {downloaded ? "Download again" : "Download agent"}
@@ -566,11 +559,12 @@ export function ChatLanding({
 }: ChatLandingProps = {}) {
   const isDashboard = variant === "dashboard";
   const router = useRouter();
-  const { session, refresh: refreshSession } = useSession();
+  const { session, loading: sessionLoading, refresh: refreshSession } = useSession();
   const [introDone, setIntroDone] = useState(isDashboard);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [builderModel, setBuilderModel] = useState<string>(DEFAULT_BUILDER_PARSE_MODEL);
+  const [openrouterCatalog, setOpenrouterCatalog] = useState<ModelCatalogEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [claimOpen, setClaimOpen] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -598,6 +592,25 @@ export function ChatLanding({
   useEffect(() => {
     if (session) sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelCatalog("openrouter").then((result) => {
+      if (!cancelled && result.ok) setOpenrouterCatalog(result.models);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const builderModelGroups = useMemo(
+    () => buildTeamRunModelGroups(openrouterCatalog),
+    [openrouterCatalog],
+  );
+  const builderModelIds = useMemo(
+    () => new Set(builderModelGroups.flatMap((group) => group.options.map((option) => option.id))),
+    [builderModelGroups],
+  );
 
   const nextId = () => ++idRef.current;
   const push = (item: NewChatItem) => {
@@ -756,7 +769,10 @@ export function ChatLanding({
   const constShape: ConstellationShape = hasConversation
     ? SHAPE_SEQUENCE[Math.min(Math.max(userTurns, 1), SHAPE_SEQUENCE.length) - 1]
     : "scramble";
-  const shapeSide: ConstellationSide = !hasConversation
+  // While work is in progress, keep the animation centered inside this
+  // component's measured viewport (the space remaining after app chrome).
+  // Once the response is ready it may move aside again to frame the result.
+  const shapeSide: ConstellationSide = busy || !hasConversation
     ? "center"
     : userTurns % 2 === 1
       ? "left"
@@ -771,6 +787,15 @@ export function ChatLanding({
   /** Ensures an authenticated session exists, creating a guest workspace if needed. */
   const ensureSession = async (): Promise<AuthSuccessResponse | null> => {
     if (sessionRef.current) return sessionRef.current;
+    if (sessionLoading) {
+      await refreshSession();
+      if (sessionRef.current) return sessionRef.current;
+    }
+    const existing = await getSession();
+    if (existing) {
+      sessionRef.current = existing;
+      return existing;
+    }
     const infoId = push({ kind: "thinking", text: "Spinning up your private workspace…" });
     const res = await postGuestSession();
     if (!res.ok || !res.data) {
@@ -784,34 +809,6 @@ export function ChatLanding({
       text: "Created a private guest workspace for you — no sign-up needed. Everything you build here can be saved to a real account later.",
     });
     return res.data;
-  };
-
-  /** Runs one design pass and drops the resulting plan card into the transcript. */
-  const runDesign = async (base: string, revisions: string[], thinkingText: string) => {
-    const thinkingId = push({ kind: "thinking", text: thinkingText });
-    const res = await nlParsePrompt(composeDesignPrompt(base, revisions), builderModel);
-    if (!res.ok) {
-      replace(thinkingId, { kind: "error", text: res.errorMessage });
-      return;
-    }
-
-      let plan = applyDefaultAgentModel(res.plan);
-    let guestNote: string | null = null;
-    const activeSession = isDashboard ? session : sessionRef.current;
-    if (activeSession?.user.isGuest) {
-      const adapted = adaptPlanForGuest(plan);
-      plan = adapted.plan;
-      guestNote = adapted.note;
-    }
-    replace(thinkingId, {
-      kind: "plan",
-      plan,
-      consumed: false,
-      guestNote,
-      sourceText: base,
-      revisions,
-      superseded: false,
-    });
   };
 
   const handleSubmit = async () => {
@@ -832,14 +829,47 @@ export function ChatLanding({
       }
 
       void saveBuilderPrompt(text);
-      await runDesign(text, [], "Designing your agent…");
+      const thinkingId = push({ kind: "thinking", text: "Understanding what you need…" });
+      const result = await sendBuilderTurn({
+        sessionId: builderSessionIdRef.current,
+        content: text,
+        model: builderModel,
+        title: text.replace(/\s+/g, " ").slice(0, 72),
+      });
+      if (!result.ok) {
+        replace(thinkingId, { kind: "error", text: result.errorMessage });
+        return;
+      }
+      builderSessionIdRef.current = result.sessionId;
+      setBuilderSessionId(result.sessionId);
+
+      replace(thinkingId, { kind: "info", text: result.data.message.content });
+      if (result.data.plan) {
+        let plan = applyDefaultAgentModel(result.data.plan);
+        let guestNote: string | null = null;
+        const activeSession = isDashboard ? session : sessionRef.current;
+        if (activeSession?.user.isGuest) {
+          const adapted = adaptPlanForGuest(plan);
+          plan = adapted.plan;
+          guestNote = adapted.note;
+        }
+        push({
+          kind: "plan",
+          plan,
+          consumed: false,
+          guestNote,
+          sourceText: result.data.planningBrief ?? text,
+          revisions: [],
+          superseded: false,
+        });
+      }
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   };
 
-  /** Sends the plan back through the builder with an extra change request. */
+  /** Sends the redesign request through discovery so facts and plans stay versioned. */
   const requestRedesign = async (
     planItemId: number,
     base: string,
@@ -852,10 +882,50 @@ export function ChatLanding({
     setRedesignFor(null);
     setRedesignNote("");
     try {
-      const trimmed = note.trim();
-      push({ kind: "user", text: trimmed || "Redesign it" });
+      const trimmed = note.trim() || OPEN_REDESIGN_NOTE;
+      const nextRevisions = [...revisions, trimmed];
+      push({ kind: "user", text: trimmed });
       patch(planItemId, { superseded: true });
-      await runDesign(base, [...revisions, trimmed || OPEN_REDESIGN_NOTE], "Redesigning your agent…");
+
+      const thinkingId = push({ kind: "thinking", text: "Redesigning your agent…" });
+      const redesignPrompt = [
+        "Please redesign the agent or team with this change and produce an updated plan:",
+        trimmed,
+      ].join("\n");
+      const result = await sendBuilderTurn({
+        sessionId: builderSessionIdRef.current,
+        content: redesignPrompt.slice(0, 5000),
+        model: builderModel,
+        intent: "redesign",
+        title: base.replace(/\s+/g, " ").slice(0, 72),
+      });
+      if (!result.ok) {
+        replace(thinkingId, { kind: "error", text: result.errorMessage });
+        return;
+      }
+      builderSessionIdRef.current = result.sessionId;
+      setBuilderSessionId(result.sessionId);
+
+      replace(thinkingId, { kind: "info", text: result.data.message.content });
+      if (result.data.plan) {
+        let plan = applyDefaultAgentModel(result.data.plan);
+        let guestNote: string | null = null;
+        const activeSession = isDashboard ? session : sessionRef.current;
+        if (activeSession?.user.isGuest) {
+          const adapted = adaptPlanForGuest(plan);
+          plan = adapted.plan;
+          guestNote = adapted.note;
+        }
+        push({
+          kind: "plan",
+          plan,
+          consumed: false,
+          guestNote,
+          sourceText: result.data.planningBrief ?? base,
+          revisions: nextRevisions,
+          superseded: false,
+        });
+      }
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -1048,7 +1118,7 @@ export function ChatLanding({
 
   const composer = (
     <div className="relative w-full rounded-[1.4rem]">
-      <div className="relative flex items-end gap-2 rounded-[1.4rem] border border-black/10 bg-white/75 px-4 py-3 shadow-[0_1px_1px_rgba(28,24,48,0.04),0_18px_44px_-22px_rgba(28,24,48,0.35),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-xl transition-[border-color,box-shadow] duration-300 focus-within:border-black/25 focus-within:shadow-[0_1px_1px_rgba(28,24,48,0.05),0_24px_56px_-24px_rgba(28,24,48,0.45),inset_0_1px_0_rgba(255,255,255,0.9)]">
+      <div className="chat-composer relative flex items-end gap-2 rounded-[1.4rem] bg-[#E2F0CC]/75 px-4 py-3 backdrop-blur-xl">
         <textarea
           ref={textareaRef}
           value={input}
@@ -1070,8 +1140,9 @@ export function ChatLanding({
           maxLength={5000}
           disabled={busy}
           placeholder="Describe the AI agent you want — it'll be alive in under a minute…"
+          data-chat-input
           className={cn(
-            "max-h-40 w-full resize-none bg-transparent text-[14px] leading-relaxed text-[#26203a] outline-none transition-[min-height] duration-200 placeholder:text-black/35 disabled:opacity-60",
+            "max-h-40 w-full resize-none bg-transparent text-[14px] leading-relaxed text-[#011207] outline-none transition-[min-height] duration-200 placeholder:text-black/35 disabled:opacity-60",
             input ? "min-h-[64px] sm:min-h-[28px]" : "min-h-[28px]",
           )}
         />
@@ -1081,13 +1152,20 @@ export function ChatLanding({
             value={builderModel}
             disabled={busy}
             onChange={(event) => setBuilderModel(event.target.value)}
-            className="max-w-36 rounded-full border border-black/15 bg-white/80 px-2.5 py-1.5 text-[10px] font-medium text-[#26203a] outline-none hover:border-black/30 focus:border-black/40 disabled:opacity-50"
+            className="max-w-36 rounded-full border border-black/15 bg-[#E2F0CC]/80 px-2.5 py-1.5 text-[10px] font-medium text-[#011207] outline-none hover:border-black/30 focus:border-black/40 disabled:opacity-50"
             title="Model used to design and create agents"
           >
-            {BUILDER_MODELS.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
+            {!builderModelIds.has(builderModel) ? (
+              <option value={builderModel}>{formatModelOptionLabel(builderModel)}</option>
+            ) : null}
+            {builderModelGroups.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.options.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -1098,7 +1176,7 @@ export function ChatLanding({
           aria-label="Send"
           className={cn(
             "flex size-9 shrink-0 items-center justify-center rounded-full text-white",
-            "bg-[#1c1830]",
+            "bg-[#012F13]",
             "hover:brightness-110 active:scale-95 motion-safe:transition-[filter,transform]",
             "disabled:cursor-not-allowed disabled:opacity-40",
           )}
@@ -1115,7 +1193,7 @@ export function ChatLanding({
         type="button"
         onClick={startNewChat}
         disabled={busy || (!hasConversation && !builderSessionId)}
-        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-white/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-[#E2F0CC]/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#012F13] transition-colors hover:bg-black/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
         title="Start a new chat"
       >
         <MessageSquarePlus className="size-3.5" aria-hidden />
@@ -1127,7 +1205,7 @@ export function ChatLanding({
           setHistoryOpen((open) => !open);
           if (!historyOpen) void refreshHistoryList();
         }}
-        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-white/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.06]"
+        className="inline-flex items-center gap-1.5 rounded-full border border-black/15 bg-[#E2F0CC]/70 px-2.5 py-1.5 text-[11px] font-semibold text-[#012F13] transition-colors hover:bg-black/[0.06]"
         aria-expanded={historyOpen}
         aria-haspopup="menu"
         title="Chat history"
@@ -1139,14 +1217,14 @@ export function ChatLanding({
       {historyOpen ? (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+0.4rem)] z-50 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-black/15 bg-white shadow-[0_18px_40px_-24px_rgba(28,24,48,0.55)]"
+          className="absolute right-0 top-[calc(100%+0.4rem)] z-50 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-black/15 bg-[#E2F0CC] shadow-[0_18px_40px_-24px_rgba(28,24,48,0.55)]"
         >
           <div className="flex items-center justify-between border-b border-black/10 px-3 py-2">
             <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-black/55">Recent chats</p>
             <button
               type="button"
               onClick={startNewChat}
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1c1830] hover:underline"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#012F13] hover:underline"
             >
               <MessageSquarePlus className="size-3" aria-hidden />
               New
@@ -1175,7 +1253,7 @@ export function ChatLanding({
                     onClick={() => void openHistorySession(row.id)}
                     className="min-w-0 flex-1 rounded-md px-1.5 py-1.5 text-left"
                   >
-                    <p className="truncate text-[12px] font-medium text-[#1c1830]">{row.title}</p>
+                    <p className="truncate text-[12px] font-medium text-[#012F13]">{row.title}</p>
                     <p className="mt-0.5 text-[10px] text-black/40">
                       {row.createdAgentIds.length > 0
                         ? `${row.createdAgentIds.length} agent${row.createdAgentIds.length === 1 ? "" : "s"} created`
@@ -1210,13 +1288,14 @@ export function ChatLanding({
 
   return (
     <div
+      data-swiss-layout={isDashboard ? "dashboard" : undefined}
       className={cn(
-        "relative flex flex-col overflow-hidden bg-[#f4f1ea] text-[#26203a]",
+        "relative flex flex-col overflow-hidden bg-[#E2F0CC] text-[#011207]",
         isDashboard ? "size-full" : "h-dvh",
       )}
     >
       <style>{`
-        .qlmono { --text-primary:#1c1830; --text-secondary:#3a3550; --text-tertiary:#6b6680; --accent:#1c1830; --danger:#1c1830; --border-subtle:rgba(0,0,0,0.12); --border-default:rgba(0,0,0,0.30); --bg-subtle:rgba(0,0,0,0.04); --bg-elevated:#ffffff; }
+        .qlmono { --text-primary:#012F13; --text-secondary:#3a3550; --text-tertiary:#6b6680; --accent:#012F13; --danger:#012F13; --border-subtle:rgba(0,0,0,0.12); --border-default:rgba(0,0,0,0.30); --bg-subtle:rgba(0,0,0,0.04); --bg-elevated:#ffffff; }
         .qlscroll::-webkit-scrollbar{width:7px;height:7px} .qlscroll::-webkit-scrollbar-track{background:transparent} .qlscroll::-webkit-scrollbar-thumb{background:rgba(0,0,0,.20);border-radius:999px} .qlscroll::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.4)} .qlscroll{scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.20) transparent}
       `}</style>
 
@@ -1224,14 +1303,14 @@ export function ChatLanding({
       {!isDashboard ? (
         <div
           className={cn(
-            "fixed inset-0 z-50 flex items-center justify-center bg-[#f4f1ea] transition-opacity duration-700",
+            "fixed inset-0 z-50 flex items-center justify-center bg-[#E2F0CC] transition-opacity duration-700",
             introDone ? "pointer-events-none opacity-0" : "opacity-100",
           )}
         >
           <QlixWordmark
             animate
             onAnimationComplete={() => setIntroDone(true)}
-            className="text-[72px] text-[#1c1830] sm:text-[110px] md:text-[150px]"
+            className="text-[72px] text-[#012F13] sm:text-[110px] md:text-[150px]"
           />
         </div>
       ) : null}
@@ -1260,7 +1339,7 @@ export function ChatLanding({
       {/* Header — landing only */}
       {!isDashboard ? (
         <header className="relative z-20 flex h-14 shrink-0 items-center px-4">
-          <QlixWordmark className="shrink-0 text-[34px] text-[#1c1830]" />
+          <QlixWordmark className="shrink-0 text-[34px] text-[#012F13]" />
           <div
             className={cn(
               "flex items-center justify-end gap-3",
@@ -1268,7 +1347,10 @@ export function ChatLanding({
             )}
           >
             {historyControls}
-            <Link href="/docs" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#1c1830]">
+            <Link href="/how-to-use" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#012F13]">
+              How to use
+            </Link>
+            <Link href="/docs" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#012F13]">
               Docs
             </Link>
             {session && isGuest && (
@@ -1280,28 +1362,31 @@ export function ChatLanding({
                 <button
                   type="button"
                   onClick={() => setClaimOpen(true)}
-                  className="rounded-full bg-[#1c1830] px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-white hover:brightness-110"
+                  className="rounded-full bg-[#012F13] px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-white hover:brightness-110"
                 >
                   Save my account
                 </button>
               </>
             )}
             {session && !isGuest && (
-              <Link
-                href={`${routePrefix}/overview`}
-                className="rounded-full bg-black/[0.06] px-3.5 py-1.5 text-[12px] font-semibold text-[#26203a] transition-colors hover:bg-black/10"
-              >
-                Open dashboard →
-              </Link>
+              <>
+                <Link
+                  href={`${routePrefix}/overview`}
+                  className="rounded-full bg-black/[0.06] px-3.5 py-1.5 text-[12px] font-semibold text-[#011207] transition-colors hover:bg-black/10"
+                >
+                  Open dashboard →
+                </Link>
+                <LogoutButton />
+              </>
             )}
             {!session && (
               <>
-                <Link href="/sign-in" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#1c1830]">
+                <Link href="/sign-in" className="text-[12px] font-medium text-black/55 transition-colors hover:text-[#012F13]">
                   Sign in
                 </Link>
                 <Link
                   href="/sign-in?mode=sign-up"
-                  className="rounded-full border border-black/15 bg-black/[0.04] px-3.5 py-1.5 text-[12px] font-semibold text-[#26203a] transition-colors hover:bg-black/[0.08]"
+                  className="rounded-full border border-black/15 bg-black/[0.04] px-3.5 py-1.5 text-[12px] font-semibold text-[#011207] transition-colors hover:bg-black/[0.08]"
                 >
                   Sign up
                 </Link>
@@ -1315,21 +1400,25 @@ export function ChatLanding({
       <div className="relative z-10 flex flex-1 overflow-hidden px-2 sm:px-4">
         {!hasConversation ? (
           <div className="mx-auto flex h-full w-full max-w-2xl flex-col items-center justify-center px-2 pb-24 sm:px-5">
-            <p className="mb-4 text-center text-[11px] font-semibold uppercase tracking-[0.05em] text-[#1c1830] sm:text-[12px]">
+            <p className="mb-4 text-center text-[11px] font-semibold uppercase tracking-[0.05em] text-[#012F13] sm:text-[12px]">
               Describe it. Qlix builds it.
             </p>
-            <h1 className="text-center text-[34px] font-extralight leading-[0.95] tracking-[-0.04em] text-[#1c1830] sm:text-[44px] md:text-[64px]">
-              What should your
-              <br />
-              AI agent do for you?
+            <h1 className="mx-auto w-full" aria-label="What should your AI agent do for you?">
+              <span className="sr-only">What should your AI agent do for you?</span>
+              <span className="block h-12 sm:h-14 md:h-16">
+                <ParticleText text="What should your AI agent" fontSize="clamp(1.75rem, 5vw, 3rem)" />
+              </span>
+              <span className="-mt-2 block h-12 sm:h-14 md:h-16">
+                <ParticleText text="do for you?" fontSize="clamp(1.75rem, 5vw, 3rem)" />
+              </span>
             </h1>
-            <p className="mt-5 max-w-md text-center text-[14px] font-light leading-relaxed tracking-[0.025em] text-[#26203a]/70 sm:mt-6 sm:text-[15px]">
+            <p className="mt-5 max-w-md text-center text-[14px] font-light leading-relaxed tracking-[0.025em] text-[#011207]/70 sm:mt-6 sm:text-[15px]">
               Describe it in plain words. Qlix designs it, wires up its permissions, and brings it to life — right here.
             </p>
             {isDashboard ? (
               <Link
                 href={`${routePrefix}/ai-employees`}
-                className="mt-4 text-[12px] font-medium text-[#1c1830]/70 underline underline-offset-2 hover:text-[#1c1830]"
+                className="mt-4 text-[12px] font-medium text-[#012F13]/70 underline underline-offset-2 hover:text-[#012F13]"
               >
                 Looking for a ready-made role? Hire an AI Employee →
               </Link>
@@ -1339,7 +1428,7 @@ export function ChatLanding({
           <div
             ref={scrollRef}
             className={cn(
-              "qlmono qlscroll mt-4 mb-2 flex h-[calc(100%-2.5rem)] max-h-full flex-col gap-3 overflow-y-auto rounded-3xl border border-black/10 bg-white/55 p-3 text-[#1c1830] shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_64px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-2xl transition-[margin] duration-700 sm:mt-8 sm:gap-4 sm:p-5",
+              "qlmono qlscroll mt-4 mb-2 flex h-[calc(100%-2.5rem)] max-h-full flex-col gap-3 overflow-y-auto rounded-3xl border border-black/10 bg-[#E2F0CC]/55 p-3 text-[#012F13] shadow-[0_1px_1px_rgba(28,24,48,0.04),0_28px_64px_-32px_rgba(28,24,48,0.4),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-2xl transition-[margin] duration-700 sm:mt-8 sm:gap-4 sm:p-5",
               panelColumnClass,
             )}
           >
@@ -1347,7 +1436,7 @@ export function ChatLanding({
               if (item.kind === "user") {
                 return (
                   <div key={item.id} className="qlix-msg-in flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl rounded-br-md border border-black/10 bg-white/80 px-4 py-2.5 text-[13.5px] leading-relaxed text-[#1c1830] shadow-[0_10px_24px_-16px_rgba(28,24,48,0.35)] backdrop-blur-sm">
+                    <div className="max-w-[85%] rounded-2xl rounded-br-md border border-black/10 bg-[#E2F0CC]/80 px-4 py-2.5 text-[13.5px] leading-relaxed text-[#012F13] shadow-[0_10px_24px_-16px_rgba(28,24,48,0.35)] backdrop-blur-sm">
                       {item.text}
                     </div>
                   </div>
@@ -1356,15 +1445,15 @@ export function ChatLanding({
               if (item.kind === "thinking") {
                 return (
                   <div key={item.id} className="qlix-msg-in flex items-center gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       <Sparkles className="size-3.5 text-white" aria-hidden />
                     </div>
                     <div className="flex items-center gap-2 text-[13px] text-black/60">
                       {item.text}
                       <span className="flex gap-1">
-                        <span className="qlix-thinking-dot size-1.5 rounded-full bg-[#1c1830]" />
+                        <span className="qlix-thinking-dot size-1.5 rounded-full bg-[#012F13]" />
                         <span className="qlix-thinking-dot size-1.5 rounded-full bg-black/40" />
-                        <span className="qlix-thinking-dot size-1.5 rounded-full bg-[#1c1830]" />
+                        <span className="qlix-thinking-dot size-1.5 rounded-full bg-[#012F13]" />
                       </span>
                     </div>
                   </div>
@@ -1373,7 +1462,7 @@ export function ChatLanding({
               if (item.kind === "info") {
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       <Sparkles className="size-3.5 text-white" aria-hidden />
                     </div>
                     <p className="max-w-[85%] text-[13px] leading-relaxed text-black/60">{item.text}</p>
@@ -1383,10 +1472,10 @@ export function ChatLanding({
               if (item.kind === "error") {
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       <Sparkles className="size-3.5 text-white" aria-hidden />
                     </div>
-                    <p className="max-w-[85%] rounded-xl border border-red-500/20 bg-red-500/[0.07] px-3.5 py-2.5 text-[13px] text-[#1c1830]">
+                    <p className="max-w-[85%] rounded-xl border border-red-500/20 bg-red-500/[0.07] px-3.5 py-2.5 text-[13px] text-[#012F13]">
                       {item.text}
                     </p>
                   </div>
@@ -1396,7 +1485,7 @@ export function ChatLanding({
                 const plan = item.plan;
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       {plan.type === "team" ? (
                         <Users className="size-3.5 text-white" aria-hidden />
                       ) : (
@@ -1415,7 +1504,7 @@ export function ChatLanding({
                           : "Here's the agent I'd build for that. Review or tweak anything below, then bring it to life."}
                       </p>
                       {item.guestNote && (
-                        <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] text-[#1c1830]">
+                        <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] text-[#012F13]">
                           {item.guestNote}
                         </p>
                       )}
@@ -1443,7 +1532,7 @@ export function ChatLanding({
                                 onClick={() => void requestCreate(item.id, plan)}
                                 className={cn(
                                   "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-white",
-                                  "bg-[#1c1830]",
+                                  "bg-[#012F13]",
                                   "hover:brightness-110 active:scale-[0.98] motion-safe:transition-[filter,transform]",
                                   "disabled:cursor-not-allowed disabled:opacity-50",
                                 )}
@@ -1460,11 +1549,11 @@ export function ChatLanding({
                                   setCapabilitiesFor((cur) => (cur === item.id ? null : item.id));
                                 }}
                                 className={cn(
-                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#1c1830]",
-                                  "bg-white/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
+                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#012F13]",
+                                  "bg-[#E2F0CC]/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
                                   capabilitiesFor === item.id
-                                    ? "border-[#1c1830]/45 bg-white"
-                                    : "border-black/15 hover:border-[#1c1830]/40 hover:bg-white",
+                                    ? "border-[#012F13]/45 bg-[#E2F0CC]"
+                                    : "border-black/15 hover:border-[#012F13]/40 hover:bg-[#E2F0CC]",
                                   "disabled:cursor-not-allowed disabled:opacity-50",
                                 )}
                               >
@@ -1481,11 +1570,11 @@ export function ChatLanding({
                                   setRedesignFor((cur) => (cur === item.id ? null : item.id));
                                 }}
                                 className={cn(
-                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#1c1830]",
-                                  "bg-white/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
+                                  "inline-flex items-center gap-2 rounded-full border px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.05em] text-[#012F13]",
+                                  "bg-[#E2F0CC]/70 backdrop-blur-sm motion-safe:transition-[border-color,background-color,transform] active:scale-[0.98]",
                                   redesignFor === item.id
-                                    ? "border-[#1c1830]/45 bg-white"
-                                    : "border-black/15 hover:border-[#1c1830]/40 hover:bg-white",
+                                    ? "border-[#012F13]/45 bg-[#E2F0CC]"
+                                    : "border-black/15 hover:border-[#012F13]/40 hover:bg-[#E2F0CC]",
                                   "disabled:cursor-not-allowed disabled:opacity-50",
                                 )}
                               >
@@ -1509,7 +1598,7 @@ export function ChatLanding({
                             )}
 
                             {redesignFor === item.id && (
-                              <div className="qlix-msg-in rounded-2xl border border-black/12 bg-white/75 p-3 backdrop-blur-xl">
+                              <div className="qlix-msg-in rounded-2xl border border-black/12 bg-[#E2F0CC]/75 p-3 backdrop-blur-xl">
                                 <textarea
                                   autoFocus
                                   value={redesignNote}
@@ -1530,7 +1619,7 @@ export function ChatLanding({
                                     if (e.key === "Escape") setRedesignFor(null);
                                   }}
                                   placeholder="What should change? Leave blank for a fresh take."
-                                  className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-[#26203a] outline-none placeholder:text-black/35 disabled:opacity-60"
+                                  className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-[#011207] outline-none placeholder:text-black/35 disabled:opacity-60"
                                 />
                                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                   {REDESIGN_HINTS.map((hint) => (
@@ -1539,7 +1628,7 @@ export function ChatLanding({
                                       type="button"
                                       disabled={busy}
                                       onClick={() => setRedesignNote(hint)}
-                                      className="rounded-full border border-black/12 bg-white/70 px-2.5 py-1 text-[11px] text-black/60 motion-safe:transition-colors hover:border-black/30 hover:text-[#1c1830] disabled:opacity-50"
+                                      className="rounded-full border border-black/12 bg-[#E2F0CC]/70 px-2.5 py-1 text-[11px] text-black/60 motion-safe:transition-colors hover:border-black/30 hover:text-[#012F13] disabled:opacity-50"
                                     >
                                       {hint}
                                     </button>
@@ -1548,7 +1637,7 @@ export function ChatLanding({
                                     <button
                                       type="button"
                                       onClick={() => setRedesignFor(null)}
-                                      className="rounded-full px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.05em] text-black/45 hover:text-[#1c1830]"
+                                      className="rounded-full px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.05em] text-black/45 hover:text-[#012F13]"
                                     >
                                       Cancel
                                     </button>
@@ -1564,7 +1653,7 @@ export function ChatLanding({
                                         )
                                       }
                                       className={cn(
-                                        "inline-flex items-center gap-1.5 rounded-full bg-[#1c1830] px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-white",
+                                        "inline-flex items-center gap-1.5 rounded-full bg-[#012F13] px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-white",
                                         "hover:brightness-110 active:scale-[0.98] motion-safe:transition-[filter,transform]",
                                         "disabled:cursor-not-allowed disabled:opacity-50",
                                       )}
@@ -1591,7 +1680,7 @@ export function ChatLanding({
                 const allStepsDone = item.steps.every((s) => s.status === "done" || s.status === "error");
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       {allStepsDone ? (
                         <Check className="size-3.5 text-white" aria-hidden />
                       ) : (
@@ -1612,11 +1701,11 @@ export function ChatLanding({
                   (result.type === "team" ? "Your team" : "Your agent");
                 return (
                   <div key={item.id} className="qlix-msg-in flex gap-3">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                       <Check className="size-3.5 text-white" aria-hidden />
                     </div>
                     <div className="min-w-0 flex-1 rounded-xl border border-green-600/35 bg-green-50 p-4">
-                      <p className="text-[13px] font-medium text-[#1c1830]">
+                      <p className="text-[13px] font-medium text-[#012F13]">
                         {result.type === "team"
                           ? `${primaryName} is live — ${result.agents.length} agents created`
                           : `${primaryName} is live`}
@@ -1631,7 +1720,7 @@ export function ChatLanding({
                           <Link
                             key={a.id}
                             href={`${routePrefix}/agents/${a.id}`}
-                            className="rounded-full border border-green-700/30 bg-white px-2.5 py-1 text-[11px] font-medium text-[#1c1830] hover:bg-green-50/80"
+                            className="rounded-full border border-green-700/30 bg-[#E2F0CC] px-2.5 py-1 text-[11px] font-medium text-[#012F13] hover:bg-green-50/80"
                           >
                             {a.name}
                           </Link>
@@ -1640,7 +1729,7 @@ export function ChatLanding({
                       <Link
                         href={result.type === "team" ? `${routePrefix}/teams` : `${routePrefix}/agents`}
                         className={cn(
-                          "mt-4 inline-flex items-center justify-center rounded-lg border border-green-700/40 bg-white px-4 py-2 text-[12px] font-semibold text-[#1c1830]",
+                          "mt-4 inline-flex items-center justify-center rounded-lg border border-green-700/40 bg-[#E2F0CC] px-4 py-2 text-[12px] font-semibold text-[#012F13]",
                           "transition-colors hover:bg-green-50/80",
                         )}
                       >
@@ -1652,7 +1741,7 @@ export function ChatLanding({
               }
               return (
                 <div key={item.id} className="qlix-msg-in flex gap-3">
-                  <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1c1830]">
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#012F13]">
                     <Check className="size-3.5 text-white" aria-hidden />
                   </div>
                   <div className="min-w-0 flex-1 space-y-3">
@@ -1668,7 +1757,7 @@ export function ChatLanding({
                     {result.agents.some((a) => (a.response?.agent.jitScopes.length ?? 0) > 0) && result.agents[0] && (
                       <div className="rounded-xl border border-amber-500/25 bg-amber-50/70 p-3.5 backdrop-blur-sm space-y-2.5">
                         <div>
-                          <p className="text-[12.5px] font-semibold text-[#1c1830]">
+                          <p className="text-[12.5px] font-semibold text-[#012F13]">
                             This agent asks before sensitive actions
                           </p>
                           <p className="mt-0.5 text-[11px] text-black/55">
@@ -1678,14 +1767,14 @@ export function ChatLanding({
                         <div className="flex flex-wrap gap-2">
                           <Link
                             href={`${routePrefix}/connectors`}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-[12px] font-semibold text-[#1c1830] transition-colors hover:bg-emerald-400/20"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-[12px] font-semibold text-[#012F13] transition-colors hover:bg-emerald-400/20"
                           >
                             <MessageCircle className="size-3.5" aria-hidden />
                             Approve via WhatsApp
                           </Link>
                           <Link
                             href={`${routePrefix}/agents/${result.agents[0].id}/chat`}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-black/15 bg-black/[0.04] px-3 py-1.5 text-[12px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.08]"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-black/15 bg-black/[0.04] px-3 py-1.5 text-[12px] font-semibold text-[#012F13] transition-colors hover:bg-black/[0.08]"
                           >
                             <LayoutDashboard className="size-3.5" aria-hidden />
                             Approve in dashboard
@@ -1701,7 +1790,7 @@ export function ChatLanding({
                       {result.agents[0] && (
                         <Link
                           href={`${routePrefix}/agents/${result.agents[0].id}`}
-                          className="rounded-lg border border-black/15 bg-black/[0.04] px-3.5 py-1.5 text-[12px] font-semibold text-[#1c1830] transition-colors hover:bg-black/[0.08]"
+                          className="rounded-lg border border-black/15 bg-black/[0.04] px-3.5 py-1.5 text-[12px] font-semibold text-[#012F13] transition-colors hover:bg-black/[0.08]"
                         >
                           Open dashboard →
                         </Link>
@@ -1710,7 +1799,7 @@ export function ChatLanding({
                         <button
                           type="button"
                           onClick={() => setClaimOpen(true)}
-                          className="text-[12px] font-medium text-[#1c1830] hover:text-black/70 hover:underline"
+                          className="text-[12px] font-medium text-[#012F13] hover:text-black/70 hover:underline"
                         >
                           Like it? Save your workspace with a free account
                         </button>
@@ -1737,9 +1826,9 @@ export function ChatLanding({
               <button
                 type="button"
                 onClick={() => setShowSuggestions((v) => !v)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-black/12 bg-black/[0.03] px-3 py-1 text-[11px] text-black/55 transition-colors hover:border-black/40 hover:text-[#1c1830]"
+                className="inline-flex items-center gap-1.5 rounded-full border border-black/12 bg-black/[0.03] px-3 py-1 text-[11px] text-black/55 transition-colors hover:border-black/40 hover:text-[#012F13]"
               >
-                <Lightbulb className="size-3 text-[#1c1830]" aria-hidden />
+                <Lightbulb className="size-3 text-[#012F13]" aria-hidden />
                 Need ideas?
                 <ChevronDown
                   className={cn("size-3 transition-transform", showSuggestions && "rotate-180")}
@@ -1747,7 +1836,7 @@ export function ChatLanding({
                 />
               </button>
               {showSuggestions && (
-                <div className="absolute bottom-full left-0 z-30 mb-2 w-full max-w-md overflow-hidden rounded-2xl border border-black/10 bg-white p-1 shadow-xl shadow-black/10">
+                <div className="absolute bottom-full left-0 z-30 mb-2 w-full max-w-md overflow-hidden rounded-2xl border border-black/10 bg-[#E2F0CC] p-1 shadow-xl shadow-black/10">
                   {EXAMPLE_PROMPTS.map((ex) => (
                     <button
                       key={ex}
@@ -1758,7 +1847,7 @@ export function ChatLanding({
                         setShowSuggestions(false);
                         textareaRef.current?.focus();
                       }}
-                      className="block w-full rounded-lg px-3 py-2 text-left text-[12px] text-black/65 transition-colors hover:bg-black/[0.04] hover:text-[#1c1830] disabled:opacity-50"
+                      className="block w-full rounded-lg px-3 py-2 text-left text-[12px] text-black/65 transition-colors hover:bg-black/[0.04] hover:text-[#012F13] disabled:opacity-50"
                     >
                       {ex}
                     </button>

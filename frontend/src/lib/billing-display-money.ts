@@ -109,3 +109,20 @@ export function formatUsageCost(usdAmount: string | number, currency: UsageDispl
   }
   return formatUsd(String(amount));
 }
+
+/** Keep tiny per-run provider charges visible instead of rounding them to zero. */
+export function formatDetailedUsageCost(
+  usdAmount: string | number,
+  currency: UsageDisplayCurrency,
+): string {
+  const usd = Number(usdAmount);
+  if (!Number.isFinite(usd)) return currency === "USD" ? `$${usdAmount}` : `₹${usdAmount}`;
+  const amount = currency === "USD" ? usd : usd * USD_INR_DISPLAY_RATE;
+  const maximumFractionDigits = amount !== 0 && Math.abs(amount) < 0.01 ? 8 : 4;
+  return amount.toLocaleString(currency === "USD" ? "en-US" : "en-IN", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 2,
+    maximumFractionDigits,
+  });
+}

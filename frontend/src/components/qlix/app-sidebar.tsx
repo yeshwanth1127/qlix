@@ -13,6 +13,7 @@ import { QlixWordmark } from "./landing/QlixWordmark";
 import { useSession } from "./session-context";
 import { UserAccountMenu } from "./user-account-menu";
 import { sketchLabel, sketchNavLink, SKETCH_SIDEBAR_WIDTH } from "./sketch/tokens";
+import styles from "./LineSidebarNav.module.css";
 
 interface AppSidebarProps {
   readonly currentPath: string;
@@ -33,7 +34,7 @@ export function AppSidebar({
   const [accountOpen, setAccountOpen] = useState(false);
 
   const items = useMemo(() => {
-    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false);
+    const all = getConsoleNavItems(routePrefix, session?.user.billingExempt ?? false, session?.organization.enabledPluginIds ?? []);
     if (routePrefix !== "/organization") return all;
     if (session?.organization.workspaceKind !== "organization") return all;
     return all.filter((i) => {
@@ -48,26 +49,27 @@ export function AppSidebar({
   const moreActive = more.some((item) => isConsoleNavActive(item.href, currentPath, overviewHref));
 
   const navLinkBase =
-    "sketch-press rounded-lg border border-transparent py-2 pl-2.5 pr-2 text-[10px] leading-snug transition-all duration-200 ease-out";
+    "sketch-press flex items-center gap-3 rounded-none border border-transparent px-3 py-2.5 text-[11px] uppercase tracking-[0.08em] leading-snug transition-colors duration-150 ease-out";
   const navLinkActive =
-    "border-l-[3px] border-l-[color:var(--sketch-purple)] bg-[color:var(--sketch-purple-soft)] font-bold text-[color:var(--sketch-purple)]";
+    "border-transparent bg-transparent font-bold text-[#8BC53D]";
   const navLinkIdle =
-    "text-black hover:border-black hover:bg-[color:var(--sketch-purple-soft)] hover:text-black";
+    "bg-transparent text-white hover:border-transparent hover:bg-transparent hover:text-[#E2F0CC]";
 
   return (
     <aside
-      className="fixed inset-y-0 left-0 z-40 hidden w-40 flex-col border-r border-black/[0.08] bg-white/60 shadow-[inset_-1px_0_0_rgba(255,255,255,0.65),12px_0_40px_-30px_rgba(16,14,22,0.28)] backdrop-blur-2xl md:flex"
+      className="qlix-app-sidebar fixed inset-y-0 left-0 z-40 hidden flex-col bg-[#011207]/[0.97] backdrop-blur-2xl md:flex"
       aria-label="Primary navigation"
       style={{ width: SKETCH_SIDEBAR_WIDTH }}
     >
-      <div className="shrink-0 px-4 pt-6">
-        <Link href={homeHref} className="block text-black transition-opacity duration-200 hover:opacity-80">
-          <QlixWordmark className="text-[34px]" />
+      <div className="shrink-0 px-5 pb-5 pt-6">
+        <Link href={homeHref} className="block text-[#E2F0CC] transition-opacity duration-200 hover:opacity-80">
+          <QlixWordmark surface="dark" className="text-[32px]" />
         </Link>
+        <p className="mt-2 border-t border-[#E2F0CC]/20 pt-2 text-[9px] font-bold uppercase tracking-[0.22em] text-[#E2F0CC]/45">Agent workspace</p>
       </div>
 
       {moreOpen && (more.length > 0 || showUpgradeCta) ? (
-        <div className="sketch-panel-in absolute bottom-6 left-full z-50 ml-3 w-56 max-h-[min(70vh,28rem)] overflow-y-auto rounded-2xl border border-black/10 bg-white/92 p-3 shadow-[0_16px_40px_-20px_rgba(16,14,22,0.35)] backdrop-blur-2xl">
+        <div className="sketch-panel-in absolute bottom-6 left-full z-50 ml-3 w-60 max-h-[min(70vh,28rem)] overflow-y-auto rounded-2xl border border-[#8BC53D]/20 bg-[#011207]/95 p-3 text-[#E2F0CC] shadow-[0_24px_64px_-24px_rgba(1,18,7,0.65)] backdrop-blur-2xl">
           <div className="mb-2.5 flex items-center justify-between border-b border-black/8 pb-2">
             <span className={cn(sketchLabel, "text-[10px]")}>More</span>
             <button
@@ -115,23 +117,26 @@ export function AppSidebar({
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto overscroll-contain px-3.5 pb-6">
-        <nav className="space-y-1">
+      <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto overscroll-contain px-3 pb-5">
+        <div className="mb-2 px-3 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#E2F0CC]/35">Workspace</div>
+        <nav className={styles.nav}>
           {primary.map((item, index) => {
             const active = isConsoleNavActive(item.href, currentPath, overviewHref);
+            const Icon = item.icon;
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={active ? "page" : undefined}
                 style={{ "--qlix-stagger-i": index } as React.CSSProperties}
-                className={cn(
-                  sketchNavLink,
-                  navLinkBase,
-                  "qlix-nav-in",
-                  active ? navLinkActive : navLinkIdle,
-                )}
+                className={cn(styles.item, active && styles.active, "qlix-nav-in")}
               >
-                {item.label.toUpperCase()}
+                <span className={styles.marker} aria-hidden />
+                <span className={styles.label}>
+                  <span className={styles.index}>{String(index + 1).padStart(2, "0")}</span>
+                  <Icon className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
+                  <span>{item.label}</span>
+                </span>
               </Link>
             );
           })}
@@ -142,15 +147,16 @@ export function AppSidebar({
                 setMoreOpen((v) => !v);
                 setAccountOpen(false);
               }}
+              aria-current={moreOpen || moreActive ? "page" : undefined}
               style={{ "--qlix-stagger-i": primary.length } as React.CSSProperties}
-              className={cn(
-                sketchNavLink,
-                navLinkBase,
-                "qlix-nav-in w-full text-left",
-                moreOpen || moreActive ? navLinkActive : navLinkIdle,
-              )}
+              className={cn(styles.item, (moreOpen || moreActive) && styles.active, "qlix-nav-in w-full text-left")}
             >
-              + MORE
+              <span className={styles.marker} aria-hidden />
+              <span className={styles.label}>
+                <span className={styles.index}>{String(primary.length + 1).padStart(2, "0")}</span>
+                <span className="flex size-3.5 items-center justify-center text-base font-light">+</span>
+                <span>More tools</span>
+              </span>
             </button>
           )}
           <div className="pt-2">
