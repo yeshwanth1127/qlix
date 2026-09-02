@@ -281,7 +281,7 @@ export function enrichCrmPlan(
 // ---------------------------------------------------------------------------
 
 const SCHEDULE_INTENT =
-  /\b(cron|schedule(?:d)?\s+(?:task|job|event|run|reminder)|recurring\s+(?:task|job|run)|every\s+(?:day|morning|evening|hour|weekday)|daily\s+(?:digest|report|summary|run)|remind\s+me\s+(?:to|at|every)|run\s+(?:this|it)\s+(?:later|daily|weekly|every)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+(?:every|daily|each))\b/i;
+  /\b(?:cron|qlix-schedule|schedule_create|schedule(?:d)?\s+(?:task|job|event|run|reminder)|recurring\s+(?:task|job|run)|daily\s+(?:digest|summary)(?:\s+\w+){0,12}\s+(?:every|each)|(?:every|each)\s+(?:day|morning|evening|hour|weekday)\s+(?:at\s+\d|run\b|send\b|execute\b|trigger\b|remind\b)|remind\s+me\s+(?:to|at|every)|run\s+(?:this|it)\s+(?:later|daily|weekly|every)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+(?:every|daily|each))\b/i;
 
 const SCHEDULE_SCOPES: readonly string[] = DEFAULT_SCHEDULE_SCOPES;
 
@@ -336,6 +336,36 @@ export function enrichSchedulePlan(
     ...plan,
     team: { ...plan.team, supervisor, workers },
     rationale: `${plan.rationale} Schedule enrichment: qlix-schedule tools wired for timed agent runs.`,
+  };
+}
+
+function stripScheduleFromAgent(spec: NLAgentSpec): NLAgentSpec {
+  const permissionScopes = spec.permissionScopes.filter((s) => !s.startsWith('mcp.qlix-schedule.'));
+  const jitScopes = spec.jitScopes.filter((s) => !s.startsWith('mcp.qlix-schedule.'));
+  let description = spec.description;
+  const markerIdx = description.indexOf(SCHEDULE_METHOD_MARKER);
+  if (markerIdx >= 0) {
+    description = description.slice(0, markerIdx).trimEnd();
+  }
+  return { ...spec, permissionScopes, jitScopes, description };
+}
+
+/** Remove qlix-schedule scopes unless the user explicitly asked for timed/recurring runs. */
+export function stripScheduleUnlessIntent(
+  intentText: string,
+  plan: AgentCreationPlan,
+): AgentCreationPlan {
+  if (isSchedulePrompt(intentText)) return plan;
+  if (plan.type === 'single') {
+    return { ...plan, agent: stripScheduleFromAgent(plan.agent) };
+  }
+  return {
+    ...plan,
+    team: {
+      ...plan.team,
+      supervisor: stripScheduleFromAgent(plan.team.supervisor),
+      workers: plan.team.workers.map((w) => stripScheduleFromAgent(w) as NLWorkerSpec),
+    },
   };
 }
 

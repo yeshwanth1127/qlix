@@ -1,5 +1,10 @@
 import type { ApiErrorBody } from "./auth-api";
 import type { PermissionScope } from "./agents-api";
+import {
+  TeamRunRequestError,
+  teamRunFailureFromApiError,
+  type TeamRunFailure,
+} from "./team-run-failures";
 
 const defaultBase = "http://localhost:4000";
 
@@ -256,6 +261,9 @@ export interface A2ATaskDTO {
 
 // ─── API calls ───────────────────────────────────────────────────────────────
 
+export type { TeamRunFailure } from "./team-run-failures";
+export { TeamRunRequestError } from "./team-run-failures";
+
 export async function listTeams(): Promise<TeamDTO[]> {
   const res = await fetch(`${apiBase()}/api/v1/teams`, { credentials: "include" });
   if (!res.ok) {
@@ -484,10 +492,20 @@ export async function listTeamRuns(teamId: string): Promise<TeamRunDTO[]> {
 export async function getTeamRun(
   teamId: string,
   runId: string,
-): Promise<{ run: TeamRunDTO; events: TeamRunEventDTO[]; tasks: A2ATaskDTO[] }> {
+): Promise<{
+  run: TeamRunDTO;
+  events: TeamRunEventDTO[];
+  tasks: A2ATaskDTO[];
+  failure: TeamRunFailure | null;
+}> {
   const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to load run");
-  return res.json() as Promise<{ run: TeamRunDTO; events: TeamRunEventDTO[]; tasks: A2ATaskDTO[] }>;
+  return res.json() as Promise<{
+    run: TeamRunDTO;
+    events: TeamRunEventDTO[];
+    tasks: A2ATaskDTO[];
+    failure: TeamRunFailure | null;
+  }>;
 }
 
 export async function getTeamRunDefense(
@@ -597,6 +615,13 @@ export async function injectTeamRunMessage(
   }
 }
 
+/** Matches backend GOAL_IMPLIES_ATTACHMENT_RE — goal expects an uploaded authoritative file. */
+export function goalImpliesAuthoritativeAttachment(goal: string): boolean {
+  return /\b(attached|uploaded|provided)\s+(spreadsheet|sheet|excel(?:\s+file)?|file|document|workbook)\b/i.test(
+    goal.trim(),
+  );
+}
+
 export async function cancelTeamRun(teamId: string, runId: string): Promise<void> {
   const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/cancel`, {
     method: "POST",
@@ -653,8 +678,14 @@ export async function startTeamRun(
     });
   }
   if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
-    throw new Error(err?.error?.message ?? "Failed to start run");
+    const body = (await res.json().catch(() => null)) as {
+      error?: ApiErrorBody["error"] & { title?: string; reason?: string; hint?: string };
+      failure?: TeamRunFailure;
+    } | null;
+    const failure =
+      body?.failure ??
+      teamRunFailureFromApiError(body?.error ?? null, "Failed to start run");
+    throw new TeamRunRequestError(failure);
   }
   const data = (await res.json()) as {
     run: TeamRunDTO;
@@ -667,8 +698,17 @@ export async function startTeamRun(
     if (data.run?.id) {
       await cancelTeamRun(teamId, data.run.id).catch(() => undefined);
     }
-    throw new Error(
-      "File upload did not reach the team run. Please try attaching the file again.",
+    throw new TeamRunRequestError(
+      teamRunFailureFromApiError(
+        {
+          code: "upload_error",
+          title: "File upload failed",
+          message: "File upload did not reach the team run.",
+          reason: "The server accepted the run but did not record your attachment.",
+          hint: "Attach the file again and resend. If this keeps happening, try a smaller file.",
+        },
+        "File upload did not reach the team run.",
+      ),
     );
   }
   return {

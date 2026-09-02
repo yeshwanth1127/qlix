@@ -75,6 +75,11 @@ export class NLCreationService {
     );
     if (replyWaitRequested) {
       for (const worker of plan.team.workers) {
+        const kinds = new Set([worker.stageKind, ...(worker.alsoKinds ?? [])]);
+        const channels = worker.channels ?? [];
+        if (kinds.has('act') && channels.includes('whatsapp') && !kinds.has('wait')) {
+          worker.alsoKinds = [...(worker.alsoKinds ?? []), 'wait'];
+        }
         if (worker.permissionScopes.includes('whatsapp.contact_send')) {
           worker.permissionScopes = Array.from(
             new Set([...worker.permissionScopes, 'whatsapp.auto_reply']),
@@ -114,6 +119,9 @@ export class NLCreationService {
           agentId: workerOutputs[i].agentResult.agent.id,
           role: w.role,
           delegatedScopes: w.permissionScopes,
+          stageKind: w.stageKind,
+          alsoKinds: w.alsoKinds,
+          channels: w.channels,
         })),
         config: {
           maxParallelWorkers: plan.team.config.maxParallelWorkers,

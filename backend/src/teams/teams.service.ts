@@ -97,6 +97,16 @@ export class TeamContinuesRunError extends Error {
   }
 }
 
+export class TeamRunMissingAttachmentError extends Error {
+  readonly code = 'missing_attachment';
+  readonly status = 400;
+  constructor(
+    message = 'This run refers to an attached spreadsheet or file, but no file was uploaded. Attach the file and try again.',
+  ) {
+    super(message);
+  }
+}
+
 export class TeamConfirmNameMismatchError extends Error {
   readonly code = 'confirm_name_mismatch';
   constructor(expected: 'team' | 'agent') {
@@ -203,7 +213,8 @@ export class TeamsService {
   async getTeam(id: string, orgId: string): Promise<TeamDTO> {
     const team = await this.repo.findByIdAndOrg(id, orgId);
     if (!team) throw new TeamNotFoundError();
-    return this.activateIfSupervisorAssigned(team);
+    const withKinds = await this.repo.persistMissingStageContracts(team);
+    return this.activateIfSupervisorAssigned(withKinds);
   }
 
   async deleteTeam(
@@ -412,16 +423,18 @@ export class TeamsService {
     },
     backendUrl?: string,
   ): Promise<TeamRunDTO> {
-    const team = await this.repo.findByIdAndOrg(teamId, orgId);
-    if (!team) throw new TeamNotFoundError();
-    if (!team.supervisorAgentId) throw new TeamNoSupervisorError();
+    const found = await this.repo.findByIdAndOrg(teamId, orgId);
+    if (!found) throw new TeamNotFoundError();
+    const supervisorAgentId = found.supervisorAgentId;
+    if (!supervisorAgentId) throw new TeamNoSupervisorError();
+    const team = await this.repo.persistMissingStageContracts(found);
 
     // Best-effort: refresh team runner containers (new runtime hash / scopes) before this run.
     // This prevents "think-only" loops caused by stale runner images.
     const url = (backendUrl || this.defaultBackendUrl).trim();
     if (url && this.autoReprovision) {
       this.cloudProvisioner.scheduleApplyTeamContext({
-        agentId: team.supervisorAgentId,
+        agentId: supervisorAgentId,
         teamId,
         teamName: team.name,
         role: 'supervisor',

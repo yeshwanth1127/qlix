@@ -12,10 +12,9 @@ export const DEFAULT_SCHEDULE_SCOPES = [
   'mcp.qlix-schedule.schedule_cancel',
 ] as const satisfies readonly PermissionScope[];
 
-/** Always-on defaults: org brain access + schedule MCP tools. */
+/** Always-on defaults: org brain access. Schedule MCP tools are added only when the build intent matches (see nlPlanEnrichment). */
 export const DEFAULT_AGENT_SCOPES = [
   'brain.query',
-  ...DEFAULT_SCHEDULE_SCOPES,
 ] as const satisfies readonly PermissionScope[];
 
 /** Merge always-on defaults into a scope list (order: existing first, then missing defaults). */

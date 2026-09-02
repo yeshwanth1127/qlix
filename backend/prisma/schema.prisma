@@ -1588,6 +1588,12 @@ model TeamMember {
   agentCardSnapshot Json?    @map("agent_card_snapshot")
   /// Pipeline stage (1-indexed). In pipeline mode with autoSequence=false, workers run in ascending order of this field. Members added later default to (max+1) so new agents go to the end of the pipeline.
   stageOrder        Int      @default(0) @map("stage_order")
+  /// source | transform | act | wait | deliver — sticky job type for scope packs.
+  stageKind         String?  @map("stage_kind")
+  /// Extra kinds on the same member (act+wait+deliver).
+  alsoKinds         String[] @default([]) @map("also_kinds")
+  /// Channel ids for act/wait/deliver packs (whatsapp, email, slack, …).
+  channels          String[] @default([])
   addedAt           DateTime @default(now()) @map("added_at")
 
   team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)

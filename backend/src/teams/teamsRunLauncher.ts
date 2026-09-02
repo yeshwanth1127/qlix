@@ -8,11 +8,16 @@ import type {
 } from './teams.types.js';
 import { TeamOrchestrator } from './teamOrchestrator.js';
 import { TeamsRepository } from './teams.repository.js';
-import { TeamContinuesRunError, TeamsService } from './teams.service.js';
+import {
+  TeamContinuesRunError,
+  TeamRunMissingAttachmentError,
+  TeamsService,
+} from './teams.service.js';
 import {
   applyTeamRunFollowUp,
   firstInputsInContinueChain,
   firstRealGoalInContinueChain,
+  goalImpliesAuthoritativeAttachment,
   isUnusableTeamSynthesis,
   lastResultFromEnvelope,
   pickUsableSynthesis,
@@ -214,6 +219,16 @@ export async function launchTeamRun(input: LaunchTeamRunInput): Promise<{
 
   const inputs =
     input.inputs && input.inputs.length > 0 ? input.inputs : priorInputs;
+  const attachmentGoal =
+    resolvedIntent.effectiveGoal?.trim() ||
+    resolvedIntent.userMessage?.trim() ||
+    goal;
+  if (
+    goalImpliesAuthoritativeAttachment(attachmentGoal) &&
+    !inputs.some((row) => row.purpose === 'authoritative_input')
+  ) {
+    throw new TeamRunMissingAttachmentError();
+  }
   const run = await teamsService.startRun(
     input.teamId,
     input.orgId,

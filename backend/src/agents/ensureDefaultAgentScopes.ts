@@ -1,5 +1,5 @@
 /**
- * Backfill always-on scopes (brain.query + qlix-schedule) onto existing standard agents.
+ * Backfill always-on scopes (brain.query) onto existing standard agents.
  * Runs once at boot after first-party MCP servers are registered.
  */
 import { prisma } from '../lib/prisma.js';
@@ -61,6 +61,6 @@ export async function ensureDefaultAgentScopesAllAgents(): Promise<void> {
   }
 
   console.info(
-    `[default-scopes] backfilled brain.query + qlix-schedule on ${updated}/${agents.length} standard agent(s)`,
+    `[default-scopes] backfilled brain.query on ${updated}/${agents.length} standard agent(s)`,
   );
 }

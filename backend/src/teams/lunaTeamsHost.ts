@@ -14,42 +14,47 @@ import { effectiveRunGoal, resolvedIntentForRun } from './teamIntent.js';
 import type { TeamIntentMode, TeamIntentRequirement } from './teams.types.js';
 import { FULL_STACK_EXAMINER_TEAM_NAME } from '../assessment/examinerTeamRecipe.js';
 import { decodeNestedJsonValue } from '../contracts/agentRuntimeContracts.js';
+import {
+  allKindsForContract,
+  allowedScopesForDispatch,
+  cannedDispatchTask,
+  contractFromMember,
+  isJsonOnlyKinds,
+  type StageContract,
+} from './stageKind.js';
 
 export type LunaTeamsKnowledgeMode = 'none' | 'reference_only' | 'required';
 
 /** Runner skill_filter sentinel: load always-on meta tools only, no connectors. */
 export const TEAM_DISPATCH_ONLY_SKILL = 'team.dispatch' as PermissionScope;
 
-const SCOPE_FAMILIES: Array<{ pattern: RegExp; match: (scope: string) => boolean }> = [
-  {
-    pattern: /\b(assessment|assess|examiner|examine|work session|sessionid|evidence|artifact|snapshot|framework|criterion|criteria)\b/i,
-    match: (s) => s.startsWith('assessment.'),
-  },
-  { pattern: /\b(whatsapp|outreach|poll|brochure|messenger)\b/i, match: (s) => s.startsWith('whatsapp') },
-  { pattern: /\bemail\b/i, match: (s) => s.startsWith('email.') },
-  { pattern: /\bcrm\b/i, match: (s) => s.startsWith('crm.') },
-  {
-    pattern: /\b(sheet|excel|spreadsheet|xlsx|csv)\b/i,
-    match: (s) =>
-      s.startsWith('sheets.') || s === 'drive.write' || s === 'files.create' || s === 'system.file_write',
-  },
-  {
-    pattern: /\b(pdf|create[_ ]?report[_ ]?pdf|make a pdf|create a pdf|export(?:\s+as)?\s+pdf|document export)\b/i,
-    match: (s) => s === 'files.create' || s === 'system.file_write',
-  },
-  { pattern: /\b(notion)\b/i, match: (s) => s.startsWith('notion.') },
-  { pattern: /\bslack\b/i, match: (s) => s.startsWith('slack.') },
-  { pattern: /\b(research|browse|scrape)\b/i, match: (s) => s === 'web.research' || s.startsWith('web.') },
-  { pattern: /\bschedule\b/i, match: (s) => s.includes('schedule') },
-];
-
-const CONNECTOR_DISPATCH_RE =
-  /\b(whatsapp|email|crm|send|outreach|poll|brochure|research|browse|schedule|sheet|excel|xlsx|pdf|notion|slack|messenger)\b/i;
 const FILTER_ONLY_RE = /\b(filter|filtering|qualify|qualifying)\b/i;
 const DOWNSTREAM_STAGE_RE =
   /\b(whatsapp|messenger|outreach|contact|crm|send|message|poll|brochure)\b/i;
 const BRAIN_SOURCE_RE = /\b(brain|company knowledge|knowledge base)\b/i;
 const KNOWLEDGE_ASSET_RE = /\b(brochure|document|file|asset)\b/i;
+
+function contractFromDispatchParams(params: {
+  role: string;
+  delegatedScopes: PermissionScope[];
+  stageKind?: string | null;
+  alsoKinds?: string[] | null;
+  channels?: string[] | null;
+  stageOrder?: number;
+  memberCount?: number;
+}): StageContract {
+  return contractFromMember(
+    {
+      role: params.role,
+      delegatedScopes: params.delegatedScopes,
+      stageOrder: params.stageOrder ?? 1,
+      stageKind: params.stageKind,
+      alsoKinds: params.alsoKinds,
+      channels: params.channels,
+    },
+    params.memberCount ?? 2,
+  );
+}
 
 export function resolveDispatchKnowledgeMode(params: {
   task: string;
@@ -66,47 +71,32 @@ export function resolveDispatchKnowledgeMode(params: {
     : 'none';
 }
 
-function dispatchNeedsSourceFile(role: string, task: string, index: number): boolean {
-  const text = `${role} ${task}`;
-  if (FILTER_ONLY_RE.test(text) && !DOWNSTREAM_STAGE_RE.test(text)) return true;
-  if (DOWNSTREAM_STAGE_RE.test(text) && !FILTER_ONLY_RE.test(text)) return false;
-  return index === 0;
+function dispatchNeedsSourceFile(contract: StageContract): boolean {
+  return isJsonOnlyKinds(allKindsForContract(contract));
 }
 
-function withoutBrainUnlessRequired(
-  scopes: PermissionScope[],
-  knowledgeMode: LunaTeamsKnowledgeMode,
-): PermissionScope[] {
-  if (knowledgeMode === 'required') return scopes;
-  return scopes.filter((scope) => scope !== 'brain.query' && !scope.startsWith('brain.'));
-}
-
-/** Smallest delegated-scope subset that can complete this task. Empty = JSON-only. */
+/** Smallest delegated-scope subset that can complete this job kind. Empty = JSON-only. */
 export function heuristicAllowedScopes(params: {
   role: string;
   task: string;
   delegatedScopes: PermissionScope[];
   knowledgeMode: LunaTeamsKnowledgeMode;
+  stageKind?: string | null;
+  alsoKinds?: string[] | null;
+  channels?: string[] | null;
+  stageOrder?: number;
+  memberCount?: number;
 }): PermissionScope[] {
-  const scopes = withoutBrainUnlessRequired(params.delegatedScopes, params.knowledgeMode);
-  const brainScopes = params.knowledgeMode === 'required'
-    ? scopes.filter((scope) => scope === 'brain.query')
-    : [];
-  const text = `${params.role} ${params.task}`;
-  if (FILTER_ONLY_RE.test(text) && !CONNECTOR_DISPATCH_RE.test(text)) return brainScopes;
-  const matched = SCOPE_FAMILIES.flatMap((family) =>
-    family.pattern.test(text) ? scopes.filter((scope) => family.match(scope)) : [],
-  );
-  if (matched.length > 0 || brainScopes.length > 0) {
-    return [...new Set([...matched, ...brainScopes])];
-  }
-  if (CONNECTOR_DISPATCH_RE.test(text)) return scopes;
-  return [];
+  return allowedScopesForDispatch({
+    contract: contractFromDispatchParams(params),
+    delegatedScopes: params.delegatedScopes,
+    knowledgeMode: params.knowledgeMode,
+  });
 }
 
 /**
- * Host-enforced allowlist. Commander requests ∩ delegatedScopes ∩ task heuristic.
- * Omitted `requested` falls back to the heuristic. Empty means no connector tools.
+ * Host-enforced allowlist. Commander requests ∩ kind pack ∩ delegatedScopes.
+ * Commander cannot add scopes the kind does not allow.
  */
 export function resolveDispatchAllowedScopes(params: {
   role: string;
@@ -114,27 +104,20 @@ export function resolveDispatchAllowedScopes(params: {
   delegatedScopes: PermissionScope[];
   knowledgeMode: LunaTeamsKnowledgeMode;
   requested?: string[] | null;
+  stageKind?: string | null;
+  alsoKinds?: string[] | null;
+  channels?: string[] | null;
+  stageOrder?: number;
+  memberCount?: number;
+  hasExtractedAuthoritativeInput?: boolean;
 }): PermissionScope[] {
-  const heuristic = heuristicAllowedScopes(params);
-  if (!Array.isArray(params.requested)) {
-    return heuristic;
-  }
-  const granted = new Set(params.delegatedScopes);
-  const fromCommander = [...new Set(
-    params.requested.filter((scope): scope is PermissionScope =>
-      granted.has(scope as PermissionScope),
-    ),
-  )];
-  const selected = withoutBrainUnlessRequired(
-    fromCommander.filter((scope) => heuristic.includes(scope)),
-    params.knowledgeMode,
-  );
-  // A model-produced allowlist must not remove a host-determined required
-  // knowledge capability.
-  const requiredBrain = params.knowledgeMode === 'required'
-    ? heuristic.filter((scope) => scope === 'brain.query')
-    : [];
-  return [...new Set([...selected, ...requiredBrain])];
+  return allowedScopesForDispatch({
+    contract: contractFromDispatchParams(params),
+    delegatedScopes: params.delegatedScopes,
+    knowledgeMode: params.knowledgeMode,
+    requested: params.requested,
+    hasExtractedAuthoritativeInput: params.hasExtractedAuthoritativeInput,
+  });
 }
 
 export function skillsForLunaTeamsDispatch(params: {
@@ -143,6 +126,9 @@ export function skillsForLunaTeamsDispatch(params: {
   delegatedScopes?: PermissionScope[];
   knowledgeMode?: LunaTeamsKnowledgeMode;
   allowedScopes?: PermissionScope[];
+  stageKind?: string | null;
+  alsoKinds?: string[] | null;
+  channels?: string[] | null;
 }): PermissionScope[] {
   const allowed =
     params.allowedScopes ??
@@ -151,8 +137,36 @@ export function skillsForLunaTeamsDispatch(params: {
       task: params.task ?? '',
       delegatedScopes: params.delegatedScopes ?? [],
       knowledgeMode: params.knowledgeMode ?? 'none',
+      stageKind: params.stageKind,
+      alsoKinds: params.alsoKinds,
+      channels: params.channels,
     });
   return allowed.length > 0 ? allowed : [TEAM_DISPATCH_ONLY_SKILL];
+}
+
+/** JSON-only kinds with extracted attachment text load no connector tools. */
+export function shouldUseExtractedInputDispatchOnly(params: {
+  role: string;
+  task: string;
+  stageOrder: number;
+  hasExtractedAuthoritativeInput: boolean;
+  allowedScopes: PermissionScope[];
+  stageKind?: string | null;
+  alsoKinds?: string[] | null;
+  channels?: string[] | null;
+  delegatedScopes?: PermissionScope[];
+}): boolean {
+  if (!params.hasExtractedAuthoritativeInput) return false;
+  if (params.allowedScopes.some((scope) => scope.startsWith('whatsapp.contact_send'))) return false;
+  const contract = contractFromDispatchParams({
+    role: params.role,
+    delegatedScopes: params.delegatedScopes ?? params.allowedScopes,
+    stageKind: params.stageKind,
+    alsoKinds: params.alsoKinds,
+    channels: params.channels,
+    stageOrder: params.stageOrder,
+  });
+  return isJsonOnlyKinds(allKindsForContract(contract));
 }
 
 export const DEFAULT_RESULT_CONTRACT: Record<string, unknown> = {
@@ -208,6 +222,9 @@ export interface LunaTeamsDispatch {
   /** Subset of delegatedScopes for this task. Empty = no connector tools. */
   allowedScopes: PermissionScope[];
   stageOrder: number;
+  stageKind?: string | null;
+  alsoKinds?: string[];
+  channels?: string[];
   contractId?: string;
   resultPolicy: TeamResultPolicy;
   inputRefs: string[];
@@ -300,6 +317,10 @@ export function bindIntentRequirements(
             task,
             delegatedScopes: dispatch.delegatedScopes,
             knowledgeMode,
+            stageKind: dispatch.stageKind,
+            alsoKinds: dispatch.alsoKinds,
+            channels: dispatch.channels,
+            stageOrder: dispatch.stageOrder,
           }),
     };
   });
@@ -373,16 +394,23 @@ function fallbackDispatches(
     .filter((input) => input.purpose === 'authoritative_input')
     .map((input) => input.ref);
   const objective = effectiveRunGoal(run);
+  const extracted = run.inputs.some(
+    (input) => input.purpose === 'authoritative_input' && Boolean(input.extractedText?.trim()),
+  );
   return members.map((member, index) => {
-    const task =
-      index === 0
-        ? `Perform the ${member.role} part of this objective and return only the information the next specialist needs: ${objective}`
-        : `Continue the objective using only the Result handbacks supplied by Luna-Teams. Perform the ${member.role} part; do not repeat earlier work.`;
+    const contract = contractFromMember(member, members.length);
+    const task = cannedDispatchTask(contract, member.role, objective);
     const allowedScopes = resolveDispatchAllowedScopes({
       role: member.role,
       task,
       delegatedScopes: member.delegatedScopes,
       knowledgeMode: 'none',
+      stageKind: contract.stageKind,
+      alsoKinds: contract.alsoKinds,
+      channels: contract.channels,
+      stageOrder: member.stageOrder,
+      memberCount: members.length,
+      hasExtractedAuthoritativeInput: extracted,
     });
     const dispatchPolicy = resolveDispatchResultPolicy({
       configured: resultPolicy,
@@ -400,9 +428,12 @@ function fallbackDispatches(
       delegatedScopes: member.delegatedScopes,
       allowedScopes,
       stageOrder: member.stageOrder,
+      stageKind: contract.stageKind,
+      alsoKinds: contract.alsoKinds,
+      channels: contract.channels,
       resultPolicy: dispatchPolicy,
       ...(dispatchPolicy === 'tool_evidence.v1' ? { contractId: 'qlix.assessment.result.v1' } : {}),
-      inputRefs: index === 0 ? authoritativeRefs : [],
+      inputRefs: dispatchNeedsSourceFile(contract) ? authoritativeRefs : [],
       allowedSources: ['authoritative_input'] as TeamRunInputPurpose[],
       knowledgeMode: 'none' as const,
       outputContract: resultContractForPolicy(dispatchPolicy),
@@ -438,7 +469,10 @@ export async function planLunaTeamsDispatches(
     .map(
       (member) =>
         `- id=${member.agentId}; name=${member.agent?.name ?? member.agentId}; ` +
-        `role=${member.role}; stage=${member.stageOrder}; scopes=${member.delegatedScopes.join(', ') || 'none'}`,
+        `role=${member.role}; stage=${member.stageOrder}; kind=${contractFromMember(member, orderedMembers.length).stageKind}; ` +
+        `also=${contractFromMember(member, orderedMembers.length).alsoKinds.join(',') || 'none'}; ` +
+        `channels=${contractFromMember(member, orderedMembers.length).channels.join(',') || 'none'}; ` +
+        `scopes=${member.delegatedScopes.join(', ') || 'none'}`,
     )
     .join('\n');
   const inputs = run.inputs.length > 0
@@ -459,8 +493,8 @@ Create short, self-contained dispatch contracts for existing agents.
 The Intent/Objective is authoritative. If this is a retry, execute that same intent — do not rewrite it as "re-attempt filtering" or drop constraints (city, channel, greeting/brochure/poll, contacts).
 Each task must carry the constraints relevant to that member (for example Bangalore/Bengaluru for the filter stage; greeting then brochure then poll for WhatsApp).
 Never invent agents or scopes.
-allowedScopes must be a subset of that member's roster scopes. Use the smallest set that can complete the task. Use [] when the member can finish from extracted inputs or Result handbacks with no connector. Do not include write, research, or schedule scopes unless the task explicitly needs them.
-Use only input refs from the supplied input catalog. Only the source/filter stage should receive authoritative_input refs. Later stages (WhatsApp, contacts, CRM) must set inputRefs to [] and use Result handbacks. Operational records must come from authoritative_input or those handbacks.
+Each roster member has a kind (source/transform/act/wait/deliver). allowedScopes must be a subset of that member's kind pack — you cannot add scopes. Use [] for source/transform (JSON from extracted inputs or handbacks).
+Use only input refs from the supplied input catalog. Only source/transform kinds receive authoritative_input refs. Later stages must set inputRefs to [] and use Result handbacks.
 Knowledge mode is "none" by default, "reference_only" when a selected reference asset is needed, or "required" only when Brain knowledge is explicitly necessary.
 Every active requirement id must appear in at least one dispatch.requirementIds array.
 Return only a JSON array: [{"agentId":"...","task":"...","requirementIds":["req_..."],"inputRefs":["team-input:..."],"allowedSources":["authoritative_input"],"allowedScopes":[],"knowledgeMode":"none","contractId":"optional","outputContract":{...}}].
@@ -518,8 +552,9 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
       const member = item.agentId ? memberById.get(item.agentId) : undefined;
       const task = item.task?.trim();
       if (!member || !task || seen.has(member.agentId)) return [];
+      const contract = contractFromMember(member, orderedMembers.length);
       let inputRefs = (item.inputRefs ?? []).filter((ref) => validInputRefs.has(ref));
-      const sourceStage = dispatchNeedsSourceFile(member.role, task, index);
+      const sourceStage = dispatchNeedsSourceFile(contract);
       if (sourceStage && inputRefs.length === 0) {
         inputRefs = run.inputs
           .filter((input) => input.purpose === 'authoritative_input' && validInputRefs.has(input.ref))
@@ -536,12 +571,21 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         proposed: item.knowledgeMode,
       });
       seen.add(member.agentId);
+      const extracted = run.inputs.some(
+        (input) => input.purpose === 'authoritative_input' && Boolean(input.extractedText?.trim()),
+      );
       const allowedScopes = resolveDispatchAllowedScopes({
         role: member.role,
         task,
         delegatedScopes: member.delegatedScopes,
         knowledgeMode,
         requested: item.allowedScopes,
+        stageKind: contract.stageKind,
+        alsoKinds: contract.alsoKinds,
+        channels: contract.channels,
+        stageOrder: member.stageOrder,
+        memberCount: orderedMembers.length,
+        hasExtractedAuthoritativeInput: extracted,
       });
       const dispatchPolicy = resolveDispatchResultPolicy({
         configured: resultPolicy,
@@ -559,6 +603,9 @@ ${preserveOrder ? 'Use every roster member exactly once and preserve roster orde
         delegatedScopes: member.delegatedScopes,
         allowedScopes,
         stageOrder: preserveOrder ? member.stageOrder : index + 1,
+        stageKind: contract.stageKind,
+        alsoKinds: contract.alsoKinds,
+        channels: contract.channels,
         resultPolicy: dispatchPolicy,
         ...(dispatchPolicy === 'tool_evidence.v1'
           ? { contractId: 'qlix.assessment.result.v1' }
@@ -679,16 +726,26 @@ export function effectiveOutputContract(raw?: Record<string, unknown> | null): R
   return raw;
 }
 
-export function isEmptyWorkerHandback(payload: unknown): boolean {
+export function isMissingResultEnvelope(payload: unknown): boolean {
   if (payload == null) return true;
   if (typeof payload === 'string') {
-    return !payload.trim() || /^no response generated\.?$/i.test(payload.trim());
+    const trimmed = payload.trim();
+    return !trimmed || /^no response generated\.?$/i.test(trimmed);
   }
-  if (typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (typeof payload !== 'object' || Array.isArray(payload)) return true;
   const record = payload as Record<string, unknown>;
-  const text = typeof record.text === 'string' ? record.text.trim() : '';
-  const hasResultKeys = 'summary' in record || 'findings' in record || 'provenance' in record;
-  return !hasResultKeys && (!text || /^no response generated\.?$/i.test(text));
+  if ((record as { truncated?: unknown }).truncated === true) return false;
+  return !(
+    typeof record.summary === 'string' &&
+    'findings' in record &&
+    record.provenance &&
+    typeof record.provenance === 'object' &&
+    !Array.isArray(record.provenance)
+  );
+}
+
+export function isEmptyWorkerHandback(payload: unknown): boolean {
+  return isMissingResultEnvelope(payload);
 }
 
 function assertContract(value: unknown, schema: Record<string, unknown>, path = 'result'): void {

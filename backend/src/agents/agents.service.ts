@@ -65,7 +65,7 @@ export class AgentsService {
     const { webauthnCredentialId } = await this.repo.assertDeviceVerified(userId);
     await this.repo.assertOrgMembership(userId, input.orgId);
 
-    // Always-on: brain.query + qlix-schedule MCP, regardless of intent / caller scopes.
+    // Always-on: brain.query regardless of intent / caller scopes. Schedule MCP is intent-based.
     const permissionScopes = withDefaultAgentScopes(input.permissionScopes);
     const jitScopesInput = input.jitScopes.filter((s) => permissionScopes.includes(s));
 
@@ -112,7 +112,7 @@ export class AgentsService {
       webauthnCredentialId,
     });
 
-    // Bind qlix-schedule (and any other mcp.* defaults) before callers re-wire their own scopes.
+    // Bind MCP tools (e.g. qlix-schedule when granted) before callers re-wire their own scopes.
     await wireAgentMcpFromScopes({
       userId,
       orgId: normalizedInput.orgId,

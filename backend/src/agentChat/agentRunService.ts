@@ -269,28 +269,20 @@ export async function waitForAgentRunCompletion(
     const now = Date.now();
     const sliceMs = now - lastTick;
     lastTick = now;
-    let slice = applyAgentRunWaitSlice({
+    let jitPending = false;
+    try {
+      const { JitService } = await import('../jit/jit.service.js');
+      jitPending = await new JitService().hasPendingForRun(runId);
+    } catch (jitErr) {
+      console.warn('[waitForAgentRunCompletion] hasPendingForRun failed', jitErr);
+    }
+    const slice = applyAgentRunWaitSlice({
       sliceMs,
       activeMs,
       timeoutMs,
       holdingForJit,
+      jitPending,
     });
-    if (slice.needsJitCheck) {
-      let jitPending = false;
-      try {
-        const { JitService } = await import('../jit/jit.service.js');
-        jitPending = await new JitService().hasPendingForRun(runId);
-      } catch (jitErr) {
-        console.warn('[waitForAgentRunCompletion] hasPendingForRun failed', jitErr);
-      }
-      slice = applyAgentRunWaitSlice({
-        sliceMs,
-        activeMs,
-        timeoutMs,
-        holdingForJit,
-        jitPending,
-      });
-    }
     activeMs = slice.activeMs;
     holdingForJit = slice.holdingForJit;
     if (slice.timedOut) {

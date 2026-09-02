@@ -134,15 +134,37 @@ export function requirementsToPlanningBrief(
   facts: RequirementFactView[],
   summary: string,
   assumptions: string[],
+  options?: { redesignNote?: string },
 ): string {
   const grouped: Record<string, Array<{ key: string; value: unknown }>> = {};
   for (const fact of facts) {
     (grouped[fact.category] ??= []).push({ key: fact.key, value: fact.value });
   }
-  return [
+  const blocks = [
     'Design an agent or team from these confirmed discovery requirements.',
+  ];
+  if (options?.redesignNote?.trim()) {
+    blocks.push(
+      `REDESIGN_REQUEST (apply this change to the prior design; re-select scopes only for what the updated agent needs): ${options.redesignNote.trim().slice(0, 2_000)}`,
+    );
+  }
+  blocks.push(
     `Discovery summary: ${summary.slice(0, 2_000)}`,
     `Requirements: ${clippedJson(grouped, 8_000)}`,
     `Assumptions: ${clippedJson(assumptions, 1_500)}`,
-  ].join('\n');
+  );
+  return blocks.join('\n');
+}
+
+/** Natural-language intent for scope filtering/enrichment — not the full requirements JSON brief. */
+export function buildScopeIntentText(input: {
+  summary: string;
+  redesignNote?: string;
+  currentMessage?: string;
+}): string {
+  return [
+    input.summary.trim(),
+    input.redesignNote?.trim(),
+    input.currentMessage?.trim(),
+  ].filter(Boolean).join('\n').slice(0, 5_000);
 }

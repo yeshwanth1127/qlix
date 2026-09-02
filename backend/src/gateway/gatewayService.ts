@@ -172,7 +172,7 @@ export class GatewayService {
     }
 
     const { launchTeamRun } = await import('../teams/teamsRunLauncher.js');
-    const { TeamContinuesRunError } = await import('../teams/teams.service.js');
+    const { TeamContinuesRunError, TeamRunMissingAttachmentError } = await import('../teams/teams.service.js');
     const sourceChannel: TeamRunSourceChannel =
       msg.channel === 'whatsapp' ||
       msg.channel === 'api' ||
@@ -219,6 +219,14 @@ export class GatewayService {
       });
     } catch (err) {
       if (err instanceof TeamContinuesRunError) {
+        return {
+          status: 'rejected',
+          reason: err.message,
+          sessionKey,
+          ackReply: err.message,
+        };
+      }
+      if (err instanceof TeamRunMissingAttachmentError) {
         return {
           status: 'rejected',
           reason: err.message,
