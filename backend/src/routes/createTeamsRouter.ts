@@ -47,7 +47,16 @@ import {
   TeamsService,
   TeamEmailConnectorRequiredError,
   TeamContinuesRunError,
+  TeamRunMissingAttachmentError,
 } from '../teams/teams.service.js';
+import { goalImpliesAuthoritativeAttachment } from '../teams/teamRunFollowUp.js';
+import {
+  apiErrorBodyFromFailure,
+  missingAttachmentFailure,
+  resolveTeamRunFailure,
+  teamRunFailureFromError,
+  teamRunFailureFromMessage,
+} from '../teams/teamRunFailures.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
 import { JitService } from '../jit/jit.service.js';
 import { stopInFlightTeamRunWorkers } from '../teams/teamRunCancel.js';
@@ -517,7 +526,8 @@ export function createTeamsRouter(): Router {
       const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
       const events = await repo.listEvents(run.id);
       const tasks = await repo.listA2ATasks(run.id);
-      res.json({ run, events, tasks });
+      const failure = resolveTeamRunFailure(run, events);
+      res.json({ run, events, tasks, failure });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
       res.status(500).json({ error: { code: 'run_get_failed', message: 'Failed to load run' } });
@@ -765,6 +775,17 @@ export function createTeamsRouter(): Router {
         return;
       }
 
+      if (
+        !continuesRunId &&
+        inputs.length === 0 &&
+        goalImpliesAuthoritativeAttachment(agentGoal)
+      ) {
+        res.status(400).json({
+          error: apiErrorBodyFromFailure(missingAttachmentFailure()),
+        });
+        return;
+      }
+
       const auth = req.auth!;
       const team = await service.getTeam(req.params.id!, auth.orgId);
       const backendUrl = resolveDockerBackendUrl(req);
@@ -785,11 +806,14 @@ export function createTeamsRouter(): Router {
         }),
       );
       if (turn.status !== 'accepted') {
+        const reason = turn.status === 'rejected' ? turn.reason : (turn.ackReply ?? turn.status);
+        const failure = teamRunFailureFromMessage(reason);
         res.status(turn.status === 'rejected' ? 409 : 202).json({
           error: {
-            code: 'gateway_rejected',
-            message: turn.status === 'rejected' ? turn.reason : (turn.ackReply ?? turn.status),
+            ...apiErrorBodyFromFailure(failure),
+            code: failure.code === 'pipeline_error' ? 'gateway_rejected' : failure.code,
           },
+          failure,
         });
         return;
       }
@@ -810,9 +834,22 @@ export function createTeamsRouter(): Router {
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
       if (err instanceof TeamNoSupervisorError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
-      if (err instanceof TeamRunnersNotReadyError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
-      if (err instanceof TeamEmailConnectorRequiredError) { res.status(409).json({ error: { code: err.code, message: err.message } }); return; }
-      if (err instanceof TeamContinuesRunError) { res.status(400).json({ error: { code: err.code, message: err.message } }); return; }
+      if (err instanceof TeamRunnersNotReadyError) {
+        res.status(400).json({ error: apiErrorBodyFromFailure(teamRunFailureFromError(err)) });
+        return;
+      }
+      if (err instanceof TeamEmailConnectorRequiredError) {
+        res.status(409).json({ error: apiErrorBodyFromFailure(teamRunFailureFromError(err)) });
+        return;
+      }
+      if (err instanceof TeamContinuesRunError) {
+        res.status(400).json({ error: apiErrorBodyFromFailure(teamRunFailureFromError(err)) });
+        return;
+      }
+      if (err instanceof TeamRunMissingAttachmentError) {
+        res.status(400).json({ error: apiErrorBodyFromFailure(missingAttachmentFailure()) });
+        return;
+      }
       if (err instanceof ModelPolicyError) {
         res.status(400).json({ error: { code: 'invalid_model', message: err.message } });
         return;

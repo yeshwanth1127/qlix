@@ -52,11 +52,22 @@ import {
   resolveDispatchAllowedScopes,
   resultRepairPrompt,
   skillsForLunaTeamsDispatch,
+  shouldUseExtractedInputDispatchOnly,
   TEAM_DISPATCH_ONLY_SKILL,
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
+import { contractFromMember, toolIndexLines } from './stageKind.js';
 import { effectiveRunGoal } from './teamIntent.js';
 import { isUnusableTeamSynthesis, lastResultFromEnvelope } from './teamRunFollowUp.js';
+import {
+  missingInputReferenceFailure,
+  teamRunFailure,
+  teamRunFailureFromError,
+  teamRunFailurePayload,
+  teamRunFailureSummary,
+  workerFailureFromResult,
+  type TeamRunFailure,
+} from './teamRunFailures.js';
 import {
   findReviewProcessForTeamRun,
   loadCompletedReviewExchanges,
@@ -120,6 +131,9 @@ export interface SubtaskPlan {
    * stages themselves run in ascending order, each seeing every earlier stage's output.
    */
   stageOrder: number;
+  stageKind?: string | null;
+  alsoKinds?: string[];
+  channels?: string[];
   contractId?: string;
   resultPolicy?: TeamResultPolicy;
   inputRefs: string[];
@@ -228,6 +242,9 @@ export class TeamOrchestrator {
         delegatedScopes: dispatch.delegatedScopes,
         allowedScopes: dispatch.allowedScopes,
         stageOrder: dispatch.stageOrder,
+        stageKind: dispatch.stageKind,
+        alsoKinds: dispatch.alsoKinds,
+        channels: dispatch.channels,
         ...(dispatch.contractId ? { contractId: dispatch.contractId } : {}),
         resultPolicy: dispatch.resultPolicy,
         inputRefs: dispatch.inputRefs,
@@ -325,22 +342,9 @@ export class TeamOrchestrator {
         emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
         return;
       }
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TeamOrchestrator] run ${run.id} failed:`, message);
-      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
-      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
-      if (teamRunShouldReplyWhatsApp(run, runObjective(run))) {
-        void deliverTextToWorkspaceWhatsApp(team.orgId, {
-          title: team.name,
-          body: message,
-          level: 'error',
-        });
-      }
-      if (run.sourceConnectorId) {
-        await this.repo.clearChannelSession(run.sourceConnectorId);
-      }
-      clearNotifierState(run.id);
-      emit('error', { message });
+      const failure = teamRunFailureFromError(err);
+      console.error(`[TeamOrchestrator] run ${run.id} failed:`, failure.message);
+      await this.markRunFailed(run, team, failure, emit);
     }
   }
 
@@ -548,11 +552,9 @@ export class TeamOrchestrator {
         emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
         return;
       }
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TeamOrchestrator] resume ${run.id} failed:`, message);
-      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
-      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
-      emit('error', { message });
+      const failure = teamRunFailureFromError(err);
+      console.error(`[TeamOrchestrator] resume ${run.id} failed:`, failure.message);
+      await this.markRunFailed(run, team, failure, emit);
     }
   }
 
@@ -895,11 +897,9 @@ export class TeamOrchestrator {
         emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
         return;
       }
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TeamOrchestrator] review resume ${run.id} failed:`, message);
-      await this.repo.updateRunStatus(run.id, 'failed', { errorMessage: message });
-      await this.emitEvent(run, team, null, 'run_failed', { error: message }, emit);
-      emit('error', { message });
+      const failure = teamRunFailureFromError(err);
+      console.error(`[TeamOrchestrator] review resume ${run.id} failed:`, failure.message);
+      await this.markRunFailed(run, team, failure, emit);
     }
   }
 
@@ -1051,8 +1051,12 @@ export class TeamOrchestrator {
     orderedMembers: TeamMemberDTO[],
   ): SubtaskPlan[] {
     const total = orderedMembers.length;
+    const extracted = run.inputs.some(
+      (input) => input.purpose === 'authoritative_input' && Boolean(input.extractedText?.trim()),
+    );
     return orderedMembers.map((m, i) => {
       const stage = i + 1;
+      const contract = contractFromMember(m, total);
       const description = (m.agent as any)?.description as string | undefined;
       const descPart = description?.trim()
         ? `\n\nYour role: ${description.trim()}`
@@ -1071,8 +1075,17 @@ export class TeamOrchestrator {
           task: goal,
           delegatedScopes: m.delegatedScopes,
           knowledgeMode: 'none',
+          stageKind: contract.stageKind,
+          alsoKinds: contract.alsoKinds,
+          channels: contract.channels,
+          stageOrder: m.stageOrder,
+          memberCount: total,
+          hasExtractedAuthoritativeInput: extracted,
         }),
         stageOrder: m.stageOrder,
+        stageKind: contract.stageKind,
+        alsoKinds: contract.alsoKinds,
+        channels: contract.channels,
         inputRefs: run.inputs.filter((input) => input.purpose === 'authoritative_input').map((input) => input.ref),
         allowedSources: ['authoritative_input'],
         knowledgeMode: 'none',
@@ -1093,18 +1106,21 @@ export class TeamOrchestrator {
       emit('complete', { status: 'canceled', synthesis: 'Run was canceled.' });
       return;
     }
-    const synthesis = `Pipeline aborted: stage "${failed.agentName}" failed — ${failed.errorMessage ?? 'no output produced'}. Downstream stages were skipped.`;
-    await this.repo.updateRunStatus(run.id, 'failed', {
-      completedAt: new Date(),
-      errorMessage: synthesis,
+    const workerFailure = workerFailureFromResult(failed);
+    const synthesis =
+      `Pipeline aborted: stage "${failed.agentName}" failed — ${workerFailure.message}. Downstream stages were skipped.`;
+    const failure = teamRunFailure({
+      ...workerFailure,
+      code: 'stage_aborted',
+      title: `Stage "${failed.agentName}" failed`,
+      message: synthesis,
+      reason: workerFailure.reason ?? 'A worker stage failed, so downstream stages were skipped.',
+      agentName: failed.agentName,
+      stage: failed.agentName,
+    });
+    await this.markRunFailed(run, team, failure, emit, supervisorId, {
       result: { synthesis },
     });
-    await this.emitEvent(run, team, supervisorId, 'run_failed', { error: synthesis }, emit);
-    if (run.sourceConnectorId) {
-      await this.repo.clearChannelSession(run.sourceConnectorId);
-    }
-    clearNotifierState(run.id);
-    emit('complete', { status: 'failed', synthesis });
   }
 
   private pipelineName(members: TeamMemberDTO[]): string {
@@ -1358,7 +1374,8 @@ User goal: ${runObjective(run)}`;
       selectedInputs.length === 0 &&
       /\b(provided|attached|uploaded|input)\s+(file|sheet|spreadsheet|document)\b/i.test(subtask.goal)
     ) {
-      throw new Error('Dispatch refers to a provided file but has no valid input reference');
+      const missing = missingInputReferenceFailure();
+      throw Object.assign(new Error(missing.message), { code: missing.code });
     }
     const inputContext = selectedInputs.length > 0
       ? [
@@ -1420,17 +1437,37 @@ User goal: ${runObjective(run)}`;
       delegatedScopes: subtask.delegatedScopes,
       knowledgeMode,
     });
-    const toolsEnabled = workerSkills.some((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL);
+    const hasExtractedAuthoritativeInput = selectedInputs.some(
+      (input) => input.purpose === 'authoritative_input' && Boolean(input.extractedText?.trim()),
+    );
+    const dispatchSkills = shouldUseExtractedInputDispatchOnly({
+      role: subtask.role,
+      task: subtask.goal,
+      stageOrder: subtask.stageOrder,
+      hasExtractedAuthoritativeInput,
+      allowedScopes: subtask.allowedScopes ?? [],
+      stageKind: subtask.stageKind,
+      alsoKinds: subtask.alsoKinds,
+      channels: subtask.channels,
+      delegatedScopes: subtask.delegatedScopes,
+    })
+      ? [TEAM_DISPATCH_ONLY_SKILL]
+      : workerSkills;
+    const toolsEnabled = dispatchSkills.some((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL);
+    const toolIndex = toolIndexLines(dispatchSkills.filter((scope) => scope !== TEAM_DISPATCH_ONLY_SKILL));
+    const toolIndexGuidance = toolsEnabled && toolIndex.length > 0
+      ? `- Tools for this job (do not expand into others): ${toolIndex.join(', ')}.\n`
+      : '';
     const conversationWorkflowEnabled = Boolean(
       (team.config as TeamConfig).conversationWorkflowVersionId,
     );
     const replyWaitGuidance =
-      conversationWorkflowEnabled && workerSkills.includes('whatsapp.contact_send')
+      conversationWorkflowEnabled && dispatchSkills.includes('whatsapp.contact_send')
         ? '- This Team uses a managed per-contact conversation workflow. Send exactly one initial prompt per validated lead (text or native poll if the entry question is multiple-choice). Qlix rewrites the queued row to the published workflow entry.\n' +
           '- Do NOT send later branch messages, collect later answers, set auto-reply instructions, or delegate follow-up work. The conversation middleware owns every reply and next step.\n' +
           '- Message only contacts present in the authoritative Luna-Teams Result handback, using the full phone number including country code.\n'
-        : workerSkills.includes('whatsapp.contact_send') &&
-      workerSkills.includes('whatsapp.auto_reply') &&
+        : dispatchSkills.includes('whatsapp.contact_send') &&
+      dispatchSkills.includes('whatsapp.auto_reply') &&
       (goalRequestsOutreachPack(runObjective(run)) ||
         (Array.isArray((team.config as TeamConfig).waitSteps) &&
           ((team.config as TeamConfig).waitSteps?.length ?? 0) > 0))
@@ -1456,7 +1493,8 @@ User goal: ${runObjective(run)}`;
     const extractedGuidance = resultPolicy === 'tool_evidence.v1'
       ? '- This dispatch is tool-sourced. Cite only real evidence ids returned by assessment tools; do not invent spreadsheet inputs or row references.\n'
       : extractedReady
-        ? '- Exact extracted content is already below. Do NOT call find_tools, call_tool, or any other tool to re-read the file. Filter from that text and return the JSON Result immediately.\n'
+        ? '- Exact extracted content is already below. Do NOT call context_get, context_search, state_read, state_patch, find_tools, call_tool, or any other tool to re-read the file. Filter from that text and return the JSON Result immediately.\n' +
+          '- Return ONLY the JSON Result object (summary, findings, artifacts, provenance). No markdown, no prose, no chain-of-thought outside the JSON.\n'
         : selectedInputs.length === 0 && hasPriorHandbacks
           ? '- This dispatch has no attached source file. Copy provenance.inputRefs and recordRefs from the prior Result handback. Do not invent a new source file.\n'
           : selectedInputs.length === 0
@@ -1478,7 +1516,7 @@ User goal: ${runObjective(run)}`;
 Rules:
 - Do only what this dispatch asks. Do NOT invent side work (CRM writes, outreach, research, scheduling, etc.) unless the dispatch explicitly requires it.
 - Prefer tools that are necessary for this stage. Having a tool available is not permission to use it.
-${toolsEnabled ? '' : '- No connector tools are enabled for this dispatch yet. Do not call find_tools or call_tool until a capability is granted.\n'}
+${toolsEnabled ? toolIndexGuidance : '- No connector tools are enabled for this dispatch yet. Do not call find_tools or call_tool until a capability is granted.\n'}
 - If this dispatch needs a capability this agent does not have (PDF, spreadsheet, email, WhatsApp, web, files, etc.), you MUST call request_capability with the scope ids and a short reason that names the user ask (e.g. "create a PDF of the script"), then wait. Do NOT return a blocked JSON, "missing tool", or "delegated scopes: none" instead of asking.
 - PDF / document / spreadsheet export on cloud: request scopes ["files.create"] (create_report_pdf / create_xlsx in the sandbox). Do NOT request web.research for PDF/Excel alone. Do NOT request system.file_write for PDFs on cloud — that is local/hybrid only.
 - PDF on hybrid/local desktop: system.file_write (luna_local_create_pdf). Email: email.send. WhatsApp: whatsapp.contact_send.
@@ -1537,7 +1575,7 @@ Dispatch: ${subtask.goal}`;
           userId: run.startedByUserId,
           role: 'worker',
           prompt: attemptPrompt,
-          skills: repairOnly ? [TEAM_DISPATCH_ONLY_SKILL] : workerSkills,
+          skills: repairOnly ? [TEAM_DISPATCH_ONLY_SKILL] : dispatchSkills,
           a2aTaskId: a2aTask.id,
           dispatchId: subtask.subtaskId,
           useBrain,
@@ -1861,6 +1899,36 @@ Provide the final synthesized result as plain text.${whatsappHint}`;
       agentRunId,
       dispatchId: subtask.subtaskId,
     }, emit);
+  }
+
+  private async markRunFailed(
+    run: TeamRunDTO,
+    team: TeamDTO,
+    failure: TeamRunFailure,
+    emit: RunEventEmitter,
+    agentId: string | null = null,
+    extra?: { result?: Record<string, unknown> },
+  ): Promise<void> {
+    const summary = teamRunFailureSummary(failure);
+    await this.repo.updateRunStatus(run.id, 'failed', {
+      completedAt: new Date(),
+      errorMessage: summary,
+      ...(extra?.result ? { result: extra.result } : {}),
+    });
+    await this.emitEvent(run, team, agentId, 'run_failed', teamRunFailurePayload(failure), emit);
+    if (teamRunShouldReplyWhatsApp(run, runObjective(run))) {
+      void deliverTextToWorkspaceWhatsApp(team.orgId, {
+        title: failure.title,
+        body: [failure.message, failure.hint].filter(Boolean).join('\n\n'),
+        level: 'error',
+      });
+    }
+    if (run.sourceConnectorId) {
+      await this.repo.clearChannelSession(run.sourceConnectorId);
+    }
+    clearNotifierState(run.id);
+    emit('error', teamRunFailurePayload(failure));
+    emit('complete', { status: 'failed', synthesis: summary, failure });
   }
 
   private async emitEvent(

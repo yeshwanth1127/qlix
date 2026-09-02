@@ -10,6 +10,7 @@ import {
 import { normalizeDiscoveryOutcome } from './discoveryNormalize.js';
 import {
   requirementsToPlanningBrief,
+  buildScopeIntentText,
   topicSummariesFromFacts,
   type ContextMessage,
 } from './contextCompiler.js';
@@ -514,9 +515,20 @@ export async function processBuilderTurn(input: {
         persisted.requirements.facts,
         outcome.summary,
         persisted.requirements.assumptions,
+        input.intent === 'redesign' ? { redesignNote: input.content } : undefined,
       );
+      const scopeIntent = buildScopeIntentText({
+        summary: outcome.summary,
+        redesignNote: input.intent === 'redesign' ? input.content : undefined,
+        currentMessage: input.intent !== 'redesign' ? input.content : undefined,
+      });
       try {
-        const plan = await parseAgentCreationPrompt(planningBrief, input.orgId, input.model);
+        const plan = await parseAgentCreationPrompt(
+          planningBrief,
+          input.orgId,
+          input.model,
+          scopeIntent,
+        );
         const planRow = await persistPlan({
           sessionId: input.sessionId,
           requirementsVersion: persisted.version,

@@ -30,6 +30,7 @@ import type {
   TeamStatus,
 } from './teams.types.js';
 import { DEFAULT_TEAM_CONFIG } from './teams.types.js';
+import { inferStageContract, isStageKind } from './stageKind.js';
 
 function toTeamDTO(t: PrismaTeam & {
   members?: Array<PrismaTeamMember & { agent?: { id: string; name: string; did: string; status: string; permissionScopes: string[]; agentKind: string } }>;
@@ -63,6 +64,9 @@ function toTeamMemberDTO(m: PrismaTeamMember & {
     delegatedScopes: m.delegatedScopes as TeamMemberDTO['delegatedScopes'],
     agentCardSnapshot: m.agentCardSnapshot as Record<string, unknown> | null,
     stageOrder: m.stageOrder ?? 0,
+    stageKind: isStageKind(m.stageKind) ? m.stageKind : null,
+    alsoKinds: ((m as { alsoKinds?: string[] }).alsoKinds ?? []) as TeamMemberDTO['alsoKinds'],
+    channels: ((m as { channels?: string[] }).channels ?? []) as TeamMemberDTO['channels'],
     addedAt: m.addedAt.toISOString(),
     agent: m.agent
       ? {
@@ -202,6 +206,9 @@ export class TeamsRepository {
             delegatedScopes: m.delegatedScopes,
             // Members declared in the create payload are assigned stages in declaration order.
             stageOrder: Math.max(1, Math.floor(m.stageOrder ?? (i + 1))),
+            stageKind: m.stageKind ?? null,
+            alsoKinds: m.alsoKinds ?? [],
+            channels: m.channels ?? [],
           })),
         },
       },
@@ -312,6 +319,9 @@ export class TeamsRepository {
         delegatedScopes: input.delegatedScopes,
         agentCardSnapshot: (input.agentCardSnapshot as object | undefined) ?? undefined,
         stageOrder: nextStage,
+        stageKind: input.stageKind ?? null,
+        alsoKinds: input.alsoKinds ?? [],
+        channels: input.channels ?? [],
       },
       include: { agent: { select: MEMBER_AGENT_SELECT } },
     });
@@ -385,6 +395,32 @@ export class TeamsRepository {
       include: { agent: { select: MEMBER_AGENT_SELECT } },
     });
     return toTeamMemberDTO(m);
+  }
+
+  /** Sticky one-time backfill of stageKind/channels for members created before kinds existed. */
+  async persistMissingStageContracts(team: TeamDTO): Promise<TeamDTO> {
+    const members = team.members ?? [];
+    const missing = members.filter((member) => !member.stageKind);
+    if (missing.length === 0) return team;
+    await prisma.$transaction(
+      missing.map((member) => {
+        const contract = inferStageContract({
+          role: member.role,
+          delegatedScopes: member.delegatedScopes,
+          stageOrder: member.stageOrder,
+          memberCount: members.length,
+        });
+        return prisma.teamMember.update({
+          where: { id: member.id },
+          data: {
+            stageKind: contract.stageKind,
+            alsoKinds: contract.alsoKinds,
+            channels: contract.channels,
+          },
+        });
+      }),
+    );
+    return (await this.findById(team.id)) ?? team;
   }
 
   async isMember(teamId: string, agentId: string): Promise<boolean> {

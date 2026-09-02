@@ -26,11 +26,14 @@ def _identity() -> AgentIdentity:
     )
 
 
-def test_generic_context_tool_is_team_scoped() -> None:
-    assert openai_team_context_tool_definitions(["team.dispatch"])[0]["function"]["name"] == "context_get"
-    names = {tool["function"]["name"] for tool in openai_team_context_tool_definitions(["team.dispatch"])}
-    assert names == {"context_get", "context_search", "state_read", "state_patch"}
+def test_team_dispatch_alone_has_no_context_tools() -> None:
+    assert openai_team_context_tool_definitions(["team.dispatch"]) == []
     assert openai_team_context_tool_definitions(["brain.query"]) == []
+
+
+def test_context_plane_tools_when_pack_has_references() -> None:
+    names = {tool["function"]["name"] for tool in openai_team_context_tool_definitions(["team.dispatch"], enable=True)}
+    assert names == {"context_get", "context_search", "state_read", "state_patch"}
 
 
 def test_context_get_is_available_when_pack_has_references() -> None:

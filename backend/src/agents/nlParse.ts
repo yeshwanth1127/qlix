@@ -16,9 +16,12 @@ import {
   enrichCrmPlan,
   enrichSchedulePlan,
   enrichCloudPreferPlan,
+  stripScheduleUnlessIntent,
 } from './nlPlanEnrichment.js';
 import { selectNlPromptPacks } from './nlPromptPacks.js';
+import { filterScopesForBuilderPrompt } from './nlScopeFilter.js';
 import { withDefaultAgentScopes } from './defaultAgentScopes.js';
+import { applyStageKindPacksToPlan, isStageKind, parseStageChannels, parseStageKinds } from '../teams/stageKind.js';
 
 const DEFAULT_BUILDER_MODEL = 'openrouter/openai/gpt-4o-mini';
 const DEFAULT_AGENT_MODEL = 'exora/exora-general';
@@ -56,7 +59,7 @@ export function sanitizeAgentSpec(rawInput: unknown, fallbackName: string, allow
     const fallback = allowed.has('web.read') ? 'web.read' : [...allowed][0];
     if (fallback) permissionScopes = [fallback as PermissionScope];
   }
-  // Always-on defaults (brain.query + qlix-schedule) — force even if MCP catalog lag.
+  // Always-on default (brain.query) — schedule scopes are intent-based via enrichment.
   permissionScopes = withDefaultAgentScopes(permissionScopes);
   const rawJit = sanitizeScopes(raw.jitScopes, allowed);
   const scopeSet = new Set(permissionScopes);
@@ -123,6 +126,9 @@ export function sanitizeWorkerSpec(rawInput: unknown, index: number, allowed: Se
     ...base,
     role: String(raw.role ?? 'worker').slice(0, 80),
     stageOrder: typeof raw.stageOrder === 'number' && raw.stageOrder > 0 ? Math.floor(raw.stageOrder) : index + 1,
+    stageKind: isStageKind(raw.stageKind) ? raw.stageKind : undefined,
+    alsoKinds: parseStageKinds(raw.alsoKinds),
+    channels: parseStageChannels(raw.channels),
   };
 }
 
@@ -168,22 +174,26 @@ export async function parseAgentCreationPrompt(
   userPrompt: string,
   orgId: string | null,
   model?: string,
+  /** Natural-language intent for scope filtering/enrichment (omit to use userPrompt). */
+  scopeIntent?: string,
 ): Promise<AgentCreationPlan> {
   const resolvedModel = model?.trim() || DEFAULT_BUILDER_MODEL;
   const provider = providerForModel(resolvedModel);
   const planAllowedTiers = await planAllowedTiersForOrg(orgId);
+  const intentText = (scopeIntent?.trim() || userPrompt).slice(0, 5000);
 
   // Offer every scope enabled for this org (base + connector-gated), even if the
   // connector isn't linked yet — the link is verified at run time, not build time.
   // Skills-page-disabled scopes are still excluded.
   const availableScopes: ScopeDef[] = await getBuildableScopes(orgId);
   const allowed = new Set<string>(availableScopes.map((s) => s.id));
-  const packs = selectNlPromptPacks(userPrompt);
+  const promptScopes = filterScopesForBuilderPrompt(intentText, availableScopes);
+  const packs = selectNlPromptPacks(intentText);
 
   const request = {
     model: resolvedModel,
     messages: [
-      { role: 'system' as const, content: buildSystemPrompt(availableScopes, packs) },
+      { role: 'system' as const, content: buildSystemPrompt(promptScopes, packs) },
       { role: 'user' as const, content: userPrompt.slice(0, 5000) },
     ],
     temperature: 0.1,
@@ -304,12 +314,13 @@ export async function parseAgentCreationPrompt(
     throw new NLParseError(`Unexpected tool name: ${toolCall.function.name}`);
   }
 
-  const jobEnriched = enrichJobApplyPlan(userPrompt, plan, allowed);
-  const competitorEnriched = enrichCompetitorResearchPlan(userPrompt, jobEnriched, allowed);
-  const crmEnriched = enrichCrmPlan(userPrompt, competitorEnriched, allowed);
-  const scheduleEnriched = enrichSchedulePlan(userPrompt, crmEnriched, allowed);
+  const jobEnriched = enrichJobApplyPlan(intentText, plan, allowed);
+  const competitorEnriched = enrichCompetitorResearchPlan(intentText, jobEnriched, allowed);
+  const crmEnriched = enrichCrmPlan(intentText, competitorEnriched, allowed);
+  const scheduleEnriched = enrichSchedulePlan(intentText, crmEnriched, allowed);
   // Last: honor cloud-hosted / cloud docs (create_xlsx sandbox) by stripping hybrid-only scopes.
-  return enrichCloudPreferPlan(userPrompt, scheduleEnriched, allowed);
+  const cloudEnriched = enrichCloudPreferPlan(intentText, scheduleEnriched, allowed);
+  return applyStageKindPacksToPlan(stripScheduleUnlessIntent(intentText, cloudEnriched), allowed);
 }
 
 /**
@@ -351,7 +362,7 @@ export async function sanitizeCreationPlan(
       (w) => w && typeof w === 'object',
     );
     const configRaw = (teamRaw.config ?? {}) as Record<string, unknown>;
-    return {
+    return applyStageKindPacksToPlan({
       type: 'team',
       rationale,
       team: {
@@ -369,7 +380,7 @@ export async function sanitizeCreationPlan(
             : 'once',
         },
       },
-    };
+    }, allowed);
   }
 
   throw new NLParseError(`Creation plan kind must be single or team (got "${kind}")`);

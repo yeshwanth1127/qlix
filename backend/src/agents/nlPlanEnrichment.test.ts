@@ -9,6 +9,7 @@ import {
   isCrmPrompt,
   enrichSchedulePlan,
   isSchedulePrompt,
+  stripScheduleUnlessIntent,
   enrichCloudPreferPlan,
   isCloudHostedPrompt,
   isCloudDocPrompt,
@@ -170,6 +171,22 @@ describe('enrichSchedulePlan', () => {
     assert.equal(isSchedulePrompt('create an agent that runs a daily digest every morning'), true);
     assert.equal(isSchedulePrompt('schedule a recurring task for weekdays'), true);
     assert.equal(isSchedulePrompt('scrape google maps leads'), false);
+    assert.equal(isSchedulePrompt('daily report in spreadsheet'), false);
+    assert.equal(isSchedulePrompt('output format: daily report'), false);
+  });
+
+  it('does not enrich when output mentions daily report only', () => {
+    const plan = singleAgentPlan('Lead reporter', ['web.read']);
+    const out = enrichSchedulePlan(
+      'WhatsApp outreach agent with daily report in spreadsheet output',
+      plan,
+      SCHEDULE_ALLOWED,
+    );
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(!out.agent.permissionScopes.includes('mcp.qlix-schedule.schedule_create'));
   });
 
   it('wires qlix-schedule MCP scopes', () => {
@@ -185,6 +202,20 @@ describe('enrichSchedulePlan', () => {
     }
     assert.ok(out.agent.permissionScopes.includes('mcp.qlix-schedule.schedule_create'));
     assert.match(out.agent.description, /## Schedule method/);
+  });
+
+  it('strips schedule scopes when intent is not scheduling', () => {
+    const plan = singleAgentPlan('Reporter', [
+      'web.read',
+      'mcp.qlix-schedule.schedule_create',
+      'mcp.qlix-schedule.schedule_list',
+    ]);
+    const out = stripScheduleUnlessIntent('WhatsApp outreach with daily report output', plan);
+    if (out.type !== 'single') {
+      assert.fail('expected single');
+      return;
+    }
+    assert.ok(!out.agent.permissionScopes.some((s) => s.startsWith('mcp.qlix-schedule.')));
   });
 });
 

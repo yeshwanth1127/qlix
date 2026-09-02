@@ -167,7 +167,7 @@ export function buildTeamToolSchema(_scopes?: ScopeDef[]): Record<string, unknow
               },
               workers: {
                 type: 'array',
-                description: 'Specialized workers.',
+                description: 'Specialized workers. Give each a stageKind so scopes stay job-sized.',
                 items: {
                   type: 'object',
                   properties: {
@@ -182,8 +182,27 @@ export function buildTeamToolSchema(_scopes?: ScopeDef[]): Record<string, unknow
                       minimum: 1,
                       description: 'Execution order starting at 1.',
                     },
+                    stageKind: {
+                      type: 'string',
+                      enum: ['source', 'transform', 'act', 'wait', 'deliver'],
+                      description:
+                        'Job type. source/transform = read/filter attached data (no connectors). act = message a named channel. wait = collect replies. deliver = create a file and send it back.',
+                    },
+                    alsoKinds: {
+                      type: 'array',
+                      items: { type: 'string', enum: ['source', 'transform', 'act', 'wait', 'deliver'] },
+                      description: 'Extra jobs this same worker also performs.',
+                    },
+                    channels: {
+                      type: 'array',
+                      items: {
+                        type: 'string',
+                        enum: ['whatsapp', 'email', 'slack', 'crm', 'notion', 'web', 'files'],
+                      },
+                      description: 'Channels for act/wait/deliver (e.g. whatsapp). Empty for source/transform.',
+                    },
                   },
-                  required: [...AGENT_REQUIRED, 'role', 'stageOrder'],
+                  required: [...AGENT_REQUIRED, 'role', 'stageOrder', 'stageKind'],
                   additionalProperties: false,
                 },
               },
@@ -237,6 +256,12 @@ ${scopeList}
 - Web research: web.research. Browse: web.read+web.click. Forms: +web.transaction.
 - Excel / spreadsheet / PDF on cloud: files.create unlocks create_xlsx + create_report_pdf (Qlix sandbox download link). Do NOT add web.research just for PDF/Excel. Do NOT add system.file_* for sheets or PDFs unless the user wants local filesystem/desktop (hybrid).
 - Request every scope the core task needs. Connector scopes OK before link. mcp.<server>.<tool> = MCP tools (bindings auto-created).
+- Teams: assign each worker a stageKind. Scopes are taken from that kind + channels — do NOT copy the whole user ask onto every worker.
+  source / transform: no connector scopes (uploaded files are already extracted).
+  act: only the named channel (whatsapp.contact_send, email.send, …).
+  wait: auto-reply / read on that same channel.
+  deliver: files.create plus send-to-self on that channel (whatsapp.send, not contact_send).
+  Combine jobs on one worker with alsoKinds (e.g. act + wait + deliver).
 
 ## JIT
 Forced: ${forceJitList || '(none)'}

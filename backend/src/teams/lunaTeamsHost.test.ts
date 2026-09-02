@@ -14,6 +14,7 @@ import {
   resolveDispatchResultPolicy,
   resultRepairPrompt,
   skillsForLunaTeamsDispatch,
+  shouldUseExtractedInputDispatchOnly,
   TEAM_DISPATCH_ONLY_SKILL,
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
@@ -209,6 +210,19 @@ test('Result repair retries preserve the good candidate and prohibit more tool c
   assert.match(prompt, /Do not call tools/);
 });
 
+test('prose worker output is a missing Result envelope', () => {
+  const parsed = parseLunaTeamsHandback('Here are the Bangalore leads:\n- Alice, +91...');
+  assert.throws(
+    () =>
+      validateLunaTeamsResult({
+        run: incidentRun,
+        dispatch: filterDispatch,
+        payload: parsed.payload,
+      }),
+    /Worker did not return a Result envelope/,
+  );
+});
+
 test('empty worker output is a missing Result, not a provenance incident', () => {
   const parsed = parseLunaTeamsHandback('No response generated.');
   assert.throws(
@@ -320,6 +334,48 @@ test('commander empty allowedScopes means no connector tools', () => {
   });
   assert.deepEqual(allowed, []);
   assert.deepEqual(skillsForLunaTeamsDispatch({ allowedScopes: allowed }), [TEAM_DISPATCH_ONLY_SKILL]);
+});
+
+test('data reader / lead processor with extracted spreadsheet gets no connector tools', () => {
+  const allowed = resolveDispatchAllowedScopes({
+    role: 'data reader',
+    task: 'Read the uploaded Excel file and extract lead rows for Bangalore',
+    delegatedScopes: ['brain.query', 'files.create'],
+    knowledgeMode: 'none',
+  });
+  assert.deepEqual(allowed, []);
+  assert.deepEqual(
+    skillsForLunaTeamsDispatch({
+      role: 'data reader',
+      task: 'Read the uploaded Excel file and extract lead rows for Bangalore',
+      delegatedScopes: ['brain.query', 'files.create'],
+      allowedScopes: allowed,
+    }),
+    [TEAM_DISPATCH_ONLY_SKILL],
+  );
+});
+
+test('shouldUseExtractedInputDispatchOnly for stage-1 spreadsheet upload', () => {
+  assert.equal(
+    shouldUseExtractedInputDispatchOnly({
+      role: 'lead processor',
+      task: 'Filter Bangalore leads from the uploaded sheet',
+      stageOrder: 1,
+      hasExtractedAuthoritativeInput: true,
+      allowedScopes: ['brain.query', 'files.create'],
+    }),
+    true,
+  );
+  assert.equal(
+    shouldUseExtractedInputDispatchOnly({
+      role: 'outreach',
+      task: 'Send WhatsApp messages to filtered leads',
+      stageOrder: 2,
+      hasExtractedAuthoritativeInput: false,
+      allowedScopes: ['whatsapp.contact_send'],
+    }),
+    false,
+  );
 });
 
 test('invented commander scopes are dropped', () => {

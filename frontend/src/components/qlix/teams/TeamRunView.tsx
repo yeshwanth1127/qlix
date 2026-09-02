@@ -47,6 +47,9 @@ import {
   setTeamRunWaitTtl,
   startTeamRun,
   streamTeamRun,
+  goalImpliesAuthoritativeAttachment,
+  TeamRunRequestError,
+  type TeamRunFailure,
   updateTeamConfig,
   type TeamDTO,
   type TeamRunDTO,
@@ -80,6 +83,11 @@ import {
   toolCategoryIcon,
   type TeamReasoningStep,
 } from "@/components/qlix/agents/agentToolActivity";
+import { TeamRunFailureBanner } from "@/components/qlix/teams/TeamRunFailureBanner";
+import {
+  parseTeamRunFailurePayload,
+  resolveTeamRunFailureFromRun,
+} from "@/lib/team-run-failures";
 import { cn } from "@/lib/utils/cn";
 import { sketchButtonPrimary } from "@/components/qlix/sketch";
 import { AgentMessageContent } from "@/components/qlix/agents/AgentMessageContent";
@@ -176,7 +184,7 @@ type ProcessedEvent =
     }
   | { kind: "subtask_completed"; eventId: string; timestampMs: number; payload: Record<string, unknown>; agentId: string | null }
   | { kind: "run_result"; eventId: string; timestampMs: number; synthesis?: string }
-  | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string }
+  | { kind: "run_failed_event"; eventId: string; timestampMs: number; error: string; failure?: TeamRunFailure }
   | { kind: "wait_armed"; eventId: string; timestampMs: number; reason: string; contactCount: number }
   | {
       kind: "wait_ttl_requested";
@@ -1357,7 +1365,7 @@ type ChatItem =
   | { kind: "activity"; id: string; ts: number; agentId: string; entries: ActivityEntry[] }
   | { kind: "completed"; id: string; ts: number; agentId: string | null; summary?: string }
   | { kind: "result"; id: string; ts: number; synthesis?: string }
-  | { kind: "failed"; id: string; ts: number; error: string }
+  | { kind: "failed"; id: string; ts: number; error: string; failure?: TeamRunFailure }
   | { kind: "wait_armed"; id: string; ts: number; reason: string; contactCount: number }
   | {
       kind: "wait_ttl_requested";
@@ -1411,6 +1419,7 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     Record<string, "authoritative_input" | "reference_asset">
   >({});
   const [fileError, setFileError] = useState<string | null>(null);
+  const [runFailure, setRunFailure] = useState<TeamRunFailure | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
   const [startedGoal, setStartedGoal] = useState<string | null>(null);
   const [goalAttachments, setGoalAttachments] = useState<ChatAttachmentChip[] | null>(null);
@@ -1901,9 +1910,17 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
             synthesis: typeof p.synthesis === "string" ? p.synthesis : undefined,
           });
           break;
-        case "run_failed":
-          result.push({ kind: "run_failed_event", eventId: e.id, timestampMs: ts, error: (p.error as string | undefined) ?? "Run failed" });
+        case "run_failed": {
+          const failure = parseTeamRunFailurePayload(p);
+          result.push({
+            kind: "run_failed_event",
+            eventId: e.id,
+            timestampMs: ts,
+            error: (p.error as string | undefined) ?? failure?.message ?? "Run failed",
+            ...(failure ? { failure } : {}),
+          });
           break;
+        }
         case "wait_armed":
           result.push({
             kind: "wait_armed",
@@ -2171,7 +2188,13 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
           });
           break;
         case "run_failed_event":
-          items.push({ kind: "failed", id: ev.eventId, ts: ev.timestampMs, error: ev.error });
+          items.push({
+            kind: "failed",
+            id: ev.eventId,
+            ts: ev.timestampMs,
+            error: ev.error,
+            ...(ev.failure ? { failure: ev.failure } : {}),
+          });
           break;
         case "wait_armed":
           break;
@@ -2307,6 +2330,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
 
   const isPaused = runStatus === "paused" || run?.status === "paused";
   const isRunning = (runStatus === "running" || submitting) && !isPaused;
+  const activeFailure = useMemo(() => {
+    if (runFailure) return runFailure;
+    if (run) return resolveTeamRunFailureFromRun(run, events);
+    return null;
+  }, [runFailure, run, events]);
   const waitTtlAlreadySet = events.some(
     (e) => e.eventType === "wait_ttl_set" && e.runId === run?.id,
   );
@@ -2616,8 +2644,10 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     if (event.eventType === "run_failed") {
       setRunStatus("failed");
       setRun((current) => current ? { ...current, status: "failed" } : current);
-      const failure = typeof p.error === "string" ? p.error : null;
-      if (failure) setFinalResult(failure);
+      const failure = parseTeamRunFailurePayload(p);
+      if (failure) setRunFailure(failure);
+      const failureText = typeof p.error === "string" ? p.error : failure?.message ?? null;
+      if (failureText) setFinalResult(failureText);
     } else if (event.eventType === "run_completed") {
       setRunStatus("completed");
       setRun((current) => current ? { ...current, status: "completed" } : current);
@@ -2684,10 +2714,22 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
       run &&
       (finishedStatuses.has(runStatus ?? "") || finishedStatuses.has(run.status)),
     );
+    if (
+      !isFollowUp &&
+      files.length === 0 &&
+      text.trim() &&
+      goalImpliesAuthoritativeAttachment(text)
+    ) {
+      setFileError(
+        "This message refers to an attached file, but no file is selected. Add your spreadsheet before sending.",
+      );
+      return;
+    }
     const continuesRunId = isFollowUp && run ? run.id : null;
     const localFollowUpId = isFollowUp ? `followup-local-${Date.now()}` : null;
     setSubmitting(true);
     setError(null);
+    setRunFailure(null);
     setClarificationNotice(null);
     const display =
       text.trim() ||
@@ -2786,9 +2828,10 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
           }
         },
         onError: () => {
-          void getTeamRun(team.id, started.run.id).then(({ run: latest }) => {
+          void getTeamRun(team.id, started.run.id).then(({ run: latest, events, failure }) => {
             setRun(latest);
             setRunStatus(latest.status);
+            setRunFailure(failure ?? resolveTeamRunFailureFromRun(latest, events));
             if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
               setFinalResult(String((latest.result as { synthesis: string }).synthesis));
             }
@@ -2798,11 +2841,19 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
       });
       streamCleanup.current = cleanup;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to start run";
-      setError(message);
+      if (err instanceof TeamRunRequestError) {
+        setRunFailure(err.failure);
+        if (err.failure.code === "missing_attachment" || err.failure.code === "missing_input_reference") {
+          setFileError(err.failure.hint ?? err.failure.message);
+        }
+        setError(err.failure.message);
+      } else {
+        const message = err instanceof Error ? err.message : "Failed to start run";
+        setError(message);
+      }
       setRunStatus(isFollowUp ? (run?.status ?? "failed") : "failed");
       if (isFollowUp && localFollowUpId) {
-        setClarificationNotice(message);
+        setClarificationNotice(err instanceof TeamRunRequestError ? err.failure.message : (err instanceof Error ? err.message : "Failed to start run"));
       } else {
         setStartedGoal(null);
         setGoalAttachments(null);
@@ -2914,6 +2965,7 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     setUploadingAttachments(null);
     setRunModelLabel(null);
     setError(null);
+    setRunFailure(null);
     setPendingFiles([]);
     setPendingFilePurposes({});
     setFileError(null);
@@ -2993,6 +3045,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
       setEvents(mergedEvents);
       setArtifacts(latest.run.artifacts ?? []);
       setRunStatus(latest.run.status);
+      setRunFailure(
+        latest.failure ??
+          resolveTeamRunFailureFromRun(latest.run, latest.events) ??
+          null,
+      );
       setFinalResult(
         typeof (latest.run.result as { synthesis?: unknown } | null)?.synthesis === "string"
           ? String((latest.run.result as { synthesis: string }).synthesis)
@@ -3043,9 +3100,10 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
         }
       },
       onError: () => {
-        void getTeamRun(team.id, runId).then(({ run: latest }) => {
+        void getTeamRun(team.id, runId).then(({ run: latest, events, failure }) => {
           setRun(latest);
           setRunStatus(latest.status);
+          setRunFailure(failure ?? resolveTeamRunFailureFromRun(latest, events));
           if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
             setFinalResult(String((latest.result as { synthesis: string }).synthesis));
           }
@@ -3386,14 +3444,14 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
             </button>
           ) : null}
 
-          {error && (
+          {error && !activeFailure ? (
             <span
               className="max-w-[220px] truncate text-[11px] text-[color:var(--sketch-red)]"
               title={error}
             >
               {error}
             </span>
-          )}
+          ) : null}
 
           {(isRunning || isPaused) && run && (
             <button
@@ -3573,7 +3631,9 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
                 }
 
                 case "failed":
-                  return (
+                  return item.failure ? (
+                    <TeamRunFailureBanner key={item.id} failure={item.failure} />
+                  ) : (
                     <SystemLine key={item.id} icon={XCircle} tone="danger">
                       {item.error}
                     </SystemLine>
@@ -3798,6 +3858,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
         {/* ── Composer ───────────────────────────────────────────────────── */}
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="mx-auto w-full max-w-2xl">
+            {activeFailure && (runStatus === "failed" || run?.status === "failed" || Boolean(error)) ? (
+              <div className="mb-3">
+                <TeamRunFailureBanner failure={activeFailure} />
+              </div>
+            ) : null}
             {stickyJitPending ? (
               <JitApprovalCard
                 className="mb-2.5"

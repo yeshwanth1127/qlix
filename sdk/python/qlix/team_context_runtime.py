@@ -133,14 +133,13 @@ def openai_team_context_tool_definitions(
     enable: bool = False,
     enable_search: bool = False,
 ) -> list[dict[str, Any]]:
-    filt = {str(scope).strip() for scope in (skill_filter or []) if str(scope).strip()}
     tools: list[dict[str, Any]] = []
-    if enable or "team.dispatch" in filt:
+    if enable:
         tools.append(TEAM_CONTEXT_TOOL_DEFINITION)
-    if enable_search or enable or "team.dispatch" in filt:
         tools.append(CONTEXT_SEARCH_TOOL_DEFINITION)
-    if "team.dispatch" in filt:
         tools.extend(_STATE_TOOL_DEFINITIONS)
+    elif enable_search:
+        tools.append(CONTEXT_SEARCH_TOOL_DEFINITION)
     return tools
 
 

@@ -55,6 +55,14 @@ export function priorContextFromRun(
 const RETRY_ONLY_GOAL_RE =
   /^(try again|do it again|do that again|repeat(?: that| it)?|same again|run it again|retry|again|please retry|re-?run(?: it)?|re-?try|proceed with the original intent)\.?!?$/i;
 
+/** User text that expects an authoritative_input attachment on this run. */
+export const GOAL_IMPLIES_ATTACHMENT_RE =
+  /\b(attached|uploaded|provided)\s+(spreadsheet|sheet|excel(?:\s+file)?|file|document|workbook)\b/i;
+
+export function goalImpliesAuthoritativeAttachment(goal: string): boolean {
+  return GOAL_IMPLIES_ATTACHMENT_RE.test(goal.trim());
+}
+
 export function isRetryOnlyUserText(text: string): boolean {
   return RETRY_ONLY_GOAL_RE.test(text.trim());
 }

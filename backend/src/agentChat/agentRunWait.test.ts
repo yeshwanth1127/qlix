@@ -50,3 +50,16 @@ test('asks for a JIT check when the work timeout is about to elapse', () => {
   assert.equal(check.needsJitCheck, true);
   assert.equal(check.timedOut, false);
 });
+
+test('mid-run JIT pending pauses the timeout clock before the deadline', () => {
+  const paused = applyAgentRunWaitSlice({
+    sliceMs: 5_000,
+    activeMs: 90_000,
+    timeoutMs: 180_000,
+    holdingForJit: false,
+    jitPending: true,
+  });
+  assert.equal(paused.activeMs, 0);
+  assert.equal(paused.holdingForJit, true);
+  assert.equal(paused.timedOut, false);
+});

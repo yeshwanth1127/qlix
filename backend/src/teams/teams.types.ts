@@ -1,4 +1,5 @@
 import type { PermissionScope } from '../agents/agents.types.js';
+import type { StageChannel, StageKind } from './stageKind.js';
 import type {
   LiveArtifactState,
   WaitPolicySnapshot,
@@ -108,6 +109,9 @@ export interface TeamMemberDTO {
   agentCardSnapshot: Record<string, unknown> | null;
   /** Pipeline stage (1-indexed). Lower = earlier in the pipeline. */
   stageOrder: number;
+  stageKind?: StageKind | null;
+  alsoKinds?: StageKind[];
+  channels?: StageChannel[];
   addedAt: string;
   agent?: {
     id: string;
@@ -410,6 +414,9 @@ export interface CreateTeamInput {
     delegatedScopes: PermissionScope[];
     /** Optional dependency stage; equal values execute concurrently. */
     stageOrder?: number;
+    stageKind?: StageKind;
+    alsoKinds?: StageKind[];
+    channels?: StageChannel[];
   }>;
   config?: Partial<TeamConfig>;
 }
@@ -418,6 +425,9 @@ export interface AddTeamMemberInput {
   agentId: string;
   role: string;
   delegatedScopes: PermissionScope[];
+  stageKind?: StageKind;
+  alsoKinds?: StageKind[];
+  channels?: StageChannel[];
 }
 
 export interface StartTeamRunInput {

@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "team_members" ADD COLUMN IF NOT EXISTS "stage_kind" TEXT;
+ALTER TABLE "team_members" ADD COLUMN IF NOT EXISTS "also_kinds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE "team_members" ADD COLUMN IF NOT EXISTS "channels" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

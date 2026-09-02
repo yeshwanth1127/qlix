@@ -7,13 +7,14 @@ import {
 } from './defaultAgentScopes.js';
 
 describe('withDefaultAgentScopes', () => {
-  it('adds brain.query and all qlix-schedule tools', () => {
+  it('adds brain.query but not schedule tools by default', () => {
     const merged = withDefaultAgentScopes(['web.read']);
     assert.ok(merged.includes('web.read'));
     assert.ok(merged.includes('brain.query'));
     for (const s of DEFAULT_AGENT_SCOPES) {
       assert.ok(merged.includes(s), `missing ${s}`);
     }
+    assert.ok(!merged.some((s) => s.startsWith('mcp.qlix-schedule.')));
   });
 
   it('is idempotent', () => {
@@ -32,8 +33,8 @@ describe('withDefaultAgentScopes', () => {
 
 describe('missingDefaultAgentScopes', () => {
   it('reports only absent defaults', () => {
-    const missing = missingDefaultAgentScopes(['brain.query', 'web.read']);
-    assert.ok(!missing.includes('brain.query'));
-    assert.ok(missing.some((s) => s.startsWith('mcp.qlix-schedule.')));
+    const missing = missingDefaultAgentScopes(['web.read']);
+    assert.deepEqual(missing, ['brain.query']);
+    assert.ok(missingDefaultAgentScopes(['brain.query', 'web.read']).length === 0);
   });
 });

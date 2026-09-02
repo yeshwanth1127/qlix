@@ -8,6 +8,7 @@ import {
   extractTeamRunUserGoal,
   firstInputsInContinueChain,
   firstRealGoalInContinueChain,
+  goalImpliesAuthoritativeAttachment,
   isUnusableTeamSynthesis,
   lastResultFromEnvelope,
   pickUsableSynthesis,
@@ -164,6 +165,18 @@ describe('applyTeamRunFollowUp / resolveContinuedGoal', () => {
       userNotes: [],
     });
     assert.equal(extractTeamRunUserGoal(note), original);
+  });
+});
+
+describe('goalImpliesAuthoritativeAttachment', () => {
+  it('detects attached spreadsheet language', () => {
+    assert.equal(
+      goalImpliesAuthoritativeAttachment(
+        'Read the attached spreadsheet, filter only Bangalore leads',
+      ),
+      true,
+    );
+    assert.equal(goalImpliesAuthoritativeAttachment('Filter Bangalore leads only'), false);
   });
 });
 
