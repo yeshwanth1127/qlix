@@ -15,6 +15,9 @@ youtube-cookies.txt
 # Runtime state (contains agent signing keys)
 backend/.qlix-runners/
 
+# Uploaded Brain / GTM files — runtime data, not source
+backend/data/brain-files/
+
 # Postgres data — bind-mounted so it survives Docker Desktop VM resets
 data/postgres/
 
