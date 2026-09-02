@@ -21,4 +21,4 @@ CREATE INDEX "gtm_discovery_plans_org_id_status_created_at_idx" ON "gtm_discover
 CREATE UNIQUE INDEX "gtm_discovery_plans_org_id_version_key" ON "gtm_discovery_plans"("org_id", "version");
 
 -- AddForeignKey
-ALTER TABLE "gtm_discovery_plans" ADD CONSTRAINT "gtm_discovery_plans_org_id_fkey" FOREIGN KEY ("org_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "gtm_discovery_plans" ADD CONSTRAINT "gtm_discovery_plans_org_id_fkey" FOREIGN KEY ("org_id") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
