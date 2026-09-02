@@ -1,0 +1,135 @@
+.outer {
+  width: 100%;
+}
+
+.container {
+  width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  background: #fbfaf6;
+}
+
+.indicators {
+  display: flex;
+  align-items: center;
+  padding: 1.25rem 1.25rem 0;
+}
+
+.indicator {
+  display: flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.42);
+  font: 600 0.6875rem/1 system-ui, sans-serif;
+}
+
+.indicator:focus-visible,
+.back:focus-visible,
+.next:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 2px;
+}
+
+.indicatorActive,
+.indicatorComplete {
+  border-color: #111;
+  background: #111;
+  color: #fff;
+}
+
+.connector {
+  height: 1px;
+  flex: 1;
+  margin: 0 0.5rem;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.connectorFill {
+  height: 100%;
+  transform-origin: left;
+  background: #111;
+}
+
+.content {
+  min-height: 19rem;
+  padding: 2rem 1.5rem 1rem;
+  overflow: hidden;
+}
+
+.step {
+  width: 100%;
+}
+
+.footer {
+  padding: 0 1.5rem 1.5rem;
+}
+
+.navigation {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+  padding-top: 1rem;
+}
+
+.navigationSpread {
+  justify-content: space-between;
+}
+
+.back,
+.next {
+  min-height: 2.25rem;
+  border: 1px solid #111;
+  padding: 0.5rem 1rem;
+  font: 500 0.625rem/1.2 Georgia, serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.back {
+  background: transparent;
+  color: #111;
+}
+
+.next {
+  background: #111;
+  color: #fff;
+}
+
+.back:disabled,
+.next:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+@media (min-width: 640px) {
+  .indicators {
+    padding: 1.5rem 2rem 0;
+  }
+
+  .content {
+    min-height: 20rem;
+    padding: 2.5rem 2rem 1.25rem;
+  }
+
+  .footer {
+    padding: 0 2rem 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indicator,
+  .connectorFill,
+  .back,
+  .next {
+    transition: none;
+  }
+}

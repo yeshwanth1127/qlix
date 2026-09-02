@@ -59,6 +59,8 @@ export interface AiBrainKnowledgeDocumentRow {
   readonly collectionName: string;
   readonly title: string;
   readonly ingestStatus: string;
+  readonly reviewStatus: string;
+  readonly reviewedAt: string | null;
   readonly sourceUri: string | null;
   readonly createdAt: string;
   readonly chunkCount: number;
@@ -121,6 +123,36 @@ export async function updateAiBrainKnowledgeDocument(
     return { ok: false, message: json?.error?.message ?? "Failed to update document" };
   }
   return { ok: true, chunkCount: json.chunkCount, updatedAt: json.updatedAt };
+}
+
+export async function reviewAiBrainDocument(
+  documentId: string,
+  body: { reviewStatus: "pending" | "reviewed" | "rejected" },
+): Promise<
+  { ok: true; reviewStatus: string; reviewedAt: string | null; freshnessExpiresAt: string | null }
+  | { ok: false; message: string }
+> {
+  const res = await fetch(`${apiBase()}/api/v1/ai-brain/documents/${encodeURIComponent(documentId)}/review`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => null)) as {
+    reviewStatus?: string;
+    reviewedAt?: string | null;
+    freshnessExpiresAt?: string | null;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.reviewStatus) {
+    return { ok: false, message: json?.error?.message ?? "Failed to review document" };
+  }
+  return {
+    ok: true,
+    reviewStatus: json.reviewStatus,
+    reviewedAt: json.reviewedAt ?? null,
+    freshnessExpiresAt: json.freshnessExpiresAt ?? null,
+  };
 }
 
 /** OpenRouter `GET /models` entries — `id` is exactly what OpenRouter accepts in API calls. */
@@ -488,7 +520,7 @@ export async function updateAiBrainModel(
 
 export async function ingestAiBrainDocument(
   collectionId: string,
-  body: { title: string; bodyText: string; sourceUri?: string | null },
+  body: { title: string; bodyText: string; sourceUri?: string | null; markReviewed?: boolean },
 ): Promise<{ ok: true; id: string; chunkCount: number } | { ok: false; message: string }> {
   const res = await fetch(`${apiBase()}/api/v1/ai-brain/collections/${encodeURIComponent(collectionId)}/documents`, {
     method: "POST",
@@ -512,11 +544,12 @@ export async function ingestAiBrainDocument(
 export async function ingestAiBrainDocumentFromFile(
   collectionId: string,
   file: File,
-  title?: string,
+  options?: { title?: string; markReviewed?: boolean },
 ): Promise<{ ok: true; id: string; chunkCount: number } | { ok: false; message: string }> {
   const fd = new FormData();
   fd.append("file", file);
-  if (title?.trim()) fd.append("title", title.trim());
+  if (options?.title?.trim()) fd.append("title", options.title.trim());
+  if (options?.markReviewed) fd.append("markReviewed", "true");
   const res = await fetch(
     `${apiBase()}/api/v1/ai-brain/collections/${encodeURIComponent(collectionId)}/documents/upload`,
     {

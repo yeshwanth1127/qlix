@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Eye, Loader2, Pencil, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { Eye, Loader2, Pencil, RefreshCw, Save, ShieldCheck, Trash2, X } from "lucide-react";
 import { useSession } from "@/components/qlix/session-context";
 import { consoleRoutePrefix } from "@/lib/workspace";
 import {
   deleteAiBrainDocument,
   getAiBrainKnowledgeDocument,
   getAiBrainKnowledgeDocuments,
+  reviewAiBrainDocument,
   updateAiBrainKnowledgeDocument,
   type AiBrainKnowledgeDocumentDetail,
   type AiBrainKnowledgeDocumentRow,
@@ -52,6 +53,13 @@ export function KnowledgeLibraryView() {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftBody, setDraftBody] = useState("");
   const [saving, setSaving] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+
+  function reviewLabel(status: string): string {
+    if (status === "reviewed") return "Reviewed";
+    if (status === "rejected") return "Rejected";
+    return "Pending review";
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,6 +151,29 @@ export function KnowledgeLibraryView() {
     setEditing(false);
   };
 
+  const onReview = async (d: AiBrainKnowledgeDocumentRow, reviewStatus: "reviewed" | "pending" | "rejected") => {
+    if (!manageKnowledge) return;
+    setReviewingId(d.id);
+    setError(null);
+    const res = await reviewAiBrainDocument(d.id, { reviewStatus });
+    setReviewingId(null);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    setDocuments((prev) =>
+      prev.map((document) =>
+        document.id === d.id
+          ? {
+              ...document,
+              reviewStatus: res.reviewStatus,
+              reviewedAt: res.reviewedAt,
+            }
+          : document,
+      ),
+    );
+  };
+
   if (sessionLoading || !session) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center font-serif text-[11px] uppercase tracking-widest text-black/50">
@@ -192,11 +223,39 @@ export function KnowledgeLibraryView() {
                 <div className="min-w-0">
                   <div className="truncate text-[13px] text-black">{d.title}</div>
                   <div className="font-serif text-[10px] uppercase text-black/50">
-                    {d.collectionName} · {d.ingestStatus} · {d.chunkCount} chunks
+                    {d.collectionName} · {d.ingestStatus} · {reviewLabel(d.reviewStatus)} · {d.chunkCount} chunks
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <span className="font-mono text-[10px] text-black/40">{formatShortDate(d.createdAt)}</span>
+                  {manageKnowledge && d.reviewStatus !== "reviewed" ? (
+                    <button
+                      type="button"
+                      disabled={reviewingId !== null}
+                      onClick={() => void onReview(d, "reviewed")}
+                      className={sketchButton}
+                    >
+                      {reviewingId === d.id ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <ShieldCheck className="size-3.5" aria-hidden />
+                      )}
+                      Mark reviewed
+                    </button>
+                  ) : null}
+                  {manageKnowledge && d.reviewStatus === "reviewed" ? (
+                    <button
+                      type="button"
+                      disabled={reviewingId !== null}
+                      onClick={() => void onReview(d, "pending")}
+                      className={sketchButton}
+                    >
+                      {reviewingId === d.id ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : null}
+                      Unreview
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void onOpen(d)}

@@ -11,6 +11,7 @@ export interface PluginDTO {
   navItems: Array<{ href: string; label: string; iconName: string }>;
   defaultEnabled: boolean;
   enabled: boolean;
+  lifecycleState: "registered" | "active" | "draining" | "inactive" | "failed" | string;
 }
 
 export async function listPlugins(): Promise<PluginDTO[] | null> {

@@ -8,6 +8,14 @@ import {
   resumeOrganizationPlugin,
   withOrganizationPluginLease,
 } from './organizationPluginLifecycle.js';
+import { getPluginDef } from './pluginCatalog.js';
+
+test('GTM is an opt-in organization plugin with a native navigation entry', () => {
+  const plugin = getPluginDef('gtm');
+  assert.ok(plugin);
+  assert.equal(plugin.defaultEnabled, false);
+  assert.deepEqual(plugin.navItems, [{ href: 'gtm', label: 'GTM', iconName: 'Target' }]);
+});
 
 test('organization plugin drains active work and runs every cleanup hook', async () => {
   const orgId = 'org-phase11';

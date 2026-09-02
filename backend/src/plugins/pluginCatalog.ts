@@ -40,6 +40,16 @@ export interface PluginDef {
 
 export const PLUGIN_CATALOG: PluginDef[] = [
   {
+    id: 'gtm',
+    name: 'GTM Revenue OS',
+    description:
+      'Discover and validate target accounts with Exa, reviewed organization knowledge, source-backed evidence, and governed Qlix agents. Outreach stays disabled until discovery calibration is complete.',
+    navItems: [
+      { href: 'gtm', label: 'GTM', iconName: 'Target' },
+    ],
+    defaultEnabled: false,
+  },
+  {
     id: 'assessment',
     name: 'Assessment Engine',
     description:

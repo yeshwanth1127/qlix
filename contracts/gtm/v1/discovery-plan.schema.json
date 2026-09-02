@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/gtm/v1/discovery-plan.schema.json",
+  "title": "GTM Discovery Plan",
+  "oneOf": [
+    { "$ref": "#/$defs/v1" },
+    { "$ref": "#/$defs/v2" }
+  ],
+  "$defs": {
+    "matchReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "label"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 240 }
+      }
+    },
+    "suggestedAgentV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roleSlug", "label", "reason"],
+      "properties": {
+        "roleSlug": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "suggestedAgentV2": {
+      "allOf": [
+        { "$ref": "#/$defs/suggestedAgentV1" },
+        {
+          "type": "object",
+          "properties": {
+            "tier": { "enum": ["primary", "secondary"] },
+            "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "matchReasons": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/matchReason" }
+            }
+          }
+        }
+      ]
+    },
+    "planBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "focus", "suggestedAgents", "tools", "planSteps", "hypotheses"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "focus": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["audience", "reasons", "openQuestions"],
+          "properties": {
+            "audience": { "type": "string", "minLength": 1, "maxLength": 2000 },
+            "reasons": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 5,
+              "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+            },
+            "openQuestions": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+            }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capabilityId", "priority", "reason"],
+            "properties": {
+              "capabilityId": { "enum": ["research", "crm", "email"] },
+              "priority": { "enum": ["now", "later", "optional"] },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+            }
+          }
+        },
+        "planSteps": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 7,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "why", "effort"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+              "why": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "effort": { "enum": ["small", "medium"] }
+            }
+          }
+        },
+        "hypotheses": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "statement"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1, "maxLength": 40 },
+              "statement": { "type": "string", "minLength": 1, "maxLength": 1000 }
+            }
+          }
+        }
+      }
+    },
+    "v1": {
+      "allOf": [
+        { "$ref": "#/$defs/planBody" },
+        {
+          "type": "object",
+          "required": ["schemaVersion"],
+          "properties": {
+            "schemaVersion": { "const": "gtm.discovery_plan.v1" },
+            "suggestedAgents": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "$ref": "#/$defs/suggestedAgentV1" }
+            }
+          }
+        }
+      ]
+    },
+    "v2": {
+      "allOf": [
+        { "$ref": "#/$defs/planBody" },
+        {
+          "type": "object",
+          "required": ["schemaVersion"],
+          "properties": {
+            "schemaVersion": { "const": "gtm.discovery_plan.v2" },
+            "suggestedAgents": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "$ref": "#/$defs/suggestedAgentV2" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

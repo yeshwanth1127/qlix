@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qlix.dev/contracts/gtm/v1/account-research-input.schema.json",
+  "title": "GTM Account Research Input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "campaignId", "accountId", "candidateDomain", "sourceSnapshotIds", "sourcePolicy"],
+  "properties": {
+    "schemaVersion": { "const": "gtm.account_research.input.v1" },
+    "campaignId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "accountId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "candidateDomain": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}\\.)+[a-z]{2,63}$", "maxLength": 253 },
+    "candidateNames": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 240 }, "default": [] },
+    "sourceSnapshotIds": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 160 } },
+    "sourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedTiers", "maxAgeDays", "requireIndependentCorroboration"],
+      "properties": {
+        "allowedTiers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["A", "B", "C", "D"] } },
+        "maxAgeDays": { "type": "integer", "minimum": 1, "maximum": 3650 },
+        "requireIndependentCorroboration": { "type": "boolean" }
+      }
+    }
+  }
+}

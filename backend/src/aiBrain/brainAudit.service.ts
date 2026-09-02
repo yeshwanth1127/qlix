@@ -8,15 +8,31 @@ export type BrainActionType =
   | 'brain.console_open'
   | 'brain.ensure_agent'
   | 'brain.collection_create'
+  | 'brain.gtm_collections_bootstrap'
   | 'brain.knowledge_ingest'
   | 'brain.knowledge_update'
   | 'brain.knowledge_delete'
+  | 'brain.knowledge_review'
   | 'brain.policy_check'
   | 'brain.query'
+  | 'brain.gtm_query'
   | 'brain.model_update'
   | 'brain.propose_plan'
   | 'brain.confirm_plan'
-  | 'brain.reject_plan';
+  | 'brain.reject_plan'
+  | 'gtm.setup_proposal_create'
+  | 'gtm.setup_proposal_confirm'
+  | 'gtm.setup_proposal_reject'
+  | 'gtm.setup_draft_save'
+  | 'gtm.discovery_proposal_create'
+  | 'gtm.discovery_proposal_confirm'
+  | 'gtm.discovery_proposal_reject'
+  | 'gtm.hypothesis_evidence_add'
+  | 'gtm.hypothesis_review'
+  | 'brain.gtm_idea_ingest'
+  | 'gtm.discovery_plan_generate'
+  | 'gtm.discovery_checklist_update'
+  | 'gtm.qlix_crm_request';
 
 /** Where the operator action originated (for attribution). */
 export type BrainAuditSurface = 'console' | 'agent_chat' | 'agent_tool';

@@ -22,6 +22,14 @@ model Organization {
   users                     User[]
   agents                    Agent[]
   brainKnowledgeCollections BrainKnowledgeCollection[]
+  gtmKnowledgeBindings      GtmKnowledgeBinding[]
+  gtmSetupProposals         GtmSetupProposal[]
+  gtmIdeas                  GtmIdea[]
+  gtmHypotheses             GtmHypothesis[]
+  gtmHypothesisVersions     GtmHypothesisVersion[]
+  gtmHypothesisEvidence     GtmHypothesisEvidence[]
+  gtmDiscoveryProposals     GtmDiscoveryProposal[]
+  gtmDiscoveryPlans         GtmDiscoveryPlan[]
   wallets                   Wallet[]
   invitations               OrganizationInvitation[]
   successfulEvents          SuccessfulEvent[]
@@ -83,10 +91,10 @@ model ContextObject {
   createdAt       DateTime  @default(now()) @map("created_at")
   expiresAt       DateTime? @map("expires_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  organization  Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   versions      ContextVersion[]
-  outgoingEdges ContextEdge[] @relation("ContextEdgeFrom")
-  incomingEdges ContextEdge[] @relation("ContextEdgeTo")
+  outgoingEdges ContextEdge[]    @relation("ContextEdgeFrom")
+  incomingEdges ContextEdge[]    @relation("ContextEdgeTo")
 
   @@index([orgId, kind, createdAt])
   @@index([sourceType, sourceId])
@@ -137,16 +145,16 @@ model ContextEdge {
 /// Versioned structured state for one AgentRun or TeamRun. Agents patch selected
 /// namespaces with optimistic concurrency instead of reconstructing state from prose.
 model ExecutionRunState {
-  id                String   @id @default(cuid())
-  orgId             String   @map("org_id") @db.Uuid
-  executionId       String   @map("execution_id")
+  id               String   @id @default(cuid())
+  orgId            String   @map("org_id") @db.Uuid
+  executionId      String   @map("execution_id")
   /// `agent_run` | `team_run`
-  executionKind     String   @map("execution_kind")
-  version           Int      @default(1)
-  namespaces        Json     @default("{}")
-  appliedPatchKeys  String[] @default([]) @map("applied_patch_keys")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  executionKind    String   @map("execution_kind")
+  version          Int      @default(1)
+  namespaces       Json     @default("{}")
+  appliedPatchKeys String[] @default([]) @map("applied_patch_keys")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -183,31 +191,31 @@ model User {
   webauthnCounter      Int     @default(0) @map("webauthn_counter")
   deviceVerified       Boolean @default(false) @map("device_verified")
 
-  organization       Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agents             Agent[]
-  agentConversations AgentConversation[]
-  brainConversations BrainConversation[]
-  brainUsages        BrainUsage[]
-  brainAgentProposals BrainAgentProposal[]
-  agentMemories      AgentMemory[]
-  actionLogs         ActionLog[]
-  approvals          Approval[]
-  wallets            Wallet[]
-  invitationsSent    OrganizationInvitation[] @relation("InvitationInviter")
-  successfulEvents   SuccessfulEvent[]
-  failedEvents       FailedEvent[]
-  teamsCreated       Team[]                   @relation("TeamsCreated")
-  teamRunsStarted    TeamRun[]                @relation("TeamRunsStarted")
-  connectorAccounts  ConnectorAccount[]
-  nlBuilderHistory   NlBuilderHistory[]
-  nlBuilderSessions  NlBuilderSession[]
-  jobCandidateProfiles JobCandidateProfile[]  @relation("JobCandidateProfileOwner")
-  jobApplyCampaigns  JobApplyCampaign[]       @relation("JobApplyCampaignCreator")
-  apiKeys            ApiKey[]
-  mcpServersCreated  McpServer[]
-  oauthAccounts      OAuthAccount[]
-  employeeEngagementsHired EmployeeEngagement[] @relation("EmployeeHiredBy")
-  builderCanvases    BuilderCanvas[]          @relation("BuilderCanvasCreator")
+  organization             Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agents                   Agent[]
+  agentConversations       AgentConversation[]
+  brainConversations       BrainConversation[]
+  brainUsages              BrainUsage[]
+  brainAgentProposals      BrainAgentProposal[]
+  agentMemories            AgentMemory[]
+  actionLogs               ActionLog[]
+  approvals                Approval[]
+  wallets                  Wallet[]
+  invitationsSent          OrganizationInvitation[] @relation("InvitationInviter")
+  successfulEvents         SuccessfulEvent[]
+  failedEvents             FailedEvent[]
+  teamsCreated             Team[]                   @relation("TeamsCreated")
+  teamRunsStarted          TeamRun[]                @relation("TeamRunsStarted")
+  connectorAccounts        ConnectorAccount[]
+  nlBuilderHistory         NlBuilderHistory[]
+  nlBuilderSessions        NlBuilderSession[]
+  jobCandidateProfiles     JobCandidateProfile[]    @relation("JobCandidateProfileOwner")
+  jobApplyCampaigns        JobApplyCampaign[]       @relation("JobApplyCampaignCreator")
+  apiKeys                  ApiKey[]
+  mcpServersCreated        McpServer[]
+  oauthAccounts            OAuthAccount[]
+  employeeEngagementsHired EmployeeEngagement[]     @relation("EmployeeHiredBy")
+  builderCanvases          BuilderCanvas[]          @relation("BuilderCanvasCreator")
 
   @@index([orgId])
   @@map("users")
@@ -298,21 +306,21 @@ model TelegramUpdateClaim {
 
 /// Active listen session: contact replies auto-route to the agent that messaged them.
 model WhatsAppAutoReplySession {
-  id            String    @id @default(cuid())
-  connectorId   String    @map("connector_id") @db.Uuid
-  agentId       String    @map("agent_id")
-  contactJid    String    @map("contact_jid")
-  contactName   String?   @map("contact_name")
-  contactPhone  String?   @map("contact_phone")
+  id                String    @id @default(cuid())
+  connectorId       String    @map("connector_id") @db.Uuid
+  agentId           String    @map("agent_id")
+  contactJid        String    @map("contact_jid")
+  contactName       String?   @map("contact_name")
+  contactPhone      String?   @map("contact_phone")
   /// What the agent should do when this contact replies (set via tool / send).
-  replyInstructions String? @map("reply_instructions") @db.Text
+  replyInstructions String?   @map("reply_instructions") @db.Text
   /// `active` | `stopped` | `expired`
-  status        String    @default("active")
-  expiresAt     DateTime  @map("expires_at")
-  lastOutboundAt DateTime @default(now()) @map("last_outbound_at")
-  lastInboundAt DateTime? @map("last_inbound_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  status            String    @default("active")
+  expiresAt         DateTime  @map("expires_at")
+  lastOutboundAt    DateTime  @default(now()) @map("last_outbound_at")
+  lastInboundAt     DateTime? @map("last_inbound_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
@@ -415,28 +423,28 @@ model Agent {
   createdAt  DateTime  @default(now()) @map("created_at")
   lastActive DateTime? @map("last_active")
 
-  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization     Organization?          @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  actionLogs       ActionLog[]
-  successfulEvents SuccessfulEvent[]
-  failedEvents     FailedEvent[]
-  credentials      VerifiableCredential[]
-  conversations    AgentConversation[]
-  runs             AgentRun[]
-  memories         AgentMemory[]
-  runUsages        RunUsage[]
-  supervisedTeams  Team[]                 @relation("TeamSupervisor")
-  teamMemberships  TeamMember[]
-  mcpBindings      AgentMcpBinding[]
-  employeeEngagement EmployeeEngagement?
-  schedules        EmployeeSchedule[]
-  scheduledEvents  ScheduledEvent[]      @relation("ScheduledEventTarget")
-  createdSchedules ScheduledEvent[]      @relation("ScheduledEventCreator")
-  orgSkills        OrgSkill[]
-  brainConversations BrainConversation[] @relation("BrainAgentConversations")
-  brainUsages        BrainUsage[]
-  brainAgentProposals BrainAgentProposal[] @relation("BrainAgentProposals")
-  subAgentInvocations SubAgentInvocation[]
+  user                      User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization              Organization?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actionLogs                ActionLog[]
+  successfulEvents          SuccessfulEvent[]
+  failedEvents              FailedEvent[]
+  credentials               VerifiableCredential[]
+  conversations             AgentConversation[]
+  runs                      AgentRun[]
+  memories                  AgentMemory[]
+  runUsages                 RunUsage[]
+  supervisedTeams           Team[]                     @relation("TeamSupervisor")
+  teamMemberships           TeamMember[]
+  mcpBindings               AgentMcpBinding[]
+  employeeEngagement        EmployeeEngagement?
+  schedules                 EmployeeSchedule[]
+  scheduledEvents           ScheduledEvent[]           @relation("ScheduledEventTarget")
+  createdSchedules          ScheduledEvent[]           @relation("ScheduledEventCreator")
+  orgSkills                 OrgSkill[]
+  brainConversations        BrainConversation[]        @relation("BrainAgentConversations")
+  brainUsages               BrainUsage[]
+  brainAgentProposals       BrainAgentProposal[]       @relation("BrainAgentProposals")
+  subAgentInvocations       SubAgentInvocation[]
   whatsappAutoReplySessions WhatsAppAutoReplySession[]
 
   @@index([orgId])
@@ -462,8 +470,8 @@ model EmployeeEngagement {
   terminatedAt    DateTime? @map("terminated_at")
   replacedById    String?   @map("replaced_by_id")
 
-  agent   Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  hiredBy User  @relation("EmployeeHiredBy", fields: [hiredByUserId], references: [id], onDelete: Cascade)
+  agent     Agent              @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  hiredBy   User               @relation("EmployeeHiredBy", fields: [hiredByUserId], references: [id], onDelete: Cascade)
   schedules EmployeeSchedule[]
 
   @@index([workspaceOrgId])
@@ -598,28 +606,28 @@ model AgentMcpBinding {
 }
 
 model AgentConversation {
-  id              String   @id @default(cuid())
-  agentId         String   @map("agent_id")
-  userId          String   @map("user_id") @db.Uuid
-  orgId           String?  @map("org_id") @db.Uuid
+  id                   String   @id @default(cuid())
+  agentId              String   @map("agent_id")
+  userId               String   @map("user_id") @db.Uuid
+  orgId                String?  @map("org_id") @db.Uuid
   /// Display title (web / local terminal chat list).
-  title           String?
+  title                String?
   /// `chat` (default web) or `local` (terminal threads).
-  kind            String   @default("chat")
+  kind                 String   @default("chat")
   /// Fork parent when created via /fork.
-  parentConversationId String? @map("parent_conversation_id")
+  parentConversationId String?  @map("parent_conversation_id")
   /// Stable gateway session key for cross-channel routing (optional).
-  sessionKey      String?  @map("session_key")
+  sessionKey           String?  @map("session_key")
   /// Stage 2 compaction: rolling summary of messages older than the recent window.
   /// Hard-capped (~2000 chars) and re-compressed on each update, so it can't snowball.
-  summary         String?  @db.Text
+  summary              String?  @db.Text
   /// How many of this conversation's messages are already folded into `summary`.
-  summarizedCount Int      @default(0) @map("summarized_count")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  summarizedCount      Int      @default(0) @map("summarized_count")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at")
 
-  agent          Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent          Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   parent         AgentConversation?  @relation("ConversationForks", fields: [parentConversationId], references: [id], onDelete: SetNull)
   forks          AgentConversation[] @relation("ConversationForks")
   messages       AgentMessage[]
@@ -687,9 +695,9 @@ model BrainAgentProposal {
   updatedAt       DateTime  @updatedAt @map("updated_at")
   resolvedAt      DateTime? @map("resolved_at")
 
-  org          Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  brainAgent   Agent             @relation("BrainAgentProposals", fields: [brainAgentId], references: [id], onDelete: Cascade)
-  createdBy    User              @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  org          Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  brainAgent   Agent              @relation("BrainAgentProposals", fields: [brainAgentId], references: [id], onDelete: Cascade)
+  createdBy    User               @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
   conversation BrainConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
@@ -780,32 +788,59 @@ model BrainKnowledgeCollection {
   organization Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
   documents    BrainKnowledgeDocument[]
   citations    BrainKnowledgeCitation[]
+  gtmBinding   GtmKnowledgeBinding?
 
   @@index([orgId])
   @@map("brain_knowledge_collections")
+}
+
+/// Assigns stable GTM purposes to ordinary Brain collections. Content remains
+/// in the canonical Brain ingestion and retrieval path; GTM only scopes it.
+model GtmKnowledgeBinding {
+  id           String   @id @default(cuid())
+  orgId        String   @map("org_id") @db.Uuid
+  collectionId String   @unique @map("collection_id")
+  purpose      String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  organization Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  collection   BrainKnowledgeCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, purpose])
+  @@index([orgId])
+  @@map("gtm_knowledge_bindings")
 }
 
 /// Document ingested into a brain collection.
 /// File uploads retain the original binary (storageKey) AND extract text into
 /// bodyText + chunks + embeddings for the normal RAG workflow.
 model BrainKnowledgeDocument {
-  id           String   @id @default(cuid())
-  orgId        String   @map("org_id") @db.Uuid
-  collectionId String   @map("collection_id")
-  title        String
+  id                 String    @id @default(cuid())
+  orgId              String    @map("org_id") @db.Uuid
+  collectionId       String    @map("collection_id")
+  title              String
   /// Raw source text for MVP ingest; external URI optional for future connectors.
-  bodyText     String   @map("body_text") @db.Text
-  sourceUri    String?  @map("source_uri")
+  bodyText           String    @map("body_text") @db.Text
+  sourceUri          String?   @map("source_uri")
   /// Original upload filename (when a binary was retained for download/send).
-  originalFileName String? @map("original_file_name")
+  originalFileName   String?   @map("original_file_name")
   /// MIME type of the retained original upload.
-  originalMimeType String? @map("original_mime_type")
+  originalMimeType   String?   @map("original_mime_type")
   /// Relative path under the brain-files root (orgId/docId/filename).
-  storageKey   String?  @map("storage_key")
+  storageKey         String?   @map("storage_key")
   /// `pending` | `ready` | `failed`
-  ingestStatus String   @default("pending") @map("ingest_status")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  ingestStatus       String    @default("pending") @map("ingest_status")
+  /// `pending` | `reviewed` | `rejected` — GTM and qualification use reviewed docs only.
+  reviewStatus       String    @default("pending") @map("review_status")
+  reviewedAt         DateTime? @map("reviewed_at")
+  reviewedByUserId   String?   @map("reviewed_by_user_id") @db.Uuid
+  /// When the underlying source was observed or published (optional).
+  sourceObservedAt   DateTime? @map("source_observed_at")
+  /// After this time the document is stale for GTM retrieval unless re-reviewed.
+  freshnessExpiresAt DateTime? @map("freshness_expires_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   collection BrainKnowledgeCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   chunks     BrainKnowledgeChunk[]
@@ -813,7 +848,144 @@ model BrainKnowledgeDocument {
 
   @@index([orgId])
   @@index([collectionId])
+  @@index([orgId, reviewStatus])
   @@map("brain_knowledge_documents")
+}
+
+/// Pending structured GTM setup change proposed by Exa or an operator; never applied until confirmed.
+model GtmSetupProposal {
+  id         String    @id @default(cuid())
+  orgId      String    @map("org_id") @db.Uuid
+  /// `pending` | `confirmed` | `rejected`
+  status     String    @default("pending")
+  patch      Json
+  rationale  String    @default("")
+  /// `exa` | `operator`
+  source     String    @default("exa")
+  createdBy  String    @map("created_by") @db.Uuid
+  resolvedBy String?   @map("resolved_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@map("gtm_setup_proposals")
+}
+
+/// Immutable, versioned founder starting point. Only one version is active per org.
+model GtmIdea {
+  id           String    @id @default(cuid())
+  orgId        String    @map("org_id") @db.Uuid
+  version      Int
+  status       String    @default("active")
+  content      Json
+  source       String    @default("operator")
+  createdBy    String    @map("created_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+  supersededAt DateTime? @map("superseded_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, version])
+  @@index([orgId, status])
+  @@map("gtm_ideas")
+}
+
+/// Stable identity for a discovery assumption; its content lives in immutable versions.
+model GtmHypothesis {
+  id          String   @id @default(cuid())
+  orgId       String   @map("org_id") @db.Uuid
+  kind        String
+  status      String   @default("active")
+  ownerUserId String   @map("owner_user_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  organization Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  versions     GtmHypothesisVersion[]
+
+  @@index([orgId, kind, status])
+  @@map("gtm_hypotheses")
+}
+
+model GtmHypothesisVersion {
+  id            String   @id @default(cuid())
+  orgId         String   @map("org_id") @db.Uuid
+  hypothesisId  String   @map("hypothesis_id")
+  version       Int
+  statement     String   @db.Text
+  details       Json     @default("{}")
+  evidenceClass String   @map("evidence_class")
+  createdBy     String   @map("created_by") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  organization Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  hypothesis   GtmHypothesis           @relation(fields: [hypothesisId], references: [id], onDelete: Cascade)
+  evidence     GtmHypothesisEvidence[]
+
+  @@unique([hypothesisId, version])
+  @@index([orgId, createdAt])
+  @@map("gtm_hypothesis_versions")
+}
+
+model GtmHypothesisEvidence {
+  id                  String   @id @default(cuid())
+  orgId               String   @map("org_id") @db.Uuid
+  hypothesisVersionId String   @map("hypothesis_version_id")
+  evidenceType        String   @map("evidence_type")
+  evidenceId          String?  @map("evidence_id")
+  relationship        String
+  note                String   @default("") @db.Text
+  createdBy           String   @map("created_by") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  organization      Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  hypothesisVersion GtmHypothesisVersion @relation(fields: [hypothesisVersionId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, relationship])
+  @@index([hypothesisVersionId])
+  @@map("gtm_hypothesis_evidence")
+}
+
+/// Reviewable zero-to-one change. Chat and forms cannot mutate confirmed discovery state directly.
+model GtmDiscoveryProposal {
+  id         String    @id @default(cuid())
+  orgId      String    @map("org_id") @db.Uuid
+  kind       String
+  status     String    @default("pending")
+  payload    Json
+  rationale  String    @default("")
+  source     String    @default("operator")
+  createdBy  String    @map("created_by") @db.Uuid
+  resolvedBy String?   @map("resolved_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, createdAt])
+  @@map("gtm_discovery_proposals")
+}
+
+/// Personalized GTM starter dashboard generated from confirmed founder answers.
+model GtmDiscoveryPlan {
+  id           String   @id @default(cuid())
+  orgId        String   @map("org_id") @db.Uuid
+  ideaVersion  Int      @map("idea_version")
+  version      Int
+  status       String   @default("generating")
+  content      Json?
+  errorMessage String?  @map("error_message") @db.Text
+  createdBy    String   @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, version])
+  @@index([orgId, status, createdAt])
+  @@map("gtm_discovery_plans")
 }
 
 model BrainKnowledgeChunk {
@@ -855,52 +1027,52 @@ model BrainKnowledgeCitation {
 }
 
 model AgentRun {
-  id             String    @id @default(cuid())
-  agentId        String    @map("agent_id")
-  conversationId String    @map("conversation_id")
+  id                 String    @id @default(cuid())
+  agentId            String    @map("agent_id")
+  conversationId     String    @map("conversation_id")
   /// Exact chat records that opened and closed this run (nullable for legacy rows).
-  inputMessageId  String?   @map("input_message_id")
-  outputMessageId String?   @map("output_message_id")
-  userId         String    @map("user_id") @db.Uuid
-  orgId          String?   @map("org_id") @db.Uuid
-  status         String    @default("queued")
-  prompt         String
+  inputMessageId     String?   @map("input_message_id")
+  outputMessageId    String?   @map("output_message_id")
+  userId             String    @map("user_id") @db.Uuid
+  orgId              String?   @map("org_id") @db.Uuid
+  status             String    @default("queued")
+  prompt             String
   /// File attachments for this run (same shape as AgentMessage.attachments).
-  attachments    Json?
-  skills         String[]  @default([])
+  attachments        Json?
+  skills             String[]  @default([])
   /// Normalized OpenRouter model id for proxy inference (`openrouter/provider/model`). Null = runner manifest default.
-  inferenceModel String?   @map("inference_model")
+  inferenceModel     String?   @map("inference_model")
   /// Per-run thinking share. Null uses the agent's saved preference or Qlix's small default.
-  reasoningEffort String?  @map("reasoning_effort")
+  reasoningEffort    String?   @map("reasoning_effort")
   /// When true, cloud runner prepends org brain context before proxy inference.
-  useBrain       Boolean   @default(false) @map("use_brain")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  startedAt      DateTime? @map("started_at")
-  finishedAt     DateTime? @map("finished_at")
-  result         Json?
-  errorMessage   String?   @map("error_message")
+  useBrain           Boolean   @default(false) @map("use_brain")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  startedAt          DateTime? @map("started_at")
+  finishedAt         DateTime? @map("finished_at")
+  result             Json?
+  errorMessage       String?   @map("error_message")
   /// Set when run is enqueued by team orchestration.
-  teamRunId      String?   @map("team_run_id")
-  teamId         String?   @map("team_id")
+  teamRunId          String?   @map("team_run_id")
+  teamId             String?   @map("team_id")
   /// supervisor | worker — role within the team run.
-  teamRole       String?   @map("team_role")
+  teamRole           String?   @map("team_role")
   /// Where this run was started: `web` | `api` | `whatsapp` | `slack` | `telegram` | `local` | `cron`.
-  sourceChannel  String    @default("web") @map("source_channel")
+  sourceChannel      String    @default("web") @map("source_channel")
   /// When set, final run result is delivered to this WhatsApp contact JID (auto-reply).
-  whatsappReplyToJid String? @map("whatsapp_reply_to_jid")
+  whatsappReplyToJid String?   @map("whatsapp_reply_to_jid")
   /// Parent AgentRun when this run is a child of another run (V2 child runs; optional in V1).
-  parentRunId String? @map("parent_run_id")
+  parentRunId        String?   @map("parent_run_id")
   /// How this run was created: `user` | `subagent` | `team_worker` | null (legacy).
-  invocationKind String? @map("invocation_kind")
+  invocationKind     String?   @map("invocation_kind")
 
-  agent        Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  events       AgentRunEvent[]
-  usage        RunUsage?
-  teamRun      TeamRun?          @relation(fields: [teamRunId], references: [id], onDelete: SetNull)
-  a2aTask      A2ATask?
-  parentRun    AgentRun?         @relation("AgentRunParentChild", fields: [parentRunId], references: [id], onDelete: SetNull)
-  childRuns    AgentRun[]        @relation("AgentRunParentChild")
+  agent               Agent                @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation        AgentConversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  events              AgentRunEvent[]
+  usage               RunUsage?
+  teamRun             TeamRun?             @relation(fields: [teamRunId], references: [id], onDelete: SetNull)
+  a2aTask             A2ATask?
+  parentRun           AgentRun?            @relation("AgentRunParentChild", fields: [parentRunId], references: [id], onDelete: SetNull)
+  childRuns           AgentRun[]           @relation("AgentRunParentChild")
   subAgentInvocations SubAgentInvocation[] @relation("SubAgentParentRun")
   asChildInvocation   SubAgentInvocation?  @relation("SubAgentChildRun")
 
@@ -1391,9 +1563,9 @@ model Team {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy       User         @relation("TeamsCreated", fields: [createdByUserId], references: [id], onDelete: Cascade)
-  supervisorAgent Agent?       @relation("TeamSupervisor", fields: [supervisorAgentId], references: [id], onDelete: SetNull)
+  organization    Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User          @relation("TeamsCreated", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  supervisorAgent Agent?        @relation("TeamSupervisor", fields: [supervisorAgentId], references: [id], onDelete: SetNull)
   members         TeamMember[]
   runs            TeamRun[]
   workSessions    WorkSession[]
@@ -1430,50 +1602,50 @@ model TeamMember {
 
 /// A single execution of a team against a user-supplied goal.
 model TeamRun {
-  id                     String    @id @default(cuid())
-  teamId                 String    @map("team_id")
-  orgId                  String    @map("org_id") @db.Uuid
-  startedByUserId        String    @map("started_by_user_id") @db.Uuid
-  goal                   String    @db.Text
+  id                String    @id @default(cuid())
+  teamId            String    @map("team_id")
+  orgId             String    @map("org_id") @db.Uuid
+  startedByUserId   String    @map("started_by_user_id") @db.Uuid
+  goal              String    @db.Text
   /// `web` | `whatsapp` | `api` | `slack` | `telegram` — where the run was started.
-  sourceChannel          String    @default("web") @map("source_channel")
+  sourceChannel     String    @default("web") @map("source_channel")
   /// Connector UUID when started from WhatsApp.
-  sourceConnectorId      String?   @map("source_connector_id") @db.Uuid
+  sourceConnectorId String?   @map("source_connector_id") @db.Uuid
   /// `whatsapp` | `none` — where to send the final result.
-  replyChannel           String    @default("none") @map("reply_channel")
+  replyChannel      String    @default("none") @map("reply_channel")
   /// `queued` | `running` | `paused` | `completed` | `failed` | `canceled`
-  status                 String    @default("queued")
+  status            String    @default("queued")
   /// Supervisor reasoning/planning steps (JSON array, append-only).
-  supervisorTrace        Json      @default("[]") @map("supervisor_trace")
+  supervisorTrace   Json      @default("[]") @map("supervisor_trace")
   /// Artifacts produced during the run (JSON array of {type, name, content, agentId, createdAt}).
-  artifacts              Json      @default("[]")
+  artifacts         Json      @default("[]")
   /// JIT scope escalation requests made during this run.
-  scopeEscalations       Json      @default("[]") @map("scope_escalations")
+  scopeEscalations  Json      @default("[]") @map("scope_escalations")
   /// Durable pipeline state saved while this run is waiting for an external trigger.
-  checkpointJson         Json?     @map("checkpoint_json")
+  checkpointJson    Json?     @map("checkpoint_json")
   /// Immutable source handles for Luna-Teams (authoritative user inputs vs reference assets).
-  inputs                 Json      @default("[]")
+  inputs            Json      @default("[]")
   /// Versioned, canonical intent consumed by every team execution subsystem.
-  intentJson             Json?     @map("intent_json")
+  intentJson        Json?     @map("intent_json")
   /// Final synthesized result from the supervisor.
-  result                 Json?
-  errorMessage           String?   @map("error_message")
+  result            Json?
+  errorMessage      String?   @map("error_message")
   /// Prior TeamRun this follow-up continues (same team conversation).
-  continuesRunId         String?   @map("continues_run_id")
-  createdAt              DateTime  @default(now()) @map("created_at")
-  startedAt              DateTime? @map("started_at")
-  completedAt            DateTime? @map("completed_at")
+  continuesRunId    String?   @map("continues_run_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  startedAt         DateTime? @map("started_at")
+  completedAt       DateTime? @map("completed_at")
 
-  team           Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  startedBy      User                   @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
-  continuedFrom  TeamRun?               @relation("TeamRunFollowUp", fields: [continuesRunId], references: [id], onDelete: SetNull)
-  followUps      TeamRun[]              @relation("TeamRunFollowUp")
-  events         TeamRunEvent[]
-  a2aTasks       A2ATask[]
-  agentRuns      AgentRun[]
-  mailbox        TeamMailboxMessage[]
-  waitTriggers   WaitTrigger[]
-  channelSession TeamRunChannelSession?
+  team              Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  startedBy         User                   @relation("TeamRunsStarted", fields: [startedByUserId], references: [id], onDelete: Cascade)
+  continuedFrom     TeamRun?               @relation("TeamRunFollowUp", fields: [continuesRunId], references: [id], onDelete: SetNull)
+  followUps         TeamRun[]              @relation("TeamRunFollowUp")
+  events            TeamRunEvent[]
+  a2aTasks          A2ATask[]
+  agentRuns         AgentRun[]
+  mailbox           TeamMailboxMessage[]
+  waitTriggers      WaitTrigger[]
+  channelSession    TeamRunChannelSession?
   assessmentRecords AssessmentRecord[]
 
   @@index([teamId, createdAt])
@@ -1487,19 +1659,19 @@ model TeamRun {
 /// Durable Luna-Teams handoff. Messages are conversational context; Results are
 /// terminal worker handbacks consumed by the commander host.
 model TeamMailboxMessage {
-  id               String   @id @default(cuid())
-  teamRunId        String   @map("team_run_id")
-  teamId           String   @map("team_id")
-  kind             String   @default("result")
-  status           String   @default("pending")
-  senderAgentId    String?  @map("sender_agent_id")
-  recipientAgentId String?  @map("recipient_agent_id")
-  a2aTaskId        String?  @map("a2a_task_id")
-  agentRunId       String?  @map("agent_run_id")
-  contractId       String?  @map("contract_id")
+  id               String    @id @default(cuid())
+  teamRunId        String    @map("team_run_id")
+  teamId           String    @map("team_id")
+  kind             String    @default("result")
+  status           String    @default("pending")
+  senderAgentId    String?   @map("sender_agent_id")
+  recipientAgentId String?   @map("recipient_agent_id")
+  a2aTaskId        String?   @map("a2a_task_id")
+  agentRunId       String?   @map("agent_run_id")
+  contractId       String?   @map("contract_id")
   payload          Json
-  errorMessage     String?  @map("error_message")
-  createdAt        DateTime @default(now()) @map("created_at")
+  errorMessage     String?   @map("error_message")
+  createdAt        DateTime  @default(now()) @map("created_at")
   completedAt      DateTime? @map("completed_at")
 
   run TeamRun @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
@@ -1514,31 +1686,31 @@ model TeamMailboxMessage {
 /// Durable external-event wait for an agent or a paused team pipeline.
 /// V1 matches an inbound WhatsApp message by connector + contact JID.
 model WaitTrigger {
-  id               String    @id @default(cuid())
-  orgId            String    @map("org_id") @db.Uuid
-  userId           String    @map("user_id") @db.Uuid
+  id                   String    @id @default(cuid())
+  orgId                String    @map("org_id") @db.Uuid
+  userId               String    @map("user_id") @db.Uuid
   /// `whatsapp_inbound` now; schema leaves room for webhook, timeout and human approval.
-  kind             String
+  kind                 String
   /// `open` | `fulfilled` | `expired` | `canceled`
-  status           String    @default("open")
+  status               String    @default("open")
   /// `first_match` | `collect_until_timeout`
-  fulfillment      String    @default("first_match")
-  connectorId      String?   @map("connector_id") @db.Uuid
-  contactJid       String?   @map("contact_jid")
-  agentId          String?   @map("agent_id")
+  fulfillment          String    @default("first_match")
+  connectorId          String?   @map("connector_id") @db.Uuid
+  contactJid           String?   @map("contact_jid")
+  agentId              String?   @map("agent_id")
   /// `resume_team_run` | `spawn_agent_run`
-  continuationKind String    @map("continuation_kind")
-  teamRunId        String?   @map("team_run_id")
+  continuationKind     String    @map("continuation_kind")
+  teamRunId            String?   @map("team_run_id")
   /// Generic per-contact conversation thread used by the workflow middleware.
-  conversationThreadId String? @map("conversation_thread_id")
-  replyInstructions String?  @map("reply_instructions") @db.Text
+  conversationThreadId String?   @map("conversation_thread_id")
+  replyInstructions    String?   @map("reply_instructions") @db.Text
   /// Matched events ({jid, text, timestampMs, pushName}[]).
-  inboundJson      Json      @default("[]") @map("inbound_json")
-  armedAt          DateTime  @default(now()) @map("armed_at")
-  expiresAt        DateTime  @map("expires_at")
-  fulfilledAt      DateTime? @map("fulfilled_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  inboundJson          Json      @default("[]") @map("inbound_json")
+  armedAt              DateTime  @default(now()) @map("armed_at")
+  expiresAt            DateTime  @map("expires_at")
+  fulfilledAt          DateTime? @map("fulfilled_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   teamRun TeamRun? @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
 
@@ -1551,18 +1723,18 @@ model WaitTrigger {
 
 /// Parent aggregation for campaigns, Team runs, bulk jobs, and long-lived processes.
 model ConversationProcess {
-  id              String   @id @default(cuid())
-  orgId           String   @map("org_id") @db.Uuid
-  ownerType       String   @map("owner_type")
-  ownerId         String?  @map("owner_id")
-  externalRefType String?  @map("external_ref_type")
-  externalRefId   String?  @map("external_ref_id")
-  status          String   @default("active")
-  completionMode  String   @default("all_terminal") @map("completion_mode")
-  counters        Json     @default("{}")
-  metadata        Json     @default("{}")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id              String    @id @default(cuid())
+  orgId           String    @map("org_id") @db.Uuid
+  ownerType       String    @map("owner_type")
+  ownerId         String?   @map("owner_id")
+  externalRefType String?   @map("external_ref_type")
+  externalRefId   String?   @map("external_ref_id")
+  status          String    @default("active")
+  completionMode  String    @default("all_terminal") @map("completion_mode")
+  counters        Json      @default("{}")
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
   completedAt     DateTime? @map("completed_at")
 
   @@unique([orgId, externalRefType, externalRefId])
@@ -1572,22 +1744,22 @@ model ConversationProcess {
 
 /// One logical conversation. Messages are events in this thread, never separate threads.
 model ConversationThread {
-  id                String   @id @default(cuid())
-  orgId             String   @map("org_id") @db.Uuid
-  processId         String?  @map("process_id")
-  parentThreadId    String?  @map("parent_thread_id")
-  workflowVersionId String?  @map("workflow_version_id")
-  ownerType         String   @map("owner_type")
-  ownerId           String?  @map("owner_id")
+  id                String    @id @default(cuid())
+  orgId             String    @map("org_id") @db.Uuid
+  processId         String?   @map("process_id")
+  parentThreadId    String?   @map("parent_thread_id")
+  workflowVersionId String?   @map("workflow_version_id")
+  ownerType         String    @map("owner_type")
+  ownerId           String?   @map("owner_id")
   channel           String?
-  status            String   @default("created")
-  currentNodeId     String?  @map("current_node_id")
-  version           Int      @default(0)
-  stateJson         Json     @default("{}") @map("state_json")
-  resultJson        Json?    @map("result_json")
-  errorMessage      String?  @map("error_message")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  status            String    @default("created")
+  currentNodeId     String?   @map("current_node_id")
+  version           Int       @default(0)
+  stateJson         Json      @default("{}") @map("state_json")
+  resultJson        Json?     @map("result_json")
+  errorMessage      String?   @map("error_message")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
   completedAt       DateTime? @map("completed_at")
 
   @@index([orgId, status, createdAt])
@@ -1614,18 +1786,18 @@ model ConversationParticipant {
 
 /// Immutable event stream; `(thread_id, seq)` is the replay order.
 model ConversationEvent {
-  id             String   @id @default(cuid())
-  orgId          String   @map("org_id") @db.Uuid
-  threadId       String   @map("thread_id")
-  seq            Int
-  eventType      String   @map("event_type")
-  direction      String?
-  channel        String?
-  idempotencyKey String?  @map("idempotency_key")
-  providerEventId String? @map("provider_event_id")
-  payload        Json
-  occurredAt     DateTime @default(now()) @map("occurred_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id              String   @id @default(cuid())
+  orgId           String   @map("org_id") @db.Uuid
+  threadId        String   @map("thread_id")
+  seq             Int
+  eventType       String   @map("event_type")
+  direction       String?
+  channel         String?
+  idempotencyKey  String?  @map("idempotency_key")
+  providerEventId String?  @map("provider_event_id")
+  payload         Json
+  occurredAt      DateTime @default(now()) @map("occurred_at")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   @@unique([threadId, seq])
   @@unique([threadId, idempotencyKey])
@@ -1636,17 +1808,17 @@ model ConversationEvent {
 
 /// Correlation keys route provider replies to the correct active thread.
 model ConversationBinding {
-  id          String   @id @default(cuid())
-  orgId       String   @map("org_id") @db.Uuid
-  threadId    String   @map("thread_id")
+  id          String    @id @default(cuid())
+  orgId       String    @map("org_id") @db.Uuid
+  threadId    String    @map("thread_id")
   channel     String
-  connectorId String?  @map("connector_id")
-  keyType     String   @map("key_type")
-  keyValue    String   @map("key_value")
-  priority    Int      @default(0)
-  active      Boolean  @default(true)
+  connectorId String?   @map("connector_id")
+  keyType     String    @map("key_type")
+  keyValue    String    @map("key_value")
+  priority    Int       @default(0)
+  active      Boolean   @default(true)
   expiresAt   DateTime? @map("expires_at")
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
   @@index([orgId, channel, connectorId, keyType, keyValue, active])
   @@index([threadId, active])
@@ -1655,21 +1827,21 @@ model ConversationBinding {
 
 /// Transactional external work queue. Stable idempotency keys make retries safe.
 model ConversationOutbox {
-  id             String   @id @default(cuid())
-  orgId          String   @map("org_id") @db.Uuid
-  threadId       String   @map("thread_id")
-  eventId        String?  @map("event_id")
+  id             String    @id @default(cuid())
+  orgId          String    @map("org_id") @db.Uuid
+  threadId       String    @map("thread_id")
+  eventId        String?   @map("event_id")
   kind           String
-  status         String   @default("pending")
-  idempotencyKey String   @unique @map("idempotency_key")
+  status         String    @default("pending")
+  idempotencyKey String    @unique @map("idempotency_key")
   payload        Json
-  attemptCount   Int      @default(0) @map("attempt_count")
-  availableAt    DateTime @default(now()) @map("available_at")
+  attemptCount   Int       @default(0) @map("attempt_count")
+  availableAt    DateTime  @default(now()) @map("available_at")
   lockedAt       DateTime? @map("locked_at")
   completedAt    DateTime? @map("completed_at")
-  lastError      String?  @map("last_error")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([status, availableAt])
   @@index([threadId, createdAt])
@@ -1677,17 +1849,17 @@ model ConversationOutbox {
 }
 
 model ConversationTimer {
-  id             String   @id @default(cuid())
-  orgId          String   @map("org_id") @db.Uuid
-  threadId       String   @map("thread_id")
-  nodeId         String   @map("node_id")
-  status         String   @default("scheduled")
-  idempotencyKey String   @unique @map("idempotency_key")
+  id             String    @id @default(cuid())
+  orgId          String    @map("org_id") @db.Uuid
+  threadId       String    @map("thread_id")
+  nodeId         String    @map("node_id")
+  status         String    @default("scheduled")
+  idempotencyKey String    @unique @map("idempotency_key")
   purpose        String?
-  payload        Json     @default("{}")
-  dueAt          DateTime @map("due_at")
+  payload        Json      @default("{}")
+  dueAt          DateTime  @map("due_at")
   firedAt        DateTime? @map("fired_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   @@index([status, dueAt])
   @@index([threadId, status])
@@ -1844,20 +2016,20 @@ model WorkSession {
 
   // ─── Intake brief — set by the staff member when creating the assessment ───
   /// Free-text description of what the student is meant to build.
-  projectDescription String?  @map("project_description") @db.Text
+  projectDescription   String?   @map("project_description") @db.Text
   /// e.g. ["React", "Postgres", "Express"] — what the student is expected to use.
-  expectedStack       String[] @default([]) @map("expected_stack")
-  windowStartsAt      DateTime? @map("window_starts_at")
-  windowEndsAt        DateTime? @map("window_ends_at")
+  expectedStack        String[]  @default([]) @map("expected_stack")
+  windowStartsAt       DateTime? @map("window_starts_at")
+  windowEndsAt         DateTime? @map("window_ends_at")
   /// Optional — what AI assistance is/isn't allowed for this assessment.
-  aiUsagePolicy       String?  @map("ai_usage_policy") @db.Text
+  aiUsagePolicy        String?   @map("ai_usage_policy") @db.Text
   /// [{id, text}] — staff-authored checklist shown to the student, distinct from
   /// EvaluationFramework.criteria (the org-wide rubric an evaluator agent scores against).
-  checklist            Json     @default("[]")
-  requiredDeliverables String[] @default([]) @map("required_deliverables")
+  checklist            Json      @default("[]")
+  requiredDeliverables String[]  @default([]) @map("required_deliverables")
 
-  organization      Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  team              Team?               @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  organization      Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team              Team?                @relation(fields: [teamId], references: [id], onDelete: SetNull)
   framework         EvaluationFramework? @relation(fields: [frameworkId], references: [id], onDelete: SetNull)
   evidence          EvidenceRecord[]
   snapshots         ProjectSnapshot[]
@@ -1995,19 +2167,19 @@ model AssessmentReport {
 // its nav item appear (see sessionOrganizationPayload's enabledPluginIds).
 
 model OrgPlugin {
-  id            String    @id @default(cuid())
-  orgId         String    @map("org_id") @db.Uuid
+  id              String    @id @default(cuid())
+  orgId           String    @map("org_id") @db.Uuid
   /// Matches an id in the code-level PLUGIN_CATALOG (e.g. "assessment").
-  pluginId      String    @map("plugin_id")
-  enabled       Boolean   @default(true)
+  pluginId        String    @map("plugin_id")
+  enabled         Boolean   @default(true)
   /// Per-plugin settings, shape defined by the plugin itself. Empty for now.
-  config        Json      @default("{}")
+  config          Json      @default("{}")
   /// registered | active | draining | inactive | failed
-  lifecycleState String   @default("active") @map("lifecycle_state")
-  lifecycleError String?  @map("lifecycle_error") @db.Text
-  enabledAt     DateTime  @default(now()) @map("enabled_at")
-  enabledByUserId String  @map("enabled_by_user_id") @db.Uuid
-  disabledAt    DateTime? @map("disabled_at")
+  lifecycleState  String    @default("active") @map("lifecycle_state")
+  lifecycleError  String?   @map("lifecycle_error") @db.Text
+  enabledAt       DateTime  @default(now()) @map("enabled_at")
+  enabledByUserId String    @map("enabled_by_user_id") @db.Uuid
+  disabledAt      DateTime? @map("disabled_at")
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -2065,33 +2237,33 @@ model NlBuilderHistory {
 
 /// Full AI Builder chat session (transcript + created agent refs), scoped to user + workspace org.
 model NlBuilderSession {
-  id              String   @id @default(cuid())
-  userId          String   @map("user_id") @db.Uuid
-  orgId           String   @map("org_id") @db.Uuid
-  title           String   @default("New chat") @db.VarChar(160)
+  id                    String   @id @default(cuid())
+  userId                String   @map("user_id") @db.Uuid
+  orgId                 String   @map("org_id") @db.Uuid
+  title                 String   @default("New chat") @db.VarChar(160)
   /// Durable chat items (user/info/error/plan/done) — no private keys or starter packs.
-  transcript      Json     @default("[]")
+  transcript            Json     @default("[]")
   /// Server-owned discovery lifecycle. Kept as a string for forward-compatible phases.
-  phase           String   @default("discovering") @db.VarChar(32)
-  stateVersion    Int      @default(0) @map("state_version")
-  latestMessageSequence Int @default(0) @map("latest_message_sequence")
+  phase                 String   @default("discovering") @db.VarChar(32)
+  stateVersion          Int      @default(0) @map("state_version")
+  latestMessageSequence Int      @default(0) @map("latest_message_sequence")
   /// Materialized current truth; normalized facts and events below remain authoritative.
-  requirements    Json     @default("{\"facts\":[],\"unresolved\":[],\"assumptions\":[]}")
-  readiness       Json     @default("{\"score\":0,\"canPlan\":false,\"blocking\":[]}")
-  rollingSummary  String   @default("") @map("rolling_summary") @db.Text
-  createdAgentIds String[] @default([]) @map("created_agent_ids")
-  teamId          String?  @map("team_id")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  requirements          Json     @default("{\"facts\":[],\"unresolved\":[],\"assumptions\":[]}")
+  readiness             Json     @default("{\"score\":0,\"canPlan\":false,\"blocking\":[]}")
+  rollingSummary        String   @default("") @map("rolling_summary") @db.Text
+  createdAgentIds       String[] @default([]) @map("created_agent_ids")
+  teamId                String?  @map("team_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
-  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  messages NlBuilderMessage[]
+  user             User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org              Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  messages         NlBuilderMessage[]
   requirementFacts NlBuilderRequirementFact[]
-  stateSnapshots NlBuilderStateSnapshot[]
-  stateEvents NlBuilderStateEvent[]
-  memorySummaries NlBuilderMemorySummary[]
-  plans NlBuilderPlan[]
+  stateSnapshots   NlBuilderStateSnapshot[]
+  stateEvents      NlBuilderStateEvent[]
+  memorySummaries  NlBuilderMemorySummary[]
+  plans            NlBuilderPlan[]
 
   @@index([userId, orgId, updatedAt])
   @@map("nl_builder_sessions")
@@ -2099,20 +2271,20 @@ model NlBuilderSession {
 
 /// Append-only, server-owned builder messages. The legacy transcript remains for UI compatibility.
 model NlBuilderMessage {
-  id          String   @id @default(cuid())
-  sessionId   String   @map("session_id")
-  sequence    Int
-  role        String   @db.VarChar(16)
-  content     String   @db.Text
-  status      String   @default("completed") @db.VarChar(16)
-  model       String?  @db.VarChar(200)
-  provider    String?  @db.VarChar(40)
-  inputTokens Int?     @map("input_tokens")
-  cachedInputTokens Int? @map("cached_input_tokens")
-  outputTokens Int?    @map("output_tokens")
-  latencyMs   Int?     @map("latency_ms")
-  createdAt   DateTime @default(now()) @map("created_at")
-  completedAt DateTime? @map("completed_at")
+  id                String    @id @default(cuid())
+  sessionId         String    @map("session_id")
+  sequence          Int
+  role              String    @db.VarChar(16)
+  content           String    @db.Text
+  status            String    @default("completed") @db.VarChar(16)
+  model             String?   @db.VarChar(200)
+  provider          String?   @db.VarChar(40)
+  inputTokens       Int?      @map("input_tokens")
+  cachedInputTokens Int?      @map("cached_input_tokens")
+  outputTokens      Int?      @map("output_tokens")
+  latencyMs         Int?      @map("latency_ms")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  completedAt       DateTime? @map("completed_at")
 
   session NlBuilderSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -2246,8 +2418,8 @@ model JobCandidateProfile {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user         User         @relation("JobCandidateProfileOwner", fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User               @relation("JobCandidateProfileOwner", fields: [userId], references: [id], onDelete: Cascade)
   campaigns    JobApplyCampaign[]
 
   @@unique([orgId, userId])
@@ -2385,21 +2557,21 @@ model ApiKey {
 
 /// Cron / schedule for AI Employees (Hermes-style cronjob).
 model EmployeeSchedule {
-  id                   String    @id @default(cuid())
-  orgId                String    @map("org_id") @db.Uuid
-  agentId              String    @map("agent_id")
-  engagementId         String?   @map("engagement_id")
+  id             String    @id @default(cuid())
+  orgId          String    @map("org_id") @db.Uuid
+  agentId        String    @map("agent_id")
+  engagementId   String?   @map("engagement_id")
   /// 5-field cron expression (UTC), e.g. `0 9 * * 1-5`
-  cronExpression       String    @map("cron_expression")
+  cronExpression String    @map("cron_expression")
   /// Natural-language description of the schedule (optional).
-  label                String?
+  label          String?
   /// Prompt / goal enqueued on each tick.
-  prompt               String
-  enabled              Boolean   @default(true)
-  lastEnqueuedAt       DateTime? @map("last_enqueued_at")
-  nextRunAt            DateTime? @map("next_run_at")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+  prompt         String
+  enabled        Boolean   @default(true)
+  lastEnqueuedAt DateTime? @map("last_enqueued_at")
+  nextRunAt      DateTime? @map("next_run_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   org        Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent      Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -2414,40 +2586,40 @@ model EmployeeSchedule {
 /// Generic scheduled event — cron / once / interval — fires an agent run (or future action types).
 /// Independent of EmployeeSchedule; agents and AI Brain create these via qlix-schedule MCP / brain tools.
 model ScheduledEvent {
-  id                 String    @id @default(cuid())
-  orgId              String    @map("org_id") @db.Uuid
+  id               String    @id @default(cuid())
+  orgId            String    @map("org_id") @db.Uuid
   /// Agent that receives the run when the event fires.
-  agentId            String    @map("agent_id")
+  agentId          String    @map("agent_id")
   /// Agent that created the schedule (MCP caller); null for console / brain.
-  createdByAgentId   String?   @map("created_by_agent_id")
-  createdByUserId    String?   @map("created_by_user_id") @db.Uuid
+  createdByAgentId String?   @map("created_by_agent_id")
+  createdByUserId  String?   @map("created_by_user_id") @db.Uuid
   /// `cron` | `once` | `interval`
-  scheduleType       String    @map("schedule_type")
+  scheduleType     String    @map("schedule_type")
   /// 5-field UTC cron when scheduleType=cron, e.g. `0 9 * * 1-5`
-  cronExpression     String?   @map("cron_expression")
+  cronExpression   String?   @map("cron_expression")
   /// Absolute fire time when scheduleType=once
-  onceAt             DateTime? @map("once_at")
+  onceAt           DateTime? @map("once_at")
   /// Seconds between fires when scheduleType=interval (min 60)
-  intervalSeconds    Int?      @map("interval_seconds")
-  timezone           String    @default("UTC")
+  intervalSeconds  Int?      @map("interval_seconds")
+  timezone         String    @default("UTC")
   /// `agent_run` for now (webhook reserved)
-  actionType         String    @default("agent_run") @map("action_type")
-  label              String?
+  actionType       String    @default("agent_run") @map("action_type")
+  label            String?
   /// Prompt / goal enqueued on each fire for actionType=agent_run
-  prompt             String
-  payloadJson        Json?     @map("payload_json")
-  enabled            Boolean   @default(true)
+  prompt           String
+  payloadJson      Json?     @map("payload_json")
+  enabled          Boolean   @default(true)
   /// `active` | `paused` | `cancelled` | `completed`
-  status             String    @default("active")
-  lastEnqueuedAt     DateTime? @map("last_enqueued_at")
-  nextRunAt          DateTime? @map("next_run_at")
-  runCount           Int       @default(0) @map("run_count")
-  maxRuns            Int?      @map("max_runs")
-  lastError          String?   @map("last_error")
+  status           String    @default("active")
+  lastEnqueuedAt   DateTime? @map("last_enqueued_at")
+  nextRunAt        DateTime? @map("next_run_at")
+  runCount         Int       @default(0) @map("run_count")
+  maxRuns          Int?      @map("max_runs")
+  lastError        String?   @map("last_error")
   /// `mcp` | `console` | `brain`
-  source             String    @default("mcp")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  source           String    @default("mcp")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent          Agent        @relation("ScheduledEventTarget", fields: [agentId], references: [id], onDelete: Cascade)
@@ -2462,22 +2634,22 @@ model ScheduledEvent {
 
 /// Org skill library — promote a successful run into a reusable skill.
 model OrgSkill {
-  id              String    @id @default(cuid())
-  orgId           String    @map("org_id") @db.Uuid
-  name            String
-  description     String    @default("")
+  id               String    @id @default(cuid())
+  orgId            String    @map("org_id") @db.Uuid
+  name             String
+  description      String    @default("")
   /// Skill body / instructions (markdown or plain).
-  content         String
+  content          String
   /// Optional source run that was promoted.
-  sourceRunId     String?   @map("source_run_id")
-  sourceAgentId   String?   @map("source_agent_id")
-  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  sourceRunId      String?   @map("source_run_id")
+  sourceAgentId    String?   @map("source_agent_id")
+  createdByUserId  String    @map("created_by_user_id") @db.Uuid
   /// `draft` | `approved` | `archived`
-  status          String    @default("draft")
-  approvedAt      DateTime? @map("approved_at")
-  approvedByUserId String?  @map("approved_by_user_id") @db.Uuid
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  status           String    @default("draft")
+  approvedAt       DateTime? @map("approved_at")
+  approvedByUserId String?   @map("approved_by_user_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   sourceAgent Agent?       @relation(fields: [sourceAgentId], references: [id], onDelete: SetNull)

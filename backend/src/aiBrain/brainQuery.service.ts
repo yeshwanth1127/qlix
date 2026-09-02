@@ -9,6 +9,7 @@ import {
 import { createEmbedding } from '../llm/providers/embeddingClient.js';
 import { appendBrainActionLog, type BrainAuditSurface } from './brainAudit.service.js';
 import { DEFAULT_RETRIEVAL_MIN_SCORE } from '../context/scopedRetrieval.js';
+import { isDocumentFresh } from './brainDocumentReview.js';
 
 const TOP_K = 5;
 /**
@@ -78,17 +79,35 @@ type ScoredChunk = {
   score: number;
 };
 
+export interface BrainDocumentRetrievalFilter {
+  collectionIds?: string[];
+  updatedAfter?: Date;
+  /** When set, only documents with these review statuses are retrieved. */
+  reviewStatuses?: string[];
+  /** When true, exclude documents past freshnessExpiresAt. */
+  requireFresh?: boolean;
+}
+
 function chunkWhere(
   orgId: string,
-  collectionIds?: string[],
-  updatedAfter?: Date,
+  filter?: BrainDocumentRetrievalFilter,
 ): Prisma.BrainKnowledgeChunkWhereInput {
   const documentFilter: Prisma.BrainKnowledgeDocumentWhereInput = {};
-  if (collectionIds && collectionIds.length > 0) {
-    documentFilter.collectionId = { in: collectionIds };
+  if (filter?.collectionIds && filter.collectionIds.length > 0) {
+    documentFilter.collectionId = { in: filter.collectionIds };
   }
-  if (updatedAfter) {
-    documentFilter.updatedAt = { gte: updatedAfter };
+  if (filter?.updatedAfter) {
+    documentFilter.updatedAt = { gte: filter.updatedAfter };
+  }
+  if (filter?.reviewStatuses && filter.reviewStatuses.length > 0) {
+    documentFilter.reviewStatus = { in: filter.reviewStatuses };
+  }
+  if (filter?.requireFresh) {
+    const now = new Date();
+    documentFilter.OR = [
+      { freshnessExpiresAt: null },
+      { freshnessExpiresAt: { gt: now } },
+    ];
   }
   return {
     orgId,
@@ -175,12 +194,11 @@ export class BrainQueryService {
   async retrieveTopChunks(input: {
     orgId: string;
     questionEmbedding: number[];
-    collectionIds?: string[];
-    updatedAfter?: Date;
+    retrievalFilter?: BrainDocumentRetrievalFilter;
     topK?: number;
   }): Promise<ScoredChunk[]> {
     const topK = input.topK ?? TOP_K;
-    const where = chunkWhere(input.orgId, input.collectionIds, input.updatedAfter);
+    const where = chunkWhere(input.orgId, input.retrievalFilter);
     let top: ScoredChunk[] = [];
     let skip = 0;
 
@@ -271,6 +289,8 @@ export class BrainQueryService {
     /** Drop cosine hits below this after org/collection/time filters. */
     minScore?: number;
     updatedAfter?: Date;
+    /** Scoped document filters (review state, freshness, collections). */
+    retrievalFilter?: BrainDocumentRetrievalFilter;
     /** AgentRun that triggered this retrieval so Layer 5 can join Brain to the same trace. */
     runId?: string;
   }): Promise<{ answer: string; citations: BrainQueryCitation[]; contextBlock?: string }> {
@@ -278,11 +298,14 @@ export class BrainQueryService {
     const embeddingPromptTokens = Number(queryResult.usage?.prompt_tokens) || 0;
     const embeddingTotalTokens = Number(queryResult.usage?.total_tokens) || embeddingPromptTokens;
     const embeddingCost = Number(queryResult.usage?.total_cost ?? queryResult.usage?.cost) || 0;
+    const retrievalFilter: BrainDocumentRetrievalFilter = input.retrievalFilter ?? {
+      collectionIds: input.collectionIds,
+      updatedAfter: input.updatedAfter,
+    };
     const scored = await this.retrieveTopChunks({
       orgId: input.orgId,
       questionEmbedding: queryResult.embedding,
-      collectionIds: input.collectionIds,
-      updatedAfter: input.updatedAfter,
+      retrievalFilter,
       topK: input.topK ?? TOP_K,
     });
     const applyAgentBudget = input.contextOnly && input.agentContextBudget !== false;
@@ -291,7 +314,7 @@ export class BrainQueryService {
 
     if (scored.length === 0 || relevant.length === 0) {
       const any = await prisma.brainKnowledgeChunk.count({
-        where: chunkWhere(input.orgId, input.collectionIds, input.updatedAfter),
+        where: chunkWhere(input.orgId, retrievalFilter),
       });
       if (scored.length === 0 && any === 0) {
         await this.recordUsage({

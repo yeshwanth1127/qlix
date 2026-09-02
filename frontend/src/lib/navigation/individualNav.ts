@@ -18,6 +18,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Target,
   Plug,
   Users,
   UsersRound,
@@ -43,6 +44,8 @@ const PRIMARY_NAV_SUFFIXES = [
   "/passports",
   "/plugins",
   "/assessments",
+  "/gtm",
+  "/gtm/plan",
 ] as const;
 
 /**
@@ -54,21 +57,27 @@ const PRIMARY_NAV_SUFFIXES = [
  */
 const PLUGIN_ICONS: Record<string, LucideIcon> = {
   ClipboardCheck,
+  Target,
 };
 
 const PLUGIN_NAV_ITEMS: Record<string, ReadonlyArray<{ href: string; label: string; iconName: string }>> = {
   assessment: [{ href: "assessments", label: "Assessments", iconName: "ClipboardCheck" }],
   whatsapp_outreach: [],
+  gtm: [
+    { href: "gtm", label: "GTM", iconName: "Target" },
+    { href: "gtm/plan", label: "My plan", iconName: "Target" },
+  ],
 };
 
 function pluginNavItems(routePrefix: string, enabledPluginIds: readonly string[]): ConsoleNavItem[] {
-  return enabledPluginIds.flatMap((pluginId) =>
-    (PLUGIN_NAV_ITEMS[pluginId] ?? []).map((item) => ({
+  return enabledPluginIds.flatMap((pluginId) => {
+    if (pluginId === "gtm" && routePrefix !== "/organization") return [];
+    return (PLUGIN_NAV_ITEMS[pluginId] ?? []).map((item) => ({
       href: `${routePrefix}/${item.href}`,
       label: item.label,
       icon: PLUGIN_ICONS[item.iconName] ?? Puzzle,
-    })),
-  );
+    }));
+  });
 }
 
 function isPrimaryNavItem(href: string): boolean {

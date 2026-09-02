@@ -52,6 +52,7 @@ import { createAssessmentRoutes } from '../assessment/assessment.routes.js';
 import { createPluginsRouter } from '../plugins/plugins.routes.js';
 import { createDeviceIngestRoutes } from '../assessment/deviceIngest.routes.js';
 import { createContextToolRoutes } from '../context/contextToolRoutes.js';
+import { createGtmRouter } from '../gtm/gtm.routes.js';
 
 export interface RegisterApiRoutesOptions {
   webAuthn: WebAuthnEnvironment;
@@ -89,6 +90,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/assessment/device', createDeviceIngestRoutes());
   application.use('/api/v1/assessment', createAssessmentRoutes());
   application.use('/api/v1/plugins', createPluginsRouter());
+  application.use('/api/v1/gtm', createGtmRouter());
   application.use('/api/v1/connectors', createConnectorsRouter());
   application.use('/api/v1/mcp', createMcpRouter());
   application.use('/api/v1/nl-builder/history', createNlBuilderHistoryRouter());

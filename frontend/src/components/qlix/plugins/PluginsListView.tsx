@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Puzzle } from "lucide-react";
 import { disablePlugin, enablePlugin, listPlugins, type PluginDTO } from "@/lib/plugins-api";
 import { useSession } from "@/components/qlix/session-context";
@@ -19,8 +20,6 @@ export function PluginsListView({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     void listPlugins()
       .then((rows) => {
         if (cancelled) return;
@@ -79,14 +78,24 @@ export function PluginsListView({
                   <p className="max-w-xl text-[12px] text-black/60">{plugin.description}</p>
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={pendingId === plugin.id}
-                onClick={() => void toggle(plugin)}
-                className="shrink-0 border border-black/20 px-3 py-1.5 font-serif text-[11px] uppercase tracking-widest text-black transition hover:border-black/40 disabled:opacity-50"
-              >
-                {pendingId === plugin.id ? "…" : plugin.enabled ? "Disable" : "Enable"}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={pendingId === plugin.id}
+                  onClick={() => void toggle(plugin)}
+                  className="border border-black/20 px-3 py-1.5 font-serif text-[11px] uppercase tracking-widest text-black transition hover:border-black/40 disabled:opacity-50"
+                >
+                  {pendingId === plugin.id ? "…" : plugin.enabled ? "Disable" : "Enable"}
+                </button>
+                {plugin.enabled && plugin.navItems[0] && !(plugin.id === "gtm" && routePrefix !== "/organization") ? (
+                  <Link
+                    href={`${routePrefix}/${plugin.navItems[0].href}`}
+                    className="border border-black bg-black px-3 py-1.5 font-serif text-[11px] uppercase tracking-widest text-white transition hover:bg-black/80"
+                  >
+                    Open
+                  </Link>
+                ) : null}
+              </div>
             </SketchRow>
           ))
         )}

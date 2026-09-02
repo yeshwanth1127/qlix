@@ -1,7 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { getBuildableScopes } from '../agents/scopeCatalog.js';
 import { listRoleManifests } from '../employees/rolePacks.js';
-import { BrainQueryService, type BrainQueryCitation } from './brainQuery.service.js';
+import { BrainQueryService, type BrainQueryCitation, type BrainDocumentRetrievalFilter } from './brainQuery.service.js';
 import { BrainProposalService, type BrainProposalDTO } from './brainProposal.service.js';
 import {
   ScheduleForbiddenError,
@@ -9,6 +9,167 @@ import {
   ScheduleValidationError,
   scheduleService,
 } from '../schedules/schedule.service.js';
+
+export const GTM_SETUP_BRAIN_TOOL_DEFINITIONS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'propose_gtm_setup',
+      description:
+        'Propose structured GTM setup changes (company, ICP, offer, regions, completed steps). Does NOT apply them — the operator must confirm in the GTM workspace.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rationale: { type: 'string', description: 'Why these setup changes fit what the operator said' },
+          companyDescription: { type: 'string' },
+          idealCustomerProfile: { type: 'string' },
+          primaryOffer: { type: 'string' },
+          targetRegions: { type: 'array', items: { type: 'string' } },
+          buyerRolesAndWorkflows: { type: 'string' },
+          proofAndCaseStudies: { type: 'string' },
+          validityPolicy: { type: 'string' },
+          calibrationNotes: { type: 'string' },
+          completedSteps: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['company', 'market', 'offer', 'buyers', 'proof', 'connectors', 'validity_policy', 'calibration'],
+            },
+          },
+        },
+        required: ['rationale'],
+      },
+    },
+  },
+] as const satisfies ReadonlyArray<{
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}>;
+
+export const GTM_DISCOVERY_BRAIN_TOOL_DEFINITIONS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'propose_gtm_idea',
+      description: 'Propose the founder starting idea and known constraints. Unknown fields may be blank. The operator must confirm before it becomes discovery truth.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rationale: { type: 'string' },
+          idea: { type: 'string' },
+          problem: { type: 'string' },
+          solution: { type: 'string' },
+          audience: { type: 'string' },
+          outcome: { type: 'string' },
+          constraints: { type: 'string' },
+        },
+        required: ['rationale', 'idea'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'propose_gtm_hypothesis',
+      description: 'Propose one testable GTM assumption with an explicit evidence class. The operator must confirm it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rationale: { type: 'string' },
+          kind: { type: 'string', enum: ['problem', 'segment', 'trigger', 'user', 'champion', 'buyer', 'value', 'offer', 'channel', 'price'] },
+          statement: { type: 'string' },
+          evidenceClass: { type: 'string', enum: ['founder_provided', 'externally_verified', 'inferred', 'prospect_reported', 'experiment_observed', 'unknown'] },
+        },
+        required: ['rationale', 'kind', 'statement', 'evidenceClass'],
+      },
+    },
+  },
+] as const satisfies ReadonlyArray<{
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}>;
+
+export const GTM_DISCOVERY_PLAN_BRAIN_TOOL_DEFINITIONS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'propose_gtm_discovery_plan',
+      description:
+        'Return the complete personalized GTM starter dashboard as structured JSON. Call exactly once when drafting a discovery plan from founder answers.',
+      parameters: {
+        type: 'object',
+        properties: {
+          schemaVersion: { type: 'string', enum: ['gtm.discovery_plan.v1', 'gtm.discovery_plan.v2'] },
+          summary: { type: 'string' },
+          focus: {
+            type: 'object',
+            properties: {
+              audience: { type: 'string' },
+              reasons: { type: 'array', items: { type: 'string' } },
+              openQuestions: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['audience', 'reasons', 'openQuestions'],
+          },
+          suggestedAgents: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                roleSlug: { type: 'string' },
+                label: { type: 'string' },
+                reason: { type: 'string' },
+              },
+              required: ['roleSlug', 'label', 'reason'],
+            },
+          },
+          tools: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                capabilityId: { type: 'string', enum: ['research', 'crm', 'email'] },
+                priority: { type: 'string', enum: ['now', 'later', 'optional'] },
+                reason: { type: 'string' },
+              },
+              required: ['capabilityId', 'priority', 'reason'],
+            },
+          },
+          planSteps: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' },
+                why: { type: 'string' },
+                effort: { type: 'string', enum: ['small', 'medium'] },
+              },
+              required: ['title', 'why', 'effort'],
+            },
+          },
+          hypotheses: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string' },
+                statement: { type: 'string' },
+              },
+              required: ['kind', 'statement'],
+            },
+          },
+        },
+        required: ['summary', 'focus', 'suggestedAgents', 'tools', 'planSteps', 'hypotheses'],
+      },
+    },
+  },
+] as const satisfies ReadonlyArray<{
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}>;
 
 export const BRAIN_TOOL_DEFINITIONS = [
   {
@@ -251,6 +412,17 @@ export interface BrainToolContext {
   conversationId?: string | null;
   queryService: BrainQueryService;
   proposals: BrainProposalService;
+  retrievalFilter?: BrainDocumentRetrievalFilter;
+  proposeGtmSetup?: (input: {
+    patch: Record<string, unknown>;
+    rationale: string;
+  }) => Promise<{ proposalId: string }>;
+  proposeGtmDiscovery?: (input: {
+    kind: 'idea' | 'hypothesis';
+    payload: Record<string, unknown>;
+    rationale: string;
+  }) => Promise<{ proposalId: string }>;
+  proposeGtmDiscoveryPlan?: (plan: Record<string, unknown>) => Promise<{ ok: true }>;
 }
 
 export async function executeBrainTool(
@@ -278,6 +450,7 @@ export async function executeBrainTool(
         contextOnly: true,
         agentContextBudget: false,
         writeAudit: false,
+        retrievalFilter: ctx.retrievalFilter,
       });
       return {
         content: JSON.stringify({
@@ -505,6 +678,91 @@ export async function executeBrainTool(
               ? err.message
               : 'schedule_cancel failed';
         return { content: JSON.stringify({ error: message }) };
+      }
+    }
+    case 'propose_gtm_setup': {
+      if (!ctx.proposeGtmSetup) {
+        return { content: JSON.stringify({ error: 'GTM setup proposals are not enabled in this context.' }) };
+      }
+      const rationale = String(args.rationale ?? '').trim();
+      if (!rationale) return { content: JSON.stringify({ error: 'rationale is required' }) };
+      const patch: Record<string, unknown> = {};
+      if (typeof args.companyDescription === 'string') patch.companyDescription = args.companyDescription;
+      if (typeof args.idealCustomerProfile === 'string') patch.idealCustomerProfile = args.idealCustomerProfile;
+      if (typeof args.primaryOffer === 'string') patch.primaryOffer = args.primaryOffer;
+      if (Array.isArray(args.targetRegions)) patch.targetRegions = args.targetRegions;
+      if (typeof args.buyerRolesAndWorkflows === 'string') patch.buyerRolesAndWorkflows = args.buyerRolesAndWorkflows;
+      if (typeof args.proofAndCaseStudies === 'string') patch.proofAndCaseStudies = args.proofAndCaseStudies;
+      if (typeof args.validityPolicy === 'string') patch.validityPolicy = args.validityPolicy;
+      if (typeof args.calibrationNotes === 'string') patch.calibrationNotes = args.calibrationNotes;
+      if (Array.isArray(args.completedSteps)) patch.completedSteps = args.completedSteps;
+      if (Object.keys(patch).length === 0) {
+        return { content: JSON.stringify({ error: 'At least one setup field must be proposed.' }) };
+      }
+      try {
+        const created = await ctx.proposeGtmSetup({ patch, rationale });
+        return {
+          content: JSON.stringify({
+            ok: true,
+            proposalId: created.proposalId,
+            message: 'Proposal saved. The operator must review the structured diff and confirm in the GTM workspace.',
+          }),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to save proposal';
+        return { content: JSON.stringify({ error: message }) };
+      }
+    }
+    case 'propose_gtm_idea': {
+      if (!ctx.proposeGtmDiscovery) return { content: JSON.stringify({ error: 'GTM discovery proposals are not enabled.' }) };
+      const rationale = String(args.rationale ?? '').trim();
+      const idea = String(args.idea ?? '').trim();
+      if (!rationale || !idea) return { content: JSON.stringify({ error: 'rationale and idea are required' }) };
+      try {
+        const created = await ctx.proposeGtmDiscovery({
+          kind: 'idea', rationale,
+          payload: {
+            idea,
+            problem: String(args.problem ?? '').trim(),
+            solution: String(args.solution ?? '').trim(),
+            audience: String(args.audience ?? '').trim(),
+            outcome: String(args.outcome ?? '').trim(),
+            constraints: String(args.constraints ?? '').trim(),
+          },
+        });
+        return { content: JSON.stringify({ ok: true, proposalId: created.proposalId, message: 'Idea proposal ready for operator review.' }) };
+      } catch (err) {
+        return { content: JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to save idea proposal' }) };
+      }
+    }
+    case 'propose_gtm_hypothesis': {
+      if (!ctx.proposeGtmDiscovery) return { content: JSON.stringify({ error: 'GTM discovery proposals are not enabled.' }) };
+      const rationale = String(args.rationale ?? '').trim();
+      const kind = String(args.kind ?? '').trim();
+      const statement = String(args.statement ?? '').trim();
+      const evidenceClass = String(args.evidenceClass ?? '').trim();
+      if (!rationale || !kind || !statement || !evidenceClass) {
+        return { content: JSON.stringify({ error: 'rationale, kind, statement, and evidenceClass are required' }) };
+      }
+      try {
+        const created = await ctx.proposeGtmDiscovery({
+          kind: 'hypothesis', rationale,
+          payload: { kind, statement, evidenceClass, details: {} },
+        });
+        return { content: JSON.stringify({ ok: true, proposalId: created.proposalId, message: 'Hypothesis proposal ready for operator review.' }) };
+      } catch (err) {
+        return { content: JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to save hypothesis proposal' }) };
+      }
+    }
+    case 'propose_gtm_discovery_plan': {
+      if (!ctx.proposeGtmDiscoveryPlan) {
+        return { content: JSON.stringify({ error: 'GTM discovery plan drafting is not enabled in this context.' }) };
+      }
+      try {
+        await ctx.proposeGtmDiscoveryPlan(args);
+        return { content: JSON.stringify({ ok: true, message: 'Discovery plan captured.' }) };
+      } catch (err) {
+        return { content: JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to save discovery plan' }) };
       }
     }
     default:

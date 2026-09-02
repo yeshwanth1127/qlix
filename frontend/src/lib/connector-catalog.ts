@@ -179,6 +179,17 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     logo: { domain: "tally.so", color: "000000" },
   },
   {
+    id: "twenty",
+    name: "Qlix CRM (Twenty)",
+    category: "CRM",
+    authTypes: ["OAuth2"],
+    description: "Managed CRM workspace powered by Twenty — request access via your GTM plan.",
+    docsUrl: "https://twenty.com",
+    availability: "soon",
+    aliases: ["crm", "qlix crm", "twenty"],
+    logo: { domain: "twenty.com", color: "000000" },
+  },
+  {
     id: "zoho",
     name: "Zoho CRM",
     category: "CRM",

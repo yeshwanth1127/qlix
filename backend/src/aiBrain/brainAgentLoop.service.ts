@@ -5,12 +5,13 @@ import {
   type LlmProviderId,
 } from '../llm/inferenceRouter.js';
 import type { InferenceToolCall } from '../llm/providers/types.js';
-import { BrainQueryService, type BrainQueryCitation } from './brainQuery.service.js';
-import { appendBrainActionLog } from './brainAudit.service.js';
+import { BrainQueryService, type BrainQueryCitation, type BrainDocumentRetrievalFilter } from './brainQuery.service.js';
+import { appendBrainActionLog, type BrainActionType } from './brainAudit.service.js';
 import {
   BRAIN_COGNITIVE_SYSTEM_PROMPT,
   BRAIN_TOOL_DEFINITIONS,
   executeBrainTool,
+  type BrainToolContext,
 } from './brainTools.js';
 import { BrainProposalService, type BrainProposalDTO } from './brainProposal.service.js';
 
@@ -51,13 +52,30 @@ export class BrainAgentLoopService {
     question: string;
     conversationId?: string | null;
     history?: readonly { role: string; content: string }[];
+    retrievalFilter?: BrainDocumentRetrievalFilter;
+    systemPromptAppend?: string;
+    extraTools?: ReadonlyArray<{
+      type: 'function';
+      function: {
+        name: string;
+        description: string;
+        parameters: Record<string, unknown>;
+      };
+    }>;
+    toolContext?: Partial<BrainToolContext>;
+    auditActionType?: BrainActionType;
   }): Promise<BrainAgentLoopResult> {
     const provider: LlmProviderId = input.brainModel.toLowerCase().startsWith('exora/')
       ? 'exora'
       : 'openrouter';
     const model = modelForProvider(input.brainModel, provider);
 
-    const messages: LoopMessage[] = [{ role: 'system', content: BRAIN_COGNITIVE_SYSTEM_PROMPT }];
+    const messages: LoopMessage[] = [{
+      role: 'system',
+      content: input.systemPromptAppend
+        ? `${BRAIN_COGNITIVE_SYSTEM_PROMPT}\n\n${input.systemPromptAppend}`
+        : BRAIN_COGNITIVE_SYSTEM_PROMPT,
+    }];
 
     const history = (input.history ?? []).slice(-HISTORY_TURNS);
     for (const turn of history) {
@@ -82,6 +100,7 @@ export class BrainAgentLoopService {
         contextOnly: true,
         agentContextBudget: false,
         writeAudit: false,
+        retrievalFilter: input.retrievalFilter,
       });
       if (primed.citations.length > 0 && primed.contextBlock?.trim()) {
         autoRetrieved = true;
@@ -123,6 +142,8 @@ export class BrainAgentLoopService {
     let totalCost = 0;
     let finalAnswer = '';
 
+    const tools = [...BRAIN_TOOL_DEFINITIONS, ...(input.extraTools ?? [])];
+
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const llmResult = await chatCompletion(
         {
@@ -131,7 +152,7 @@ export class BrainAgentLoopService {
           temperature: 0.3,
           max_tokens: 2048,
           stream: false,
-          tools: BRAIN_TOOL_DEFINITIONS,
+          tools,
           tool_choice:
             round === 0 && !autoRetrieved && looksLikeKnowledgeQuestion(input.question)
               ? 'required'
@@ -168,6 +189,8 @@ export class BrainAgentLoopService {
             conversationId: input.conversationId,
             queryService: this.queryService,
             proposals: this.proposals,
+            retrievalFilter: input.retrievalFilter,
+            ...input.toolContext,
           });
           if (toolResult.citations?.length) {
             for (const c of toolResult.citations) {
@@ -215,7 +238,7 @@ export class BrainAgentLoopService {
     await appendBrainActionLog({
       brainAgentId: input.brainAgentId,
       userId: input.userId,
-      actionType: 'brain.query',
+      actionType: input.auditActionType ?? 'brain.query',
       payload: {
         description: `Cognitive query: "${input.question.slice(0, 100)}"`,
         model,

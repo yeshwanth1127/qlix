@@ -12,7 +12,8 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "seed:assessment-workflow": "tsx src/assessment/seedDefenseInterviewWorkflow.ts"
+    "seed:assessment-workflow": "tsx src/assessment/seedDefenseInterviewWorkflow.ts",
+    "gtm:backfill-discovery-plan": "tsx src/gtm/backfillDiscoveryPlan.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^3.1.0",

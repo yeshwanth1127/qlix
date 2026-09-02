@@ -224,6 +224,49 @@ export function createAiBrainRouter(): Router {
     }
   });
 
+  router.post('/documents/:documentId/review', async (request: Request, response: Response) => {
+    const reviewSchema = z.object({
+      reviewStatus: z.enum(['pending', 'reviewed', 'rejected']),
+      sourceObservedAt: z.string().datetime().nullable().optional(),
+      freshnessExpiresAt: z.string().datetime().nullable().optional(),
+    });
+    try {
+      const parsed = reviewSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        response.status(400).json({ error: { code: 'invalid_body', message: 'Invalid review payload.' } });
+        return;
+      }
+      const brain = await brainAgents.getOrgBrainAgent(request.auth!.orgId);
+      if (!brain) {
+        response.status(409).json({ error: { code: 'brain_required', message: 'Provision the org AI brain first.' } });
+        return;
+      }
+      const result = await knowledge.reviewKnowledgeDocument({
+        userId: request.auth!.userId,
+        orgId: request.auth!.orgId,
+        role: request.auth!.role,
+        brainAgentId: brain.id,
+        documentId: String(request.params.documentId ?? ''),
+        reviewStatus: parsed.data.reviewStatus,
+        sourceObservedAt: parsed.data.sourceObservedAt,
+        freshnessExpiresAt: parsed.data.freshnessExpiresAt,
+      });
+      response.json(result);
+    } catch (err: unknown) {
+      if (err instanceof BrainKnowledgeForbiddenError) {
+        response.status(403).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Review failed';
+      if (message === 'Document not found') {
+        response.status(404).json({ error: { code: 'not_found', message } });
+        return;
+      }
+      console.error('ai-brain/documents:review', err);
+      response.status(500).json({ error: { code: 'document_review_failed', message: 'Failed to review document' } });
+    }
+  });
+
   router.delete('/documents/:documentId', async (request: Request, response: Response) => {
     try {
       const orgId = request.auth!.orgId;
@@ -366,6 +409,8 @@ export function createAiBrainRouter(): Router {
 
         const titleRaw = typeof request.body?.title === 'string' ? request.body.title.trim() : '';
         const title = titleRaw || file.originalname || 'Uploaded document';
+        const markReviewed = request.body?.markReviewed === true
+          || request.body?.markReviewed === 'true';
 
         // Dual ingest: extracted text → chunks/embeddings (RAG) + retain original bytes (file send).
         const result = await knowledge.ingestDocument({
@@ -377,6 +422,7 @@ export function createAiBrainRouter(): Router {
           title: title.slice(0, 500),
           bodyText,
           sourceUri: null,
+          markReviewed,
           originalFile: {
             fileName: file.originalname || title,
             mimeType: file.mimetype,
@@ -410,6 +456,7 @@ export function createAiBrainRouter(): Router {
       title: z.string().min(1).max(500),
       bodyText: z.string().min(1).max(1_500_000),
       sourceUri: z.string().url().max(2000).optional().nullable(),
+      markReviewed: z.boolean().optional(),
     });
     try {
       const orgId = request.auth!.orgId;
@@ -437,6 +484,7 @@ export function createAiBrainRouter(): Router {
         title: parsed.data.title,
         bodyText: parsed.data.bodyText,
         sourceUri: parsed.data.sourceUri,
+        markReviewed: parsed.data.markReviewed ?? false,
       });
 
       response.status(201).json(result);

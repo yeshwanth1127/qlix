@@ -3,6 +3,11 @@ import { roleCan } from '../lib/orgPermissions.js';
 import { AgentsRepository } from '../agents/agents.repository.js';
 import { appendBrainActionLog } from './brainAudit.service.js';
 import { BrainQueryService } from './brainQuery.service.js';
+import {
+  defaultFreshnessExpiresAt,
+  isBrainDocumentReviewStatus,
+  type BrainDocumentReviewStatus,
+} from './brainDocumentReview.js';
 
 const queryService = new BrainQueryService();
 
@@ -100,6 +105,10 @@ export class BrainKnowledgeService {
       collectionName: string;
       title: string;
       ingestStatus: string;
+      reviewStatus: string;
+      reviewedAt: string | null;
+      sourceObservedAt: string | null;
+      freshnessExpiresAt: string | null;
       sourceUri: string | null;
       createdAt: string;
       chunkCount: number;
@@ -121,6 +130,10 @@ export class BrainKnowledgeService {
       collectionName: r.collection.name,
       title: r.title,
       ingestStatus: r.ingestStatus,
+      reviewStatus: r.reviewStatus,
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
+      sourceObservedAt: r.sourceObservedAt?.toISOString() ?? null,
+      freshnessExpiresAt: r.freshnessExpiresAt?.toISOString() ?? null,
       sourceUri: r.sourceUri,
       createdAt: r.createdAt.toISOString(),
       chunkCount: r._count.chunks,
@@ -141,6 +154,8 @@ export class BrainKnowledgeService {
     title: string;
     bodyText: string;
     sourceUri?: string | null;
+    /** When true, mark reviewed immediately (operator-provided org truth). */
+    markReviewed?: boolean;
     /** When set, retain original bytes alongside chunks/embeddings. */
     originalFile?: {
       fileName: string;
@@ -173,6 +188,10 @@ export class BrainKnowledgeService {
         bodyText: input.bodyText,
         sourceUri: input.sourceUri?.trim() || null,
         ingestStatus: 'ready',
+        reviewStatus: input.markReviewed ? 'reviewed' : 'pending',
+        reviewedAt: input.markReviewed ? new Date() : null,
+        reviewedByUserId: input.markReviewed ? input.userId : null,
+        freshnessExpiresAt: input.markReviewed ? defaultFreshnessExpiresAt() : null,
         chunks: {
           create: chunks.map((textContent, ordinal) => ({
             orgId: input.orgId,
@@ -269,6 +288,10 @@ export class BrainKnowledgeService {
         title: input.title.trim(),
         bodyText: input.bodyText,
         ingestStatus: 'ready',
+        reviewStatus: 'pending',
+        reviewedAt: null,
+        reviewedByUserId: null,
+        freshnessExpiresAt: null,
         chunks: {
           deleteMany: {},
           create: chunks.map((textContent, ordinal) => ({
@@ -299,6 +322,76 @@ export class BrainKnowledgeService {
     });
 
     return { chunkCount: chunks.length, updatedAt: doc.updatedAt.toISOString() };
+  }
+
+  async reviewKnowledgeDocument(input: {
+    userId: string;
+    orgId: string;
+    role: string;
+    brainAgentId: string;
+    documentId: string;
+    reviewStatus: BrainDocumentReviewStatus;
+    sourceObservedAt?: string | null;
+    freshnessExpiresAt?: string | null;
+  }): Promise<{
+    reviewStatus: string;
+    reviewedAt: string | null;
+    freshnessExpiresAt: string | null;
+  }> {
+    await this.agentsRepo.assertOrgMembership(input.userId, input.orgId);
+    if (!roleCan(input.role, 'manage_brain')) {
+      throw new BrainKnowledgeForbiddenError('Only owners and admins can review knowledge documents.');
+    }
+    if (!isBrainDocumentReviewStatus(input.reviewStatus)) {
+      throw new Error('Invalid review status');
+    }
+
+    const existing = await prisma.brainKnowledgeDocument.findFirst({
+      where: { id: input.documentId, orgId: input.orgId },
+      select: { id: true, title: true, collectionId: true },
+    });
+    if (!existing) throw new Error('Document not found');
+
+    const observedAt = input.sourceObservedAt
+      ? new Date(input.sourceObservedAt)
+      : null;
+    const freshnessExpiresAt = input.freshnessExpiresAt
+      ? new Date(input.freshnessExpiresAt)
+      : input.reviewStatus === 'reviewed'
+        ? defaultFreshnessExpiresAt(observedAt ?? new Date())
+        : null;
+
+    const doc = await prisma.brainKnowledgeDocument.update({
+      where: { id: existing.id },
+      data: {
+        reviewStatus: input.reviewStatus,
+        reviewedAt: input.reviewStatus === 'reviewed' ? new Date() : null,
+        reviewedByUserId: input.reviewStatus === 'reviewed' ? input.userId : null,
+        sourceObservedAt: observedAt,
+        freshnessExpiresAt: input.reviewStatus === 'reviewed' ? freshnessExpiresAt : null,
+      },
+      select: { reviewStatus: true, reviewedAt: true, freshnessExpiresAt: true },
+    });
+
+    await appendBrainActionLog({
+      brainAgentId: input.brainAgentId,
+      userId: input.userId,
+      actionType: 'brain.knowledge_review',
+      payload: {
+        description: `Marked knowledge document "${existing.title}" as ${input.reviewStatus}`,
+        collectionId: existing.collectionId,
+        documentId: existing.id,
+        reviewStatus: input.reviewStatus,
+      },
+      status: 'success',
+      riskLevel: 'low',
+    });
+
+    return {
+      reviewStatus: doc.reviewStatus,
+      reviewedAt: doc.reviewedAt?.toISOString() ?? null,
+      freshnessExpiresAt: doc.freshnessExpiresAt?.toISOString() ?? null,
+    };
   }
 
   async deleteKnowledgeDocument(input: {

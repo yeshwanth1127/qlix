@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   BookOpen,
   Briefcase,
@@ -191,6 +191,9 @@ export function AiEmployeeHireWizard({
   readonly roleSlug: string;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const prefillPlatformsParam = searchParams.get("platforms") ?? "";
+  const prefillName = searchParams.get("name")?.trim() ?? "";
   const [step, setStep] = useState(0);
   const [role, setRole] = useState<RoleCatalogEntry | null>(null);
   const [selectedPlatformIds, setSelectedPlatformIds] = useState<string[]>([]);
@@ -212,7 +215,7 @@ export function AiEmployeeHireWizard({
         const res = await getEmployeeRole(roleSlug);
         if (cancelled) return;
         setRole(res.role);
-        setName(res.role.label);
+        setName(prefillName || res.role.label);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load role");
       } finally {
@@ -222,7 +225,7 @@ export function AiEmployeeHireWizard({
     return () => {
       cancelled = true;
     };
-  }, [roleSlug]);
+  }, [roleSlug, prefillName]);
 
   const refreshPreflight = useCallback(
     async (platformIds: string[]) => {
@@ -242,10 +245,17 @@ export function AiEmployeeHireWizard({
 
   useEffect(() => {
     if (!platformsInitialized && role) {
-      setSelectedPlatformIds(role.platformSuggestions.map((s) => s.platformId));
+      const prefillPlatforms = prefillPlatformsParam
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      const defaults = prefillPlatforms.length > 0
+        ? prefillPlatforms.filter((id) => role.platformSuggestions.some((s) => s.platformId === id))
+        : role.platformSuggestions.map((s) => s.platformId);
+      setSelectedPlatformIds(defaults.length > 0 ? defaults : role.platformSuggestions.map((s) => s.platformId));
       setPlatformsInitialized(true);
     }
-  }, [role, platformsInitialized]);
+  }, [role, platformsInitialized, prefillPlatformsParam]);
 
   useEffect(() => {
     if (!platformsInitialized) return;
