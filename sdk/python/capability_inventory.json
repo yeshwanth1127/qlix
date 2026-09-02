@@ -26,6 +26,7 @@
       "brain.query",
       "calendar.read",
       "calendar.write",
+      "conversation",
       "crm.delete",
       "crm.read",
       "crm.write",
@@ -688,12 +689,17 @@
       "toolRefs"
     ],
     "publicExports": [
+      "ContextPack",
+      "ContextRef",
+      "ContextRequest",
+      "ContextSelector",
       "ConversationSignalRequest",
       "ConversationStartRequest",
       "ConversationStatus",
       "ConversationWorkflow",
       "DispatchContract",
       "DispatchRequest",
+      "ExecutionBudget",
       "InputPurpose",
       "IntentMode",
       "IntentPatch",
@@ -732,6 +738,10 @@
         "cloud",
         "hybrid"
       ],
+      "documents": [
+        "cloud",
+        "hybrid"
+      ],
       "files": [
         "hybrid"
       ],
@@ -748,10 +758,6 @@
       ],
       "web": [
         "cloud"
-      ],
-      "documents": [
-        "cloud",
-        "hybrid"
       ]
     },
     "groupTools": {
@@ -764,10 +770,13 @@
       ],
       "assessment": [
         "assessment_artifact_read",
+        "assessment_context_get",
         "assessment_evidence_read",
         "assessment_evidence_search",
         "assessment_framework_read",
         "assessment_record",
+        "assessment_reference_batch_read",
+        "assessment_reference_list",
         "assessment_report_create",
         "assessment_review_ask",
         "assessment_review_request_demonstration",
@@ -783,6 +792,11 @@
       "comms": [
         "calendar_read",
         "calendar_write",
+        "conversation_close",
+        "conversation_get",
+        "conversation_list",
+        "conversation_send",
+        "conversation_start",
         "crm_add_note",
         "crm_bulk_create",
         "crm_bulk_update",
@@ -864,6 +878,8 @@
         "brain_query"
       ],
       "research": [
+        "create_report_pdf",
+        "create_xlsx",
         "research_github",
         "research_read_url",
         "research_social_search",
@@ -914,19 +930,18 @@
         "browser_ab_upload",
         "browser_ab_wait",
         "browser_exec"
-      ],
-      "documents": [
-        "create_report_pdf",
-        "create_xlsx"
       ]
     },
     "runtimeTools": {
       "cloud": [
         "assessment_artifact_read",
+        "assessment_context_get",
         "assessment_evidence_read",
         "assessment_evidence_search",
         "assessment_framework_read",
         "assessment_record",
+        "assessment_reference_batch_read",
+        "assessment_reference_list",
         "assessment_report_create",
         "assessment_review_ask",
         "assessment_review_request_demonstration",
@@ -981,6 +996,11 @@
         "calendar_read",
         "calendar_write",
         "call_tool",
+        "conversation_close",
+        "conversation_get",
+        "conversation_list",
+        "conversation_send",
+        "conversation_start",
         "create_report_pdf",
         "create_xlsx",
         "crm_add_note",
@@ -1052,10 +1072,13 @@
       ],
       "hybrid": [
         "assessment_artifact_read",
+        "assessment_context_get",
         "assessment_evidence_read",
         "assessment_evidence_search",
         "assessment_framework_read",
         "assessment_record",
+        "assessment_reference_batch_read",
+        "assessment_reference_list",
         "assessment_report_create",
         "assessment_review_ask",
         "assessment_review_request_demonstration",
@@ -1067,6 +1090,11 @@
         "calendar_read",
         "calendar_write",
         "call_tool",
+        "conversation_close",
+        "conversation_get",
+        "conversation_list",
+        "conversation_send",
+        "conversation_start",
         "create_report_pdf",
         "create_xlsx",
         "crm_add_note",
@@ -1164,6 +1192,17 @@
         ],
         "scopeGated": true
       },
+      "assessment_context_get": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
       "assessment_evidence_read": {
         "dynamic": false,
         "groups": [
@@ -1198,6 +1237,28 @@
         "scopeGated": true
       },
       "assessment_record": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_reference_batch_read": {
+        "dynamic": false,
+        "groups": [
+          "assessment"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "assessment_reference_list": {
         "dynamic": false,
         "groups": [
           "assessment"
@@ -1759,10 +1820,65 @@
         ],
         "scopeGated": true
       },
+      "conversation_close": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "conversation_get": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "conversation_list": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "conversation_send": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
+      "conversation_start": {
+        "dynamic": false,
+        "groups": [
+          "comms"
+        ],
+        "runtimes": [
+          "cloud",
+          "hybrid"
+        ],
+        "scopeGated": true
+      },
       "create_report_pdf": {
         "dynamic": false,
         "groups": [
-          "documents"
+          "research"
         ],
         "runtimes": [
           "cloud",
@@ -1773,7 +1889,7 @@
       "create_xlsx": {
         "dynamic": false,
         "groups": [
-          "documents"
+          "research"
         ],
         "runtimes": [
           "cloud",

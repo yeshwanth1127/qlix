@@ -297,6 +297,8 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
     }, [renderHeader, playOpen, animateIcon, animateColor, animateText, onMenuOpen]);
 
     const doClose = useCallback(() => {
+      // Persistent dashboard rail stays mounted; never slide it off-screen.
+      if (alwaysOpen) return;
       if (!openRef.current) return;
       openRef.current = false;
       setOpen(false);
@@ -307,12 +309,13 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
         animateColor(false);
         animateText(false);
       }
-    }, [renderHeader, playClose, animateIcon, animateColor, animateText, onMenuClose]);
+    }, [alwaysOpen, renderHeader, playClose, animateIcon, animateColor, animateText, onMenuClose]);
 
     const toggleMenu = useCallback(() => {
+      if (alwaysOpen) return;
       if (openRef.current) doClose();
       else doOpen();
-    }, [doOpen, doClose]);
+    }, [alwaysOpen, doOpen, doClose]);
 
     useImperativeHandle(ref, () => ({ open: doOpen, close: doClose, toggle: toggleMenu }), [
       doOpen,
@@ -428,7 +431,7 @@ export const StaggeredMenu = forwardRef<StaggeredMenuHandle, StaggeredMenuProps>
                         aria-current={item.active ? "page" : undefined}
                         data-index={idx + 1}
                         data-active={item.active || undefined}
-                        onClick={doClose}
+                        onClick={alwaysOpen ? undefined : doClose}
                       >
                         <span className="sm-panel-itemLabel">{item.label}</span>
                       </Link>

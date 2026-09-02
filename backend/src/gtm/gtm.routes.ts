@@ -48,6 +48,7 @@ import {
   startDiscoveryPlanPipeline,
 } from './gtmDiscoveryPlan.service.js';
 import {
+  getGtmDiscoveryEntry,
   getGtmDiscoveryWorkspace,
   GtmWorkspaceError,
   patchGtmDiscoveryWorkspace,
@@ -166,6 +167,10 @@ export function createGtmRouter(): Router {
 
   router.get('/discovery/foundation', asyncRoute(async (request, response) => {
     response.json(await getDiscoveryFoundation(request.auth!.orgId));
+  }));
+
+  router.get('/discovery/entry', asyncRoute(async (request, response) => {
+    response.json(await getGtmDiscoveryEntry(request.auth!.orgId));
   }));
 
   router.get('/discovery/plan', asyncRoute(async (request, response) => {

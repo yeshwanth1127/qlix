@@ -40,6 +40,7 @@ export type PermissionScope =
   | "whatsapp.read"
   | "whatsapp.contact_send"
   | "whatsapp.auto_reply"
+  | "conversation"
   | "social.read"
   | "social.publish"
   | "crm.read"
@@ -86,6 +87,7 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "whatsapp.read",
   "whatsapp.contact_send",
   "whatsapp.auto_reply",
+  "conversation",
   "social.read",
   "social.publish",
   "crm.read",
@@ -153,7 +155,8 @@ export const PERMISSION_SCOPE_LABELS: Record<PermissionScope, string> = {
   "whatsapp.send": "Send files to your linked WhatsApp",
   "whatsapp.read": "Read WhatsApp contact chats",
   "whatsapp.contact_send": "Message WhatsApp contacts",
-  "whatsapp.auto_reply": "Auto-reply when messaged contacts respond",
+  "whatsapp.auto_reply": "Auto-reply (conversation alias)",
+  conversation: "Manage conversation threads",
   "social.read": "Read Orbit social channels & posts",
   "social.publish": "Publish / schedule posts via Orbit",
   "crm.read": "Read CRM records",

@@ -12,7 +12,7 @@ export function GtmSuggestedTeam({
   readonly routePrefix: string;
 }) {
   const { suggestedTeam, hiredRoleSlugs, teamProgress } = workspace;
-  const buildTeamHref = `${routePrefix}/gtm/plan/build-team`;
+  const buildTeamHref = `${routePrefix}/gtm/build-team`;
   const teamReady = teamProgress.allHired;
 
   if (suggestedTeam.length === 0) {

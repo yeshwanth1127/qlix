@@ -57,6 +57,7 @@ import {
   validateLunaTeamsResult,
 } from './lunaTeamsHost.js';
 import { contractFromMember, toolIndexLines } from './stageKind.js';
+import { hasConversationCapability } from '../conversations/conversationScope.js';
 import { effectiveRunGoal } from './teamIntent.js';
 import { isUnusableTeamSynthesis, lastResultFromEnvelope } from './teamRunFollowUp.js';
 import {
@@ -423,12 +424,15 @@ export class TeamOrchestrator {
             repliedCount: inbound.length,
             liveArtifactContext,
           });
+      const threadSnapshots = this.conversationThreadSnapshots(managedConversations, checkpoint);
       const waitPayload = {
         kind: 'external_wait_result',
         triggerKind: 'whatsapp_inbound',
         timedOut,
         totalContacts,
         replies: inbound,
+        processId: managedConversations[0]?.processId ?? null,
+        threads: threadSnapshots,
         conversations: managedConversations,
         classifications,
         interestSummary,
@@ -597,10 +601,17 @@ export class TeamOrchestrator {
     };
   }
 
-  private managedConversationResult(
+  private conversationThreadSnapshots(
     conversations: TeamManagedConversationResult[],
     checkpoint: TeamRunCheckpoint,
-  ): WorkerResult {
+  ): Array<{
+    threadId: string;
+    contact: { name: string | null; phone: string; jid: string };
+    status: string;
+    replies: WaitTriggerInbound[];
+    result: Record<string, unknown>;
+    responses: Record<string, unknown>;
+  }> {
     const internalKeys = new Set([
       'connectorId',
       'contactJid',
@@ -609,7 +620,7 @@ export class TeamOrchestrator {
       'pushName',
     ]);
     const preferredOrder = ['interest', 'preference', 'city', 'degree', 'experience'];
-    const contacts = conversations.map((conversation) => {
+    return conversations.map((conversation) => {
       const responses = Object.fromEntries(
         Object.entries(conversation.variables)
           .filter(([key]) => !internalKeys.has(key) && !key.endsWith('Classification'))
@@ -621,16 +632,25 @@ export class TeamOrchestrator {
       );
       const contact = checkpoint.waitContacts?.[conversation.contactJid];
       return {
+        threadId: conversation.threadId,
         contact: {
           name: contact?.name ?? null,
-          phone: contact?.phone ?? conversation.contactJid.split('@')[0],
+          phone: contact?.phone ?? conversation.contactJid.split('@')[0] ?? conversation.contactJid,
           jid: conversation.contactJid,
         },
         status: conversation.status,
+        replies: conversation.replies,
+        result: conversation.result,
         responses,
-        outcome: conversation.result,
       };
     });
+  }
+
+  private managedConversationResult(
+    conversations: TeamManagedConversationResult[],
+    checkpoint: TeamRunCheckpoint,
+  ): WorkerResult {
+    const contacts = this.conversationThreadSnapshots(conversations, checkpoint);
     const formatLabel = (value: string) =>
       value
         .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -641,10 +661,12 @@ export class TeamOrchestrator {
         const responseLines = Object.entries(entry.responses)
           .map(([key, value]) => `- **${formatLabel(key)}:** ${String(value)}`)
           .join('\n');
-        const nextAction = entry.outcome.nextAction;
+        const nextAction =
+          typeof entry.result.nextAction === 'string' ? entry.result.nextAction : undefined;
         return [
           `### ${entry.contact.name || 'WhatsApp contact'}`,
           `- **Phone:** +${entry.contact.phone.replace(/^\+/, '')}`,
+          `- **Thread:** ${entry.threadId}`,
           `- **Status:** ${formatLabel(entry.status)}`,
           '',
           '**Responses**',
@@ -751,7 +773,9 @@ export class TeamOrchestrator {
       }
     }
 
-    await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: checkpoint });
+    // Persist wait prompt events BEFORE flipping status to paused.
+    // Otherwise the SSE poller can observe `paused` and notify the client a beat
+    // before wait_ttl_requested is readable, and the TTL picker never appears live.
     await this.emitEvent(run, team, team.supervisorAgentId, 'wait_armed', {
       triggerKind: 'whatsapp_inbound',
       triggerIds: checkpoint.waitTriggerIds,
@@ -775,6 +799,7 @@ export class TeamOrchestrator {
           ? 'How long should we wait for WhatsApp replies? Messages are sent only after you pick a duration.'
           : 'How long should we wait for WhatsApp replies before continuing with whoever has responded?',
     }, emit);
+    await this.repo.updateRunStatus(run.id, 'paused', { checkpointJson: checkpoint });
     emit('paused', { status: 'paused', teamRunId: run.id, reason: checkpoint.waitReason });
     return true;
   }
@@ -1463,21 +1488,21 @@ User goal: ${runObjective(run)}`;
     );
     const replyWaitGuidance =
       conversationWorkflowEnabled && dispatchSkills.includes('whatsapp.contact_send')
-        ? '- This Team uses a managed per-contact conversation workflow. Send exactly one initial prompt per validated lead (text or native poll if the entry question is multiple-choice). Qlix rewrites the queued row to the published workflow entry.\n' +
-          '- Do NOT send later branch messages, collect later answers, set auto-reply instructions, or delegate follow-up work. The conversation middleware owns every reply and next step.\n' +
+        ? '- This Team uses a managed per-contact conversation workflow. Queue one kickoff per validated lead (a short greeting text is enough; optional whatsapp_send_document with brain_document_id if a real Brain brochure file exists).\n' +
+          '- Do NOT send later polls yourself. After wait TTL is set, Qlix starts the workflow: greeting → brochure (if available) → first poll, then waits for each reply before sending the next poll.\n' +
+          '- Do NOT set auto-reply instructions or delegate follow-up work. The conversation middleware owns every reply and next step.\n' +
           '- Message only contacts present in the authoritative Luna-Teams Result handback, using the full phone number including country code.\n'
         : dispatchSkills.includes('whatsapp.contact_send') &&
-      dispatchSkills.includes('whatsapp.auto_reply') &&
+      hasConversationCapability(dispatchSkills) &&
       (goalRequestsOutreachPack(runObjective(run)) ||
         (Array.isArray((team.config as TeamConfig).waitSteps) &&
           ((team.config as TeamConfig).waitSteps?.length ?? 0) > 0))
         ? '- This stage queues WhatsApp outreach with the **full phone number including country code** from prior stage context — one number per lead, never reuse.\n' +
-          '- REQUIRED tool sequence when the goal asks for greeting + brochure + poll (per lead, in order):\n' +
-          '  1) whatsapp_send_message for the greeting only — do not put the word "brochure" or a poll question in this text\n' +
-          '  2) whatsapp_send_document with brain_document_id (from brain context documentId=… or brain_find_documents query \"brochure\") — NEVER send a URL/link/placeholder text instead of the file\n' +
-          '  3) whatsapp_send_poll with clear Yes/No (or Interest) options — NEVER replace the poll with a text asking them to type Interested/Not Interested\n' +
-          '- If you skip the document or poll tools, Qlix will still attach the brochure file and a Yes/No poll before sending.\n' +
-          '- Messages are NOT delivered yet; Qlix enters wait mode, you pick a duration, then they go out in that order and replies/votes are captured live. Do NOT create a responder sheet or deliver anything yet.\n' +
+          '- Follow the user objective exactly for conversation content and order: every greeting, follow-up text, document, and poll the objective asks for — and only those. Do not invent, collapse, or skip steps.\n' +
+          '- Use whatsapp_send_message / whatsapp_send_document / whatsapp_send_poll as the objective requires. Call each tool once per intended step; keep distinct questions as separate polls when the objective lists multiple polls.\n' +
+          '- For Brain files use whatsapp_send_document with brain_document_id (from brain context or brain_find_documents) — never a URL, link, or placeholder text instead of the file.\n' +
+          '- Never replace a requested poll with free-text asking the contact to type yes/no unless the objective explicitly asks for text.\n' +
+          '- Messages are NOT delivered yet; Qlix enters wait mode, you pick a duration, then they go out in queued order and replies/votes are captured live. Do NOT create a responder sheet or deliver anything yet.\n' +
           '- Message only contacts present in the authoritative Luna-Teams Result handback. Never broaden or re-read the original source list.\n'
         : '';
     const filterGuidance =

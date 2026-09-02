@@ -308,13 +308,20 @@ export const SCOPE_CATALOG: ScopeDef[] = [
     id: 'whatsapp.auto_reply',
     label: 'Auto-reply to WhatsApp contacts',
     description:
-      'After messaging a contact, listen for their replies and auto-route them into a new agent run; deliver the answer back to that contact',
+      'Compatibility alias for conversation on WhatsApp: after messaging a contact, listen for replies on a dedicated thread',
     forceJit: false,
     requiresConnector: 'whatsapp_baileys',
     runtimes: ['cloud', 'hybrid'],
-    // This is specifically the outreach-campaign capability (send, then wait/listen for
-    // replies). whatsapp.send/read/contact_send are ordinary scopes and stay ungated.
-    pluginId: 'whatsapp_outreach',
+    pluginId: 'outreach',
+  },
+  {
+    id: 'conversation',
+    label: 'Manage conversation threads',
+    description:
+      'Start one or many parallel conversation threads, keep each contact’s replies isolated, and read organized results back',
+    forceJit: false,
+    runtimes: ['cloud', 'hybrid'],
+    pluginId: 'outreach',
   },
   {
     id: 'social.read',

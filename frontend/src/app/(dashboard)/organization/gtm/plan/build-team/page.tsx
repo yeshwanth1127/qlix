@@ -1,5 +1,5 @@
-import { GtmTeamBuildFlow } from "@/components/qlix/gtm/GtmTeamBuildFlow";
+import { redirect } from "next/navigation";
 
-export default function OrganizationGtmBuildTeamPage() {
-  return <GtmTeamBuildFlow routePrefix="/organization" />;
+export default function OrganizationGtmPlanBuildTeamRedirectPage() {
+  redirect("/organization/gtm/build-team");
 }

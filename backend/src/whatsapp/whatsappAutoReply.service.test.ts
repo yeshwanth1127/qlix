@@ -39,6 +39,17 @@ describe('buildAutoReplyInboundPrompt', () => {
     assert.match(prompt, /Book a 30-min call/);
   });
 
+  it('includes threadId when a conversation thread is known', () => {
+    const prompt = buildAutoReplyInboundPrompt({
+      label: 'Priya',
+      contactJid: '9198@s.whatsapp.net',
+      text: 'Hi',
+      threadId: 'thread-1',
+    });
+    assert.match(prompt, /Conversation threadId: thread-1/);
+    assert.match(prompt, /conversation_get/);
+  });
+
   it('falls back to generic guidance without instructions', () => {
     const prompt = buildAutoReplyInboundPrompt({
       label: 'Priya',

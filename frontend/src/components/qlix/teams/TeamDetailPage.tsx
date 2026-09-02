@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import { getTeam, type TeamDTO } from "@/lib/teams-api";
-import { useSession } from "@/components/qlix/session-context";
 import { sketchButton } from "@/components/qlix/sketch";
 import { TeamDetailView } from "./TeamDetailView";
 
@@ -15,7 +14,6 @@ interface TeamDetailPageProps {
 
 export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
   const router = useRouter();
-  const { session } = useSession();
   const [team, setTeam] = useState<TeamDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,12 +60,12 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {loading && (
+        {loading && !error && (
           <div className="flex h-full items-center justify-center text-[13px] text-[color:var(--ink-soft)]">
             Loading team…
           </div>
         )}
-        {error && (
+        {!loading && error && (
           <div className="flex h-full flex-col items-center justify-center gap-3">
             <p className="text-[13px] text-black">{error}</p>
             <button type="button" onClick={load} className={sketchButton}>
@@ -75,7 +73,7 @@ export function TeamDetailPage({ teamId, routePrefix }: TeamDetailPageProps) {
             </button>
           </div>
         )}
-        {team && session && (
+        {!loading && !error && team && (
           <TeamDetailView
             team={team}
             routePrefix={routePrefix}

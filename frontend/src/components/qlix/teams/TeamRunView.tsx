@@ -20,6 +20,7 @@ import {
   Loader2,
   Mail,
   MessageSquarePlus,
+  MessagesSquare,
   Paperclip,
   PanelLeft,
   Phone,
@@ -41,7 +42,9 @@ import {
   answerTeamRunDefense,
   getTeamRunDefense,
   getTeamRun,
+  getTeamRunConversation,
   injectTeamRunMessage,
+  listTeamRunConversations,
   listTeamRunPendingJit,
   listTeamRuns,
   setTeamRunWaitTtl,
@@ -58,6 +61,8 @@ import {
   type ChatAttachmentChip,
   type TeamRunPendingJit,
   type DefenseInterviewState,
+  type TeamRunConversationEvent,
+  type TeamRunConversationThread,
 } from "@/lib/teams-api";
 import { decideJit, isSessionChatJitScope } from "@/lib/jit-api";
 import { JitApprovalCard } from "@/components/qlix/agents/JitApprovalCard";
@@ -97,6 +102,7 @@ import {
   type AgentStatus as GraphAgentStatus,
 } from "@/components/qlix/teams/TeamRunGraph";
 import { LiveArtifactPanel } from "@/components/qlix/teams/LiveArtifactPanel";
+import { ConversationThreadsPanel } from "@/components/qlix/teams/ConversationThreadsPanel";
 import { DefenseInterviewPanel } from "@/components/qlix/teams/DefenseInterviewPanel";
 import {
   liveArtifactFromCheckpoint,
@@ -784,9 +790,9 @@ function UserMessage({
 }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] space-y-2">
+      <div className="max-w-[88%] space-y-2">
         {text ? (
-          <div className="whitespace-pre-wrap rounded-3xl rounded-br-lg bg-black px-4 py-2.5 text-[13px] leading-relaxed text-white">
+          <div className="whitespace-pre-wrap rounded-2xl rounded-br-md border border-[#1a2e0f]/20 bg-gradient-to-br from-[#243d14] via-[#2d4a18] to-[#1f3512] px-4 py-3 text-[13px] leading-relaxed text-white shadow-[0_8px_24px_rgba(26,46,15,0.18)]">
             {text}
           </div>
         ) : null}
@@ -1200,49 +1206,98 @@ function LiveExecutionBar({
   const reconnecting = connection === "reconnecting" || connection === "connecting";
   const stepsLabel =
     totalSteps > 0 ? `${completedSteps}/${totalSteps}` : completedSteps > 0 ? String(completedSteps) : null;
+  const stepProgress =
+    totalSteps > 0 ? Math.min(100, Math.round((completedSteps / totalSteps) * 100)) : null;
 
   return (
     <div
       className={cn(
-        "flex items-center gap-2.5 border-y py-2",
-        HAIRLINE,
+        "overflow-hidden rounded-xl border bg-white shadow-sm",
+        paused ? "border-amber-200/70" : HAIRLINE,
       )}
       aria-label="Live execution status"
       aria-live="polite"
       data-testid="live-execution-bar-inner"
     >
-      <span className="relative flex size-2 shrink-0" aria-hidden>
-        {!paused && connected ? (
-          <span className="absolute inline-flex size-full rounded-full bg-[color:var(--sketch-purple)]/40 motion-safe:animate-ping" />
-        ) : null}
-        <span
-          className={cn(
-            "relative inline-flex size-2 rounded-full",
-            paused
-              ? "bg-amber-500"
-              : connected
-                ? "bg-[color:var(--sketch-purple)]"
-                : "bg-black/25",
-          )}
-        />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[12.5px] text-black/85">
-          <span className="font-medium">{agentName}</span>
-          <span className={cn("mx-1.5", INK_FAINT)}>·</span>
-          <span className={INK_SOFT}>{paused ? "Waiting" : action}</span>
+      <div className="flex items-center gap-2.5 px-3 py-2.5">
+        <span className="relative flex size-2.5 shrink-0" aria-hidden>
+          {!paused && connected ? (
+            <span className="absolute inline-flex size-full rounded-full bg-[color:var(--sketch-purple)]/40 motion-safe:animate-ping" />
+          ) : paused ? (
+            <span className="absolute inline-flex size-full rounded-full bg-amber-400/40 motion-safe:animate-pulse" />
+          ) : null}
+          <span
+            className={cn(
+              "relative inline-flex size-2.5 rounded-full",
+              paused
+                ? "bg-amber-500"
+                : connected
+                  ? "bg-[color:var(--sketch-purple)]"
+                  : "bg-black/25",
+            )}
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[12.5px] text-black/85">
+            <span className="font-semibold">{agentName}</span>
+            <span className={cn("mx-1.5", INK_FAINT)}>·</span>
+            <span className={INK_SOFT}>{paused ? "Waiting for replies" : action}</span>
+          </p>
+        </div>
+        <p className={cn("hidden shrink-0 tabular-nums sm:block text-[11px]", INK_FAINT)}>
+          {[
+            stepsLabel ? `${stepsLabel} steps` : null,
+            formatDuration(elapsedMs),
+            paused ? "Paused" : connected ? "Live" : reconnecting ? "Reconnecting" : "Connecting",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </p>
       </div>
-      <p className={cn("hidden shrink-0 tabular-nums sm:block text-[11px]", INK_FAINT)}>
-        {[
-          stepsLabel ? `${stepsLabel} steps` : null,
-          formatDuration(elapsedMs),
-          paused ? "Paused" : connected ? "Live" : reconnecting ? "Reconnecting" : "Connecting",
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
+      {stepProgress != null ? (
+        <div className="h-1 bg-black/[0.04]" aria-hidden>
+          <div
+            className={cn(
+              "h-full transition-all duration-500",
+              paused ? "bg-amber-400" : "bg-[color:var(--sketch-purple)]",
+            )}
+            style={{ width: `${stepProgress}%` }}
+          />
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function PanelToggleButton({
+  active,
+  onClick,
+  icon: Icon,
+  label,
+  detail,
+}: {
+  readonly active: boolean;
+  readonly onClick: () => void;
+  readonly icon: ComponentType<{ size?: number; className?: string }>;
+  readonly label: string;
+  readonly detail?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+        active
+          ? "border-[#6b9e2f]/30 bg-[#8BC53D]/15 text-[#2d4a18] shadow-sm"
+          : "border-transparent bg-transparent text-black/55 hover:border-black/10 hover:bg-white/80 hover:text-black",
+      )}
+    >
+      <Icon size={12} aria-hidden />
+      {label}
+      {detail ? <span className="tabular-nums text-black/40">{detail}</span> : null}
+    </button>
   );
 }
 
@@ -1459,6 +1514,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
   const [jitError, setJitError] = useState<string | null>(null);
   const [liveArtifact, setLiveArtifact] = useState<LiveArtifactPreview | null>(null);
   const [liveArtifactOpen, setLiveArtifactOpen] = useState(true);
+  const [contactThreads, setContactThreads] = useState<TeamRunConversationThread[]>([]);
+  const [contactThreadsOpen, setContactThreadsOpen] = useState(true);
+  const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
+  const [threadEvents, setThreadEvents] = useState<Record<string, TeamRunConversationEvent[]>>({});
+  const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -2297,8 +2357,32 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
       }
     }
 
+    // Checkpoint fallback: if the live stream missed wait_ttl_requested but the
+    // run is paused awaiting TTL, still show the duration picker.
+    const awaitingTtl = Boolean(run?.checkpointJson?.awaitingTtlSelection);
+    const hasTtlRequest = items.some((item) => item.kind === "wait_ttl_requested");
+    const hasTtlSet = items.some((item) => item.kind === "wait_ttl_set");
+    if (run?.id && awaitingTtl && !hasTtlRequest && !hasTtlSet) {
+      const pendingSendCount = Array.isArray(run.checkpointJson?.pendingWaitOutbounds)
+        ? run.checkpointJson.pendingWaitOutbounds.length
+        : 0;
+      items.push({
+        kind: "wait_ttl_requested",
+        id: `checkpoint-wait-ttl-${run.id}`,
+        ts: Date.now(),
+        reason:
+          pendingSendCount > 0
+            ? "How long should we wait for WhatsApp replies? Messages are sent only after you pick a duration."
+            : (run.checkpointJson?.waitReason ??
+              "How long should we wait for WhatsApp replies before continuing with whoever has responded?"),
+        optionsHours: [1, 6, 24, 48],
+        allowCustom: true,
+        runId: run.id,
+      });
+    }
+
     return items;
-  }, [processedEvents, agentNameById]);
+  }, [processedEvents, agentNameById, run?.id, run?.checkpointJson]);
 
   const reasoningState = useMemo(
     () => collectTeamReasoningSteps(events, agentNameById),
@@ -2330,6 +2414,53 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
 
   const isPaused = runStatus === "paused" || run?.status === "paused";
   const isRunning = (runStatus === "running" || submitting) && !isPaused;
+  const waitProgressKey = useMemo(() => {
+    const last = [...events].reverse().find((event) =>
+      event.eventType === "wait_progress" || event.eventType === "wait_fulfilled"
+    );
+    return last ? `${last.id}:${last.seq}` : "";
+  }, [events]);
+
+  useEffect(() => {
+    if (!run?.id) {
+      setContactThreads([]);
+      setThreadEvents({});
+      setExpandedThreadId(null);
+      return;
+    }
+    let cancelled = false;
+    void listTeamRunConversations(team.id, run.id)
+      .then((listed) => {
+        if (!cancelled) setContactThreads(listed.threads);
+      })
+      .catch(() => {
+        if (!cancelled) setContactThreads([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [team.id, run?.id, runStatus, waitProgressKey]);
+
+  useEffect(() => {
+    if (!run?.id || !expandedThreadId) return;
+    let cancelled = false;
+    setLoadingThreadId(expandedThreadId);
+    void getTeamRunConversation(team.id, run.id, expandedThreadId)
+      .then((detail) => {
+        if (cancelled) return;
+        setThreadEvents((prev) => ({ ...prev, [detail.thread.id]: detail.events }));
+        setContactThreads((prev) =>
+          prev.map((thread) => (thread.id === detail.thread.id ? detail.thread : thread)),
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingThreadId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [team.id, run?.id, expandedThreadId, waitProgressKey]);
   const activeFailure = useMemo(() => {
     if (runFailure) return runFailure;
     if (run) return resolveTeamRunFailureFromRun(run, events);
@@ -2581,7 +2712,7 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     const el = timelineScrollRef.current;
     if (!el || !followingLive) return;
     el.scrollTop = el.scrollHeight;
-  }, [chatItems.length, reasoningSteps.length, isAgentThinking, isRunning, followingLive]);
+  }, [chatItems.length, reasoningSteps.length, isAgentThinking, isRunning, isPaused, followingLive]);
 
   // ── Composer auto-grow ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -2767,6 +2898,10 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
       setArtifacts([]);
       setLiveArtifact(null);
       setLiveArtifactOpen(true);
+      setContactThreads([]);
+      setContactThreadsOpen(true);
+      setExpandedThreadId(null);
+      setThreadEvents({});
       setFinalResult(null);
       setRunStatus(null);
       setBrowserFrames({});
@@ -2816,7 +2951,7 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
           processRunStreamEvent(event);
         },
         onPaused: () => {
-          setRunStatus("paused");
+          void syncPausedRun(started.run.id);
         },
         onComplete: (data) => {
           setConnectionState("closed");
@@ -2831,6 +2966,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
           void getTeamRun(team.id, started.run.id).then(({ run: latest, events, failure }) => {
             setRun(latest);
             setRunStatus(latest.status);
+            setEvents((prev) => {
+              const byId = new Map(prev.map((event) => [event.id, event]));
+              for (const event of events) byId.set(event.id, event);
+              return Array.from(byId.values()).sort((a, b) => a.seq - b.seq);
+            });
             setRunFailure(failure ?? resolveTeamRunFailureFromRun(latest, events));
             if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
               setFinalResult(String((latest.result as { synthesis: string }).synthesis));
@@ -2843,7 +2983,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     } catch (err) {
       if (err instanceof TeamRunRequestError) {
         setRunFailure(err.failure);
-        if (err.failure.code === "missing_attachment" || err.failure.code === "missing_input_reference") {
+        if (
+          err.failure.code === "missing_attachment" ||
+          err.failure.code === "missing_input_reference" ||
+          err.failure.code === "upload_error"
+        ) {
           setFileError(err.failure.hint ?? err.failure.message);
         }
         setError(err.failure.message);
@@ -2958,6 +3102,10 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     setArtifacts([]);
     setLiveArtifact(null);
     setLiveArtifactOpen(true);
+    setContactThreads([]);
+    setContactThreadsOpen(true);
+    setExpandedThreadId(null);
+    setThreadEvents({});
     setFinalResult(null);
     setRunStatus(null);
     setStartedGoal(null);
@@ -3079,6 +3227,32 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
     }
   }
 
+  const syncPausedRun = useCallback(async (runId: string) => {
+    setRunStatus("paused");
+    try {
+      const { run: latest, events: latestEvents, failure } = await getTeamRun(team.id, runId);
+      setRun(latest);
+      setRunStatus(latest.status);
+      setEvents((prev) => {
+        const byId = new Map(prev.map((event) => [event.id, event]));
+        for (const event of latestEvents) byId.set(event.id, event);
+        return Array.from(byId.values()).sort((a, b) => a.seq - b.seq);
+      });
+      setArtifacts(latest.artifacts ?? []);
+      setRunFailure(failure ?? resolveTeamRunFailureFromRun(latest, latestEvents));
+      setLiveArtifact(
+        replayLiveArtifactFromEvents(latestEvents) ??
+          liveArtifactFromCheckpoint(latest.checkpointJson) ??
+          null,
+      );
+      if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
+        setFinalResult(String((latest.result as { synthesis: string }).synthesis));
+      }
+    } catch {
+      // Keep the paused status even if the sync fetch fails; stream may still catch up.
+    }
+  }, [team.id]);
+
   function attachRunStream(runId: string, afterSeq: number) {
     streamCleanup.current?.();
     streamCleanup.current = streamTeamRun(team.id, runId, {
@@ -3088,7 +3262,7 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
         processRunStreamEvent(event);
       },
       onPaused: () => {
-        setRunStatus("paused");
+        void syncPausedRun(runId);
       },
       onComplete: (data) => {
         setConnectionState("closed");
@@ -3103,6 +3277,11 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
         void getTeamRun(team.id, runId).then(({ run: latest, events, failure }) => {
           setRun(latest);
           setRunStatus(latest.status);
+          setEvents((prev) => {
+            const byId = new Map(prev.map((event) => [event.id, event]));
+            for (const event of events) byId.set(event.id, event);
+            return Array.from(byId.values()).sort((a, b) => a.seq - b.seq);
+          });
           setRunFailure(failure ?? resolveTeamRunFailureFromRun(latest, events));
           if (typeof (latest.result as { synthesis?: unknown } | null)?.synthesis === "string") {
             setFinalResult(String((latest.result as { synthesis: string }).synthesis));
@@ -3428,20 +3607,24 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
 
           <div className="flex-1" />
 
+          {contactThreads.length > 0 ? (
+            <PanelToggleButton
+              active={contactThreadsOpen}
+              onClick={() => setContactThreadsOpen((open) => !open)}
+              icon={MessagesSquare}
+              label="Threads"
+              detail={`(${contactThreads.length})`}
+            />
+          ) : null}
+
           {liveArtifact ? (
-            <button
-              type="button"
+            <PanelToggleButton
+              active={liveArtifactOpen}
               onClick={() => setLiveArtifactOpen((open) => !open)}
-              className={cn(
-                quietButton,
-                liveArtifactOpen && "bg-black/[0.06] text-black",
-              )}
-              aria-pressed={liveArtifactOpen}
-            >
-              <Table2 size={12} />
-              {liveArtifact.previewKind === "table" ? "Sheet" : "File"}
-              {liveArtifact.rowCount > 0 ? ` (${liveArtifact.rowCount})` : ""}
-            </button>
+              icon={Table2}
+              label={liveArtifact.previewKind === "table" ? "Sheet" : "File"}
+              detail={liveArtifact.rowCount > 0 ? `(${liveArtifact.rowCount})` : undefined}
+            />
           ) : null}
 
           {error && !activeFailure ? (
@@ -4070,24 +4253,62 @@ export function TeamRunView({ team, canSend = true, onTeamUpdated }: TeamRunView
         </div>
       </div>
 
-      {liveArtifact && liveArtifactOpen ? (
-        <>
-          <button
-            type="button"
-            className="absolute inset-0 z-20 bg-black/20 lg:hidden"
-            onClick={() => setLiveArtifactOpen(false)}
-            aria-label="Close document overlay"
-          />
-          <LiveArtifactPanel
-            artifact={liveArtifact}
-            isLive={isPaused}
-            onClose={() => setLiveArtifactOpen(false)}
-            className={cn(
-              "z-30 w-[min(480px,42%)] shrink-0",
-              "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:w-full max-lg:max-w-md max-lg:shadow-2xl",
-            )}
-          />
-        </>
+      {(contactThreadsOpen && contactThreads.length > 0) ||
+      (liveArtifact && liveArtifactOpen) ? (
+        <div
+          className={cn(
+            "relative z-30 flex min-h-0 shrink-0",
+            "max-lg:contents",
+          )}
+        >
+          {contactThreadsOpen && contactThreads.length > 0 ? (
+            <>
+              <button
+                type="button"
+                className="absolute inset-0 z-20 bg-black/30 backdrop-blur-[1px] lg:hidden"
+                onClick={() => setContactThreadsOpen(false)}
+                aria-label="Close threads overlay"
+              />
+              <ConversationThreadsPanel
+                threads={contactThreads}
+                expandedThreadId={expandedThreadId}
+                eventsByThread={threadEvents}
+                loadingThreadId={loadingThreadId}
+                isLive={isPaused}
+                onToggleThread={(threadId) =>
+                  setExpandedThreadId((prev) => (prev === threadId ? null : threadId))
+                }
+                onClose={() => setContactThreadsOpen(false)}
+                className={cn(
+                  "min-h-0 w-[min(360px,34vw)]",
+                  "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-full max-lg:max-w-md",
+                )}
+              />
+            </>
+          ) : null}
+
+          {liveArtifact && liveArtifactOpen ? (
+            <>
+              {!contactThreadsOpen || contactThreads.length === 0 ? (
+                <button
+                  type="button"
+                  className="absolute inset-0 z-20 bg-black/30 backdrop-blur-[1px] lg:hidden"
+                  onClick={() => setLiveArtifactOpen(false)}
+                  aria-label="Close document overlay"
+                />
+              ) : null}
+              <LiveArtifactPanel
+                artifact={liveArtifact}
+                isLive={isPaused}
+                onClose={() => setLiveArtifactOpen(false)}
+                className={cn(
+                  "min-h-0 w-[min(400px,36vw)]",
+                  "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-full max-lg:max-w-md",
+                )}
+              />
+            </>
+          ) : null}
+        </div>
       ) : null}
       </div>
     </div>

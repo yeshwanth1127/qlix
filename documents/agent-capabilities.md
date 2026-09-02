@@ -49,7 +49,8 @@ Scopes are not free-form. Each builtin scope maps to real tools in the SDK. Orgs
 | `whatsapp.send` | Send files to linked WhatsApp | File to self-chat | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.read` | Read WhatsApp chats | List contacts + read 1:1 messages | No | WhatsApp (Baileys) | cloud, hybrid |
 | `whatsapp.contact_send` | Message WhatsApp contacts | Text a contact/phone (user must ask) | Yes | WhatsApp (Baileys) | cloud, hybrid |
-| `whatsapp.auto_reply` | Auto-reply to contacts | After send, route that contact’s replies into a new run and deliver the answer back | No | WhatsApp (Baileys) | cloud, hybrid |
+| `whatsapp.auto_reply` | Auto-reply to contacts | Compatibility alias for `conversation` on WhatsApp (listen after send) | No | WhatsApp (Baileys) | cloud, hybrid |
+| `conversation` | Manage conversation threads | Start one or many parallel threads, keep replies isolated, list/get/send/close | No | — (channel send stays a separate scope) | cloud, hybrid |
 | `notion.read` | Read Notion | Search pages/databases, read page markdown, query databases | No | Notion | cloud, hybrid |
 | `notion.write` | Write to Notion | Create/update pages and create database rows | **Yes** | Notion | cloud, hybrid |
 | `mcp.<slug>.<tool>` | MCP tool | One tool on a registered MCP server | Per tool (`auto` / `jit` / `blocked`) | MCP server | cloud (HTTP), hybrid (HTTP + stdio) |
@@ -73,7 +74,7 @@ The intent router groups tools by required scopes:
 | `files` | `system.file_read`, `system.file_write` | hybrid |
 | `code` | `system.file_read` | hybrid |
 | `gui` | `system.gui_control` | hybrid |
-| `comms` | `email.read`, `email.send`, `drive.*`, `calendar.*`, `meet.manage`, `whatsapp.*`, `crm.*`, `slack.*`, `notion.read`, `notion.write` | cloud, hybrid |
+| `comms` | `email.read`, `email.send`, `drive.*`, `calendar.*`, `meet.manage`, `whatsapp.*`, `conversation`, `crm.*`, `slack.*`, `notion.read`, `notion.write` | cloud, hybrid |
 | `knowledge` | `brain.query`, `brain.knowledge_read` | cloud, hybrid |
 | `always` | (none) | cloud, hybrid |
 
@@ -148,14 +149,14 @@ No full browser — structured CLIs / APIs for search and content.
 
 ### 3.4 WhatsApp
 
-**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT; includes native polls), `whatsapp.auto_reply` (listen after send). Reply-wait also requires the org plugin **`whatsapp_outreach`**. There is no `whatsapp.poll` scope — polls are a rendering of a conversation `choice` prompt under `whatsapp.contact_send`.
+**Scopes:** `whatsapp.send` (self files), `whatsapp.read` (contacts + chats), `whatsapp.contact_send` (message contacts, JIT; includes native polls), `conversation` (parallel threads; org plugin **`outreach`**). `whatsapp.auto_reply` is a compatibility alias for `conversation` on WhatsApp. There is no `whatsapp.poll` scope — polls are a rendering of a conversation `choice` prompt under `whatsapp.contact_send`. WhatsApp is a channel, not the plugin.
 
 | Tool | Notes |
 |------|-------|
 | `whatsapp_send` | Send a file to the linked WhatsApp **self-chat** |
 | `whatsapp_list_contacts` | Search phonebook contacts by name/phone |
 | `whatsapp_read_chat` | Read recent 1:1 messages with a contact (only when user asks) |
-| `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT). With `whatsapp.auto_reply`, arms a 24h listener for that contact. Optional `reply_instructions` stored on the session |
+| `whatsapp_send_message` | Text a contact/phone (only when user explicitly asks; JIT). With `conversation` (or aliased `whatsapp.auto_reply`), starts a dedicated thread and arms a 24h listener for that contact. Optional `reply_instructions` stored on the session |
 | `whatsapp_send_document` | Send a file to a contact (JIT `whatsapp.contact_send`) |
 | `whatsapp_send_poll` | Native WhatsApp poll / MCQ (2–12 options). Same `whatsapp.contact_send` JIT as text. Poll votes arrive as inbound text |
 | `whatsapp_auto_reply_status` | List active auto-reply listeners for this agent |
@@ -163,9 +164,19 @@ No full browser — structured CLIs / APIs for search and content.
 | `whatsapp_auto_reply_set_instructions` | Set/update what to do when that contact replies |
 | `luna_local_send_whatsapp_document` | Hybrid: deliver a local file to self-chat; needs `system.file_read` **or** `system.file_write` |
 
-**Auto-reply flow:** standalone agents receive a new agent run when an active contact listener matches; the prompt includes stored `replyInstructions` and the result is sent back to the same contact (not self-chat).
+**Conversation tools** (scope `conversation`, Outreach plugin):
 
-**Team wait flow:** when a team worker has both `whatsapp.contact_send` and `whatsapp.auto_reply`, and the team has a configured **wait step** (`TeamConfig.waitSteps`) or the run goal requests reply-wait, the send arms a durable `whatsapp_inbound` wait **per contacted lead**. The team pauses after that stage (workers stop; the run stays observable via SSE). On pause, team chat asks how long to wait (1h / 6h / 24h / 48h / custom). Progress events show “N of M replies received” until every lead replies or the chosen TTL ends.
+| Tool | Notes |
+|------|-------|
+| `conversation_start` | Start 1..N parallel threads on a channel; optional opening message; returns `{ processId, threads }` |
+| `conversation_list` | Organized snapshots for this campaign/run (status, participant, last inbound/outbound) |
+| `conversation_get` | One thread and its event history |
+| `conversation_send` | Follow-up on an existing thread (still needs that channel’s send scope + JIT) |
+| `conversation_close` | Close a thread so new replies no longer attach |
+
+**Auto-reply flow:** standalone agents receive a new agent run when an active contact listener matches; the prompt includes stored `replyInstructions` and a `threadId` so the agent can `conversation_get` instead of only `whatsapp_read_chat`. The result is sent back to the same contact (not self-chat).
+
+**Team wait flow:** when a team worker has both `whatsapp.contact_send` and `conversation` (or aliased `whatsapp.auto_reply`), and the team has a configured **wait step** (`TeamConfig.waitSteps`) or the run goal requests reply-wait, the send arms a durable `whatsapp_inbound` wait **per contacted lead** and creates one conversation thread per contact. The team pauses after that stage (workers stop; the run stays observable via SSE). On pause, team chat asks how long to wait (1h / 6h / 24h / 48h / custom). Progress events show “N of M replies received” until every lead replies or the chosen TTL ends. The team run also lists per-contact threads.
 
 **Managed conversation workflow:** attach a published workflow (`TeamConfig.conversationWorkflowVersionId`). `ask`/`collect` nodes may set `prompt.kind: "choice"` (MCQ). The conversation engine is channel-agnostic; the WhatsApp adapter renders `choice` as a native poll and `text` as a message. Follow-up turns reuse the same `whatsapp.contact_send` conversation JIT grant. NL builder does not set the workflow id — attach it on the team. Poll votes arrive as inbound **text** (the selected option).
 

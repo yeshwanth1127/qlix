@@ -45,7 +45,6 @@ const PRIMARY_NAV_SUFFIXES = [
   "/plugins",
   "/assessments",
   "/gtm",
-  "/gtm/plan",
 ] as const;
 
 /**
@@ -62,10 +61,9 @@ const PLUGIN_ICONS: Record<string, LucideIcon> = {
 
 const PLUGIN_NAV_ITEMS: Record<string, ReadonlyArray<{ href: string; label: string; iconName: string }>> = {
   assessment: [{ href: "assessments", label: "Assessments", iconName: "ClipboardCheck" }],
-  whatsapp_outreach: [],
+  outreach: [],
   gtm: [
     { href: "gtm", label: "GTM", iconName: "Target" },
-    { href: "gtm/plan", label: "My plan", iconName: "Target" },
   ],
 };
 

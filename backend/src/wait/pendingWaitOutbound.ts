@@ -93,174 +93,100 @@ export function isBrochurePlaceholderText(message: string): boolean {
   return /^(?:\[)?\s*brochure(?:\s+link)?\s*(?:\])?(?:\s*\.pdf)?\s*$/i.test(message.trim());
 }
 
-function pendingContactKey(row: PendingWaitOutbound): string {
+function pendingContactKey(row: {
+  jid?: string | null;
+  recipient: string;
+}): string {
   return normalizeContactJid(row.jid || row.recipient) || row.recipient.trim();
 }
 
-function uniquePendingRows(rows: PendingWaitOutbound[]): PendingWaitOutbound[] {
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    const kind = row.kind ?? 'text';
-    const fingerprint = kind === 'poll'
-      ? `${kind}:${row.pollName ?? row.message}:${JSON.stringify(row.pollValues ?? [])}:${row.pollSelectableCount ?? 1}`
-      : kind === 'document'
-        ? `${kind}:${row.documentFileName ?? row.message}:${row.documentStagedPath ?? ''}`
-        : `${kind}:${row.id}`;
-    if (seen.has(fingerprint)) return false;
-    seen.add(fingerprint);
-    return true;
-  });
+/** Content fingerprint so identical retries do not stack; distinct goal steps stay distinct. */
+export function pendingOutboundFingerprint(row: {
+  jid?: string | null;
+  recipient: string;
+  kind?: PendingWaitOutbound['kind'];
+  message?: string;
+  pollName?: string | null;
+  pollValues?: string[] | null;
+  pollSelectableCount?: number | null;
+  documentFileName?: string | null;
+  documentStagedPath?: string | null;
+}): string {
+  const contact = pendingContactKey(row);
+  const kind = row.kind ?? 'text';
+  if (kind === 'poll') {
+    return [
+      contact,
+      'poll',
+      String(row.pollName ?? row.message ?? '')
+        .trim()
+        .toLowerCase(),
+      JSON.stringify(row.pollValues ?? []),
+      String(row.pollSelectableCount ?? 1),
+    ].join('|');
+  }
+  if (kind === 'document') {
+    return [
+      contact,
+      'document',
+      String(row.documentStagedPath ?? '').trim(),
+      String(row.documentFileName ?? row.message ?? '')
+        .trim()
+        .toLowerCase(),
+    ].join('|');
+  }
+  return [contact, 'text', String(row.message ?? '').trim().toLowerCase()].join('|');
 }
 
 /**
- * After the outreach worker queues text, fill missing brochure file + Yes/No poll
- * per contact so wait-mode flush still sends the pack the user asked for.
+ * Keep worker call order. Drop brochure-placeholder junk and exact duplicate
+ * retries. Never invent greetings, documents, or polls — those come from the
+ * user objective via the worker tools (or a managed conversation workflow).
  */
+export function normalizePendingWaitOutbounds(
+  pending: PendingWaitOutbound[],
+): PendingWaitOutbound[] {
+  const seen = new Set<string>();
+  const out: PendingWaitOutbound[] = [];
+  for (const row of pending) {
+    if ((row.kind ?? 'text') === 'text' && isBrochurePlaceholderText(row.message)) {
+      continue;
+    }
+    const fingerprint = pendingOutboundFingerprint(row);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    out.push(row);
+  }
+  return out;
+}
+
+/** @deprecated Use normalizePendingWaitOutbounds — system no longer invents pack steps. */
 export function completePendingOutreachPack(
   pending: PendingWaitOutbound[],
-  extras: {
+  _extras?: {
     brochureForContact?: (
       contactKey: string,
     ) => { fileName: string; mimetype: string; stagedPath: string } | null;
     poll?: { name: string; values: string[]; selectableCount?: number };
   },
 ): PendingWaitOutbound[] {
-  const groups = new Map<string, PendingWaitOutbound[]>();
-  const order: string[] = [];
-  for (const row of pending) {
-    if ((row.kind ?? 'text') === 'text' && extras.brochureForContact && isBrochurePlaceholderText(row.message)) {
-      continue;
-    }
-    const key = pendingContactKey(row);
-    if (!groups.has(key)) {
-      groups.set(key, []);
-      order.push(key);
-    }
-    groups.get(key)!.push(row);
-  }
-
-  const out: PendingWaitOutbound[] = [];
-  for (const key of order) {
-    const rows = groups.get(key)!;
-    const template = rows[0]!;
-    const kinds = new Set(rows.map((row) => row.kind ?? 'text'));
-    const textRows = rows.filter((row) => (row.kind ?? 'text') === 'text');
-    const documentRows = uniquePendingRows(rows.filter((row) => row.kind === 'document'));
-    const pollRows = uniquePendingRows(rows.filter((row) => row.kind === 'poll'));
-    const otherRows = rows.filter((row) => {
-      const kind = row.kind ?? 'text';
-      return kind !== 'text' && kind !== 'document' && kind !== 'poll';
-    });
-
-    const brochure = extras.brochureForContact?.(key) ?? null;
-    if (brochure && !kinds.has('document')) {
-      documentRows.push({
-        id: randomUUID(),
-        agentId: template.agentId,
-        connectorId: template.connectorId,
-        recipient: template.recipient,
-        message: brochure.fileName,
-        kind: 'document',
-        documentFileName: brochure.fileName,
-        documentMimetype: brochure.mimetype,
-        documentStagedPath: brochure.stagedPath,
-        replyInstructions: template.replyInstructions ?? null,
-        jid: template.jid ?? null,
-        phone: template.phone ?? null,
-        name: template.name ?? null,
-        queuedAt: new Date().toISOString(),
-      });
-    }
-
-    if (extras.poll && !kinds.has('poll')) {
-      pollRows.push({
-        id: randomUUID(),
-        agentId: template.agentId,
-        connectorId: template.connectorId,
-        recipient: template.recipient,
-        message: extras.poll.name,
-        kind: 'poll',
-        pollName: extras.poll.name,
-        pollValues: extras.poll.values,
-        pollSelectableCount: extras.poll.selectableCount ?? 1,
-        replyInstructions: template.replyInstructions ?? null,
-        jid: template.jid ?? null,
-        phone: template.phone ?? null,
-        name: template.name ?? null,
-        queuedAt: new Date().toISOString(),
-      });
-    }
-    // WhatsApp outreach packs have a deterministic send order regardless of
-    // the order in which a worker called the tools.
-    out.push(...textRows, ...documentRows, ...pollRows, ...otherRows);
-  }
-  return out;
+  return normalizePendingWaitOutbounds(pending);
 }
 
+/**
+ * Sanitize queued outbounds before wait pause. Does not invent brochure/poll
+ * content from the goal — only the worker (or managed workflow) may queue steps.
+ */
 export async function fillMissingOutreachPack(input: {
   teamRunId: string;
   orgId: string;
   goal: string;
   pending: PendingWaitOutbound[];
 }): Promise<PendingWaitOutbound[]> {
-  const repo = new TeamsRepository();
-  const run = await repo.findRun(input.teamRunId);
-  const team = run ? await repo.findById(run.teamId) : null;
-  const teamConfig = team?.config as { conversationWorkflowVersionId?: string } | undefined;
-  // Managed workflows own branch timing. Never infer an up-front attachment
-  // merely because a later conditional branch mentions a brochure or poll.
-  if (teamConfig?.conversationWorkflowVersionId) return input.pending;
-  const { goalRequestsBrochureFile, goalRequestsInterestPoll } = await import('./waitPolicy.js');
-  const wantBrochure = goalRequestsBrochureFile(input.goal);
-  const wantPoll = goalRequestsInterestPoll(input.goal);
-  if (!wantBrochure && !wantPoll) return input.pending;
-  if (input.pending.length === 0) return input.pending;
-
-  let brochureBytes: { fileName: string; mimetype: string; bytes: Buffer } | null = null;
-  if (wantBrochure) {
-    const { findBrainBrochureDocument, loadBrainDocumentFile } = await import(
-      '../aiBrain/brainFileStorage.js'
-    );
-    const match = await findBrainBrochureDocument(input.orgId);
-    if (match) {
-      const file = await loadBrainDocumentFile({ orgId: input.orgId, documentId: match.documentId });
-      brochureBytes = { fileName: file.fileName, mimetype: file.mimetype, bytes: file.bytes };
-    }
-  }
-
-  const stagedByContact = new Map<string, { fileName: string; mimetype: string; stagedPath: string }>();
-  if (brochureBytes) {
-    const keys = new Set(input.pending.map((row) => pendingContactKey(row)));
-    for (const key of keys) {
-      const already = input.pending.some(
-        (row) => pendingContactKey(row) === key && (row.kind ?? 'text') === 'document',
-      );
-      if (already) continue;
-      const staged = await stagePendingWaitDocument({
-        teamRunId: input.teamRunId,
-        fileName: brochureBytes.fileName,
-        bytes: brochureBytes.bytes,
-      });
-      stagedByContact.set(key, {
-        fileName: staged.fileName,
-        mimetype: brochureBytes.mimetype,
-        stagedPath: staged.stagedPath,
-      });
-    }
-  }
-
-  return completePendingOutreachPack(input.pending, {
-    brochureForContact: stagedByContact.size
-      ? (key) => stagedByContact.get(key) ?? null
-      : undefined,
-    poll: wantPoll
-      ? {
-          name: 'Are you interested?',
-          values: ['Yes', 'No'],
-          selectableCount: 1,
-        }
-      : undefined,
-  });
+  void input.teamRunId;
+  void input.orgId;
+  void input.goal;
+  return normalizePendingWaitOutbounds(input.pending);
 }
 
 export function distinctPendingContactCount(pending: PendingWaitOutbound[]): number {
@@ -274,6 +200,7 @@ export function distinctPendingContactCount(pending: PendingWaitOutbound[]): num
 
 /**
  * Append-only: multiple text/document/poll outbounds for the same contact stay in call order.
+ * Identical content for the same contact is ignored (agent retries must not stack duplicates).
  */
 export function enqueuePendingWaitOutbound(
   checkpoint: TeamRunCheckpoint,
@@ -292,6 +219,7 @@ export function enqueuePendingWaitOutbound(
     documentFileName: outbound.documentFileName,
     documentMimetype: outbound.documentMimetype,
     documentStagedPath: outbound.documentStagedPath,
+    brainDocumentId: outbound.brainDocumentId ?? null,
     replyInstructions: outbound.replyInstructions ?? null,
     jid: outbound.jid ?? null,
     phone: outbound.phone ?? null,
@@ -300,6 +228,10 @@ export function enqueuePendingWaitOutbound(
     lastError: outbound.lastError ?? null,
   };
   const existing = checkpoint.pendingWaitOutbounds ?? [];
+  const fingerprint = pendingOutboundFingerprint(entry);
+  if (existing.some((row) => pendingOutboundFingerprint(row) === fingerprint)) {
+    return checkpoint;
+  }
   return {
     ...checkpoint,
     pendingWaitOutbounds: [...existing, entry],
@@ -364,6 +296,7 @@ export async function persistPendingWaitOutbound(input: {
       waitReason: '',
     } satisfies TeamRunCheckpoint);
 
+  const fingerprint = pendingOutboundFingerprint(authoritativeOutbound);
   let next = enqueuePendingWaitOutbound(base, authoritativeOutbound);
   if (authoritativeOutbound.jid) {
     next = upsertWaitContactInCheckpoint(next, {
@@ -374,7 +307,9 @@ export async function persistPendingWaitOutbound(input: {
     });
   }
   await repo.updateRunStatus(run.id, run.status, { checkpointJson: next });
-  const queued = next.pendingWaitOutbounds?.[next.pendingWaitOutbounds.length - 1];
+  const queued =
+    next.pendingWaitOutbounds?.find((row) => pendingOutboundFingerprint(row) === fingerprint) ??
+    next.pendingWaitOutbounds?.[next.pendingWaitOutbounds.length - 1];
   if (!queued) throw new Error('Failed to queue WhatsApp outbound');
   return queued;
 }
@@ -382,6 +317,9 @@ export async function persistPendingWaitOutbound(input: {
 /**
  * After wait mode + TTL are set: deliver queued contact messages in order and arm WaitTriggers.
  * Successfully sent items are removed progressively; failures stay queued with lastError.
+ *
+ * When the team has a managed conversation workflow, flush does not blast the agent queue.
+ * It starts one workflow thread per contact (greeting → brochure → poll1, then wait).
  */
 export async function flushPendingWaitOutbounds(input: {
   teamRunId: string;
@@ -421,6 +359,19 @@ export async function flushPendingWaitOutbounds(input: {
     await repo.appendEvent(run.id, run.teamId, null, 'outbound_blocked', {
       message: `Blocked ${new Set(blocked.map((item) => item.recipient)).size} recipients: not present in source data`,
       recipients: [...new Set(blocked.map((item) => item.recipient))],
+    });
+  }
+
+  const team = await repo.findById(run.teamId);
+  const managedWorkflowId = (team?.config as { conversationWorkflowVersionId?: string } | undefined)
+    ?.conversationWorkflowVersionId;
+  if (managedWorkflowId) {
+    return flushManagedConversationOutbounds({
+      ...input,
+      run,
+      checkpoint,
+      allowed,
+      repo,
     });
   }
 
@@ -533,5 +484,135 @@ export async function flushPendingWaitOutbounds(input: {
   // Persist remaining failures so a later retry does not re-send successes.
   await repo.updateRunStatus(run.id, run.status, { checkpointJson: checkpoint });
 
+  return { checkpoint, sent, triggerIds };
+}
+
+async function flushManagedConversationOutbounds(input: {
+  teamRunId: string;
+  orgId: string;
+  userId: string;
+  fulfillment: 'first_match' | 'collect_until_timeout';
+  ttlHours: number;
+  run: { id: string; teamId: string; status: string };
+  checkpoint: TeamRunCheckpoint;
+  allowed: PendingWaitOutbound[];
+  repo: TeamsRepository;
+}): Promise<{
+  checkpoint: TeamRunCheckpoint;
+  sent: Array<{ jid: string; recipient: string; ok: boolean; error?: string; kind?: string }>;
+  triggerIds: string[];
+}> {
+  const { WaitTriggerService, WAIT_TRIGGER_PROVISIONAL_TTL_HOURS } = await import(
+    '../teams/waitTrigger.service.js'
+  );
+  const { normalizeContactJid } = await import('../whatsapp/whatsappAutoReply.service.js');
+  const { findBrainBrochureDocument } = await import('../aiBrain/brainFileStorage.js');
+  const waitTriggers = new WaitTriggerService();
+
+  const groups = new Map<string, PendingWaitOutbound[]>();
+  const order: string[] = [];
+  for (const row of input.allowed) {
+    const key = normalizeContactJid(row.jid || row.recipient) || row.recipient.trim();
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(row);
+  }
+
+  let brochureFallbackId: string | null | undefined;
+  async function resolveBrochureId(rows: PendingWaitOutbound[]): Promise<string> {
+    const fromQueue = rows.find((row) => row.brainDocumentId?.trim())?.brainDocumentId?.trim();
+    if (fromQueue) return fromQueue;
+    if (brochureFallbackId === undefined) {
+      const match = await findBrainBrochureDocument(input.orgId);
+      brochureFallbackId = match?.documentId ?? null;
+    }
+    return brochureFallbackId ?? '';
+  }
+
+  const sent: Array<{ jid: string; recipient: string; ok: boolean; error?: string; kind?: string }> =
+    [];
+  const triggerIds: string[] = [...(input.checkpoint.waitTriggerIds ?? [])];
+  let checkpoint = input.checkpoint;
+
+  for (const key of order) {
+    const rows = groups.get(key)!;
+    const template = rows[0]!;
+    const contactJid = normalizeContactJid(template.jid || template.recipient);
+    if (!contactJid) {
+      sent.push({
+        jid: template.recipient,
+        recipient: template.recipient,
+        ok: false,
+        error: 'Missing WhatsApp jid for managed conversation start',
+        kind: 'managed_workflow',
+      });
+      continue;
+    }
+    const textRow = rows.find((row) => (row.kind ?? 'text') === 'text');
+    const contactName =
+      template.name?.trim() ||
+      textRow?.name?.trim() ||
+      (textRow ? inferNameFromOutreachMessage(textRow.message) : null) ||
+      '';
+    const greetingMessage =
+      textRow?.message?.trim() ||
+      (contactName
+        ? `Hi ${contactName}, thanks for connecting — we have a few quick questions.`
+        : 'Hi, thanks for connecting — we have a few quick questions.');
+    const documentId = await resolveBrochureId(rows);
+
+    try {
+      const armed = await waitTriggers.armTeamWhatsAppWait({
+        teamRunId: input.teamRunId,
+        orgId: input.orgId,
+        userId: input.userId,
+        agentId: template.agentId,
+        connectorId: template.connectorId,
+        contactJid,
+        fulfillment: input.fulfillment,
+        ttlHours: input.ttlHours || WAIT_TRIGGER_PROVISIONAL_TTL_HOURS,
+        managedStart: {
+          greetingMessage,
+          documentId,
+          contactName,
+        },
+      });
+      if (!triggerIds.includes(armed.id)) triggerIds.push(armed.id);
+      checkpoint = upsertWaitContactInCheckpoint(checkpoint, {
+        jid: contactJid,
+        name: contactName || null,
+        phone: template.phone,
+        recipient: template.recipient,
+      });
+      for (const row of rows) {
+        if (row.kind === 'document') await unlinkStagedDocument(row.documentStagedPath);
+      }
+      sent.push({
+        jid: contactJid,
+        recipient: template.recipient,
+        ok: true,
+        kind: 'managed_workflow',
+      });
+    } catch (error) {
+      sent.push({
+        jid: contactJid,
+        recipient: template.recipient,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        kind: 'managed_workflow',
+      });
+    }
+  }
+
+  checkpoint = {
+    ...checkpoint,
+    pendingWaitOutbounds: [],
+    waitTriggerIds: triggerIds,
+  };
+  await input.repo.updateRunStatus(input.run.id, input.run.status as 'paused' | 'running' | 'queued', {
+    checkpointJson: checkpoint,
+  });
   return { checkpoint, sent, triggerIds };
 }

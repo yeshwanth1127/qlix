@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import type { WaitTriggerInbound } from '../teams/waitTrigger.service.js';
 import type { ConversationEffect, ConversationRuntimeState } from './conversation.types.js';
-import { signalConversation } from './conversationEngine.service.js';
+import { signalConversation, startConversation } from './conversationEngine.service.js';
 import { attachTrace, createTraceEnvelope } from '../contracts/traceEnvelope.js';
 import { conversationPluginRegistry } from './registry.js';
 import { fallbackPromptFromContent } from './conversationPrompt.js';
@@ -11,6 +11,12 @@ export type TeamConversationInboundResult = {
   managed: boolean;
   terminal: boolean;
   sentMessages: string[];
+};
+
+export type ManagedWaitStartVars = {
+  greetingMessage?: string | null;
+  documentId?: string | null;
+  contactName?: string | null;
 };
 
 async function configuredWorkflow(teamRunId: string) {
@@ -27,6 +33,152 @@ async function configuredWorkflow(teamRunId: string) {
   return version;
 }
 
+async function upsertTeamRunProcess(input: {
+  orgId: string;
+  teamRunId: string;
+}): Promise<string> {
+  const process = await prisma.conversationProcess.upsert({
+    where: {
+      orgId_externalRefType_externalRefId: {
+        orgId: input.orgId,
+        externalRefType: 'team_run',
+        externalRefId: input.teamRunId,
+      },
+    },
+    update: {},
+    create: {
+      orgId: input.orgId,
+      ownerType: 'team',
+      ownerId: input.teamRunId,
+      externalRefType: 'team_run',
+      externalRefId: input.teamRunId,
+      completionMode: 'all_terminal_or_timeout',
+      counters: { total: 0, active: 0 },
+      metadata: { adapter: 'team_wait_v1' },
+    },
+    select: { id: true },
+  });
+  return process.id;
+}
+
+/**
+ * Start the team's managed workflow for a contact and deliver opening effects
+ * (greeting / brochure / first poll) until the thread is waiting on input.
+ */
+async function startManagedTeamWaitThread(input: {
+  waitTriggerId: string;
+  orgId: string;
+  teamRunId: string;
+  connectorId: string;
+  contactJid: string;
+  agentId?: string | null;
+  expiresAt: Date;
+  workflowVersionId: string;
+  managedStart?: ManagedWaitStartVars;
+}): Promise<string> {
+  const processId = await upsertTeamRunProcess({
+    orgId: input.orgId,
+    teamRunId: input.teamRunId,
+  });
+  const contactName = input.managedStart?.contactName?.trim() || '';
+  const greetingMessage =
+    input.managedStart?.greetingMessage?.trim() ||
+    (contactName
+      ? `Hi ${contactName}, thanks for connecting — we have a few quick questions.`
+      : 'Hi, thanks for connecting — we have a few quick questions.');
+  const documentId = input.managedStart?.documentId?.trim() || '';
+
+  const started = await startConversation({
+    orgId: input.orgId,
+    processId,
+    ownerType: 'team',
+    ownerId: input.teamRunId,
+    channel: 'whatsapp',
+    workflowVersionId: input.workflowVersionId,
+    variables: {
+      orgId: input.orgId,
+      connectorId: input.connectorId,
+      contactJid: input.contactJid,
+      teamRunId: input.teamRunId,
+      waitTriggerId: input.waitTriggerId,
+      contactName,
+      greetingMessage,
+      documentId,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+    },
+    participants: [
+      {
+        role: 'contact',
+        channel: 'whatsapp',
+        address: input.contactJid,
+        displayName: contactName || null,
+      },
+    ],
+    bindings: [
+      {
+        channel: 'whatsapp',
+        connectorId: input.connectorId,
+        keyType: 'participant_address',
+        keyValue: input.contactJid,
+        priority: 10,
+        expiresAt: input.expiresAt,
+      },
+    ],
+  });
+
+  await prisma.waitTrigger.update({
+    where: { id: input.waitTriggerId },
+    data: { conversationThreadId: started.threadId },
+  });
+
+  const thread = await prisma.conversationThread.findUnique({
+    where: { id: started.threadId },
+    select: { stateJson: true },
+  });
+  if (thread?.stateJson) {
+    await driveManagedConversationEffects({
+      conversationThreadId: started.threadId,
+      state: thread.stateJson as unknown as ConversationRuntimeState,
+      bootstrapFromOutbox: true,
+    });
+  }
+
+  await prisma.conversationEvent
+    .create({
+      data: {
+        orgId: input.orgId,
+        threadId: started.threadId,
+        seq: 0,
+        eventType: 'legacy_wait_armed',
+        idempotencyKey: `wait:${input.waitTriggerId}:armed`,
+        payload: attachTrace(
+          {
+            waitTriggerId: input.waitTriggerId,
+            workflowVersionId: input.workflowVersionId,
+            teamRunId: input.teamRunId,
+            agentId: input.agentId ?? null,
+            contactJid: input.contactJid,
+            managedStart: true,
+          },
+          createTraceEnvelope({
+            traceId: input.teamRunId,
+            spanId: `conversation:${started.threadId}:0`,
+            parentSpanId: input.teamRunId,
+            executionId: started.threadId,
+            executionKind: 'conversation',
+            orgId: input.orgId,
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+          }),
+        ) as object,
+      },
+    })
+    .catch(() => {
+      /* seq may collide if start already wrote events — non-fatal */
+    });
+
+  return started.threadId;
+}
+
 export async function ensureLegacyTeamWaitThread(input: {
   waitTriggerId: string;
   orgId: string;
@@ -35,8 +187,51 @@ export async function ensureLegacyTeamWaitThread(input: {
   contactJid: string;
   agentId?: string | null;
   expiresAt: Date;
+  managedStart?: ManagedWaitStartVars;
 }): Promise<string> {
+  const existing = await prisma.waitTrigger.findUnique({
+    where: { id: input.waitTriggerId },
+    select: { conversationThreadId: true },
+  });
+  if (existing?.conversationThreadId) return existing.conversationThreadId;
+
   const workflowVersion = await configuredWorkflow(input.teamRunId);
+  if (workflowVersion) {
+    return startManagedTeamWaitThread({
+      ...input,
+      workflowVersionId: workflowVersion.id,
+      managedStart: input.managedStart,
+    });
+  }
+
+  try {
+    const { startOutreachConversations } = await import('./conversationCapability.service.js');
+    const started = await startOutreachConversations({
+      orgId: input.orgId,
+      ownerType: 'team',
+      ownerId: input.teamRunId,
+      teamRunId: input.teamRunId,
+      agentId: input.agentId ?? null,
+      channel: 'whatsapp',
+      recipients: [{ address: input.contactJid, connectorId: input.connectorId }],
+      openingMessage: '',
+      expiresAt: input.expiresAt,
+    });
+    const threadId = started.threads[0]?.threadId;
+    if (threadId) {
+      await prisma.waitTrigger.update({
+        where: { id: input.waitTriggerId },
+        data: { conversationThreadId: threadId },
+      });
+      return threadId;
+    }
+  } catch (error) {
+    console.warn(
+      '[legacy-team-wait] outreach conversation start failed; using adapter thread',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
   return prisma.$transaction(async (tx) => {
     const trigger = await tx.waitTrigger.findUnique({
       where: { id: input.waitTriggerId },
@@ -64,45 +259,17 @@ export async function ensureLegacyTeamWaitThread(input: {
         metadata: { adapter: 'team_wait_v1' },
       },
     });
-    const definition = workflowVersion?.definition as unknown as {
-      key: string;
-      version: number;
-      entryNodeId: string;
-      nodes: Array<{ id: string; type: string; variable?: string }>;
-    } | undefined;
-    const entry = definition?.nodes.find((node) => node.id === definition.entryNodeId);
-    const managed = Boolean(
-      workflowVersion && definition && entry && (entry.type === 'ask' || entry.type === 'collect') && entry.variable,
-    );
-    const state: Record<string, unknown> = managed
-      ? {
-          workflowKey: definition!.key,
-          workflowVersion: definition!.version,
-          status: 'waiting_input',
-          currentNodeId: entry!.id,
-          variables: {
-            orgId: input.orgId,
-            connectorId: input.connectorId,
-            contactJid: input.contactJid,
-            teamRunId: input.teamRunId,
-            waitTriggerId: input.waitTriggerId,
-            ...(input.agentId ? { agentId: input.agentId } : {}),
-          },
-          nodeVisits: { [entry!.id]: 1 },
-          frameStack: [],
-          waiting: { kind: 'input', nodeId: entry!.id, variable: entry!.variable },
-        }
-      : {
-          adapter: 'team_wait_v1',
-          status: 'waiting_input',
-          contactJid: input.contactJid,
-          waitTriggerId: input.waitTriggerId,
-        };
+    const state: Record<string, unknown> = {
+      adapter: 'team_wait_v1',
+      status: 'waiting_input',
+      contactJid: input.contactJid,
+      waitTriggerId: input.waitTriggerId,
+    };
     const thread = await tx.conversationThread.create({
       data: {
         orgId: input.orgId,
         processId: process.id,
-        workflowVersionId: managed ? workflowVersion!.id : null,
+        workflowVersionId: null,
         ownerType: 'team',
         ownerId: input.teamRunId,
         channel: 'whatsapp',
@@ -140,7 +307,7 @@ export async function ensureLegacyTeamWaitThread(input: {
         payload: attachTrace(
           {
             waitTriggerId: input.waitTriggerId,
-            workflowVersionId: managed ? workflowVersion!.id : null,
+            workflowVersionId: null,
             teamRunId: input.teamRunId,
             agentId: input.agentId ?? null,
             contactJid: input.contactJid,
@@ -351,6 +518,12 @@ async function executeManagedAction(
       '../connectors/whatsappServiceClient.js'
     );
     const file = await loadBrainDocumentFile({ orgId, documentId });
+    if (file.source === 'generated_pdf') {
+      return {
+        ok: false,
+        error: 'Brain document has no original file — refusing generated PDF stand-in',
+      };
+    }
     const staged = await stagePendingWaitDocument({
       teamRunId,
       fileName: file.fileName,
@@ -378,54 +551,87 @@ async function executeManagedAction(
   }
 }
 
-async function runManagedTeamConversation(input: {
-  conversationThreadId: string;
-  inbound: WaitTriggerInbound;
-  idempotencyKey?: string;
-  providerEventId?: string | null;
-  state: ConversationRuntimeState;
-}): Promise<TeamConversationInboundResult> {
-  let transition = await signalConversation({
-    threadId: input.conversationThreadId,
-    signal: { type: 'inbound', text: input.inbound.text, payload: { pushName: input.inbound.pushName ?? null } },
-    idempotencyKey: input.idempotencyKey ?? `${input.conversationThreadId}:inbound:${input.inbound.timestampMs}`,
-    providerEventId: input.providerEventId,
-    occurredAt: new Date(input.inbound.timestampMs),
-  });
+async function deliverManagedSendEffects(
+  conversationThreadId: string,
+  state: ConversationRuntimeState,
+  effects: ConversationEffect[],
+): Promise<string[]> {
   const sentMessages: string[] = [];
-  for (let pass = 0; pass < 4; pass++) {
-    const actions = transition.effects.filter(
+  const sends = effects.filter(
+    (effect): effect is Extract<ConversationEffect, { type: 'send' }> => effect.type === 'send',
+  );
+  for (const effect of sends) {
+    const prompt = fallbackPromptFromContent(effect.content, effect.prompt);
+    await conversationPluginRegistry.deliverSend(
+      effect.channel || 'whatsapp',
+      {
+        orgId: String(state.variables.orgId ?? ''),
+        threadId: conversationThreadId,
+        idempotencyKey: `${conversationThreadId}:${effect.nodeId}:${effect.operationIndex}:send`,
+      },
+      {
+        content: prompt.content,
+        prompt,
+        metadata: effect.metadata,
+      },
+    );
+    sentMessages.push(effect.content);
+    await completeOutboxEffect(conversationThreadId, effect);
+  }
+  return sentMessages;
+}
+
+/**
+ * Deliver send/action effects for a managed team thread until it is waiting on
+ * human input (or terminal). Used after start and after each inbound reply.
+ */
+async function driveManagedConversationEffects(input: {
+  conversationThreadId: string;
+  state: ConversationRuntimeState;
+  effects?: ConversationEffect[];
+  bootstrapFromOutbox?: boolean;
+}): Promise<TeamConversationInboundResult> {
+  let state = input.state;
+  let effects = input.effects ?? [];
+  const sentMessages: string[] = [];
+
+  if (input.bootstrapFromOutbox && effects.length === 0) {
+    const pending = await prisma.conversationOutbox.findMany({
+      where: { threadId: input.conversationThreadId, status: 'pending' },
+      orderBy: { createdAt: 'asc' },
+    });
+    effects = pending.map((row) => row.payload as unknown as ConversationEffect);
+  }
+
+  for (let pass = 0; pass < 8; pass++) {
+    if (effects.length === 0 && state.status === 'waiting_input') break;
+    if (['completed', 'failed', 'canceled', 'expired', 'handed_off'].includes(state.status)) break;
+
+    sentMessages.push(
+      ...(await deliverManagedSendEffects(input.conversationThreadId, state, effects)),
+    );
+
+    const actions = effects.filter(
       (effect): effect is Extract<ConversationEffect, { type: 'action' }> => effect.type === 'action',
     );
-    const sends = transition.effects.filter(
-      (effect): effect is Extract<ConversationEffect, { type: 'send' }> => effect.type === 'send',
-    );
-    for (const effect of sends) {
-      const prompt = fallbackPromptFromContent(effect.content, effect.prompt);
-      await conversationPluginRegistry.deliverSend(
-        effect.channel || 'whatsapp',
-        {
-          orgId: String(input.state.variables.orgId ?? ''),
-          threadId: input.conversationThreadId,
-          idempotencyKey: `${input.conversationThreadId}:${effect.nodeId}:${effect.operationIndex}:send`,
-        },
-        {
-          content: prompt.content,
-          prompt,
-          metadata: effect.metadata,
-        },
-      );
-      sentMessages.push(effect.content);
-      await completeOutboxEffect(input.conversationThreadId, effect);
-    }
     const action = actions[0];
-    if (!action) break;
-    const outcome = action.action === 'conversation.classify'
-      ? { ok: true, result: classifierResult(action) }
-      : await executeManagedAction(action, input.state);
+    if (!action) {
+      const fresh = await prisma.conversationThread.findUnique({
+        where: { id: input.conversationThreadId },
+        select: { stateJson: true, status: true },
+      });
+      if (fresh?.stateJson) state = fresh.stateJson as unknown as ConversationRuntimeState;
+      break;
+    }
+
+    const outcome =
+      action.action === 'conversation.classify'
+        ? { ok: true, result: classifierResult(action) }
+        : await executeManagedAction(action, state);
     if (outcome.ok) await completeOutboxEffect(input.conversationThreadId, action);
     else await failOutboxEffect(input.conversationThreadId, action, outcome.error ?? 'Action failed');
-    transition = await signalConversation({
+
+    const transition = await signalConversation({
       threadId: input.conversationThreadId,
       signal: {
         type: 'action_result',
@@ -436,12 +642,46 @@ async function runManagedTeamConversation(input: {
       },
       idempotencyKey: `${input.conversationThreadId}:${action.nodeId}:${action.operationIndex}:result`,
     });
+    effects = transition.effects;
+    const fresh = await prisma.conversationThread.findUnique({
+      where: { id: input.conversationThreadId },
+      select: { stateJson: true },
+    });
+    if (fresh?.stateJson) state = fresh.stateJson as unknown as ConversationRuntimeState;
   }
-  return {
-    managed: true,
-    terminal: ['completed', 'failed', 'canceled', 'expired', 'handed_off'].includes(transition.status),
-    sentMessages,
-  };
+
+  const terminal = ['completed', 'failed', 'canceled', 'expired', 'handed_off'].includes(state.status);
+  return { managed: true, terminal, sentMessages };
+}
+
+async function runManagedTeamConversation(input: {
+  conversationThreadId: string;
+  inbound: WaitTriggerInbound;
+  idempotencyKey?: string;
+  providerEventId?: string | null;
+  state: ConversationRuntimeState;
+}): Promise<TeamConversationInboundResult> {
+  const transition = await signalConversation({
+    threadId: input.conversationThreadId,
+    signal: {
+      type: 'inbound',
+      text: input.inbound.text,
+      payload: { pushName: input.inbound.pushName ?? null },
+    },
+    idempotencyKey:
+      input.idempotencyKey ?? `${input.conversationThreadId}:inbound:${input.inbound.timestampMs}`,
+    providerEventId: input.providerEventId,
+    occurredAt: new Date(input.inbound.timestampMs),
+  });
+  const fresh = await prisma.conversationThread.findUnique({
+    where: { id: input.conversationThreadId },
+    select: { stateJson: true },
+  });
+  return driveManagedConversationEffects({
+    conversationThreadId: input.conversationThreadId,
+    state: (fresh?.stateJson as unknown as ConversationRuntimeState) ?? input.state,
+    effects: transition.effects,
+  });
 }
 
 export async function closeLegacyTeamWaitThreads(
@@ -456,7 +696,9 @@ export async function closeLegacyTeamWaitThreads(
   for (const trigger of triggers) {
     if (!trigger.conversationThreadId) continue;
     await prisma.$transaction(async (tx) => {
-      const thread = await tx.conversationThread.findUnique({ where: { id: trigger.conversationThreadId! } });
+      const thread = await tx.conversationThread.findUnique({
+        where: { id: trigger.conversationThreadId! },
+      });
       if (!thread || ['completed', 'failed', 'canceled', 'expired'].includes(thread.status)) return;
       const nextVersion = thread.version + 1;
       const updated = await tx.conversationThread.updateMany({
@@ -492,7 +734,10 @@ export async function closeLegacyTeamWaitThreads(
           ) as object,
         },
       });
-      await tx.conversationBinding.updateMany({ where: { threadId: thread.id }, data: { active: false } });
+      await tx.conversationBinding.updateMany({
+        where: { threadId: thread.id },
+        data: { active: false },
+      });
       if (thread.processId) {
         await tx.$executeRawUnsafe(
           `UPDATE conversation_processes

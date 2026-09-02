@@ -167,12 +167,16 @@ export async function findBrainDocumentsForAgent(input: {
   }));
 }
 
-/** Pick the org brain file that looks like a brochure (title/filename), preferring a retained original. */
+/**
+ * Pick an org Brain brochure file. Only returns documents that still have a
+ * retained original upload — never a text-only note that would be rendered into
+ * a synthetic PDF (that looked like a "random" brochure on WhatsApp).
+ */
 export async function findBrainBrochureDocument(
   orgId: string,
 ): Promise<{ documentId: string; title: string } | null> {
   const rows = await prisma.brainKnowledgeDocument.findMany({
-    where: { orgId, ingestStatus: 'ready' },
+    where: { orgId, ingestStatus: 'ready', storageKey: { not: null } },
     orderBy: { updatedAt: 'desc' },
     take: 80,
     select: {
@@ -187,6 +191,7 @@ export async function findBrainBrochureDocument(
       const hay = `${row.title} ${row.originalFileName ?? ''}`.toLowerCase();
       let score = 0;
       if (hay.includes('brochure')) score += 10;
+      if (hay.includes('program') || hay.includes('offer')) score += 2;
       if (hay.includes('.pdf') || hay.endsWith('pdf')) score += 3;
       if (row.storageKey) score += 2;
       return { row, score };

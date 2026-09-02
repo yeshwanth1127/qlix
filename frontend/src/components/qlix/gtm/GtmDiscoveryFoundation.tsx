@@ -48,7 +48,13 @@ function ReviewCard({ proposal, busy, onResolve }: {
   );
 }
 
-export function GtmDiscoveryFoundation({ refreshKey = 0 }: { readonly refreshKey?: number }) {
+export function GtmDiscoveryFoundation({
+  refreshKey = 0,
+  onConfirmed,
+}: {
+  readonly refreshKey?: number;
+  readonly onConfirmed?: () => void;
+}) {
   const router = useRouter();
   const [foundation, setFoundation] = useState<Foundation | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,7 +113,8 @@ export function GtmDiscoveryFoundation({ refreshKey = 0 }: { readonly refreshKey
     if (!result.ok) { setError(result.message); return; }
     setFoundation(result.foundation);
     if (decision === "confirm") {
-      router.push("/organization/gtm/plan");
+      onConfirmed?.();
+      router.push("/organization/gtm");
       return;
     }
     setFlowComplete(false);
@@ -122,9 +129,9 @@ export function GtmDiscoveryFoundation({ refreshKey = 0 }: { readonly refreshKey
       <div className="mx-auto w-full max-w-3xl border border-black/25 bg-[#fbfaf6] p-8 text-center">
         <Check className="mx-auto size-5" aria-hidden />
         <h2 className="mt-3 text-xl font-medium">Discovery starting point saved</h2>
-        <p className="mt-2 text-[12px] text-black/50">View your personalized plan or edit your answers.</p>
+        <p className="mt-2 text-[12px] text-black/50">Open your GTM workspace or edit your answers.</p>
         <div className="mt-5 flex flex-wrap justify-center gap-2">
-          <Link href="/organization/gtm/plan" className="border border-black bg-black px-4 py-2 font-serif text-[10px] uppercase tracking-widest text-white">View my plan</Link>
+          <Link href="/organization/gtm" className="border border-black bg-black px-4 py-2 font-serif text-[10px] uppercase tracking-widest text-white">Open workspace</Link>
           <button type="button" onClick={() => { setFlowComplete(false); setFlowKey((value) => value + 1); }} className="border border-black px-4 py-2 font-serif text-[10px] uppercase tracking-widest">Edit answers</button>
         </div>
       </div>

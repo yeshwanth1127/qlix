@@ -119,6 +119,28 @@ nginx -t
 systemctl reload nginx
 echo "==> nginx reloaded."
 
+# ── Sidecar service secrets ───────────────────────────────────────────────────
+echo "==> Syncing sidecar SERVICE_SECRET from backend..."
+BACKEND_ENV="$APP_DIR/backend/.env"
+if [[ -f "$BACKEND_ENV" ]]; then
+  SERVICE_SECRET="$(grep -E '^QLIX_INTERNAL_SERVICE_SECRET=' "$BACKEND_ENV" | cut -d= -f2- || true)"
+  if [[ -n "$SERVICE_SECRET" ]]; then
+    for svc in qlix-mcp-service qlix-whatsapp-service; do
+      SVC_ENV="$APP_DIR/$svc/.env"
+      if [[ -f "$SVC_ENV" ]]; then
+        if grep -q '^SERVICE_SECRET=' "$SVC_ENV"; then
+          sed -i "s|^SERVICE_SECRET=.*|SERVICE_SECRET=$SERVICE_SECRET|" "$SVC_ENV"
+        else
+          echo "SERVICE_SECRET=$SERVICE_SECRET" >> "$SVC_ENV"
+        fi
+        echo "    synced $svc/.env"
+      fi
+    done
+  else
+    echo "    WARN: QLIX_INTERNAL_SERVICE_SECRET missing in backend/.env"
+  fi
+fi
+
 # ── PM2 ───────────────────────────────────────────────────────────────────────
 echo "==> Starting/reloading PM2 processes..."
 cd "$APP_DIR"

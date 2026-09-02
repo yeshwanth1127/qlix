@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   applyConversationPromptToOutbound,
-  completePendingOutreachPack,
   distinctPendingContactCount,
   enqueuePendingWaitOutbound,
+  normalizePendingWaitOutbounds,
 } from './pendingWaitOutbound.js';
-import type { TeamRunCheckpoint } from '../teams/teams.types.js';
+import type { PendingWaitOutbound, TeamRunCheckpoint } from '../teams/teams.types.js';
 
 function emptyCheckpoint(): TeamRunCheckpoint {
   return {
@@ -59,7 +59,7 @@ describe('enqueuePendingWaitOutbound', () => {
     assert.equal(distinctPendingContactCount(pending), 1);
   });
 
-  it('keeps multiple texts to the same contact in call order', () => {
+  it('keeps multiple distinct texts to the same contact in call order', () => {
     let checkpoint = emptyCheckpoint();
     checkpoint = enqueuePendingWaitOutbound(checkpoint, {
       agentId: 'agent-1',
@@ -83,6 +83,45 @@ describe('enqueuePendingWaitOutbound', () => {
       pending.map((row) => row.message),
       ['v1', 'v2'],
     );
+  });
+
+  it('does not stack identical text retries for the same contact', () => {
+    let checkpoint = emptyCheckpoint();
+    checkpoint = enqueuePendingWaitOutbound(checkpoint, {
+      agentId: 'agent-1',
+      connectorId: 'conn-1',
+      recipient: 'Karthik',
+      message: 'Hello Karthik',
+      kind: 'text',
+      jid: '919999999999@s.whatsapp.net',
+    });
+    checkpoint = enqueuePendingWaitOutbound(checkpoint, {
+      agentId: 'agent-1',
+      connectorId: 'conn-1',
+      recipient: 'Karthik',
+      message: 'Hello Karthik',
+      kind: 'text',
+      jid: '919999999999@s.whatsapp.net',
+    });
+    assert.equal((checkpoint.pendingWaitOutbounds ?? []).length, 1);
+  });
+
+  it('keeps multiple distinct polls for the same contact', () => {
+    let checkpoint = emptyCheckpoint();
+    for (const name of ['In Bangalore?', 'Fresher?', 'Interested?']) {
+      checkpoint = enqueuePendingWaitOutbound(checkpoint, {
+        agentId: 'agent-1',
+        connectorId: 'conn-1',
+        recipient: 'Karthik',
+        message: name,
+        kind: 'poll',
+        pollName: name,
+        pollValues: ['Yes', 'No'],
+        pollSelectableCount: 1,
+        jid: '919999999999@s.whatsapp.net',
+      });
+    }
+    assert.equal((checkpoint.pendingWaitOutbounds ?? []).length, 3);
   });
 
   it('counts distinct contacts across multi-message queues', () => {
@@ -112,8 +151,8 @@ describe('enqueuePendingWaitOutbound', () => {
   });
 });
 
-describe('completePendingOutreachPack', () => {
-  const text: Parameters<typeof completePendingOutreachPack>[0][number] = {
+describe('normalizePendingWaitOutbounds', () => {
+  const text: PendingWaitOutbound = {
     id: 't1',
     agentId: 'agent-1',
     connectorId: 'conn-1',
@@ -124,68 +163,51 @@ describe('completePendingOutreachPack', () => {
     queuedAt: '2026-08-13T00:00:00.000Z',
   };
 
-  it('appends brochure file and yes/no poll after greeting text', () => {
-    const next = completePendingOutreachPack(
-      [text, { ...text, id: 't2', message: 'brochure' }],
-      {
-        brochureForContact: () => ({
-          fileName: 'brochure.pdf',
-          mimetype: 'application/pdf',
-          stagedPath: '/tmp/brochure.pdf',
-        }),
-        poll: { name: 'Are you interested?', values: ['Yes', 'No'] },
-      },
-    );
-    assert.deepEqual(
-      next.map((row) => row.kind ?? 'text'),
-      ['text', 'document', 'poll'],
-    );
-    assert.equal(next[0]!.message, 'Hi Karthik');
-    assert.equal(next[1]!.documentFileName, 'brochure.pdf');
-    assert.deepEqual(next[2]!.pollValues, ['Yes', 'No']);
-  });
-
-  it('does not duplicate a poll the worker already queued', () => {
-    const next = completePendingOutreachPack(
-      [
-        text,
-        {
-          ...text,
-          id: 'p1',
-          kind: 'poll',
-          message: 'Interested?',
-          pollName: 'Interested?',
-          pollValues: ['Yes', 'No'],
-        },
-      ],
-      { poll: { name: 'Are you interested?', values: ['Yes', 'No'] } },
-    );
-    assert.equal(next.filter((row) => row.kind === 'poll').length, 1);
-    assert.equal(next[1]!.pollName, 'Interested?');
-  });
-
-  it('repairs poll-before-document order and removes duplicate polls', () => {
-    const poll = {
+  it('preserves call order and does not invent brochure or poll steps', () => {
+    const poll: PendingWaitOutbound = {
       ...text,
       id: 'p1',
-      kind: 'poll' as const,
+      kind: 'poll',
+      message: 'In Bangalore?',
+      pollName: 'In Bangalore?',
+      pollValues: ['Yes', 'No'],
+    };
+    const next = normalizePendingWaitOutbounds([
+      text,
+      { ...text, id: 't2', message: 'brochure' },
+      poll,
+    ]);
+    assert.deepEqual(
+      next.map((row) => row.kind ?? 'text'),
+      ['text', 'poll'],
+    );
+    assert.equal(next[0]!.message, 'Hi Karthik');
+    assert.equal(next[1]!.pollName, 'In Bangalore?');
+  });
+
+  it('dedupes identical polls while keeping distinct ones', () => {
+    const pollA: PendingWaitOutbound = {
+      ...text,
+      id: 'p1',
+      kind: 'poll',
       message: 'Interested?',
       pollName: 'Interested?',
       pollValues: ['Yes', 'No'],
     };
-    const next = completePendingOutreachPack(
-      [text, poll, { ...poll, id: 'p2' }],
-      {
-        brochureForContact: () => ({
-          fileName: 'brochure.pdf',
-          mimetype: 'application/pdf',
-          stagedPath: '/tmp/brochure.pdf',
-        }),
-        poll: { name: 'Are you interested?', values: ['Yes', 'No'] },
-      },
+    const pollB: PendingWaitOutbound = {
+      ...text,
+      id: 'p2',
+      kind: 'poll',
+      message: 'Fresher?',
+      pollName: 'Fresher?',
+      pollValues: ['Yes', 'No'],
+    };
+    const next = normalizePendingWaitOutbounds([text, pollA, { ...pollA, id: 'p1b' }, pollB]);
+    assert.equal(next.filter((row) => row.kind === 'poll').length, 2);
+    assert.deepEqual(
+      next.filter((row) => row.kind === 'poll').map((row) => row.pollName),
+      ['Interested?', 'Fresher?'],
     );
-    assert.deepEqual(next.map((row) => row.kind ?? 'text'), ['text', 'document', 'poll']);
-    assert.equal(next.filter((row) => row.kind === 'poll').length, 1);
   });
 });
 

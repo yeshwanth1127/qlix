@@ -36,6 +36,8 @@ export type BuiltinPermissionScope =
   | 'whatsapp.read'
   | 'whatsapp.contact_send'
   | 'whatsapp.auto_reply'
+  /** Parallel conversation threads (Outreach plugin). `whatsapp.auto_reply` is a compatibility alias. */
+  | 'conversation'
   | 'social.read'
   | 'social.publish'
   | 'crm.read'

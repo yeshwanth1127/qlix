@@ -38,6 +38,12 @@ export interface ArmTeamWhatsAppWaitInput {
   fulfillment?: 'first_match' | 'collect_until_timeout';
   /** When omitted, arms with the provisional 7-day safety cap until chat TTL is set. */
   ttlHours?: number;
+  /** Kickoff vars for managed conversation workflows (greeting / brochure / name). */
+  managedStart?: {
+    greetingMessage?: string | null;
+    documentId?: string | null;
+    contactName?: string | null;
+  };
 }
 
 export interface FulfilledTeamWait {
@@ -56,6 +62,7 @@ export type TeamWaitProgress = {
 export type TeamManagedConversationResult = {
   contactJid: string;
   threadId: string;
+  processId: string | null;
   status: string;
   variables: Record<string, unknown>;
   result: Record<string, unknown>;
@@ -136,6 +143,7 @@ export class WaitTriggerService {
           contactJid,
           agentId: input.agentId,
           expiresAt: existing.expiresAt,
+          managedStart: input.managedStart,
         });
       }
       return { id: existing.id, expiresAt: existing.expiresAt };
@@ -166,6 +174,7 @@ export class WaitTriggerService {
       contactJid,
       agentId: input.agentId,
       expiresAt: trigger.expiresAt,
+      managedStart: input.managedStart,
     });
     return trigger;
   }
@@ -367,8 +376,8 @@ export class WaitTriggerService {
       .filter((id): id is string => Boolean(id));
     if (threadIds.length === 0) return [];
     const threads = await prisma.conversationThread.findMany({
-      where: { id: { in: threadIds }, workflowVersionId: { not: null } },
-      select: { id: true, status: true, stateJson: true, resultJson: true },
+      where: { id: { in: threadIds } },
+      select: { id: true, processId: true, status: true, stateJson: true, resultJson: true },
     });
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
     return triggers.flatMap((trigger) => {
@@ -388,6 +397,7 @@ export class WaitTriggerService {
       return [{
         contactJid: normalizeContactJid(trigger.contactJid ?? ''),
         threadId: thread.id,
+        processId: thread.processId,
         status: thread.status,
         variables,
         result,

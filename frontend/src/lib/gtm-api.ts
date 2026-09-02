@@ -316,6 +316,25 @@ export async function resolveGtmDiscoveryProposal(
   return { ok: true, foundation: body.foundation, plan: body.plan ?? null };
 }
 
+export type GtmDiscoveryEntryView = "questions" | "workspace";
+
+export interface GtmDiscoveryEntry {
+  readonly view: GtmDiscoveryEntryView;
+  readonly planStatus: GtmDiscoveryPlanStatus | null;
+  readonly hasConfirmedIdea: boolean;
+  readonly pendingIdeaReview: boolean;
+}
+
+export async function getGtmDiscoveryEntry(): Promise<
+  | { ok: true; entry: GtmDiscoveryEntry }
+  | { ok: false; message: string }
+> {
+  const response = await fetch(`${apiBase()}/api/v1/gtm/discovery/entry`, { credentials: "include" });
+  const body = (await response.json().catch(() => null)) as (GtmDiscoveryEntry & ApiError) | null;
+  if (!response.ok || !body) return { ok: false, message: body?.error?.message ?? "Could not load GTM entry." };
+  return { ok: true, entry: body };
+}
+
 export async function getGtmDiscoveryWorkspace(): Promise<
   | { ok: true; workspace: GtmDiscoveryWorkspace }
   | { ok: false; message: string }

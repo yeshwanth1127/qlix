@@ -166,6 +166,7 @@ export interface TeamRunCheckpoint {
   }>;
   waitReason?: string;
   awaitingTtlSelection?: boolean;
+  pendingWaitOutbounds?: unknown[];
   reviewConversation?: { processId: string };
 }
 
@@ -476,6 +477,7 @@ export async function listConversationWorkflows(): Promise<ConversationWorkflowO
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => null)) as ApiErrorBody | null;
+    if (err?.error?.code === "plugin_not_active") return [];
     throw new Error(err?.error?.message ?? "Failed to list conversation workflows");
   }
   const data = (await res.json()) as { workflows: ConversationWorkflowOption[] };
@@ -506,6 +508,58 @@ export async function getTeamRun(
     tasks: A2ATaskDTO[];
     failure: TeamRunFailure | null;
   }>;
+}
+
+export interface TeamRunConversationThread {
+  id: string;
+  processId: string | null;
+  status: string;
+  channel: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  participant: {
+    role: string;
+    address: string | null;
+    displayName: string | null;
+    channel: string | null;
+  } | null;
+  lastInbound: { text: string; occurredAt: string } | null;
+  lastOutbound: { text: string; occurredAt: string } | null;
+  eventCount: number;
+}
+
+export interface TeamRunConversationEvent {
+  id: string;
+  seq: number;
+  eventType: string;
+  direction: string | null;
+  payload: unknown;
+  occurredAt: string;
+}
+
+export async function listTeamRunConversations(
+  teamId: string,
+  runId: string,
+): Promise<{ processId: string | null; threads: TeamRunConversationThread[] }> {
+  const res = await fetch(`${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/conversations`, {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error("Failed to load conversation threads");
+  return res.json() as Promise<{ processId: string | null; threads: TeamRunConversationThread[] }>;
+}
+
+export async function getTeamRunConversation(
+  teamId: string,
+  runId: string,
+  threadId: string,
+): Promise<{ thread: TeamRunConversationThread; events: TeamRunConversationEvent[] }> {
+  const res = await fetch(
+    `${apiBase()}/api/v1/teams/${teamId}/runs/${runId}/conversations/${threadId}`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error("Failed to load conversation thread");
+  return res.json() as Promise<{ thread: TeamRunConversationThread; events: TeamRunConversationEvent[] }>;
 }
 
 export async function getTeamRunDefense(

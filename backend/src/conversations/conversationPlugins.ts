@@ -114,6 +114,9 @@ export class ConversationPluginRegistry {
     const channel = typeof job.payload.channel === 'string' ? job.payload.channel : '';
     const content = typeof job.payload.content === 'string' ? job.payload.content : '';
     const prompt = fallbackPromptFromContent(content, job.payload.prompt);
+    if (prompt.kind === 'text' && !prompt.content.trim()) {
+      return { delivered: 'skipped_empty' };
+    }
     if (!prompt.content.trim()) throw new Error('Conversation send content is required');
     const metadata = job.payload.metadata && typeof job.payload.metadata === 'object'
       ? job.payload.metadata as Record<string, unknown>

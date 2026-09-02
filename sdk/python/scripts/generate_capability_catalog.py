@@ -114,6 +114,7 @@ def _scope_metadata() -> tuple[dict[str, tuple[str, ...]], set[str]]:
     from qlix.cloud_research_runtime import RESEARCH_TOOL_SCOPES
     from qlix.cloud_slack_runtime import SLACK_TOOL_SCOPES
     from qlix.cloud_whatsapp_runtime import WHATSAPP_TOOL_SCOPES
+    from qlix.cloud_conversation_runtime import CONVERSATION_TOOL_SCOPES
     from qlix.luna.browser.agent_browser_cli import AGENT_BROWSER_TOOL_SCOPES
 
     scopes: dict[str, tuple[str, ...]] = {}
@@ -129,6 +130,7 @@ def _scope_metadata() -> tuple[dict[str, tuple[str, ...]], set[str]]:
         RESEARCH_TOOL_SCOPES,
         SLACK_TOOL_SCOPES,
         WHATSAPP_TOOL_SCOPES,
+        CONVERSATION_TOOL_SCOPES,
         AGENT_BROWSER_TOOL_SCOPES,
     ):
         scopes.update({name: tuple(values) for name, values in mapping.items()})
@@ -145,6 +147,8 @@ def _provider(name: str, groups: list[str]) -> tuple[str, str]:
         return "browser", "agent_browser"
     if name.startswith("luna_local_") or name == "gui_control":
         return "local", "agents3"
+    if name.startswith("conversation_"):
+        return "backend_proxy", "qlix.conversation"
     if "assessment" in groups:
         return "backend_proxy", "qlix.assessment"
     if "knowledge" in groups:
@@ -174,6 +178,13 @@ def _risk(name: str, scopes: tuple[str, ...]) -> tuple[str, list[str]]:
         effects.add("write")
     if any(scope.endswith(".send") or scope == "whatsapp.contact_send" for scope in lowered):
         effects.add("external_communication")
+    if "conversation" in lowered:
+        if name in {"conversation_list", "conversation_get"}:
+            effects.add("read")
+        else:
+            effects.add("write")
+            if name in {"conversation_start", "conversation_send"}:
+                effects.add("external_communication")
     if any(scope.startswith("finance.") for scope in lowered):
         effects.add("financial")
     if name in {"luna_local_bash", "luna_local_python", "luna_local_code_task", "gui_control"} or (

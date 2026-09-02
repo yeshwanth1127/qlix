@@ -48,6 +48,7 @@ import { createChannelDefaultsRouter } from '../routes/createChannelDefaultsRout
 import { createOpenApiRouter } from '../routes/createOpenApiRouter.js';
 import { createConversationsRouter } from '../routes/createConversationsRouter.js';
 import { createAssessmentToolRoutes } from '../assessment/assessmentToolRoutes.js';
+import { createConversationToolRoutes } from '../conversations/conversationToolRoutes.js';
 import { createAssessmentRoutes } from '../assessment/assessment.routes.js';
 import { createPluginsRouter } from '../plugins/plugins.routes.js';
 import { createDeviceIngestRoutes } from '../assessment/deviceIngest.routes.js';
@@ -78,6 +79,7 @@ export function registerApiRoutes(application: Express, options: RegisterApiRout
   application.use('/api/v1/agents', createInferenceProxyRouter());
   application.use('/api/v1/agents', createContextToolRoutes());
   application.use('/api/v1/agents', createAssessmentToolRoutes());
+  application.use('/api/v1/agents', createConversationToolRoutes());
   application.use('/api/v1/inference', createInferenceCatalogRouter());
   application.use('/api/v1/inference', createAutoRoutingInfoRouter());
   application.use('/api/v1/ai-brain', createAiBrainRouter());

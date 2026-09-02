@@ -1,5 +1,5 @@
-import { GtmPersonalizedDashboard } from "@/components/qlix/gtm/GtmPersonalizedDashboard";
+import { redirect } from "next/navigation";
 
-export default function OrganizationGtmPlanPage() {
-  return <GtmPersonalizedDashboard routePrefix="/organization" />;
+export default function OrganizationGtmPlanRedirectPage() {
+  redirect("/organization/gtm");
 }

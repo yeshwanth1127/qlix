@@ -211,6 +211,7 @@ def _managed_runtime_inventory() -> dict[str, Any]:
             + _mapping_keys(qlix_root / "cloud_slack_runtime.py", "SLACK_TOOL_DEFINITIONS")
             + _mapping_keys(qlix_root / "cloud_notion_runtime.py", "NOTION_TOOL_DEFINITIONS")
             + _mapping_keys(qlix_root / "cloud_whatsapp_runtime.py", "WHATSAPP_TOOL_DEFINITIONS")
+            + _mapping_keys(qlix_root / "cloud_conversation_runtime.py", "CONVERSATION_TOOL_DEFINITIONS")
         ),
         "knowledge": ["brain_query"]
         + _mapping_keys(qlix_root / "cloud_brain_file_runtime.py", "BRAIN_FILE_TOOL_DEFINITIONS"),

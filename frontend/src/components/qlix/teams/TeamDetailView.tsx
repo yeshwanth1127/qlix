@@ -39,7 +39,10 @@ import { cn } from "@/lib/utils/cn";
 import { SketchBox, sketchButton, sketchButtonPrimary } from "@/components/qlix/sketch";
 import { CreateAgentModal } from "@/components/qlix/agents/CreateAgentModal";
 import { DelegatedScopePicker } from "@/components/qlix/teams/DelegatedScopePicker";
+import { useSession } from "@/components/qlix/session-context";
 import { TeamRunView } from "./TeamRunView";
+
+const OUTREACH_PLUGIN_ID = "outreach";
 
 interface TeamDetailViewProps {
   readonly team: TeamDTO;
@@ -283,6 +286,9 @@ function Section({
 }
 
 export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: TeamDetailViewProps) {
+  const { session } = useSession();
+  const outreachEnabled =
+    session?.organization?.enabledPluginIds?.includes(OUTREACH_PLUGIN_ID) ?? false;
   const [tab, setTab] = useState<ActiveTab>("build");
   const [deleting, setDeleting] = useState(false);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
@@ -337,16 +343,21 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
   }, [tab, pollRunners]);
 
   useEffect(() => {
+    if (!outreachEnabled) {
+      setWorkflows([]);
+      setWorkflowsLoading(false);
+      return;
+    }
     let active = true;
     setWorkflowsLoading(true);
     void listConversationWorkflows()
       .then((items) => { if (active) setWorkflows(items); })
-      .catch((err) => {
-        if (active) setActionError(err instanceof Error ? err.message : "Failed to load workflows");
+      .catch(() => {
+        if (active) setWorkflows([]);
       })
       .finally(() => { if (active) setWorkflowsLoading(false); });
     return () => { active = false; };
-  }, [team.orgId]);
+  }, [team.orgId, outreachEnabled]);
 
   async function copyToClipboard(value: string, key: "did" | "trigger") {
     try {
@@ -945,7 +956,12 @@ export function TeamDetailView({ team, routePrefix, onDeleted, onUpdated }: Team
                   </label>
                 )}
 
-                {!workflowsLoading && workflows.length === 0 && (
+                {!workflowsLoading && !outreachEnabled && (
+                  <p className={cn("text-[11.5px]", INK_SOFT)}>
+                    Enable the Outreach plugin to use managed conversation workflows.
+                  </p>
+                )}
+                {!workflowsLoading && outreachEnabled && workflows.length === 0 && (
                   <p className={cn("text-[11.5px]", INK_SOFT)}>
                     No published workflows are available. Standard mode remains active.
                   </p>

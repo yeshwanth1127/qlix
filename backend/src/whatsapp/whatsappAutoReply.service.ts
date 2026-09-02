@@ -90,6 +90,7 @@ export function buildAutoReplyInboundPrompt(input: {
   contactJid: string;
   text: string;
   replyInstructions?: string | null;
+  threadId?: string | null;
 }): string {
   const body = input.text.trim();
   const instructions = normalizeReplyInstructions(input.replyInstructions);
@@ -98,16 +99,21 @@ export function buildAutoReplyInboundPrompt(input: {
     body,
     '',
   ];
+  if (input.threadId) {
+    parts.push(`Conversation threadId: ${input.threadId}`);
+    parts.push('Use conversation_get with that threadId for the organized history (preferred over only whatsapp_read_chat).');
+    parts.push('');
+  }
   if (instructions) {
     parts.push('Your instructions for this conversation:');
     parts.push(instructions);
     parts.push('');
     parts.push(
-      'Follow those instructions. Use whatsapp_read_chat if you need more context, then act and reply with whatsapp_send_message (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
+      'Follow those instructions. Use conversation_get or whatsapp_read_chat if you need more context, then act and reply with whatsapp_send_message or conversation_send (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
     );
   } else {
     parts.push(
-      'Use whatsapp_read_chat if you need more context, then reply with whatsapp_send_message (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
+      'Use conversation_get or whatsapp_read_chat if you need more context, then reply with whatsapp_send_message or conversation_send (and whatsapp_send_document / whatsapp_send_poll if needed) to this contact.',
     );
   }
   return parts.join('\n');

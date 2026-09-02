@@ -82,7 +82,7 @@ export class NLCreationService {
         }
         if (worker.permissionScopes.includes('whatsapp.contact_send')) {
           worker.permissionScopes = Array.from(
-            new Set([...worker.permissionScopes, 'whatsapp.auto_reply']),
+            new Set([...worker.permissionScopes, 'conversation', 'whatsapp.auto_reply']),
           );
         }
       }

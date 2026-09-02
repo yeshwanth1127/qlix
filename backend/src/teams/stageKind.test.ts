@@ -30,7 +30,7 @@ describe('stageKind packs', () => {
       alsoKinds: ['wait'],
       channels: ['whatsapp'],
     });
-    assert.deepEqual(scopes.sort(), ['whatsapp.auto_reply', 'whatsapp.contact_send'].sort());
+    assert.deepEqual(scopes.sort(), ['conversation', 'whatsapp.auto_reply', 'whatsapp.contact_send'].sort());
     assert.ok(!scopes.includes('files.create'));
     assert.ok(!scopes.includes('crm.write'));
   });
@@ -113,7 +113,19 @@ describe('inferStageContract', () => {
   it('marks outreach with contact_send as act/whatsapp', () => {
     const contract = inferStageContract({
       role: 'outreach',
-      delegatedScopes: ['whatsapp.contact_send', 'whatsapp.auto_reply'],
+      delegatedScopes: ['whatsapp.contact_send', 'conversation', 'whatsapp.auto_reply'],
+      stageOrder: 2,
+      memberCount: 2,
+    });
+    assert.equal(contract.stageKind, 'act');
+    assert.ok(contract.alsoKinds.includes('wait'));
+    assert.ok(contract.channels.includes('whatsapp'));
+  });
+
+  it('marks outreach with conversation (no auto_reply alias) as wait', () => {
+    const contract = inferStageContract({
+      role: 'outreach',
+      delegatedScopes: ['whatsapp.contact_send', 'conversation'],
       stageOrder: 2,
       memberCount: 2,
     });

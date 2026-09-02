@@ -4,6 +4,7 @@ import { createInitialConversationState, transitionConversation } from './conver
 import type { ConversationWorkflow } from './workflow.types.js';
 import { compileConversationWorkflow } from './workflowCompiler.js';
 import { constrainedClassifierPlugin } from './conversationPlugins.js';
+import { OUTREACH_CONVERSATION_WORKFLOW } from './outreachConversationWorkflow.js';
 
 const outreach: ConversationWorkflow = {
   key: 'education_interest',
@@ -93,6 +94,72 @@ describe('conversation runtime', () => {
     const answered = transitionConversation(retried.state, workflow, { type: 'inbound', text: 'Yes' });
     assert.equal(answered.state.status, 'completed');
     assert.deepEqual(answered.result, { interest: 'Yes' });
+  });
+
+  it('compiles the default outreach.conversation workflow', () => {
+    const workflow = compileConversationWorkflow(OUTREACH_CONVERSATION_WORKFLOW);
+    const listen = transitionConversation(
+      createInitialConversationState(workflow, { openingMessage: '' }),
+      workflow,
+      { type: 'start' },
+    );
+    assert.equal(listen.state.status, 'waiting_input');
+    const opened = transitionConversation(
+      createInitialConversationState(workflow, { openingMessage: 'Hi there' }),
+      workflow,
+      { type: 'start' },
+    );
+    assert.equal(opened.state.status, 'waiting_input');
+    assert.ok(
+      opened.effects.some((effect) => effect.type === 'send' && effect.content === 'Hi there'),
+    );
+  });
+
+  it('runs sequential lead outreach polls one wait at a time', async () => {
+    const { WHATSAPP_LEAD_OUTREACH_SEQUENTIAL_WORKFLOW } = await import(
+      './whatsappLeadOutreachSequentialWorkflow.js'
+    );
+    const workflow = compileConversationWorkflow(WHATSAPP_LEAD_OUTREACH_SEQUENTIAL_WORKFLOW);
+    let transition = transitionConversation(
+      createInitialConversationState(workflow, {
+        greetingMessage: 'Hi Raghu',
+        documentId: '',
+        contactName: 'Raghu',
+      }),
+      workflow,
+      { type: 'start' },
+    );
+    assert.equal(transition.state.status, 'waiting_input');
+    assert.equal(transition.state.currentNodeId, 'poll_bangalore');
+    assert.deepEqual(
+      transition.effects.filter((effect) => effect.type === 'send').map((effect) =>
+        effect.type === 'send' ? effect.content : '',
+      ),
+      ['Hi Raghu', 'Are you based in Bangalore?'],
+    );
+
+    transition = transitionConversation(transition.state, workflow, { type: 'inbound', text: 'Yes' });
+    assert.equal(transition.state.status, 'waiting_input');
+    assert.equal(transition.state.currentNodeId, 'poll_fresher');
+    assert.equal(
+      transition.effects[0]?.type === 'send' && transition.effects[0].content,
+      'Are you a fresher or a graduate with experience?',
+    );
+
+    transition = transitionConversation(transition.state, workflow, { type: 'inbound', text: 'Fresher' });
+    assert.equal(transition.state.currentNodeId, 'poll_experience');
+    transition = transitionConversation(transition.state, workflow, { type: 'inbound', text: 'No' });
+    assert.equal(transition.state.currentNodeId, 'poll_interest');
+    transition = transitionConversation(transition.state, workflow, { type: 'inbound', text: 'Yes' });
+    assert.equal(transition.state.status, 'completed');
+    assert.deepEqual(transition.result, {
+      inBangalore: 'Yes',
+      fresherOrGraduate: 'Fresher',
+      hasWorkExperience: 'No',
+      interested: 'Yes',
+      contactName: 'Raghu',
+      contactJid: '',
+    });
   });
 
   it('takes the negative branch without asking positive-path questions', () => {

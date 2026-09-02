@@ -180,6 +180,9 @@ export function teamRunFailureFromError(
 ): TeamRunFailure {
   const coded = error as { code?: string; message?: string };
   if (coded.code === 'missing_attachment') return missingAttachmentFailure();
+  if (coded.code === 'upload_error') {
+    return uploadErrorFailure(error instanceof Error ? error.message : String(error));
+  }
   if (coded.code === 'missing_input_reference') return missingInputReferenceFailure();
   if (coded.code === 'team_runners_not_ready') {
     return teamRunnersNotReadyFailure(
@@ -208,6 +211,18 @@ export function teamRunFailureFromError(
   }
   const message = error instanceof Error ? error.message : String(error);
   return teamRunFailureFromMessage(message, context);
+}
+
+export function uploadErrorFailure(detail?: string): TeamRunFailure {
+  return teamRunFailure({
+    code: 'upload_error',
+    title: 'File upload failed',
+    message: 'Your file was received but could not be stored for the team run.',
+    reason:
+      detail?.trim() ||
+      'The file storage service did not accept the upload before the run could start.',
+    hint: 'Try attaching the file again. If this keeps happening, restart qlix-mcp and confirm SERVICE_SECRET matches QLIX_INTERNAL_SERVICE_SECRET.',
+  });
 }
 
 export function missingAttachmentFailure(): TeamRunFailure {

@@ -6,6 +6,7 @@ import { isAgentRunTerminal } from '../agentChat/agentRunService.js';
 import { resolveTeamWhatsAppWaitMode } from '../wait/waitPolicy.js';
 import { appendEmailActionLog } from './emailAudit.service.js';
 import { getWhatsAppConnectorForAgent } from './whatsappConnector.service.js';
+import { hasConversationCapability } from '../conversations/conversationScope.js';
 import {
   getWhatsAppChatMessages,
   getWhatsAppSessionStatus,
@@ -165,6 +166,44 @@ export class WhatsAppNotLinkedError extends Error {
   readonly code = 'whatsapp_not_linked';
   constructor() {
     super('WhatsApp is not linked. Link it in Connectors.');
+  }
+}
+
+async function ensureOutreachThreadForContact(input: {
+  agentId: string;
+  runId: string | null;
+  orgId: string;
+  connectorId: string;
+  jid: string;
+  name?: string | null;
+}): Promise<void> {
+  try {
+    const agentRun = input.runId
+      ? await prisma.agentRun.findUnique({
+          where: { id: input.runId },
+          select: { teamRunId: true },
+        })
+      : null;
+    const { startOutreachConversations } = await import('../conversations/conversationCapability.service.js');
+    await startOutreachConversations({
+      orgId: input.orgId,
+      ownerType: agentRun?.teamRunId ? 'team' : 'agent',
+      ownerId: agentRun?.teamRunId ?? input.agentId,
+      teamRunId: agentRun?.teamRunId ?? null,
+      agentId: input.agentId,
+      channel: 'whatsapp',
+      recipients: [{
+        address: input.jid,
+        displayName: input.name ?? null,
+        connectorId: input.connectorId,
+      }],
+      openingMessage: '',
+    });
+  } catch (err) {
+    console.warn(
+      '[conversation] start after WhatsApp send failed:',
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -455,6 +494,17 @@ export async function executeWhatsAppContactSend(params: {
         riskLevel: 'high',
       }).catch(() => {});
 
+      if (hasConversationCapability(scopes) && resolved.jid && ctx.orgId) {
+        await ensureOutreachThreadForContact({
+          agentId: params.agentId,
+          runId: params.runId,
+          orgId: ctx.orgId,
+          connectorId: connector.id,
+          jid: resolved.jid,
+          name: displayName,
+        });
+      }
+
       return {
         jid: resolved.jid,
         phone: resolved.phone,
@@ -510,7 +560,7 @@ export async function executeWhatsAppContactSend(params: {
   let autoReplyArmed = false;
   let teamWaitArmed = false;
   let replyInstructionsSet = false;
-  if (scopes.has('whatsapp.auto_reply') && result.jid) {
+  if (hasConversationCapability(scopes) && result.jid) {
     try {
       const { armAutoReplySession, normalizeReplyInstructions } = await import(
         '../whatsapp/whatsappAutoReply.service.js'
@@ -532,6 +582,16 @@ export async function executeWhatsAppContactSend(params: {
         '[whatsapp-auto-reply] arm failed:',
         err instanceof Error ? err.message : err,
       );
+    }
+    if (ctx.orgId) {
+      await ensureOutreachThreadForContact({
+        agentId: params.agentId,
+        runId: params.runId,
+        orgId: ctx.orgId,
+        connectorId: connector.id,
+        jid: result.jid,
+        name: result.name ?? null,
+      });
     }
   }
 
@@ -687,6 +747,17 @@ export async function executeWhatsAppPollSend(params: {
         riskLevel: 'high',
       }).catch(() => {});
 
+      if (hasConversationCapability(scopes) && resolved.jid && ctx.orgId) {
+        await ensureOutreachThreadForContact({
+          agentId: params.agentId,
+          runId: params.runId,
+          orgId: ctx.orgId,
+          connectorId: connector.id,
+          jid: resolved.jid,
+          name: displayName,
+        });
+      }
+
       return {
         jid: resolved.jid,
         phone: resolved.phone,
@@ -744,7 +815,7 @@ export async function executeWhatsAppPollSend(params: {
 
   let autoReplyArmed = false;
   let replyInstructionsSet = false;
-  if (scopes.has('whatsapp.auto_reply') && result.jid) {
+  if (hasConversationCapability(scopes) && result.jid) {
     try {
       const { armAutoReplySession, normalizeReplyInstructions } = await import(
         '../whatsapp/whatsappAutoReply.service.js'
@@ -766,6 +837,16 @@ export async function executeWhatsAppPollSend(params: {
         '[whatsapp-auto-reply] arm failed:',
         err instanceof Error ? err.message : err,
       );
+    }
+    if (ctx.orgId) {
+      await ensureOutreachThreadForContact({
+        agentId: params.agentId,
+        runId: params.runId,
+        orgId: ctx.orgId,
+        connectorId: connector.id,
+        jid: result.jid,
+        name: result.name ?? null,
+      });
     }
   }
 
@@ -908,6 +989,7 @@ export async function executeWhatsAppDocumentSend(params: {
           documentFileName: staged.fileName,
           documentMimetype: identity.mimetype,
           documentStagedPath: staged.stagedPath,
+          brainDocumentId,
           replyInstructions: normalizeReplyInstructions(params.input.replyInstructions),
           jid: resolved.jid,
           phone: resolved.phone ?? null,
@@ -933,6 +1015,17 @@ export async function executeWhatsAppDocumentSend(params: {
         status: 'success',
         riskLevel: 'high',
       }).catch(() => {});
+
+      if (hasConversationCapability(scopes) && resolved.jid && ctx.orgId) {
+        await ensureOutreachThreadForContact({
+          agentId: params.agentId,
+          runId: params.runId,
+          orgId: ctx.orgId,
+          connectorId: connector.id,
+          jid: resolved.jid,
+          name: displayName,
+        });
+      }
 
       return {
         jid: resolved.jid,
@@ -995,7 +1088,7 @@ export async function executeWhatsAppDocumentSend(params: {
 
     let autoReplyArmed = false;
     let replyInstructionsSet = false;
-    if (scopes.has('whatsapp.auto_reply') && result.jid) {
+    if (hasConversationCapability(scopes) && result.jid) {
       try {
         const { armAutoReplySession, normalizeReplyInstructions } = await import(
           '../whatsapp/whatsappAutoReply.service.js'
@@ -1017,6 +1110,16 @@ export async function executeWhatsAppDocumentSend(params: {
           '[whatsapp-auto-reply] arm failed:',
           err instanceof Error ? err.message : err,
         );
+      }
+      if (ctx.orgId) {
+        await ensureOutreachThreadForContact({
+          agentId: params.agentId,
+          runId: params.runId,
+          orgId: ctx.orgId,
+          connectorId: connector.id,
+          jid: result.jid,
+          name: result.name ?? null,
+        });
       }
     }
 
@@ -1055,8 +1158,8 @@ export async function executeWhatsAppAutoReplyStatus(params: {
     ...(ctx.permissionScopes as string[]),
     ...(ctx.alwaysScopes as string[]),
   ]);
-  if (!scopes.has('whatsapp.auto_reply')) {
-    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  if (!hasConversationCapability(scopes)) {
+    throw new WhatsAppScopeDeniedError('conversation');
   }
 
   const connector = await getWhatsAppConnectorForAgent(params.agentId);
@@ -1084,8 +1187,8 @@ export async function executeWhatsAppAutoReplyStop(params: {
     ...(ctx.permissionScopes as string[]),
     ...(ctx.alwaysScopes as string[]),
   ]);
-  if (!scopes.has('whatsapp.auto_reply')) {
-    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  if (!hasConversationCapability(scopes)) {
+    throw new WhatsAppScopeDeniedError('conversation');
   }
 
   const connector = await getWhatsAppConnectorForAgent(params.agentId);
@@ -1111,8 +1214,8 @@ export async function executeWhatsAppAutoReplySetInstructions(params: {
     ...(ctx.permissionScopes as string[]),
     ...(ctx.alwaysScopes as string[]),
   ]);
-  if (!scopes.has('whatsapp.auto_reply')) {
-    throw new WhatsAppScopeDeniedError('whatsapp.auto_reply');
+  if (!hasConversationCapability(scopes)) {
+    throw new WhatsAppScopeDeniedError('conversation');
   }
 
   const instructions = params.input.instructions.trim();

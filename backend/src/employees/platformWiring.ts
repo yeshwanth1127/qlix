@@ -54,7 +54,7 @@ export const PLATFORM_WIRING: Record<string, PlatformWiring> = {
   },
   whatsapp: {
     providers: ['whatsapp_baileys'],
-    scopes: ['whatsapp.send', 'whatsapp.read', 'whatsapp.contact_send', 'whatsapp.auto_reply'],
+    scopes: ['whatsapp.send', 'whatsapp.read', 'whatsapp.contact_send', 'whatsapp.auto_reply', 'conversation'],
     jitScopes: [],
   },
   facebook: { providers: ['orbit'], scopes: SOCIAL_SCOPES, jitScopes: ['social.publish'] },

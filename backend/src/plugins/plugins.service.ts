@@ -91,6 +91,16 @@ export async function enablePlugin(
     },
   });
   resumeOrganizationPlugin(orgId, pluginId);
+  if (pluginId === 'outreach') {
+    const { ensureOutreachConversationWorkflow } = await import(
+      '../conversations/ensureOutreachConversationWorkflow.js'
+    );
+    const { ensureWhatsAppLeadOutreachSequentialWorkflow } = await import(
+      '../conversations/ensureWhatsAppLeadOutreachSequentialWorkflow.js'
+    );
+    await ensureOutreachConversationWorkflow();
+    await ensureWhatsAppLeadOutreachSequentialWorkflow();
+  }
 }
 
 export async function disablePlugin(orgId: string, pluginId: string): Promise<void> {

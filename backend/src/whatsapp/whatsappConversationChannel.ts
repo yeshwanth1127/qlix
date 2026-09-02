@@ -153,6 +153,21 @@ export async function assertWhatsAppChannelSendGrant(target: WhatsAppConversatio
       return;
     }
   }
+  // Team wait / managed workflow follow-ups: the user already approved
+  // whatsapp.contact_send for the outreach stage, and selecting wait TTL (or an
+  // open wait trigger) authorizes delivery for this team run. Do not require a
+  // second dashboard prompt when the conversation middleware sends greeting/polls.
+  if (target.teamRunId) {
+    const openWait = await prisma.waitTrigger.findFirst({
+      where: {
+        teamRunId: target.teamRunId,
+        status: 'open',
+        continuationKind: 'resume_team_run',
+      },
+      select: { id: true },
+    });
+    if (openWait) return;
+  }
   throw new Error('whatsapp.contact_send requires dashboard approval');
 }
 

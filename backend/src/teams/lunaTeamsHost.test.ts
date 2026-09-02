@@ -393,11 +393,12 @@ test('whatsapp dispatches keep channel scopes and drop CRM', () => {
   const skills = skillsForLunaTeamsDispatch({
     role: 'outreach',
     task: 'Send a WhatsApp greeting, brochure, and poll to the validated leads.',
-    delegatedScopes: ['whatsapp.contact_send', 'whatsapp.auto_reply', 'crm.write'],
+    delegatedScopes: ['whatsapp.contact_send', 'whatsapp.auto_reply', 'conversation', 'crm.write'],
     knowledgeMode: 'none',
   });
   assert.ok(skills.includes('whatsapp.contact_send'));
   assert.ok(skills.includes('whatsapp.auto_reply'));
+  assert.ok(skills.includes('conversation'));
   assert.ok(!skills.includes('crm.write'));
   assert.ok(!skills.includes(TEAM_DISPATCH_ONLY_SKILL));
 });

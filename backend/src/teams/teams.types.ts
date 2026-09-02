@@ -286,6 +286,8 @@ export type PendingWaitOutbound = {
   documentFileName?: string;
   documentMimetype?: string;
   documentStagedPath?: string;
+  /** Brain document id when the queued file came from Brain (managed workflow brochure). */
+  brainDocumentId?: string | null;
   replyInstructions?: string | null;
   jid?: string | null;
   phone?: string | null;

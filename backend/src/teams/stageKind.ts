@@ -6,6 +6,7 @@ import type { PermissionScope } from '../agents/agents.types.js';
 import { withDefaultAgentScopes } from '../agents/defaultAgentScopes.js';
 import type { NLAgentSpec, NLWorkerSpec } from '../agents/nlTypes.js';
 import type { AgentCreationPlan } from '../agents/nlTypes.js';
+import { hasConversationCapability } from '../conversations/conversationScope.js';
 
 export const STAGE_KINDS = ['source', 'transform', 'act', 'wait', 'deliver'] as const;
 export type StageKind = (typeof STAGE_KINDS)[number];
@@ -38,7 +39,7 @@ const CHANNEL_ACT_SCOPES: Record<StageChannel, readonly PermissionScope[]> = {
 };
 
 const CHANNEL_WAIT_SCOPES: Record<StageChannel, readonly PermissionScope[]> = {
-  whatsapp: ['whatsapp.auto_reply'],
+  whatsapp: ['conversation', 'whatsapp.auto_reply'],
   email: ['email.read'],
   slack: ['slack.read'],
   crm: ['crm.read'],
@@ -60,7 +61,19 @@ const CHANNEL_DELIVER_SCOPES: Record<StageChannel, readonly PermissionScope[]> =
 /** Compact names the model should see for a granted scope (index, not full schema dump). */
 export const TOOL_INDEX_BY_SCOPE: Partial<Record<string, readonly string[]>> = {
   'whatsapp.contact_send': ['whatsapp_send_message', 'whatsapp_send_document', 'whatsapp_send_poll'],
-  'whatsapp.auto_reply': ['whatsapp_set_auto_reply'],
+  conversation: [
+    'conversation_start',
+    'conversation_list',
+    'conversation_get',
+    'conversation_send',
+    'conversation_close',
+  ],
+  'whatsapp.auto_reply': [
+    'conversation_start',
+    'conversation_list',
+    'conversation_get',
+    'whatsapp_auto_reply_set_instructions',
+  ],
   'whatsapp.send': ['whatsapp_send'],
   'email.send': ['email_send'],
   'email.read': ['email_read'],
@@ -261,7 +274,7 @@ export function inferStageContract(params: {
     (scopes.has('crm.write') && !hasAssessmentAct) ||
     scopes.has('web.transaction');
   const hasAct = hasChannelAct || hasAssessmentAct;
-  const hasWait = scopes.has('whatsapp.auto_reply');
+  const hasWait = hasConversationCapability(scopes);
   const hasDeliver =
     scopes.has('files.create') ||
     scopes.has('whatsapp.send') ||

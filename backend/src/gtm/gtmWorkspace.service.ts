@@ -158,6 +158,40 @@ async function savePluginConfig(orgId: string, setup: GtmSetupConfig): Promise<G
   return setup;
 }
 
+export async function getGtmDiscoveryEntry(orgId: string): Promise<{
+  view: 'questions' | 'workspace';
+  planStatus: 'generating' | 'ready' | 'failed' | null;
+  hasConfirmedIdea: boolean;
+  pendingIdeaReview: boolean;
+}> {
+  const foundation = await getDiscoveryFoundation(orgId);
+  const plan = await getLatestDiscoveryPlan(orgId);
+  const pendingIdeaReview = foundation.proposals.some(
+    (proposal) => proposal.kind === 'idea' && proposal.status === 'pending',
+  );
+  const hasConfirmedIdea = Boolean(foundation.idea);
+
+  const planStatus = plan?.status === 'generating' || plan?.status === 'ready' || plan?.status === 'failed'
+    ? plan.status
+    : null;
+
+  if (!hasConfirmedIdea || pendingIdeaReview) {
+    return {
+      view: 'questions',
+      planStatus,
+      hasConfirmedIdea,
+      pendingIdeaReview,
+    };
+  }
+
+  return {
+    view: 'workspace',
+    planStatus,
+    hasConfirmedIdea: true,
+    pendingIdeaReview: false,
+  };
+}
+
 export async function getGtmDiscoveryWorkspace(orgId: string) {
   const [setup, foundation, plan, connectors, engagements] = await Promise.all([
     loadPluginConfig(orgId),

@@ -701,11 +701,22 @@ async function handleContactAutoReplyInbound(
 
   const label = session.contactName || session.contactPhone || session.contactJid;
   const { buildAutoReplyInboundPrompt } = await import('./whatsappAutoReply.service.js');
+  let threadId: string | null = null;
+  if (connector.orgId) {
+    const { findActiveThreadForBinding } = await import('../conversations/conversationCapability.service.js');
+    threadId = await findActiveThreadForBinding({
+      orgId: connector.orgId,
+      channel: 'whatsapp',
+      keyValue: session.contactJid,
+      connectorId: connector.id,
+    });
+  }
   const prompt = buildAutoReplyInboundPrompt({
     label,
     contactJid: session.contactJid,
     text,
     replyInstructions: session.replyInstructions,
+    threadId,
   });
 
   await enqueueWhatsAppAgentRun(

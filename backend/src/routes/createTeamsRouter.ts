@@ -50,12 +50,14 @@ import {
   TeamRunMissingAttachmentError,
 } from '../teams/teams.service.js';
 import { goalImpliesAuthoritativeAttachment } from '../teams/teamRunFollowUp.js';
+import { isSandboxStorageError } from '../sandbox/sandboxClient.js';
 import {
   apiErrorBodyFromFailure,
   missingAttachmentFailure,
   resolveTeamRunFailure,
   teamRunFailureFromError,
   teamRunFailureFromMessage,
+  uploadErrorFailure,
 } from '../teams/teamRunFailures.js';
 import { TeamsRepository } from '../teams/teams.repository.js';
 import { JitService } from '../jit/jit.service.js';
@@ -65,6 +67,7 @@ import {
   answerDefenseInterviewQuestion,
   loadDefenseInterviewForTeamRun,
 } from '../assessment/interactiveReview.service.js';
+import { getConversationThreadDetail, listConversationThreads } from '../conversations/index.js';
 
 /** Team-run uploads allow slightly more files than agent chat (8). */
 const TEAM_INJECT_MAX_FILES = 10;
@@ -534,6 +537,49 @@ export function createTeamsRouter(): Router {
     }
   });
 
+  router.get('/:id/runs/:runId/conversations', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    try {
+      const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
+      const listed = await listConversationThreads({
+        orgId: req.auth!.orgId,
+        ownerType: 'team',
+        ownerId: run.id,
+      });
+      res.json(listed);
+    } catch (err) {
+      if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
+      res.status(500).json({ error: { code: 'run_conversations_failed', message: 'Failed to list conversation threads' } });
+    }
+  });
+
+  router.get('/:id/runs/:runId/conversations/:threadId', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
+    try {
+      const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
+      const listed = await listConversationThreads({
+        orgId: req.auth!.orgId,
+        ownerType: 'team',
+        ownerId: run.id,
+        threadId: req.params.threadId!,
+      });
+      if (listed.threads.length === 0) {
+        res.status(404).json({ error: { code: 'not_found', message: 'Conversation thread not found' } });
+        return;
+      }
+      const detail = await getConversationThreadDetail({
+        orgId: req.auth!.orgId,
+        threadId: req.params.threadId!,
+      });
+      if (!detail) {
+        res.status(404).json({ error: { code: 'not_found', message: 'Conversation thread not found' } });
+        return;
+      }
+      res.json(detail);
+    } catch (err) {
+      if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: err.message } }); return; }
+      res.status(500).json({ error: { code: 'run_conversation_failed', message: 'Failed to load conversation thread' } });
+    }
+  });
+
   router.get('/:id/runs/:runId/defense', authenticateUser(true), requireSubscriptionAccess, async (req: Request, res: Response) => {
     try {
       const run = await service.getRun(req.params.id!, req.params.runId!, req.auth!.orgId);
@@ -854,6 +900,14 @@ export function createTeamsRouter(): Router {
         res.status(400).json({ error: { code: 'invalid_model', message: err.message } });
         return;
       }
+      if (isSandboxStorageError(err) || (err as { code?: string }).code === 'upload_error') {
+        const failure = uploadErrorFailure(err instanceof Error ? err.message : undefined);
+        res.status(isSandboxStorageError(err) ? err.status : 503).json({
+          error: apiErrorBodyFromFailure(failure),
+          failure,
+        });
+        return;
+      }
       const status = typeof (err as { status?: number })?.status === 'number' ? (err as { status: number }).status : 500;
       const code = typeof (err as { code?: string })?.code === 'string' ? (err as { code: string }).code : 'run_start_failed';
       if (status >= 400 && status < 500) {
@@ -862,6 +916,7 @@ export function createTeamsRouter(): Router {
         });
         return;
       }
+      console.error('[team-run-start]', err);
       res.status(500).json({ error: { code: 'run_start_failed', message: 'Failed to start run' } });
     }
   });
@@ -951,6 +1006,14 @@ export function createTeamsRouter(): Router {
       res.json({ ok: true, attachments });
     } catch (err) {
       if (err instanceof TeamNotFoundError) { res.status(404).json({ error: { code: 'not_found', message: (err as Error).message } }); return; }
+      if (isSandboxStorageError(err) || (err as { code?: string }).code === 'upload_error') {
+        const failure = uploadErrorFailure(err instanceof Error ? err.message : undefined);
+        res.status(isSandboxStorageError(err) ? err.status : 503).json({
+          error: apiErrorBodyFromFailure(failure),
+          failure,
+        });
+        return;
+      }
       const status = typeof (err as { status?: number })?.status === 'number' ? (err as { status: number }).status : 500;
       const code = typeof (err as { code?: string })?.code === 'string' ? (err as { code: string }).code : 'inject_failed';
       if (status >= 400 && status < 500) {
@@ -959,6 +1022,7 @@ export function createTeamsRouter(): Router {
         });
         return;
       }
+      console.error('[team-run-inject]', err);
       res.status(500).json({ error: { code: 'inject_failed', message: 'Failed to inject message' } });
     }
   });

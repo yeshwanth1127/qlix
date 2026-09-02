@@ -195,7 +195,7 @@ export function GtmTeamBuildFlow({ routePrefix = "/organization" }: { readonly r
         subtitle="One team, parallel execution — research, email, and support agents working together."
         actions={(
           <Link
-            href={`${routePrefix}/gtm/plan`}
+            href={`${routePrefix}/gtm`}
             className="border border-black px-3 py-2 font-serif text-[10px] uppercase tracking-widest"
           >
             Back to workspace

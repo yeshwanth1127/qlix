@@ -2959,6 +2959,240 @@
       ],
       "scopeMode": "all"
     },
+    "conversation_close": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Close a conversation thread so new replies no longer attach to it.",
+      "inputSchema": {
+        "properties": {
+          "reason": {
+            "description": "Optional close reason.",
+            "type": "string"
+          },
+          "threadId": {
+            "description": "Conversation thread id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "conversation"
+        ]
+      },
+      "name": "conversation_close",
+      "provider": {
+        "id": "qlix.conversation",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "conversation"
+      ],
+      "risk": {
+        "effects": [
+          "write"
+        ],
+        "level": "moderate"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "conversation_get": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Get one conversation thread and its event history.",
+      "inputSchema": {
+        "properties": {
+          "threadId": {
+            "description": "Conversation thread id from conversation_start or conversation_list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "conversation"
+        ]
+      },
+      "name": "conversation_get",
+      "provider": {
+        "id": "qlix.conversation",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "conversation"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "conversation_list": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "List conversation threads for this campaign or run, with status and last inbound/outbound.",
+      "inputSchema": {
+        "properties": {
+          "processId": {
+            "description": "Optional process id. Defaults to this run's process.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "conversation"
+        ]
+      },
+      "name": "conversation_list",
+      "provider": {
+        "id": "qlix.conversation",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "conversation"
+      ],
+      "risk": {
+        "effects": [
+          "read"
+        ],
+        "level": "low"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "conversation_send": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Send a follow-up message on an existing conversation thread. Uses that thread's channel (WhatsApp maps to whatsapp.contact_send JIT).",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "description": "Message to send.",
+            "type": "string"
+          },
+          "threadId": {
+            "description": "Conversation thread id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "content"
+        ],
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "conversation"
+        ]
+      },
+      "name": "conversation_send",
+      "provider": {
+        "id": "qlix.conversation",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "conversation"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication",
+          "write"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
+    "conversation_start": {
+      "aliases": [],
+      "contractVersion": "qlix.capability.v1",
+      "description": "Start one or many parallel conversation threads on a channel (WhatsApp today). Each recipient gets a separate thread so replies stay isolated. Optional opening content is sent on the thread. Requires the conversation capability (Outreach plugin). WhatsApp send still needs whatsapp.contact_send when delivering an opening message.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "description": "Channel id, e.g. whatsapp.",
+            "type": "string"
+          },
+          "content": {
+            "description": "Optional opening message. Omit to listen only.",
+            "type": "string"
+          },
+          "processId": {
+            "description": "Optional existing conversation process to attach threads to.",
+            "type": "string"
+          },
+          "recipient": {
+            "description": "One contact address (phone, jid, or channel id).",
+            "type": "string"
+          },
+          "recipients": {
+            "description": "Multiple recipients to start in parallel.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "jit": {
+        "required": false,
+        "scopes": [
+          "conversation"
+        ]
+      },
+      "name": "conversation_start",
+      "provider": {
+        "id": "qlix.conversation",
+        "kind": "backend_proxy"
+      },
+      "requiredScopes": [
+        "conversation"
+      ],
+      "risk": {
+        "effects": [
+          "external_communication",
+          "write"
+        ],
+        "level": "high"
+      },
+      "runtimes": [
+        "cloud",
+        "hybrid"
+      ],
+      "scopeMode": "all"
+    },
     "create_report_pdf": {
       "aliases": [],
       "contractVersion": "qlix.capability.v1",
@@ -7287,6 +7521,11 @@
       "whatsapp_auto_reply_status",
       "whatsapp_auto_reply_stop",
       "whatsapp_auto_reply_set_instructions",
+      "conversation_start",
+      "conversation_list",
+      "conversation_get",
+      "conversation_send",
+      "conversation_close",
       "brain_query",
       "brain_find_documents",
       "assessment_session_get",
@@ -7415,6 +7654,11 @@
       "whatsapp_auto_reply_status",
       "whatsapp_auto_reply_stop",
       "whatsapp_auto_reply_set_instructions",
+      "conversation_start",
+      "conversation_list",
+      "conversation_get",
+      "conversation_send",
+      "conversation_close",
       "brain_query",
       "brain_find_documents",
       "assessment_session_get",
@@ -7516,6 +7760,11 @@
       "whatsapp_auto_reply_status",
       "whatsapp_auto_reply_stop",
       "whatsapp_auto_reply_set_instructions",
+      "conversation_start",
+      "conversation_list",
+      "conversation_get",
+      "conversation_send",
+      "conversation_close",
       "brain_query",
       "brain_find_documents",
       "assessment_session_get",

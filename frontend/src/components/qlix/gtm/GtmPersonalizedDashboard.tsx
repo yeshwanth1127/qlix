@@ -63,7 +63,7 @@ function DoFirstCard({
   readonly crmRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const { readiness } = workspace;
-  const buildTeamHref = `${routePrefix}/gtm/plan/build-team`;
+  const buildTeamHref = `${routePrefix}/gtm/build-team`;
 
   function actionFor(nextAction: GtmWorkspaceNextAction): { href?: string; onClick?: () => void; label: string } | null {
     switch (nextAction) {
@@ -260,7 +260,7 @@ export function GtmPersonalizedDashboard({ routePrefix = "/organization" }: { re
         actions={(
           <div className="flex flex-wrap gap-2">
             <Link
-              href={`${routePrefix}/gtm`}
+              href={`${routePrefix}/gtm?edit=answers`}
               className="border border-black px-3 py-2 font-serif text-[10px] uppercase tracking-widest"
             >
               Edit answers

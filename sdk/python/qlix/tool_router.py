@@ -56,6 +56,8 @@ GROUP_REQUIRED_SCOPES: dict[ToolGroup, tuple[str, ...]] = {
         "whatsapp.send",
         "whatsapp.read",
         "whatsapp.contact_send",
+        "whatsapp.auto_reply",
+        "conversation",
         "crm.read",
         "crm.write",
         "crm.delete",
@@ -933,6 +935,9 @@ class ToolRouter:
             tools.extend(openai_slack_tool_definitions(self.identity, sf))
             tools.extend(openai_notion_tool_definitions(self.identity, sf))
             tools.extend(openai_whatsapp_tool_definitions(self.identity, sf))
+            from .cloud_conversation_runtime import openai_conversation_tool_definitions
+
+            tools.extend(openai_conversation_tool_definitions(self.identity, sf))
         if "knowledge" in groups:
             tools.extend(openai_knowledge_tool_definitions(self.identity, sf))
             from .cloud_brain_file_runtime import openai_brain_file_tool_definitions
@@ -1229,6 +1234,18 @@ class ToolRouter:
                 qlix_sdk=qlix_sdk,
             )
             executor_map.update(whatsapp_executors)
+            from .cloud_conversation_runtime import build_conversation_tool_executors
+
+            executor_map.update(
+                build_conversation_tool_executors(
+                    identity=self.identity,
+                    skill_filter=sf,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    backend_url=backend_url,
+                    runner_token=runner_token,
+                )
+            )
 
         if "assessment" in groups and agent_id and run_id and backend_url and runner_token:
             from .assessment_runtime import build_assessment_tool_executors

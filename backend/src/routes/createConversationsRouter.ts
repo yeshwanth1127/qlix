@@ -2,16 +2,22 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod';
 import { authenticateUser } from '../middleware/authenticateUser.js';
 import { requireSubscriptionAccess } from '../middleware/requireSubscriptionAccess.js';
+import { requireOrganizationPlugin } from '../plugins/requireOrganizationPlugin.js';
+import { OUTREACH_PLUGIN_ID } from '../conversations/conversationScope.js';
 import { prisma } from '../lib/prisma.js';
 import {
   correlateInboundConversation,
   createConversationProcess,
   getConversationProcess,
+  listConversationThreads,
+  getConversationThreadDetail,
   publishConversationWorkflow,
   signalConversation,
   startConversation,
 } from '../conversations/index.js';
 import { listPublishedConversationWorkflows } from '../conversations/conversationWorkflow.service.js';
+import { OUTREACH_CONVERSATION_WORKFLOW_KEY } from '../conversations/outreachConversationWorkflow.js';
+import { ensureOutreachConversationWorkflow } from '../conversations/ensureOutreachConversationWorkflow.js';
 import type { ConversationSignal } from '../conversations/conversation.types.js';
 import type { ConversationWorkflow } from '../conversations/workflow.types.js';
 
@@ -59,8 +65,6 @@ const threadBody = z.object({
     priority: z.number().int().optional(),
     expiresAt: z.coerce.date().optional().nullable(),
   })).max(50).optional(),
-}).refine((value) => Boolean(value.workflowVersionId || value.workflowKey), {
-  message: 'workflowVersionId or workflowKey is required',
 });
 const conversationSignal = z.discriminatedUnion('type', [
   z.object({ type: z.literal('start'), payload: z.record(z.string(), z.unknown()).optional() }),
@@ -98,9 +102,10 @@ function asyncRoute(
 
 export function createConversationsRouter(): Router {
   const router = Router();
-  router.use(authenticateUser(true), requireSubscriptionAccess);
+  router.use(authenticateUser(true), requireSubscriptionAccess, requireOrganizationPlugin(OUTREACH_PLUGIN_ID));
 
   router.get('/workflows', asyncRoute(async (req: Request, res: Response) => {
+    await ensureOutreachConversationWorkflow();
     const workflows = await listPublishedConversationWorkflows(req.auth!.orgId);
     res.json({ workflows });
   }));
@@ -131,7 +136,22 @@ export function createConversationsRouter(): Router {
   router.get('/processes/:processId', asyncRoute(async (req: Request, res: Response) => {
     const owned = await prisma.conversationProcess.findFirst({ where: { id: req.params.processId, orgId: req.auth!.orgId }, select: { id: true } });
     if (!owned) return void res.status(404).json({ error: { code: 'not_found', message: 'Conversation process not found' } });
-    res.json({ process: await getConversationProcess(owned.id) });
+    const process = await getConversationProcess(owned.id);
+    const listed = await listConversationThreads({ orgId: req.auth!.orgId, processId: owned.id });
+    res.json({ process, threads: listed.threads });
+  }));
+
+  router.get('/threads', asyncRoute(async (req: Request, res: Response) => {
+    const processId = typeof req.query.processId === 'string' ? req.query.processId : undefined;
+    const ownerType = typeof req.query.ownerType === 'string' ? req.query.ownerType : undefined;
+    const ownerId = typeof req.query.ownerId === 'string' ? req.query.ownerId : undefined;
+    const listed = await listConversationThreads({
+      orgId: req.auth!.orgId,
+      processId,
+      ownerType,
+      ownerId,
+    });
+    res.json(listed);
   }));
 
   router.post('/threads', asyncRoute(async (req: Request, res: Response) => {
@@ -145,17 +165,19 @@ export function createConversationsRouter(): Router {
       const parent = await prisma.conversationThread.findFirst({ where: { id: parsed.data.parentThreadId, orgId: req.auth!.orgId }, select: { id: true } });
       if (!parent) return void res.status(404).json({ error: { code: 'not_found', message: 'Parent conversation thread not found' } });
     }
-    const result = await startConversation({ orgId: req.auth!.orgId, ...parsed.data });
+    await ensureOutreachConversationWorkflow();
+    const result = await startConversation({
+      orgId: req.auth!.orgId,
+      ...parsed.data,
+      workflowKey: parsed.data.workflowVersionId ? parsed.data.workflowKey : (parsed.data.workflowKey ?? OUTREACH_CONVERSATION_WORKFLOW_KEY),
+    });
     res.status(201).json(result);
   }));
 
   router.get('/threads/:threadId', asyncRoute(async (req: Request, res: Response) => {
-    const thread = await prisma.conversationThread.findFirst({
-      where: { id: req.params.threadId, orgId: req.auth!.orgId },
-    });
-    if (!thread) return void res.status(404).json({ error: { code: 'not_found', message: 'Conversation thread not found' } });
-    const events = await prisma.conversationEvent.findMany({ where: { threadId: thread.id }, orderBy: { seq: 'asc' } });
-    res.json({ thread, events });
+    const detail = await getConversationThreadDetail({ orgId: req.auth!.orgId, threadId: req.params.threadId! });
+    if (!detail) return void res.status(404).json({ error: { code: 'not_found', message: 'Conversation thread not found' } });
+    res.json(detail);
   }));
 
   router.post('/threads/:threadId/signals', asyncRoute(async (req: Request, res: Response) => {

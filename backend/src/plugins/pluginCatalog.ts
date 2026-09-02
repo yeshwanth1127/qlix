@@ -25,7 +25,7 @@ export interface PluginDef {
   name: string;
   description: string;
   /** Nav items added to the sidebar once this plugin is enabled. Empty when the
-   * plugin only gates scopes and needs no page of its own (e.g. WhatsApp Outreach). */
+   * plugin only gates scopes and needs no page of its own (e.g. Outreach). */
   navItems: PluginNavItem[];
   /** True = new orgs get this enabled automatically at signup. Neither plugin
    * uses this today — both are opt-in — but the mechanism exists for later. */
@@ -60,10 +60,10 @@ export const PLUGIN_CATALOG: PluginDef[] = [
     defaultEnabled: false,
   },
   {
-    id: 'whatsapp_outreach',
-    name: 'WhatsApp Outreach',
+    id: 'outreach',
+    name: 'Outreach',
     description:
-      'Message multiple contacts and wait for their replies as a managed campaign (arms a durable wait, routes each reply back into the run). Sending to one contact, reading chats, and delivering files to your own WhatsApp are ordinary agent scopes and do not require this — this plugin only gates the auto-reply/wait-for-replies capability.',
+      'Start one or many parallel conversation threads, keep each contact’s replies on its own thread, and hand the organized results back to you or the agent. Channel send (WhatsApp, later email/Slack) stays an ordinary agent scope — this plugin only gates the conversation capability.',
     navItems: [],
     defaultEnabled: false,
   },

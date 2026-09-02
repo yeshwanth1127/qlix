@@ -28,6 +28,22 @@ function serviceSecret(): string {
   return secret;
 }
 
+function sandboxStorageError(message: string, httpStatus?: number): Error & { code: string; status: number } {
+  const status = httpStatus === 401 ? 503 : httpStatus && httpStatus >= 400 && httpStatus < 500 ? 503 : 502;
+  return Object.assign(new Error(message), { code: 'upload_error', status });
+}
+
+export function isSandboxStorageError(
+  err: unknown,
+): err is Error & { code: 'upload_error'; status: number } {
+  return Boolean(
+    err &&
+      typeof err === 'object' &&
+      (err as { code?: string }).code === 'upload_error' &&
+      typeof (err as { status?: number }).status === 'number',
+  );
+}
+
 function sanitizeFileName(name: string): string {
   return name.replace(/[^\w.\-]+/g, '_').slice(0, 120) || 'report.pdf';
 }
@@ -56,7 +72,12 @@ export async function replaceSandboxFile(
     body: new Uint8Array(bytes),
   });
   if (!resp.ok) {
-    throw new Error(`sandbox replace failed: HTTP ${resp.status}`);
+    throw sandboxStorageError(
+      resp.status === 401
+        ? 'File storage service rejected the upload (service secret mismatch).'
+        : `File storage service rejected the upload (HTTP ${resp.status}).`,
+      resp.status,
+    );
   }
   const data = (await resp.json()) as { id?: string; expiresAt?: number };
   if (!data.id) throw new Error('sandbox replace returned no id');
@@ -84,7 +105,12 @@ export async function storeSandboxFile(
     body: new Uint8Array(bytes),
   });
   if (!resp.ok) {
-    throw new Error(`sandbox store failed: HTTP ${resp.status}`);
+    throw sandboxStorageError(
+      resp.status === 401
+        ? 'File storage service rejected the upload (service secret mismatch).'
+        : `File storage service rejected the upload (HTTP ${resp.status}).`,
+      resp.status,
+    );
   }
   const data = (await resp.json()) as { id?: string; expiresAt?: number };
   if (!data.id) throw new Error('sandbox store returned no id');
